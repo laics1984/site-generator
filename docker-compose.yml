@@ -1,0 +1,58 @@
+# Webtree Site Generator — local dev compose
+#
+# IMPORTANT: Ollama runs on the HOST, not in a container.
+# Docker Desktop on macOS cannot pass through the M1 GPU, so an in-container
+# Ollama would fall back to CPU inference (≈2 tok/s vs ≈25 tok/s native).
+# The backend reaches the host's Ollama via host.docker.internal:11434.
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: webtree-sitegen-backend
+    ports:
+      - "8001:8001"
+    environment:
+      # host.docker.internal resolves to the macOS host from inside the container.
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:7b-instruct}"
+      OLLAMA_TIMEOUT_SECONDS: "${OLLAMA_TIMEOUT_SECONDS:-180}"
+      # Pexels free API key for real photos. Falls back to Picsum if empty.
+      PEXELS_API_KEY: "${PEXELS_API_KEY:-}"
+      CMS_API_BASE_URL: "${CMS_API_BASE_URL:-http://host.docker.internal:8000}"
+    extra_hosts:
+      # Required on Linux; harmless on macOS where it's already provided.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./backend/app:/app/app
+      - sitegen_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: webtree-sitegen-frontend
+    ports:
+      - "5174:5174"
+    environment:
+      # Vite proxy target — see frontend/vite.config.ts
+      BACKEND_URL: "http://backend:8001"
+    depends_on:
+      backend:
+        condition: service_healthy
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend/tailwind.config.js:/app/tailwind.config.js
+      - ./frontend/postcss.config.js:/app/postcss.config.js
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+      # Anonymous volume keeps node_modules from the host out of the container.
+      - /app/node_modules
+
+volumes:
+  sitegen_data:
