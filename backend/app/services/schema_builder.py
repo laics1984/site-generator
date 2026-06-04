@@ -20,6 +20,7 @@ no hardcoded brand colours. UI/UX methodology baked in:
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -57,7 +58,7 @@ from app.models.content_blocks import (
 from app.services.header_footer import build_footer, build_header
 from app.services.media import ImageResolver
 from app.services.pexels import PhotoResult
-from app.services.section_content import apply_section_rhythm, block_to_section
+from app.services.section_content import _SURFACE_BG, apply_section_rhythm, block_to_section
 from app.services.template_filler import fill_template
 from app.services.theme import build_theme
 
@@ -80,6 +81,14 @@ class StyleTokens:
     card: dict[str, Any]
     primary_button_styles: dict[str, Any]
     secondary_button_styles: dict[str, Any]
+    glass_card: dict[str, Any] | None = None
+
+    @property
+    def cards(self) -> dict[str, Any]:
+        """Card surface to use: frosted glass when the mood enables it, else the
+        standard opaque card. A fresh copy each access so per-card overrides
+        (spreads like ``{**s.cards, "padding": "32px"}``) never mutate shared state."""
+        return dict(self.glass_card or self.card)
 
 
 @dataclass
@@ -107,9 +116,16 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
     palette = theme.palette
     typo = theme.typography
 
+    # Fluid type: ceilings scale with the mood's type-scale ratio (1.25 = the
+    # previous fixed look), and every tier is a clamp() so it breathes across
+    # viewports without per-breakpoint overrides. Display tiers may use a
+    # distinct display_font (e.g. Fraunces/Playfair) when the mood sets one.
+    boost = getattr(theme, "type_scale_ratio", 1.25) / 1.25
+    display_font = getattr(theme, "display_font", None) or typo.heading_font
+
     heading_xl = {
-        "fontFamily": typo.heading_font,
-        "fontSize": "56px",
+        "fontFamily": display_font,
+        "fontSize": _fluid_heading(56, boost),
         "fontWeight": 700,
         "lineHeight": "1.05",
         "color": palette.secondary,
@@ -117,8 +133,8 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "letterSpacing": "-0.02em",
     }
     heading_lg = {
-        "fontFamily": typo.heading_font,
-        "fontSize": "44px",
+        "fontFamily": display_font,
+        "fontSize": _fluid_heading(44, boost),
         "fontWeight": 700,
         "lineHeight": "1.1",
         "color": palette.secondary,
@@ -127,7 +143,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
     }
     heading_md = {
         "fontFamily": typo.heading_font,
-        "fontSize": "32px",
+        "fontSize": _fluid_heading(32, boost),
         "fontWeight": 700,
         "lineHeight": "1.15",
         "color": palette.secondary,
@@ -165,7 +181,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "backgroundColor": palette.background,
         "border": f"1px solid {_hairline(palette.secondary)}",
         "gap": "12px",
-        "boxShadow": "0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04)",
+        "boxShadow": shadow(getattr(theme, "shadow_scale", "soft")),
     }
     primary_button = {
         "color": theme.buttons.text,
@@ -216,6 +232,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         card=card,
         primary_button_styles=primary_button,
         secondary_button_styles=secondary_button,
+        glass_card=glass_card_styles(theme) if getattr(theme, "use_glass", False) else None,
     )
 
 
@@ -237,6 +254,233 @@ def _hairline(hex_color: str, alpha: float = 0.10) -> str:
     g = int(hex_color[3:5], 16)
     b = int(hex_color[5:7], 16)
     return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+# --- 2025/26 modern style vocabulary --------------------------------------------
+#
+# All helpers return plain CSS *value* strings (or flat style dicts) so they flow
+# straight through the BuilderElement `styles` channel into both the builder
+# editor and the webtree-public renderer — no schema or renderer change needed.
+# (Mesh gradients / grain are safe on sections+containers thanks to the
+# `isPhotoSource` gate in webtree-public/lib/backgroundPhoto.ts.)
+
+
+def _fluid(min_px: float, max_px: float) -> str:
+    """A responsive `clamp()` font-size that scales with the viewport.
+
+    Floor at `min_px` (mobile), ceiling at `max_px` (≈1280px wide). The middle
+    term is vw-based: at a 1280px viewport, `vw * 12.8 ≈ px`, so we pick the vw
+    that lands on `max_px` there and let clamp() hold the floor on small screens.
+    """
+    mid_vw = round(max_px / 12.8, 2)
+    return f"clamp({round(min_px)}px, {mid_vw}vw, {round(max_px)}px)"
+
+
+def _fluid_heading(max_px: float, boost: float, *, floor_ratio: float = 0.62) -> str:
+    """Fluid size for a heading tier. `boost` scales the ceiling by the theme's
+    type-scale ratio; the mobile floor is `floor_ratio` of the (boosted) ceiling."""
+    ceiling = max_px * boost
+    return _fluid(ceiling * floor_ratio, ceiling)
+
+
+_SHADOWS: dict[str, str] = {
+    "soft": "0 1px 2px rgba(15,23,42,0.06), 0 4px 12px rgba(15,23,42,0.05)",
+    "elevated": "0 2px 4px rgba(15,23,42,0.06), 0 12px 28px rgba(15,23,42,0.10)",
+    "dramatic": "0 4px 8px rgba(15,23,42,0.08), 0 24px 56px rgba(15,23,42,0.16)",
+}
+
+
+def shadow(scale: str) -> str:
+    """Layered box-shadow string for the given depth (soft|elevated|dramatic)."""
+    return _SHADOWS.get(scale, _SHADOWS["soft"])
+
+
+def mesh_gradient(palette: Any) -> str:
+    """A soft multi-stop 'aurora' mesh, as a `backgroundImage` value.
+
+    Three offset radial gradients in the brand hues at low alpha — modern,
+    subtle, and legible (text contrast is preserved because alphas stay low).
+    Pure gradient (no url()), so webtree-public renders it in place rather than
+    routing it through the photo-layer pipeline.
+    """
+    p = palette.primary
+    a = getattr(palette, "accent", None) or p
+    return (
+        f"radial-gradient(at 18% 22%, {_hairline(p, 0.20)} 0px, transparent 55%), "
+        f"radial-gradient(at 82% 16%, {_hairline(a, 0.16)} 0px, transparent 50%), "
+        f"radial-gradient(at 50% 92%, {_hairline(p, 0.12)} 0px, transparent 55%)"
+    )
+
+
+def grain_data_uri(opacity: float = 0.5) -> str:
+    """A tiny SVG fractal-noise grain texture as a `url(data:...)` value.
+
+    Base64-encoded — the most portable form of an inline SVG data-URI (partial
+    percent-encoding silently fails to parse in some browsers). It's a data-URI,
+    so the renderers' `isPhotoSource` gate treats it as decoration, not a photo.
+
+    Note: a few very strict Content-Security-Policies block data-URIs in CSS
+    backgrounds; there the section simply falls back to its flat surface tint.
+    """
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'>"
+        "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' "
+        "numOctaves='2' stitchTiles='stitch'/>"
+        "<feColorMatrix type='saturate' values='0'/></filter>"
+        f"<rect width='140' height='140' filter='url(#n)' opacity='{opacity}'/></svg>"
+    )
+    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return f'url("data:image/svg+xml;base64,{encoded}")'
+
+
+def section_background_image(theme: ThemeTokens) -> str | None:
+    """Compose the decorative section background from the theme's strategy.
+
+    Returns a `backgroundImage` value (mesh and/or grain) or None for flat.
+    """
+    strategy = getattr(theme, "background_strategy", "flat")
+    layers: list[str] = []
+    if "grain" in strategy:
+        layers.append(grain_data_uri())
+    if "mesh" in strategy:
+        layers.append(mesh_gradient(theme.palette))
+    return ", ".join(layers) if layers else None
+
+
+def glass_card_styles(theme: ThemeTokens) -> dict[str, Any]:
+    """Frosted-glass card surface (backdrop-filter), with a no-blur fallback
+    colour so it still reads on browsers without backdrop-filter support."""
+    palette = theme.palette
+    blur = "blur(16px) saturate(140%)"
+    return {
+        "backgroundColor": "rgba(255, 255, 255, 0.62)",
+        "backdropFilter": blur,
+        "WebkitBackdropFilter": blur,
+        "border": f"1px solid {_hairline(palette.secondary, 0.12)}",
+        "borderRadius": f"{max(12, theme.buttons.radius + 6)}px",
+        "padding": "28px",
+        "gap": "12px",
+        "boxShadow": shadow(getattr(theme, "shadow_scale", "elevated")),
+    }
+
+
+# --- generation-time modernization pass -----------------------------------------
+#
+# Real pages are built by the catalogue path (fill_template), whose templates use
+# literal px sizes and almost no shadows/glass/mesh. Rather than rewrite the 223KB
+# catalogue or change the BuilderStyles contract, we apply the 2025/26 treatments
+# deterministically over the assembled BuilderElement tree, keyed off the catalogue's
+# consistent element names ("Heading" / "*Card" / surface sections). Pure + in-place;
+# covers catalogue AND legacy sections uniformly. Per-mood, driven by ThemeTokens.
+
+
+def _parse_px(value: Any) -> float | None:
+    """Numeric px from a CSS size value, or None if not a plain px length."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        v = value.strip()
+        if v.endswith("px"):
+            try:
+                return float(v[:-2])
+            except ValueError:
+                return None
+    return None
+
+
+def _walk_modernize(
+    node: BuilderElement,
+    *,
+    boost: float,
+    use_glass: bool,
+    shadow_scale: str,
+    theme: ThemeTokens,
+    headings: list[tuple[BuilderElement, float]],
+) -> None:
+    styles = node.styles
+    name = (node.name or "").strip()
+
+    if node.type == "text":
+        fs = styles.get("fontSize")
+        already_fluid = isinstance(fs, str) and ("clamp(" in fs or "var(" in fs)
+        if not already_fluid:
+            px = _parse_px(fs)
+            # Headings (named or visually large) become fluid; eyebrows / body left.
+            if px is not None and (name == "Heading" or px >= 24):
+                ceiling = px * boost
+                styles["fontSize"] = _fluid(ceiling * 0.62, ceiling)
+                headings.append((node, px))
+                if px >= 34:  # large display type: tighten if the template didn't
+                    styles.setdefault("lineHeight", "1.08")
+                    styles.setdefault("letterSpacing", "-0.02em")
+
+    elif (
+        node.type in ("container", "2Col", "3Col")
+        and name.lower().endswith("card")
+        # Only enhance a container that is ALREADY a styled card. Catalogue cards
+        # nest a bare wrapper "*Card" around the real styled "*Card" (and the
+        # contact form's "*Card" wraps a self-styled form), so framing a bare
+        # wrapper would draw a second border around the real card. Requiring
+        # existing card styling targets the real card and skips wrappers.
+        and any(k in styles for k in ("borderRadius", "border", "backgroundColor"))
+    ):
+        styles["boxShadow"] = shadow(shadow_scale)
+        styles.setdefault("borderRadius", f"{max(8, theme.buttons.radius + 4)}px")
+        if use_glass:
+            glass = glass_card_styles(theme)
+            # Layer the frosted surface; keep the template's own padding/gap/radius.
+            for key in ("backgroundColor", "backdropFilter", "WebkitBackdropFilter", "border"):
+                styles[key] = glass[key]
+
+    content = node.content
+    if isinstance(content, list):
+        for child in content:
+            _walk_modernize(
+                child,
+                boost=boost,
+                use_glass=use_glass,
+                shadow_scale=shadow_scale,
+                theme=theme,
+                headings=headings,
+            )
+
+
+def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """Apply per-mood 2025/26 treatments to an assembled page's section list,
+    in place. Idempotent: skips already-fluid type and sections that already
+    carry a background image."""
+    boost = getattr(theme, "type_scale_ratio", 1.25) / 1.25
+    display_font = getattr(theme, "display_font", None)
+    use_glass = getattr(theme, "use_glass", False)
+    shadow_scale = getattr(theme, "shadow_scale", "soft")
+    strategy = getattr(theme, "background_strategy", "flat")
+    surface_hex = theme.palette.surface
+
+    for section in sections:
+        headings: list[tuple[BuilderElement, float]] = []
+        _walk_modernize(
+            section,
+            boost=boost,
+            use_glass=use_glass,
+            shadow_scale=shadow_scale,
+            theme=theme,
+            headings=headings,
+        )
+
+        # The mood's display face goes on the section's largest heading (its H1).
+        if display_font and headings:
+            lead = max(headings, key=lambda pair: pair[1])[0]
+            lead.styles["fontFamily"] = display_font
+
+        # Atmospheric mesh/grain on tinted (surface) sections only — top level.
+        if strategy != "flat":
+            st = section.styles
+            has_fill = bool(st.get("backgroundImage") or st.get("background"))
+            is_surface = st.get("backgroundColor") in (surface_hex, _SURFACE_BG)
+            if is_surface and not has_fill:
+                deco = section_background_image(theme)
+                if deco:
+                    st["backgroundImage"] = deco
 
 
 # --- low-level factories --------------------------------------------------------
@@ -504,6 +748,14 @@ def _section(
         styles["backgroundSize"] = "cover"
         styles["backgroundPosition"] = "center"
         styles["backgroundRepeat"] = "no-repeat"
+    elif not inverted and slot == "surface":
+        # Decorative aurora/grain on the tinted (~30%) sections only — adds depth
+        # and rhythm without touching clean white sections, photo sections, or
+        # inverted CTAs. These are gradients / data-URIs, so the renderer's
+        # isPhotoSource gate keeps them out of the photo-layer pipeline.
+        deco = section_background_image(ctx.theme)
+        if deco:
+            styles["backgroundImage"] = deco
 
     inner = _container(
         children,
@@ -766,9 +1018,9 @@ async def _build_features(
         if len(triplet) == 2:
             rows.append(_two_col(triplet[0], triplet[1], styles={"gap": "24px"}))
         else:
-            rows.append(_container(triplet[0], name="Feature card", styles=s.card))
+            rows.append(_container(triplet[0], name="Feature card", styles=s.cards))
 
-    _apply_card_styles(rows, s.card)
+    _apply_card_styles(rows, s.cards)
     return _section(ctx, [header, *rows], name="Features")
 
 
@@ -870,9 +1122,9 @@ async def _build_services(
             rows.append(_two_col(pair[0], pair[1], styles={"gap": "24px"}))
             pair = []
     if pair:
-        rows.append(_container(pair[0], name="Service card", styles=s.card))
+        rows.append(_container(pair[0], name="Service card", styles=s.cards))
 
-    _apply_card_styles(rows, s.card)
+    _apply_card_styles(rows, s.cards)
     return _section(
         ctx,
         [_container(head_children, name="Section header", styles={"gap": "12px"}), *rows],
@@ -961,9 +1213,9 @@ async def _build_testimonials(
         if len(triplet) == 2:
             rows.append(_two_col(triplet[0], triplet[1], styles={"gap": "24px"}))
         else:
-            rows.append(_container(triplet[0], name="Testimonial card", styles=s.card))
+            rows.append(_container(triplet[0], name="Testimonial card", styles=s.cards))
 
-    _apply_card_styles(rows, s.card)
+    _apply_card_styles(rows, s.cards)
     return _section(
         ctx,
         [header, *rows],
@@ -1013,7 +1265,7 @@ async def _build_faq(block: FaqBlock, ctx: RenderContext) -> BuilderElement:
                 _text(item.answer, name="Answer", styles=s.body),
             ],
             name="FAQ item",
-            styles={**s.card, "gap": "8px"},
+            styles={**s.cards, "gap": "8px"},
         )
         for item in block.items
     ]
@@ -1133,7 +1385,7 @@ async def _build_contact(
         id=_uid(),
         name="Contact Form",
         type="contactForm",
-        styles={**s.card, "padding": "32px", "width": "100%"},
+        styles={**s.cards, "padding": "32px", "width": "100%"},
         content=BuilderElementContent(),
     )
 
@@ -1275,7 +1527,7 @@ async def _build_pricing(block: PricingBlock, ctx: RenderContext) -> BuilderElem
             responsiveStyles=ResponsiveStyles(mobile={"flexDirection": "column"}),
         )
 
-    _apply_card_styles([grid], s.card)
+    _apply_card_styles([grid], s.cards)
     # Highlight the recommended tier
     if isinstance(grid.content, list):
         for col, tier in zip(grid.content, block.tiers):
@@ -1367,9 +1619,9 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
         if len(triplet) == 2:
             rows.append(_two_col(triplet[0], triplet[1], styles={"gap": "24px"}))
         else:
-            rows.append(_container(triplet[0], name="Member card", styles=s.card))
+            rows.append(_container(triplet[0], name="Member card", styles=s.cards))
 
-    _apply_card_styles(rows, {**s.card, "alignItems": "stretch"})
+    _apply_card_styles(rows, {**s.cards, "alignItems": "stretch"})
     return _section(ctx, [header, *rows], name="Team")
 
 
@@ -1641,9 +1893,9 @@ async def _build_process(block: ProcessBlock, ctx: RenderContext) -> BuilderElem
         if len(triplet) == 2:
             rows.append(_two_col(triplet[0], triplet[1], styles={"gap": "24px"}))
         else:
-            rows.append(_container(triplet[0], name="Step card", styles=s.card))
+            rows.append(_container(triplet[0], name="Step card", styles=s.cards))
 
-    _apply_card_styles(rows, s.card)
+    _apply_card_styles(rows, s.cards)
     return _section(ctx, [header, *rows], name="Process")
 
 
@@ -1693,7 +1945,7 @@ async def block_to_element(
     # Catalogue path: for section types that have shared builder templates, the
     # LLM-mapped content fills a chosen template (selection by feasibility +
     # preference). Theme flows via CSS vars + builderStyles — no inline colours.
-    mapped = block_to_section(block)
+    mapped = block_to_section(block, mood=ctx.theme.mood)
     if mapped is not None:
         template, content = mapped
         intent = _IMAGE_INTENT.get(block.kind, "generic")
@@ -1816,6 +2068,9 @@ async def plan_to_site(
             elements.append(await block_to_element(block, ctx))
         # Color-blocking rhythm: alternate plain sections page-bg / surface tint.
         apply_section_rhythm(elements)
+        # 2025/26 modernization: fluid type, card depth/glass, atmospheric
+        # surface backgrounds — applied per-mood over the assembled sections.
+        modernize_sections(elements, theme)
         pages.append(
             GeneratedPage(
                 slug=page_plan.slug,

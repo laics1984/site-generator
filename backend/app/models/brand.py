@@ -109,6 +109,33 @@ class ThemeTokens(BaseModel):
     # Whether to use inverted (dark) sections for CTAs.
     inverted_cta: bool = True
 
+    # --- 2025/26 trend tokens (internal; not part of BuilderStyles) -------------
+    # These drive schema_builder's modern style vocabulary. They are NOT emitted
+    # in to_builder_styles() because the webtree builder doesn't need them — they
+    # only shape the inline styles/classes we bake into the BuilderElement tree.
+    type_scale_ratio: float = Field(
+        default=1.25,
+        ge=1.1,
+        le=1.6,
+        description="Modular type-scale ratio. >1.25 → larger, more expressive display type.",
+    )
+    use_glass: bool = Field(
+        default=False,
+        description="Apply frosted-glass (backdrop-filter) treatment to cards/overlays.",
+    )
+    background_strategy: Literal["flat", "mesh", "grain", "mesh+grain"] = Field(
+        default="flat",
+        description="Decorative section background: flat color, aurora mesh gradient, grain, or both.",
+    )
+    shadow_scale: Literal["soft", "elevated", "dramatic"] = Field(
+        default="soft",
+        description="Depth of the card/elevation shadow vocabulary.",
+    )
+    display_font: str | None = Field(
+        default=None,
+        description="Optional oversized display font stack for hero headlines; falls back to heading_font.",
+    )
+
     def to_builder_styles(self) -> dict[str, Any]:
         """Serialize as the exact `BuilderStyles` shape the webtree builder expects."""
         return {
@@ -123,6 +150,10 @@ class ThemeTokens(BaseModel):
             "typography": {
                 "headingFont": self.typography.heading_font,
                 "bodyFont": self.typography.body_font,
+                # Carry the Google Fonts CSV so the builder editor and the public
+                # site can load the web fonts (rides the existing builderStyles
+                # push; stored as flexible JSON, no CMS migration needed).
+                "googleFonts": list(self.typography.google_fonts),
             },
             "buttons": {
                 "background": self.buttons.background,

@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.config import settings
 from app.models.builder_schema import (
     BuilderElement,
     BuilderElementContent,
@@ -538,13 +539,62 @@ async def _upload_media(client: CmsClient, req: PushRequest) -> dict[str, str]:
     return rewrites
 
 
+def _split_css_layers(value: str) -> list[str]:
+    """Split a CSS value on commas at paren-depth 0 (so commas inside
+    ``gradient(...)`` or ``url("data:...,...")`` are not split points)."""
+    parts: list[str] = []
+    buf = ""
+    depth = 0
+    for ch in value:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            parts.append(buf)
+            buf = ""
+            continue
+        buf += ch
+    if buf.strip():
+        parts.append(buf)
+    return parts
+
+
+def _extract_bg_photo_urls(css_value: str | None) -> list[str]:
+    """Real photo URLs referenced by a `background-image` value.
+
+    Only http(s) ``url(...)`` layers count — gradient layers and inline ``data:``
+    URIs (grain/mesh) are decoration and must stay in the schema untouched.
+    """
+    if not isinstance(css_value, str) or not css_value.strip():
+        return []
+    urls: list[str] = []
+    for layer in _split_css_layers(css_value):
+        m = re.match(r"""^\s*url\(\s*['"]?\s*([^'")]+)""", layer, re.IGNORECASE)
+        if not m:
+            continue
+        inner = m.group(1).strip()
+        if inner.lower().startswith(("http://", "https://")):
+            urls.append(inner)
+    return urls
+
+
 def _collect_image_srcs(node: BuilderElement, out: dict[str, BuilderElement]) -> None:
-    """Walk a BuilderElement tree, recording every leaf src for an image-typed node."""
+    """Walk a BuilderElement tree, recording every uploadable image source.
+
+    Covers both image-element ``content.src`` AND photo URLs embedded in a
+    container's ``backgroundImage`` / ``background`` (hero/CTA/about photo bands).
+    """
     content = node.content
     if node.type == "image" and isinstance(content, BuilderElementContent):
         src = content.src
         if isinstance(src, str) and src not in out:
             out[src] = node
+    styles = node.styles or {}
+    for key in ("backgroundImage", "background"):
+        for url in _extract_bg_photo_urls(styles.get(key)):
+            if url not in out:
+                out[url] = node
     if isinstance(content, list):
         for child in content:
             _collect_image_srcs(child, out)
@@ -561,22 +611,31 @@ def _placeholder_logo_element(src: str) -> BuilderElement:
 
 
 def _needs_upload(src: str) -> bool:
-    """True for any src we should re-host: data URLs + non-CMS https URLs."""
+    """True for any src we should re-host so the published site is self-contained:
+    data URLs, stock photos, and external http(s) images NOT already on the CMS."""
     if src.startswith("data:image/"):
         return True
     if src.startswith("https://images.pexels.com/") or src.startswith(
         "https://picsum.photos/"
     ):
         return True
-    # If it's already on the configured CMS (ASSET_URL host), leave it alone.
     try:
         parsed = urlparse(src)
     except ValueError:
         return False
-    # Heuristic — webtree CDN hosts contain "storage" or are the configured
-    # asset host. Without knowing the exact ASSET_URL host here, default to
-    # NOT uploading external https URLs unless they're known stock providers.
-    return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    # Already hosted by the CMS / its media store → leave it alone.
+    try:
+        cms_host = urlparse(settings.cms_api_base_url).hostname or ""
+    except ValueError:
+        cms_host = ""
+    if cms_host and parsed.hostname == cms_host:
+        return False
+    if "/storage/" in parsed.path or "/api/image/" in parsed.path:
+        return False
+    # External/scraped photo → re-host it on the CMS.
+    return True
 
 
 class _ResolveSkip(Exception):
@@ -654,6 +713,19 @@ def _rewrite_srcs(node: BuilderElement, rewrites: dict[str, str]) -> None:
         src = content.src
         if isinstance(src, str) and src in rewrites:
             content.src = rewrites[src]
+    # Rewrite photo URLs embedded in background styles, preserving the gradient
+    # overlay + url() wrapper (substring replace of the exact collected URL).
+    styles = node.styles or {}
+    for key in ("backgroundImage", "background"):
+        value = styles.get(key)
+        if not isinstance(value, str):
+            continue
+        new_value = value
+        for old, new in rewrites.items():
+            if old in new_value:
+                new_value = new_value.replace(old, new)
+        if new_value != value:
+            styles[key] = new_value
     if isinstance(content, list):
         for child in content:
             _rewrite_srcs(child, rewrites)

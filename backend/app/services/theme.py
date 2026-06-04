@@ -125,6 +125,12 @@ class MoodSpec:
     heading_font: str
     body_font: str
     google_fonts: tuple[str, ...]
+    # --- 2025/26 trend tokens (passed through to ThemeTokens) -------------------
+    type_scale_ratio: float = 1.25
+    use_glass: bool = False
+    background_strategy: str = "flat"  # flat | mesh | grain | mesh+grain
+    shadow_scale: str = "soft"  # soft | elevated | dramatic
+    display_font: str | None = None  # None → reuse heading_font
 
 
 # Tuned per mood. Heading/body picks aim for distinctive but legible pairings.
@@ -136,36 +142,68 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         secondary_lightness=0.16,
         surface_tint_strength=0.05,
         page_width_mode="contained",
-        heading_font='"Inter", system-ui, sans-serif',
-        body_font='"Inter", system-ui, sans-serif',
-        google_fonts=("Inter:wght@400;500;600;700",),
+        heading_font='"Schibsted Grotesk", system-ui, sans-serif',
+        body_font='"Hanken Grotesk", system-ui, sans-serif',
+        google_fonts=(
+            "Schibsted Grotesk:wght@400;500;600;700;800",
+            "Hanken Grotesk:wght@400;500;600",
+        ),
+        type_scale_ratio=1.30,
+        use_glass=True,
+        background_strategy="mesh",
+        shadow_scale="elevated",
+        display_font='"Schibsted Grotesk", system-ui, sans-serif',
     ),
     "luxury": MoodSpec(
         radius=4,
         secondary_lightness=0.12,
         surface_tint_strength=0.04,
         page_width_mode="contained",
-        heading_font='"Playfair Display", Georgia, serif',
-        body_font='"Inter", system-ui, sans-serif',
-        google_fonts=("Playfair Display:wght@400;700", "Inter:wght@400;500;600"),
+        heading_font='"Cormorant Garamond", Georgia, serif',
+        body_font='"Jost", system-ui, sans-serif',
+        google_fonts=(
+            "Cormorant Garamond:wght@500;600;700",
+            "Jost:wght@400;500;600",
+        ),
+        type_scale_ratio=1.33,
+        use_glass=False,
+        background_strategy="grain",
+        shadow_scale="soft",
+        display_font='"Cormorant Garamond", Georgia, serif',
     ),
     "friendly": MoodSpec(
         radius=20,
         secondary_lightness=0.20,
         surface_tint_strength=0.10,
         page_width_mode="contained",
-        heading_font='"Manrope", "Inter", system-ui, sans-serif',
-        body_font='"Manrope", "Inter", system-ui, sans-serif',
-        google_fonts=("Manrope:wght@400;500;600;800",),
+        heading_font='"Gabarito", system-ui, sans-serif',
+        body_font='"Figtree", system-ui, sans-serif',
+        google_fonts=(
+            "Gabarito:wght@500;700;800",
+            "Figtree:wght@400;500;600",
+        ),
+        type_scale_ratio=1.28,
+        use_glass=True,
+        background_strategy="mesh",
+        shadow_scale="elevated",
+        display_font='"Gabarito", system-ui, sans-serif',
     ),
     "technical": MoodSpec(
         radius=6,
         secondary_lightness=0.14,
         surface_tint_strength=0.03,
         page_width_mode="contained",
-        heading_font='"IBM Plex Sans", system-ui, sans-serif',
+        heading_font='"Chivo", system-ui, sans-serif',
         body_font='"IBM Plex Sans", system-ui, sans-serif',
-        google_fonts=("IBM Plex Sans:wght@400;500;600;700",),
+        google_fonts=(
+            "Chivo:wght@500;700;800",
+            "IBM Plex Sans:wght@400;500;600",
+        ),
+        type_scale_ratio=1.22,
+        use_glass=False,
+        background_strategy="flat",
+        shadow_scale="soft",
+        display_font='"Chivo", system-ui, sans-serif',
     ),
     "editorial": MoodSpec(
         radius=8,
@@ -173,20 +211,33 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         surface_tint_strength=0.05,
         page_width_mode="contained",
         heading_font='"Fraunces", Georgia, serif',
-        body_font='"Inter", system-ui, sans-serif',
+        body_font='"Hanken Grotesk", system-ui, sans-serif',
         google_fonts=(
-            "Fraunces:opsz,wght@9..144,400;9..144,700",
-            "Inter:wght@400;500;600",
+            "Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700",
+            "Hanken Grotesk:wght@400;500;600",
         ),
+        type_scale_ratio=1.40,
+        use_glass=False,
+        background_strategy="grain",
+        shadow_scale="dramatic",
+        display_font='"Fraunces", Georgia, serif',
     ),
     "playful": MoodSpec(
         radius=24,
         secondary_lightness=0.18,
         surface_tint_strength=0.08,
         page_width_mode="contained",
-        heading_font='"Space Grotesk", "Inter", sans-serif',
-        body_font='"Inter", system-ui, sans-serif',
-        google_fonts=("Space Grotesk:wght@500;700", "Inter:wght@400;500;600"),
+        heading_font='"Syne", system-ui, sans-serif',
+        body_font='"Figtree", system-ui, sans-serif',
+        google_fonts=(
+            "Syne:wght@600;700;800",
+            "Figtree:wght@400;500;600",
+        ),
+        type_scale_ratio=1.45,
+        use_glass=True,
+        background_strategy="mesh+grain",
+        shadow_scale="dramatic",
+        display_font='"Syne", system-ui, sans-serif',
     ),
 }
 
@@ -369,4 +420,9 @@ def build_theme(
         mood=mood,
         section_rotation=section_rotation,  # type: ignore[arg-type]
         inverted_cta=True,
+        type_scale_ratio=spec.type_scale_ratio,
+        use_glass=spec.use_glass,
+        background_strategy=spec.background_strategy,  # type: ignore[arg-type]
+        shadow_scale=spec.shadow_scale,  # type: ignore[arg-type]
+        display_font=spec.display_font,
     )

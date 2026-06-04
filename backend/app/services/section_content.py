@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from app.models.brand import BrandMood
 from app.models.builder_schema import BuilderElement
 from app.models.content_blocks import (
     AboutBlock,
@@ -329,6 +330,42 @@ def is_feasible(template: dict[str, Any], content: dict[str, Any]) -> bool:
     return True
 
 
+# --- mood-aware layout preference ----------------------------------------------
+#
+# Mood biases WHICH layout variant a section uses, so brands with different moods
+# get visibly different structures from the same content. Keyed on `layoutVariant`
+# (robust to catalog additions), ordered most→least preferred per mood. This only
+# REORDERS feasible candidates — `is_feasible` in select_template remains the hard
+# gate, so an infeasible layout (e.g. an image-led hero with no image) is never
+# chosen. Single-variant section types (faq, contact, team, …) are unaffected.
+_MOOD_LAYOUT_PREFERENCE: dict[BrandMood, list[str]] = {
+    "modern": ["split", "grid", "gradient", "banner"],
+    "luxury": ["centered", "narrative", "minimal", "split", "single"],
+    "friendly": ["split", "grid", "banner", "background"],
+    "technical": ["grid", "minimal", "stacked", "centered", "split"],
+    "editorial": ["split", "narrative", "single", "background"],
+    "playful": ["background", "gradient", "banner", "grid"],
+}
+
+
+def mood_preferred_ids(mood: BrandMood | None, section_type: str) -> list[str]:
+    """Template ids for `section_type`, ordered by the mood's layout preference.
+
+    Templates whose `layoutVariant` isn't in the mood's list sort last (stable).
+    Returns [] for an unknown/None mood, so callers fall back to today's behavior.
+    """
+    pref = _MOOD_LAYOUT_PREFERENCE.get(mood) if mood else None
+    if not pref:
+        return []
+    rank = {variant: i for i, variant in enumerate(pref)}
+    candidates = templates_for_type(section_type)
+    ordered = sorted(
+        candidates,
+        key=lambda t: rank.get(t.get("layoutVariant", ""), len(pref)),
+    )
+    return [t["id"] for t in ordered]
+
+
 def select_template(
     section_type: str,
     content: dict[str, Any],
@@ -385,15 +422,22 @@ def block_to_section(
     block: ContentBlock,
     *,
     explicit_id: str | None = None,
+    mood: BrandMood | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Map a block to (template, content). Returns None if the kind is unsupported."""
+    """Map a block to (template, content). Returns None if the kind is unsupported.
+
+    Layout precedence (all gated by is_feasible in select_template):
+    explicit_id → mood preference → content preference (_PREFERENCE) → pool[0].
+    """
     kind = block.kind
     mapper = _MAPPERS.get(kind)
     if mapper is None:
         return None
     content = mapper(block)
     pref_fn = _PREFERENCE.get(kind)
-    preferred = pref_fn(content, block) if pref_fn else None
+    content_pref = pref_fn(content, block) if pref_fn else []
+    # Mood leads the layout choice; content preference is the fallback/tiebreaker.
+    preferred = mood_preferred_ids(mood, kind) + list(content_pref or [])
     template = select_template(
         kind, content, preferred_ids=preferred, explicit_id=explicit_id
     )

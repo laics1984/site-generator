@@ -196,6 +196,14 @@ async def _fill_node(
             el = await _fill_node(child, scope, resolve_image, factories, theme)
             if el is not None:
                 children.append(el)
+        # Prune a container that filled to nothing — e.g. a card/list-item whose
+        # text slots were all blank (an LLM-produced empty item). Left in, it
+        # renders as a stray placeholder box. Cascades up through bare wrappers.
+        # Keep it only if it carries its own decorative background image.
+        if not children and not (
+            styles.get("backgroundImage") or styles.get("background")
+        ):
+            return None
         return BuilderElement(id=str(uuid4()), content=children, **base)
 
     # Static leaf: literal content kept verbatim.
