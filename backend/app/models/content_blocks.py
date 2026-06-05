@@ -273,7 +273,7 @@ class PricingBlock(BaseModel):
     kind: Literal["pricing"] = "pricing"
     heading: str = "Pricing"
     subheading: str | None = None
-    tiers: list[PricingTier] = Field(min_length=2, max_length=4)
+    tiers: list[PricingTier] = Field(min_length=1, max_length=4)
 
     @field_validator("heading", mode="before")
     @classmethod

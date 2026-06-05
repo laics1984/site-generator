@@ -318,6 +318,12 @@ def is_feasible(template: dict[str, Any], content: dict[str, Any]) -> bool:
         if kind == "list":
             if not isinstance(value, list) or not value:
                 return False
+            # A template may require a minimum item count (e.g. bento needs
+            # enough tiles to read as a modular grid). Too few → infeasible,
+            # so selection falls back to a layout that suits the item count.
+            min_items = slot.get("minItems")
+            if isinstance(min_items, int) and len(value) < min_items:
+                return False
         elif kind == "image":
             if not (isinstance(value, dict) and (value.get("query") or value.get("src"))):
                 return False
@@ -339,12 +345,12 @@ def is_feasible(template: dict[str, Any], content: dict[str, Any]) -> bool:
 # gate, so an infeasible layout (e.g. an image-led hero with no image) is never
 # chosen. Single-variant section types (faq, contact, team, …) are unaffected.
 _MOOD_LAYOUT_PREFERENCE: dict[BrandMood, list[str]] = {
-    "modern": ["split", "grid", "gradient", "banner"],
-    "luxury": ["centered", "narrative", "minimal", "split", "single"],
+    "modern": ["bento", "split", "grid", "gradient", "banner"],
+    "luxury": ["centered", "editorial", "narrative", "minimal", "split", "single"],
     "friendly": ["split", "grid", "banner", "background"],
     "technical": ["grid", "minimal", "stacked", "centered", "split"],
-    "editorial": ["split", "narrative", "single", "background"],
-    "playful": ["background", "gradient", "banner", "grid"],
+    "editorial": ["editorial", "split", "narrative", "single", "background"],
+    "playful": ["bento", "background", "gradient", "banner", "grid"],
 }
 
 

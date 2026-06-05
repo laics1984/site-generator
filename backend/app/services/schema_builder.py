@@ -298,21 +298,23 @@ def shadow(scale: str) -> str:
 def mesh_gradient(palette: Any) -> str:
     """A soft multi-stop 'aurora' mesh, as a `backgroundImage` value.
 
-    Three offset radial gradients in the brand hues at low alpha — modern,
-    subtle, and legible (text contrast is preserved because alphas stay low).
-    Pure gradient (no url()), so webtree-public renders it in place rather than
-    routing it through the photo-layer pipeline.
+    A directional primary→accent "aurora": four offset radial hotspots anchored
+    to the corners so it reads as intentional atmosphere, not a faint wash. Alphas
+    stay moderate (≤0.34) so a colour wash over a light surface keeps its high
+    luminance and the dark body text stays WCAG-legible. Pure gradient (no url()),
+    so webtree-public renders it in place rather than via the photo-layer pipeline.
     """
     p = palette.primary
     a = getattr(palette, "accent", None) or p
     return (
-        f"radial-gradient(at 18% 22%, {_hairline(p, 0.20)} 0px, transparent 55%), "
-        f"radial-gradient(at 82% 16%, {_hairline(a, 0.16)} 0px, transparent 50%), "
-        f"radial-gradient(at 50% 92%, {_hairline(p, 0.12)} 0px, transparent 55%)"
+        f"radial-gradient(at 8% 12%, {_hairline(p, 0.34)} 0px, transparent 46%), "
+        f"radial-gradient(at 92% 8%, {_hairline(a, 0.26)} 0px, transparent 44%), "
+        f"radial-gradient(at 74% 82%, {_hairline(p, 0.20)} 0px, transparent 48%), "
+        f"radial-gradient(at 20% 96%, {_hairline(a, 0.15)} 0px, transparent 46%)"
     )
 
 
-def grain_data_uri(opacity: float = 0.5) -> str:
+def grain_data_uri(opacity: float = 0.55) -> str:
     """A tiny SVG fractal-noise grain texture as a `url(data:...)` value.
 
     Base64-encoded — the most portable form of an inline SVG data-URI (partial
@@ -345,6 +347,24 @@ def section_background_image(theme: ThemeTokens) -> str | None:
     if "mesh" in strategy:
         layers.append(mesh_gradient(theme.palette))
     return ", ".join(layers) if layers else None
+
+
+def apply_section_decoration(styles: dict[str, Any], theme: ThemeTokens) -> bool:
+    """Set the decorative background (mesh/grain) on a section's style dict and
+    the companion tiling props. Returns True if a decoration was applied.
+
+    Section templates set ``backgroundRepeat: no-repeat`` + ``backgroundPosition:
+    center`` for photo heroes — left as-is, the finite grain SVG would render as
+    a single tile centered in the section. Force repeat/top-left so grain tiles
+    across the whole band (gradient layers fill regardless)."""
+    deco = section_background_image(theme)
+    if not deco:
+        return False
+    styles["backgroundImage"] = deco
+    styles["backgroundRepeat"] = "repeat"
+    styles["backgroundPosition"] = "top left"
+    styles["backgroundSize"] = "auto"
+    return True
 
 
 def glass_card_styles(theme: ThemeTokens) -> dict[str, Any]:
@@ -478,9 +498,7 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
             has_fill = bool(st.get("backgroundImage") or st.get("background"))
             is_surface = st.get("backgroundColor") in (surface_hex, _SURFACE_BG)
             if is_surface and not has_fill:
-                deco = section_background_image(theme)
-                if deco:
-                    st["backgroundImage"] = deco
+                apply_section_decoration(st, theme)
 
 
 # --- low-level factories --------------------------------------------------------
@@ -753,9 +771,7 @@ def _section(
         # and rhythm without touching clean white sections, photo sections, or
         # inverted CTAs. These are gradients / data-URIs, so the renderer's
         # isPhotoSource gate keeps them out of the photo-layer pipeline.
-        deco = section_background_image(ctx.theme)
-        if deco:
-            styles["backgroundImage"] = deco
+        apply_section_decoration(styles, ctx.theme)
 
     inner = _container(
         children,

@@ -60,6 +60,19 @@ def templates_for_type(section_type: str) -> list[dict[str, Any]]:
 # --- internals ------------------------------------------------------------------
 
 
+def _bento_spans(index: int, count: int) -> dict[str, str]:
+    """Grid spans for the i-th bento tile on a 6-column, auto-flow:dense grid.
+
+    A large lead tile, periodic wide tiles, and standard half-width tiles give a
+    modular "bento" rhythm; `dense` auto-flow packs any item count cleanly.
+    """
+    if index == 0 and count >= 3:
+        return {"gridColumn": "span 4", "gridRow": "span 2"}  # large lead
+    if index > 0 and index % 5 == 0:
+        return {"gridColumn": "span 4"}  # periodic wide
+    return {"gridColumn": "span 2"}  # standard (3 per row)
+
+
 def _base_fields(node: dict[str, Any], styles: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "name": node["name"],
@@ -169,6 +182,22 @@ async def _fill_node(
         if node.get("$gridFit"):
             base = {**base, "type": "2Col" if len(children) <= 2 else "3Col"}
         return BuilderElement(id=str(uuid4()), content=children, **base)
+
+    # $bento: like $repeat, but stamp each cloned tile with varied grid spans so a
+    # plain CSS-grid container reads as a bento (modular, mixed-size) layout.
+    if node.get("$bento"):
+        items = scope.get(node["$bento"]) or []
+        content = node.get("content")
+        item_template = content[0] if isinstance(content, list) and content else None
+        tiles: list[BuilderElement] = []
+        if item_template:
+            for item in items:
+                el = await _fill_node(item_template, item, resolve_image, factories, theme)
+                if el is not None:
+                    tiles.append(el)
+        for i, el in enumerate(tiles):
+            el.styles = {**(el.styles or {}), **_bento_spans(i, len(tiles))}
+        return BuilderElement(id=str(uuid4()), content=tiles, **base)
 
     # $content: fill from a registered factory.
     if node.get("$content"):
