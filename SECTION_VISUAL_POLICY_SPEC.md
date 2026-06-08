@@ -7,47 +7,43 @@ time* from whether `styles.backgroundImage` is set
 ([`schema_builder.apply_section_rhythm()`](backend/app/services/schema_builder.py)).
 That heuristic is blind to intent: a split hero carries its photo in a content
 column (no `backgroundImage`) and a faint texture *sets* `backgroundImage` for a
-subtle reason — so the heuristic both under- and over-counts. Section
-backgrounds end up arbitrary, with no page-wide rhythm and no guaranteed
-contrast between neighbours.
+subtle reason — so it both under- and over-counts. Backgrounds end up arbitrary,
+with no page-wide rhythm and no guaranteed contrast between neighbours or between
+a featured image and its own container.
 
 **What this replaces it with.** An explicit per-section **visual policy** set by
 the planner (intent only), consumed by a deterministic **page-level luminance
-pass** that:
+pass** that resolves every section's background **luminance band**, colour, photo
+filter, and font colour — under three contrast guarantees and one page rhythm.
 
-1. alternates background **luminance** strictly down the whole page,
-2. seeds that alternation from the hero's type,
-3. filters photos to hit their target luminance,
-4. pulls every actual colour from the **brand palette** ([`theme.py`](backend/app/services/theme.py)),
-5. derives font colour from the *real* background so contrast always holds.
-
-> This supersedes the earlier `rhythm_trigger` / "energy-debt" draft. Strict
-> luminance alternation makes an adjacency-debt mechanism redundant (see §3.5).
+> Supersedes the earlier `rhythm_trigger` / "energy-debt" draft. Strict
+> luminance alternation makes an adjacency-debt mechanism redundant (§3.6).
 
 If you touch any file in **§9 Responsibilities**, read this first.
 
 ---
 
-## 1. Vocabulary (read this before anything else)
+## 1. Vocabulary (read before anything else)
 
-Two earlier review rounds got confused by overloading "light/dark." These three
-concepts are **independent** and must stay separate in code and discussion:
+Two review rounds got confused by overloading "light/dark." These concepts are
+**independent** and must stay separate in code and discussion:
 
 | Term | Meaning | Range |
 |---|---|---|
-| **Luminance band** | The section's *actual rendered lightness*. Drives font colour. Strictly alternates down the page. | `light \| dark` |
-| **Treatment** | The section's *richness / texture*, layered on top of the band. | `photo \| washed_photo \| grain \| plain` |
-| **Source intent** | *What* to search for + where to source it, if a photo is used. | search string + `scraped\|stock\|abstract` |
+| **Luminance band** | The section's *actual rendered lightness*. Drives font colour. | `light \| dark` |
+| **Treatment** | The section's *richness / texture*, layered on the band. | `photo \| washed_photo \| grain \| plain` |
+| **Anchored / flexible** | Whether the band is *fixed by a featured image* or *free for the rhythm to choose* (§3.2). | `anchored \| flexible` |
+| **Source intent** | *What* to search for + where to source it, if a photo is used. | string + `scraped\|stock\|abstract` |
 
-Key decouplings established in review:
+Decouplings established in review:
 
-- A section in the **light** band can be rendered with a **dark colour** if a
-  neighbour forces it (band is the *target*, not a fixed value) — but normally
-  light band → light colour. Font always follows the *real* colour.
-- A **dark** band does **not** mean dark pixels in a photo — a dark-band photo is
-  a colourful photo; its own pixel luminance is normalised by filter/overlay.
-- A **light**-band photo is a stock photo under a heavy *light* filter so it
-  reads washed/pale — the source photo need not be light.
+- A **light**-band section can be rendered with a **dark** colour if a constraint
+  forces it (the band is a *target*, not a fixed value). Font always follows the
+  **real** colour.
+- A **dark** band ≠ dark pixels: a dark-band photo is a *colourful* photo whose
+  luminance is normalised by filter/overlay.
+- A **light**-band photo is a stock photo under a heavy *light* filter so it reads
+  washed — the source photo need not be light.
 
 ---
 
@@ -55,73 +51,97 @@ Key decouplings established in review:
 
 | Approach | Verdict |
 |---|---|
-| **Query-inference only** — infer everything from `image_query` at render time | ✗ Status quo. Same query → split image / full-bleed hero / softened background. Rules keep leaking. |
-| **Page-level engine only** — derive rhythm from `kind` + `layout` | ✗ Relocates the same hidden inference. Hard to explain *why* a section came out light/dark/plain. |
+| **Query-inference only** — infer everything from `image_query` at render time | ✗ Status quo. Same query → split image / full-bleed hero / washed background. Rules keep leaking. |
+| **Page-level engine only** — derive rhythm from `kind` + `layout` | ✗ Relocates the hidden inference. Hard to explain *why* a section came out light/dark/plain. |
 | **Explicit per-section policy + page-level luminance pass** | ✓ **Chosen.** Planner declares intent; the pass is deterministic and debuggable. |
 
-Core separation: **search intent** (what to search) vs **treatment** (how the
-section behaves) vs **luminance band** (how light/dark it actually renders).
-`image_query` is *content* and stays flat on the block; `visual_policy` is
-*presentation* and is nested.
+`image_query` is *content* (flat on the block). `visual_policy` is *presentation*
+(nested). They intentionally look different.
 
 ---
 
 ## 3. The governing model
 
-### 3.1 Strict luminance alternation (the rhythm)
+### 3.1 Luminance band is the rhythm axis
 
-Every large background-capable section gets a **luminance band**, and bands
-**strictly alternate** down the whole page:
+Every large background-capable section resolves to a **luminance band**
+(`light` / `dark`). The page's default rhythm is **strict alternation**:
 
 ```
-… light → dark → light → dark → light …
+… light → dark → light → dark …
 ```
 
-This is the single invariant that carries the rhythm. It guarantees **rule 2**
-in §6 (adjacent sections always contrast) by construction.
+but anchored sections (§3.2) can override it, so alternation is **best-effort**,
+not absolute (§3.3 precedence).
 
-### 3.2 Seed: hero type sets the first band
+### 3.2 Anchored vs flexible sections — the core idea
 
-The alternation is seeded by what the hero *is* (content-derived, confirmed):
+A section is **anchored** if it carries its **own featured/content image** (a
+split hero's photo, an image-split about, a feature with a screenshot, etc.).
+Its band is **fixed** so the image pops against its container:
 
-| Hero | Seed band |
-|---|---|
-| featured-image / split hero (photo in a column) | **light** |
-| full-bleed colourful-photo hero | **dark** |
+> **anchored band = the OPPOSITE of the featured image's measured luminance.**
+> featured image reads **light** → container band = **dark**
+> featured image reads **dark** → container band = **light**
 
-Everything below alternates from the seed.
+The anchored section's background is `grain`/`plain` in that band (never a second
+competing photo — the featured image is the focus). This is the **image↔container
+contrast** (a third contrast pairing, §6 rule 2).
 
-### 3.3 Photos are filtered to their band — not floated
+A section is **flexible** if it has no featured image:
+- **background-photo** flexible → the photo is *filtered* to whatever band the
+  pass assigns (§3.5). We control its luminance.
+- **plain / grain / decorative** flexible → palette colour in the assigned band.
 
-A section's *treatment* may want a photo, but the photo does **not** float its
-own luminance. The engine **filters/overlays the photo to hit the band's target
-luminance**:
+> The distinction is *who owns the luminance*: a **content image** is shown
+> faithfully, so the **container** must adapt (anchored). A **background photo**
+> is ours to filter, so it adapts to the rhythm (flexible).
 
-- **light band + photo** → heavy light wash → reads pale (`washed_photo`)
-- **dark band + photo** → colourful photo, darker overlay → reads rich/dark
+### 3.3 Band resolution algorithm + precedence
 
-Trade-off accepted by design: a photo may be filtered hard enough to lose its
-natural tone. Rhythm + readability win over photo fidelity.
+The luminance pass runs in this order:
 
-### 3.4 Featured-image override (any band)
+1. **Classify** every large section as anchored or flexible.
+2. **Fix anchored bands** from each featured image's measured luminance (§3.2).
+3. **Fill flexible bands** to alternate around the anchors and contrast their
+   immediate neighbours; filter flexible photos to their assigned band.
+4. **Separator fallback:** where two **anchored** neighbours are forced to the
+   **same** band (unavoidable), alternation yields — apply a within-band
+   luminance step (`_adjust_lightness` ±small) plus a divider/border so the seam
+   stays visible. The featured images themselves also aid separation.
+5. **Font colour** from each section's *actual* resolved background (§6 rule 1).
 
-If a section carries its **own featured image** (content image meant to be the
-focus), its background must not compete: it steps **down to `grain` or `plain`**
-in the band's tone, never a photo background. The featured image stays the hero
-of that section.
+**Precedence (high → low):**
 
-### 3.5 Why there is no "energy-debt" mechanism
+| Priority | Rule | Hard? |
+|---|---|---|
+| 1 | Font ↔ its own background (readability, WCAG AA) | **hard** |
+| 2 | Featured image ↔ its container (anchored band) | **hard** |
+| 3 | Strict alternation / adjacent-bg contrast | best-effort (separator fallback) |
 
-An earlier draft tracked a loud→quiet "debt" to prevent two heavy photo sections
-back-to-back. Strict alternation makes it redundant:
+### 3.4 Photos filtered to their band (flexible photos)
 
-- Two *equally heavy* (dark-band colourful) photos can only land in **dark**
-  bands; dark bands are **never adjacent**; therefore they can never abut.
-- Adjacent photos of **opposite** band (a washed light photo above a colourful
-  dark photo) are explicitly allowed — tonal contrast separates them.
+A flexible photo does not float its luminance — the engine filters/overlays it to
+the assigned band: light band → heavy light wash (`washed_photo`); dark band →
+colourful photo + darker overlay. Trade-off accepted: a photo may be filtered
+hard enough to lose its natural tone; rhythm + readability win over fidelity.
 
-So the rhythm is fully carried by **luminance alternation + featured-image
-override**. No `rhythm_trigger`, no recovery debt.
+### 3.5 Hero seeds the flexible rhythm
+
+The hero is just the first section, resolved by the same rules:
+- featured/split hero → **anchored** (band = opposite of its featured image).
+- full-bleed photo hero → **flexible background-photo**, default band **dark**
+  (the photo is filtered to read dark).
+
+Whatever the hero resolves to seeds the alternation for the flexible run beneath.
+
+### 3.6 Why there is no "energy-debt" mechanism
+
+Two *equally heavy* dark-band colourful photos can only land in dark bands, and
+the default rhythm keeps dark bands apart; opposite-band adjacent photos (a washed
+light photo above a colourful dark photo) are explicitly allowed. So the rhythm is
+carried by **band resolution + the three contrast rules** — no `rhythm_trigger`,
+no recovery debt.
 
 ---
 
@@ -129,138 +149,146 @@ override**. No `rhythm_trigger`, no recovery debt.
 
 ### 4.1 New submodel: `VisualPolicy`
 
-In [`models/content_blocks.py`](backend/app/models/content_blocks.py). Attached
-as **optional** `visual_policy: VisualPolicy | None = None` on every large
-background-capable block (§4.2). `None` = "no opinion, infer me" — preserves
-byte-identical output for everything generated today.
+In [`models/content_blocks.py`](backend/app/models/content_blocks.py). Attached as
+optional `visual_policy: VisualPolicy | None = None` on every large
+background-capable block (§4.2). `None` = "infer me" — preserves byte-identical
+output for everything generated today.
 
 ```python
 class VisualPolicy(BaseModel):
     # --- planner INTENT (what the section wants) ---
 
     visual_mode: Literal[
-        "photo_background",  # wants a dominant background photo
-        "supporting_image",  # photo lives in a column / split, balanced w/ copy
+        "photo_background",  # wants a dominant background photo (flexible)
+        "supporting_image",  # photo in a column / split  → ANCHORED
         "decorative",        # grain / texture, no real photo
         "plain",             # flat colour fill
-        "auto",              # engine derives from kind + layout
-    ] = "auto"
-
-    image_source_preference: Literal[
-        "scraped",   # prefer scraped pool, then fall down the ladder
-        "stock",     # prefer Pexels
-        "abstract",  # prefer generated/abstract, skip people photos
         "auto",
     ] = "auto"
 
-    # Optional planner override of the calm (non-photo) rendering. Engine picks
-    # when "auto".
+    image_source_preference: Literal[
+        "scraped", "stock", "abstract", "auto"
+    ] = "auto"
+
+    # Optional override of the calm (non-photo) rendering. Engine picks if "auto".
     calm_treatment: Literal["plain", "grain", "auto"] = "auto"
 
-    # Escape hatch only. Normally the band is DERIVED by the §3.1 alternation;
-    # set this to force a band when a designer needs to override the rhythm.
+    # Escape hatch. Bands are normally DERIVED (anchored from image luminance, or
+    # flexible from the §3.3 pass). Set to force a band against the rhythm.
     band_override: Literal["light", "dark", "auto"] = "auto"
 ```
 
-Everything else — final luminance, resolved background colour, photo filter
-strength/tint, and font colour — is **derived by the engine** (§3, §7) and is
-*not* stored on the policy. The policy is intent in, render plan out.
+Final luminance, resolved background colour, photo filter, and font colour are
+**derived by the engine** — not stored on the policy.
 
 ### 4.2 Blocks that gain `visual_policy`
 
-All large background-capable sections (phase-1 scope):
-`HeroBlock`, `CtaBlock`, `AboutBlock`, `FeaturesBlock`, `ServicesBlock` (and any
-future block that can take a dominant background).
+All large background-capable sections (phase-1 scope): `HeroBlock`, `CtaBlock`,
+`AboutBlock`, `FeaturesBlock`, `ServicesBlock` (+ future dominant-background
+blocks). **Not** added to small/gridded blocks: `TestimonialItem`, `TeamMember`,
+`GalleryItem`, `FaqBlock`, `ContactBlock`.
 
-**Not** added to small / inherently-gridded blocks where a dominant background is
-meaningless and which never participate in the alternation as photo carriers:
-`TestimonialItem`, `TeamMember`, `GalleryItem`, `FaqBlock`, `ContactBlock`.
-(Team/gallery grids are never photo-background triggers — many images ≠ one
-dominant background.)
+### 4.3 New field on `ImageMetadata` — band from a dominant-colour hex
 
-### 4.3 Fields explicitly dropped vs. the original sketch
+To anchor a band we must know the featured image's lightness. The band is a
+**1-bit decision** (light vs dark), so a single dominant-colour hex is an
+adequate proxy — we do **not** download pixels. Cheapest-source-first:
 
-- **`rhythm_trigger`** — removed. Redundant under strict alternation (§3.5).
-- **`recovery_preference`** — folded into `calm_treatment` (`plain`/`grain`).
-  The old `softened_abstract_stock` value is no longer an enum token: a
-  washed-light photo is just `visual_mode=photo_background` landing in a **light**
-  band (§3.3).
-- **`background_role`** — redundant with `HeroBlock.layout` (split/background)
-  and `visual_mode`.
-- **`abstract_stock | abstract_local` as visual modes** — that's a *sourcing*
-  decision; it lives in `image_source_preference`.
+1. **Stock (Pexels)** — [`PhotoResult.avg_color`](backend/app/services/pexels.py)
+   is *already fetched* in the search JSON. `theme._relative_luminance(avg_color)`
+   → threshold. **Zero extra network, no new dependency.**
+2. **Abstract / generated** — we produce the image, so set its band at generation.
+3. **Scraped, no colour hint** — do **not** download; default per §8.4.
+
+> Rejected: downloading a thumbnail + averaging pixels (would add Pillow/numpy —
+> not imported anywhere today — plus ~5 HTTP GETs/page and ~0.5–1.5s, to
+> recompute a number `avg_color` already gives us, for a binary decision). See
+> §10 phase 2 rationale.
+
+Today `ImageMetadata`
+([content_blocks.py:608](backend/app/models/content_blocks.py)) carries only
+`url/alt/intent/width/height`; `theme._relative_luminance` works on hex. Add:
+
+```python
+class ImageMetadata(BaseModel):
+    ...
+    # Dominant colour hex (e.g. Pexels avg_color, or the generated abstract's
+    # base). None when no hint is available (scraped) — band defaults per §8.4.
+    dominant_color: str | None = None
+    # 0.0 (black)..1.0 (white) from _relative_luminance(dominant_color).
+    luminance: float | None = None
+    band: Literal["light", "dark"] | None = None  # luminance thresholded
+```
+
+### 4.4 Fields dropped vs. the original sketch
+
+- **`rhythm_trigger`** — removed (redundant under band resolution, §3.6).
+- **`recovery_preference`** — folded into `calm_treatment`. A washed-light photo
+  is just `photo_background` landing in a **light** band.
+- **`background_role`** — redundant with `layout` + `visual_mode`.
+- **`abstract_stock | abstract_local` modes** — a sourcing decision; lives in
+  `image_source_preference`.
 
 ---
 
 ## 5. Decision matrix
 
-How the planner sets intent, and what the engine derives.
-
-| Section / layout | `visual_mode` | Band (derived) | Rendered background |
-|---|---|---|---|
-| Hero, full-bleed | `photo_background` | **dark** (seed) | colourful photo, darker overlay |
-| Hero, split / featured image | `supporting_image` | **light** (seed) | flat `surface` / washed, photo in column |
-| CTA w/ background photo | `photo_background` | alternation | photo filtered to band |
-| CTA, no photo | `plain` / `decorative` | alternation | brand flat / grain in band tone |
-| About, image-split | `supporting_image` | alternation | grain/plain in band tone (override) |
-| Features / services, plain | `plain` / `decorative` | alternation | brand flat / grain in band tone |
-| Section w/ own featured image | any | alternation | **grain/plain only** (§3.4 override) |
-| Team / gallery grid | *(no policy)* | n/a | not a photo-background participant |
+| Section / layout | `visual_mode` | Class | Band | Rendered background |
+|---|---|---|---|---|
+| Hero, full-bleed | `photo_background` | flexible | dark (seed) | colourful photo, darker overlay |
+| Hero, split / featured image | `supporting_image` | **anchored** | opposite of image | grain/plain, photo in column |
+| CTA w/ background photo | `photo_background` | flexible | alternation | photo filtered to band |
+| CTA, no photo | `plain`/`decorative` | flexible | alternation | brand flat / grain in band |
+| About, image-split | `supporting_image` | **anchored** | opposite of image | grain/plain in band, image pops |
+| Features w/ screenshot | `supporting_image` | **anchored** | opposite of image | grain/plain in band |
+| Features/services, plain | `plain`/`decorative` | flexible | alternation | brand flat / grain |
+| Team / gallery grid | *(no policy)* | n/a | n/a | not a participant |
 
 ---
 
-## 6. Contrast rules (both reuse `theme.py`)
+## 6. Contrast rules — three pairings (all reuse `theme.py`)
 
-Two contrast rules, different scopes — neither needs new colour math:
+| # | Pairing | Scope | Hard? | Mechanism |
+|---|---|---|---|---|
+| 1 | **Font ↔ its own background** | within section | hard | `theme._text_for_background()`; `_ensure_contrast_against()` nudges a failing brand colour (hue preserved). Holds even when a light-band section is forced dark — font flips. |
+| 2 | **Featured image ↔ its container** | within section | hard | Anchored band = opposite of measured image luminance (§3.2). |
+| 3 | **Background ↔ adjacent background** | between sections | best-effort | Strict alternation; separator fallback (§3.3 step 4) when two anchors collide. |
 
-**Rule 1 — Font ↔ its own background (readability).**
-Font colour is derived from the section's *actual* final background via
-[`theme._text_for_background()`](backend/app/services/theme.py); a brand colour
-that can't reach AA is nudged by `_ensure_contrast_against()` /
-`_adjust_lightness()` (hue preserved). Holds even when a light-band section is
-forced to a dark colour by a neighbour — font flips to light.
-
-**Rule 2 — Background ↔ adjacent background (separation).**
-Guaranteed by strict luminance alternation (§3.1). A photo section's luminance is
-*given* by its filter; the flexible grain/plain neighbour adapts to the opposite
-band. Sandwich case (a calm section between two photos) is resolved by **filtering
-both flanking photos to the same band**, so the middle takes the opposite band and
-contrasts both (chosen resolution).
+No new colour math — all three use existing `theme.py` helpers.
 
 ---
 
 ## 7. Colour sourcing — brand palette, not raw greys
 
-All section background colours and photo-filter tints are **derived from the
-brand palette** ([`models/brand.py:ColorPalette`](backend/app/models/brand.py)),
-never raw black/white/grey. The palette already encodes 60-30-10, WCAG AA, and a
-split-complementary accent ([`theme.py`](backend/app/services/theme.py)).
+All background colours and filter tints derive from the brand palette
+([`ColorPalette`](backend/app/models/brand.py)), never raw black/white/grey. The
+palette already encodes 60-30-10, WCAG AA, and a split-complementary accent
+([`theme.py`](backend/app/services/theme.py)).
 
 | Need | Brand token / helper |
 |---|---|
-| **light** band flat/grain colour | `surface` / `background` (already a faint primary tint) |
-| **dark** band flat/grain colour | `secondary` (dark, primary-hued, explicitly not pure black) |
-| photo filter wash | overlay tinted toward `primary` / `secondary` — *this is what binds filtered photos into the brand* |
-| any derived light/dark shade | `_adjust_lightness()` off `surface` / `secondary` |
+| **light** band flat/grain | `surface` / `background` (faint primary tint) |
+| **dark** band flat/grain | `secondary` (dark, primary-hued, not pure black) |
+| photo filter wash | overlay tinted toward `primary`/`secondary` — binds photos into the brand |
+| derived light/dark shade (incl. separator step) | `_adjust_lightness()` off `surface`/`secondary` |
 | font colour | `_text_for_background()` / `_ensure_contrast_against()` |
 
-**"Complementary site theme" clarified:** the page stays in **one** cohesive
-palette and alternates **luminance within it** (`surface` ↔ `secondary`, same
-hue family). The true complement (`accent`) is reserved for ~10% emphasis
-(buttons/highlights) — it is **not** a section-background rule. Alternating
-opposite *hues* per section would clash; alternating *luminance* of one hue
-family is what reads cohesive.
+**"Complementary site theme" clarified:** one cohesive palette, alternating
+**luminance within it** (`surface` ↔ `secondary`, same hue family). The true
+complement (`accent`) is reserved for ~10% emphasis (buttons/highlights) — **not**
+a section-background rule. Alternating opposite *hues* per section clashes;
+alternating *luminance* of one hue family reads cohesive.
 
-**Builder-contract safety:** the webtree builder only understands the 6
-`ColorPalette` tokens. Per-section backgrounds are emitted as **inline section
-styles**, not new theme tokens — so the engine can derive any brand-tinted
-light/dark shade per section *without* touching the 6-token contract.
+**Builder-contract safety:** the builder understands only the 6 `ColorPalette`
+tokens. Per-section backgrounds are emitted as **inline section styles**, so the
+engine can derive any brand-tinted shade per section *without* touching the
+6-token contract.
 
 ---
 
 ## 8. Fallback ladders
 
-### 8.1 Hero photo (`image_source_preference`)
+### 8.1 Hero / background photo (`image_source_preference`)
 
 | Preference | Ladder |
 |---|---|
@@ -271,16 +299,21 @@ light/dark shade per section *without* touching the 6-token contract.
 
 ### 8.2 Non-hero large sections
 
-Same ladder, but a failed resolve **degrades to `decorative` grain in band tone**,
-never a Picsum filler — a non-hero section should never show placeholder stock.
+Same ladder; a failed resolve **degrades to `decorative` grain in band tone**,
+never a Picsum filler.
 
 ### 8.3 Calm (non-photo) rendering
 
-`calm_treatment` resolves within the section's band:
-- `plain` → flat brand colour for the band (`surface` / `secondary`), no overlay
-- `grain` → that flat colour + grain texture
-- `auto` → engine picks `plain` next to a photo section, `grain` for variety in a
-  run of calm sections
+`calm_treatment` resolves within the band: `plain` → flat brand colour; `grain` →
+flat + grain texture; `auto` → `plain` next to a photo section, `grain` for
+variety in a run of calm sections.
+
+### 8.4 No dominant-colour hint
+
+If a featured image exposes no `dominant_color` (e.g. a scraped image with no
+Pexels `avg_color` and no generated base), default `band = light` (container goes
+light) and log. The section is treated as anchored-light so the rhythm still
+resolves deterministically — no download is attempted.
 
 ---
 
@@ -288,73 +321,84 @@ never a Picsum filler — a non-hero section should never show placeholder stock
 
 | File | Change |
 |---|---|
-| [`models/content_blocks.py`](backend/app/models/content_blocks.py) | Add `VisualPolicy`; attach optional `visual_policy` to §4.2 blocks. |
-| [`services/planner.py`](backend/app/services/planner.py) | Set `visual_mode` / `image_source_preference` per §5 (intent only). Owns *what*, not *how light/dark*. |
-| [`services/schema_builder.py`](backend/app/services/schema_builder.py) | **Replace** `apply_section_rhythm()` (the `backgroundImage`-sniff) with the **luminance pass**: seed band from hero (§3.2), alternate (§3.1), apply featured-image override (§3.4), pick `calm_treatment`. In `_section()`, emit the resolved inline background + font colour. |
-| [`services/theme.py`](backend/app/services/theme.py) | Expose helpers to the pass: band colour from palette (§7), photo-filter tint, `_text_for_background` for font. (Logic already exists — surface it.) |
-| [`services/media.py`](backend/app/services/media.py) | `resolve()` honours `image_source_preference` (§8.1) and applies the band-targeted filter/overlay (§3.3). |
-| [`services/section_content.py`](backend/app/services/section_content.py) | Thread `visual_policy` (and "has featured image?") through block → section mapping. |
+| [`models/content_blocks.py`](backend/app/models/content_blocks.py) | Add `VisualPolicy`; add `dominant_color`/`luminance`/`band` to `ImageMetadata`; attach `visual_policy` to §4.2 blocks. |
+| [`services/media.py`](backend/app/services/media.py) | After `resolve()`, **set the band from `dominant_color`** (§4.3: Pexels `avg_color` → `_relative_luminance` → threshold; generated base for abstract; default per §8.4 for scraped). No download. Honour `image_source_preference`; apply band-targeted filter for flexible photos (§3.4). |
+| [`services/planner.py`](backend/app/services/planner.py) | Set `visual_mode` / `image_source_preference` per §5 (intent only). |
+| [`services/schema_builder.py`](backend/app/services/schema_builder.py) | **Replace** `apply_section_rhythm()` with the **luminance pass** (§3.3): classify anchored/flexible, fix anchored bands, fill flexible, separator fallback, emit inline bg + font in `_section()`. |
+| [`services/theme.py`](backend/app/services/theme.py) | Surface helpers to the pass: band colour from palette (§7), filter tint, `_text_for_background`, `_adjust_lightness` for separator steps. (Logic exists.) |
+| [`services/section_content.py`](backend/app/services/section_content.py) | Thread `visual_policy` + featured-image presence/luminance through block → section. |
 
-**Invariant:** `visual_policy = None` behaves exactly like today. The luminance
-pass only takes over once the planner sets policy. Until then, the old
-`backgroundImage` heuristic remains the fallback.
+**Invariant:** `visual_policy = None` behaves exactly like today; the luminance
+pass only takes over once policy is set.
 
 ---
 
 ## 10. Implementation phases
 
-1. **Schema + back-compat.** Add `VisualPolicy`, attach to blocks, default
-   `None`. No behaviour change — assert existing generations are byte-identical.
-2. **Luminance pass (engine).** Build the seed + strict-alternation pass behind a
-   flag; when every large section has a policy, derive bands and emit inline
-   colours. Old heuristic still runs when policy is `None`.
-3. **Brand-colour sourcing.** Wire band colours + filter tints to `theme.py`
-   (§7). Font colour via `_text_for_background`.
-4. **Planner sets intent.** Populate `visual_mode` / `image_source_preference`
-   per §5. Photo filtering to band in `media.resolve()`.
-5. **Retire the heuristic.** Once policy is set on all large sections, delete the
-   `backgroundImage`-presence path and the dead `rhythm_trigger` scaffolding.
+1. **Schema + back-compat.** Add `VisualPolicy` +
+   `ImageMetadata.dominant_color/luminance/band`, attach to blocks, default
+   `None`. No behaviour change — golden snapshot byte-identical.
+2. **Band from dominant colour.** Thread Pexels `avg_color` → `dominant_color`
+   in the resolver; set `luminance`/`band` via `_relative_luminance` + threshold;
+   set the generated base for abstract; default per §8.4 for scraped. Pure data,
+   no rendering change, **no download / no new dependency** (rationale: §4.3 — a
+   thumbnail fetch + pixel averaging buys negligible accuracy for a 1-bit decision
+   `avg_color` already answers).
+3. **Luminance pass (engine).** Build the anchored/flexible classifier + §3.3
+   resolution behind a flag. Old heuristic still runs when policy is `None`.
+4. **Brand-colour sourcing + filters.** Wire band colours, separator steps, and
+   photo filters to `theme.py`; font via `_text_for_background`.
+5. **Planner sets intent.** Populate `visual_mode` / `image_source_preference`
+   per §5.
+6. **Retire the heuristic.** Delete the `backgroundImage`-presence path and dead
+   `rhythm_trigger` scaffolding once policy is set on all large sections.
 
 ---
 
 ## 11. Testing notes
 
-- **Golden snapshot (phase 1).** Page with `visual_policy=None` everywhere → assert
-  the BuilderElement tree is byte-identical to current `main`.
-- **Strict alternation.** Any page → assert no two adjacent large sections share a
-  luminance band; assert the seed matches hero type (§3.2).
-- **Adjacent contrast (rule 2).** For every adjacent pair, assert measured
-  luminance contrast exceeds the separation threshold — including a washed-light
-  photo directly above a colourful-dark photo.
-- **Sandwich resolution.** Calm section between two photos → assert both photos are
-  filtered to the *same* band and the middle takes the opposite.
-- **Font readability (rule 1).** Every section → assert `_contrast(font, bg) ≥ 4.5`,
-  including a light-band section forced dark by a neighbour (font must flip light).
-- **Featured-image override.** Section with its own featured image → assert
-  background is grain/plain in band tone, never a competing photo.
-- **Brand sourcing.** Assert every background colour is a palette-derived shade
-  (matches `surface`/`secondary`/`_adjust_lightness` output), never raw grey;
-  assert `accent` is never used as a full section background.
-- **Sourcing ladder.** Mock resolver → `stock` tries Pexels first; `abstract`
-  never returns a people photo.
-- **Builder contract.** Assert only the 6 `ColorPalette` tokens reach theme
-  tokens; per-section shades appear only as inline styles.
+- **Golden snapshot (phase 1).** `visual_policy=None` everywhere → BuilderElement
+  tree byte-identical to `main`.
+- **Band from dominant colour.** Light `avg_color` (e.g. `#f0ece6`) and dark
+  `avg_color` (e.g. `#1a1b1e`) → assert `band`; no `dominant_color` → `band=light`
+  default (§8.4). Assert **no HTTP call** is made to measure (mock/spy the client).
+- **Anchored contrast (rule 2).** Featured-image section → assert container band =
+  opposite of image band; assert background is grain/plain, never a photo.
+- **Flexible alternation (rule 3).** Run of flexible sections → assert strict
+  light/dark alternation and adjacent contrast above threshold, including washed
+  light photo directly above colourful dark photo.
+- **Anchor collision → separator.** Two adjacent anchored sections forced to the
+  same band → assert a within-band luminance step + divider is applied (seam
+  preserved) and alternation is allowed to break.
+- **Precedence.** Construct a case where alternation and image↔container disagree →
+  assert image↔container wins (rule 2 > rule 3).
+- **Font readability (rule 1).** Every section → `_contrast(font, bg) ≥ 4.5`,
+  including a light-band section forced dark (font flips light).
+- **Brand sourcing.** Every bg colour is a palette-derived shade (matches
+  `surface`/`secondary`/`_adjust_lightness`), never raw grey; `accent` never a
+  full section background.
+- **Builder contract.** Only the 6 `ColorPalette` tokens reach theme tokens;
+  per-section shades appear only as inline styles.
 
 ---
 
 ## 12. Worked example
 
+A page where a mid-page anchor legally breaks strict alternation:
+
 ```
-#  Section                band     treatment            bg colour (brand)        font
-─  ─────────────────────  ───────  ───────────────────  ───────────────────────  ─────
-H  Hero (featured/split)  light    supporting_image     surface (light tint)     dark
-2  Services (photo)       dark     photo → dark overlay  colourful photo + wash   light
-3  About (featured image) light    grain (override)      surface, grain           dark
-4  Features (photo)       dark     photo → dark overlay  colourful photo + wash   light
-5  CTA (no photo)         light    plain                 surface                  dark
-   ── accent (split-complement) appears only on buttons/highlights, never as a bg ──
+#  Section                  class      img lum  band    treatment        bg (brand)     font
+─  ───────────────────────  ─────────  ───────  ──────  ───────────────  ─────────────  ────
+H  Hero (split, dark photo) anchored   dark     LIGHT   grain (override) surface        dark
+2  Services (bg photo)      flexible   —        dark    photo+overlay    colourful+wash light
+3  About (light screenshot) anchored   light    DARK    grain (override) secondary      light
+4  Features (light shot)    anchored   light    DARK    grain (override) secondary+step light   ← anchor collision:
+   ── alternation would want LIGHT here, but rule 2 forces DARK; separator step + divider applied ──
+5  CTA (no photo)           flexible   —        light   plain            surface        dark
 ```
 
-Every adjacent pair contrasts (rule 2); every font contrasts its own background
-(rule 1); every colour comes from the one brand palette (§7); the rhythm is the
-strict light/dark alternation seeded by the hero.
+Sections 3–4 are both forced **dark** by their light featured images (rule 2 >
+rule 3); the separator fallback (a `_adjust_lightness` step on `secondary` + a
+divider) keeps the seam visible. Every font contrasts its own background (rule 1);
+every colour is from the one brand palette (§7); `accent` appears only on
+buttons/highlights.

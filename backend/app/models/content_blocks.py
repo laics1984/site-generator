@@ -73,6 +73,41 @@ def _default_if_blank(value: object, default: str) -> object:
     return value
 
 
+class VisualPolicy(BaseModel):
+    """
+    Per-section visual INTENT, consumed by the schema_builder luminance pass.
+
+    The planner sets intent only (what the section wants); the luminance pass
+    derives the actual luminance band, background colour, photo filter, and font
+    colour. `visual_policy = None` on a block means "no opinion — infer me", which
+    falls through to today's backgroundImage heuristic (back-compat).
+
+    Full design + rules: SECTION_VISUAL_POLICY_SPEC.md.
+    """
+
+    visual_mode: Literal[
+        "photo_background",  # wants a dominant background photo (flexible)
+        "supporting_image",  # photo in a column / split → anchored
+        "decorative",        # grain / texture, no real photo
+        "plain",             # flat colour fill
+        "auto",              # engine derives from kind + layout
+    ] = "auto"
+
+    image_source_preference: Literal[
+        "scraped",   # prefer scraped pool, then fall down the ladder
+        "stock",     # prefer Pexels
+        "abstract",  # prefer generated/abstract, skip people photos
+        "auto",
+    ] = "auto"
+
+    # Override of the calm (non-photo) rendering; engine picks when "auto".
+    calm_treatment: Literal["plain", "grain", "auto"] = "auto"
+
+    # Escape hatch. Bands are normally derived (anchored from image luminance, or
+    # flexible from the page pass). Set to force a band against the rhythm.
+    band_override: Literal["light", "dark", "auto"] = "auto"
+
+
 class HeroBlock(BaseModel):
     kind: Literal["hero"] = "hero"
     eyebrow: str | None = None
@@ -98,6 +133,7 @@ class HeroBlock(BaseModel):
             "Use 'background' for visual brands (restaurants, fitness, travel, agencies)."
         ),
     )
+    visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("primary_cta_label", mode="before")
     @classmethod
@@ -126,6 +162,7 @@ class FeaturesBlock(BaseModel):
     heading: str = "Why choose us"
     subheading: str | None = None
     items: list[FeatureItem] = Field(min_length=1, max_length=6)
+    visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("heading", mode="before")
     @classmethod
@@ -147,6 +184,7 @@ class ServicesBlock(BaseModel):
     # min_length=1 (not 2): a business with a single real service should keep it
     # rather than be forced to invent a second one to satisfy the schema.
     items: list[ServiceItem] = Field(min_length=1, max_length=8)
+    visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("heading", mode="before")
     @classmethod
@@ -187,6 +225,7 @@ class AboutBlock(BaseModel):
         default=None,
         description="Short search phrase for the supporting image (2-6 words).",
     )
+    visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("heading", mode="before")
     @classmethod
@@ -234,6 +273,7 @@ class CtaBlock(BaseModel):
             "Choose something atmospheric and on-brand."
         ),
     )
+    visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("cta_label", mode="before")
     @classmethod
@@ -613,6 +653,12 @@ class ImageMetadata(BaseModel):
     intent: Literal["hero", "about", "logo", "generic"] = "generic"
     width: int | None = None
     height: int | None = None
+    # Luminance-band inputs for the schema_builder pass (SECTION_VISUAL_POLICY_SPEC.md
+    # §4.3). Dominant colour comes free from Pexels avg_color or a generated base —
+    # NO pixel download. luminance/band stay None until set by media.py.
+    dominant_color: str | None = None  # hex, e.g. Pexels avg_color
+    luminance: float | None = None  # 0.0 (black)..1.0 (white) from dominant_color
+    band: Literal["light", "dark"] | None = None  # luminance thresholded
 
 
 class ProfileCandidate(BaseModel):
