@@ -58,7 +58,17 @@ from app.models.content_blocks import (
 from app.services.header_footer import build_footer, build_header
 from app.services.media import ImageResolver
 from app.services.pexels import PhotoResult
-from app.services.section_content import _SURFACE_BG, apply_section_rhythm, block_to_section
+from app.config import settings
+from app.services.section_content import (
+    _SURFACE_BG,
+    Band,
+    SectionVisualInput,
+    apply_luminance_rhythm,
+    apply_section_rhythm,
+    assign_visual_policies,
+    block_to_section,
+    section_visual_input_for,
+)
 from app.services.template_filler import fill_template
 from app.services.theme import build_theme
 
@@ -110,6 +120,10 @@ class RenderContext:
     current_parent_slug: str | None = None  # set when rendering a sub-page (for breadcrumbs)
     children_by_parent: dict[str, list[ChildPageRef]] = field(default_factory=dict)
     page_title_by_slug: dict[str, str] = field(default_factory=dict)
+    # Transient: the band of the FIRST image resolved for the current section,
+    # captured by block_to_element's resolve_image closure and read by
+    # plan_to_site to feed the luminance pass. Reset per block. (Phase 4b)
+    section_image_band: Band | None = None
 
 
 def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
@@ -2009,6 +2023,11 @@ async def block_to_element(
             photo = await ctx.resolver.resolve(
                 query, intent=intent, alt_fallback=query
             )
+            # Capture the FIRST resolved image's band as the section's featured
+            # image for the luminance pass (Phase 4b). Later images (e.g. grid
+            # items) don't override the dominant one.
+            if ctx.section_image_band is None and photo.band is not None:
+                ctx.section_image_band = photo.band
             return photo.url, photo.avg_color
 
         return await fill_template(
@@ -2115,13 +2134,32 @@ async def plan_to_site(
             children_by_parent=children_by_parent,
             page_title_by_slug=page_title_by_slug,
         )
+        # Phase 5 activation (gated): deterministically assign visual_policy per
+        # the §5 matrix so the luminance pass engages. Off by default — when the
+        # flag is unset, no block gets a policy and output stays byte-identical.
+        if settings.luminance_rhythm_enabled:
+            assign_visual_policies(page_plan.blocks)
+
         elements: list[BuilderElement] = []
-        # Sub-pages get a breadcrumb prepended above the hero.
+        # Inputs to the luminance pass, built in lockstep with `elements` so they
+        # align index-for-index (SECTION_VISUAL_POLICY_SPEC.md).
+        visual_inputs: list[SectionVisualInput] = []
+        # Sub-pages get a breadcrumb prepended above the hero — a non-participant.
         if page_plan.parent_slug is not None:
             elements.append(_build_breadcrumb(page_plan, ctx))
+            visual_inputs.append(SectionVisualInput())
         for block in page_plan.blocks:
+            # Reset the per-section capture, render, then read the band of the
+            # section's featured image (Phase 4b) into the pass input.
+            ctx.section_image_band = None
             elements.append(await block_to_element(block, ctx))
-        # Color-blocking rhythm: alternate plain sections page-bg / surface tint.
+            visual_inputs.append(
+                section_visual_input_for(block, image_band=ctx.section_image_band)
+            )
+        apply_luminance_rhythm(elements, visual_inputs, theme.palette)
+        # Legacy color-blocking rhythm: alternates the remaining (non-policy)
+        # plain sections between page-bg and surface tint. Sections the luminance
+        # pass already filled carry their own backgroundColor and are skipped.
         apply_section_rhythm(elements)
         # 2025/26 modernization: fluid type, card depth/glass, atmospheric
         # surface backgrounds — applied per-mood over the assembled sections.

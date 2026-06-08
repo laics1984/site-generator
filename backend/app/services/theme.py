@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import colorsys
 from dataclasses import dataclass
+from typing import Literal
 
 from app.models.brand import (
     BrandMood,
@@ -111,6 +112,20 @@ def _ensure_contrast_against(
 def _text_for_background(bg_hex: str) -> str:
     """Pick white or near-black for best contrast against `bg_hex`."""
     return "#ffffff" if _relative_luminance(bg_hex) < 0.5 else "#0f172a"
+
+
+def band_colors(palette: ColorPalette, band: Literal["light", "dark"]) -> tuple[str, str]:
+    """(background, text) brand colours for a luminance band.
+
+    light → `surface` (a faint primary tint, near the page colour) with dark text;
+    dark → `secondary` (the dark, primary-hued neutral) with white text. Both stay
+    inside the one brand palette, so the page alternates *luminance* of one hue
+    family rather than clashing hues. Text comes from `_text_for_background`, so a
+    section's band and its font colour always agree. See
+    SECTION_VISUAL_POLICY_SPEC.md §6/§7.
+    """
+    bg = palette.secondary if band == "dark" else palette.surface
+    return bg, _text_for_background(bg)
 
 
 # --- palette construction -------------------------------------------------------

@@ -58,7 +58,11 @@ class OllamaClient:
                 {"role": "user", "content": user_prompt},
             ],
             "format": "json",
-            "stream": False,
+            # Stream the response so httpx's read timeout applies to the gap
+            # BETWEEN tokens, not the whole generation. A long multi-section
+            # generation can't ReadTimeout as long as tokens keep flowing — only
+            # a genuine stall trips the timeout. _post_chat reassembles the chunks.
+            "stream": True,
             "options": {"temperature": temperature, "num_ctx": num_ctx},
         }
 
@@ -108,17 +112,42 @@ class OllamaClient:
     async def _post_chat(
         self, client: httpx.AsyncClient, payload: dict[str, Any]
     ) -> str:
+        """POST to /api/chat and reassemble the streamed response.
+
+        Ollama streams newline-delimited JSON objects, each carrying a slice of
+        ``message.content``, terminated by an object with ``done: true``. We
+        concatenate the slices into the full JSON string the caller validates.
+        Streaming keeps the read timeout per-chunk (see the stream=True note in
+        chat_json), so long generations don't ReadTimeout while tokens flow.
+        """
+        chunks: list[str] = []
         try:
-            response = await client.post(f"{self.base_url}/api/chat", json=payload)
-            response.raise_for_status()
+            async with client.stream(
+                "POST", f"{self.base_url}/api/chat", json=payload
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        # Tolerate any non-JSON keep-alive / blank framing line.
+                        continue
+                    if event.get("error"):
+                        raise LlmError(f"Ollama stream error: {event['error']}")
+                    piece = (event.get("message") or {}).get("content")
+                    if isinstance(piece, str):
+                        chunks.append(piece)
+                    if event.get("done"):
+                        break
         except httpx.HTTPError as exc:
             raise LlmError(f"Ollama request failed [{type(exc).__name__}]: {exc}") from exc
 
-        data = response.json()
-        message = data.get("message") or {}
-        content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise LlmError(f"Ollama returned empty content: {data}")
+        content = "".join(chunks)
+        if not content.strip():
+            raise LlmError("Ollama returned empty content (stream produced no tokens)")
         return content
 
     async def list_models(self) -> list[str]:

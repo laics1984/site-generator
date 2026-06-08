@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import replace
 from typing import Literal
 
 from app.models.content_blocks import ImageMetadata
@@ -30,9 +31,30 @@ from app.services.image_match import (
     rank_candidates,
     rank_candidates_with_llm_tiebreaker,
 )
+from app.services.image_styling import band_for_luminance, relative_luminance
 from app.services.pexels import PexelsClient, PhotoResult, get_pexels_client
 
 logger = logging.getLogger(__name__)
+
+
+def _band_fields(
+    avg_hex: str | None,
+) -> tuple[float | None, Literal["light", "dark"] | None]:
+    """Derive (luminance, band) from a dominant/average colour hex.
+
+    The band is a 1-bit decision, so a single dominant colour is an adequate
+    proxy — no pixel download (SECTION_VISUAL_POLICY_SPEC.md §4.3). Returns
+    (None, None) when no colour is known or the hex can't be parsed; the
+    luminance pass then applies the §8.4 light default.
+    """
+    if not avg_hex:
+        return None, None
+    try:
+        lum = relative_luminance(avg_hex)
+    except (ValueError, IndexError):
+        logger.debug("Could not parse dominant colour %r for band", avg_hex)
+        return None, None
+    return round(lum, 4), band_for_luminance(lum)
 
 
 ImageIntent = Literal["hero", "about", "cta_bg", "avatar", "feature", "generic"]
@@ -124,12 +146,17 @@ class ImageResolver:
             picked = await self._take_best_scraped(query, intent)
             if picked is not None:
                 self._used_urls.add(picked.url)
+                # Carry the band when the scraper supplied a colour hint; else
+                # None → luminance pass applies the §8.4 light default.
+                lum, band = _band_fields(picked.dominant_color)
                 return PhotoResult(
                     url=picked.url,
                     alt=picked.alt or alt_fallback or (query or "Source image"),
                     photographer=None,
                     photographer_url=None,
                     source="scraped",
+                    luminance=lum,
+                    band=band,
                 )
 
         # 2. Pexels — locale-cued for people-likely slots, plain-query fallback.
@@ -137,7 +164,9 @@ class ImageResolver:
             photo = await self._search_pexels(query, orientation, intent)
             if photo and photo.url not in self._seen_pexels_urls:
                 self._seen_pexels_urls.add(photo.url)
-                return photo
+                # avg_color comes free from Pexels → derive the band, no download.
+                lum, band = _band_fields(photo.avg_color)
+                return replace(photo, luminance=lum, band=band)
 
         # 3. Picsum deterministic fallback.
         return _picsum_photo(query or alt_fallback or "site", orientation, alt_fallback)

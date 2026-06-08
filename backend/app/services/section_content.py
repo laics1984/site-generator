@@ -20,9 +20,10 @@ that descriptions cannot guarantee.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any, Callable, Literal
 
-from app.models.brand import BrandMood
+from app.models.brand import BrandMood, ColorPalette
 from app.models.builder_schema import BuilderElement
 from app.models.content_blocks import (
     AboutBlock,
@@ -39,8 +40,10 @@ from app.models.content_blocks import (
     ServicesBlock,
     TeamBlock,
     TestimonialsBlock,
+    VisualPolicy,
 )
 from app.services.template_filler import get_template, templates_for_type
+from app.services.theme import _adjust_lightness, band_colors
 
 
 def _link(label: str | None, href: str | None) -> dict[str, str] | None:
@@ -408,6 +411,231 @@ def select_template(
 
 _PAGE_BG = "var(--builder-page-background, #ffffff)"
 _SURFACE_BG = "var(--builder-color-surface, #f8fafc)"
+
+
+# --- luminance-band resolution (SECTION_VISUAL_POLICY_SPEC.md §3.3) --------------
+#
+# Pure, deterministic page-level pass. Given each section's visual intent + its
+# resolved photo band, it assigns a luminance band per section. Phase 4 builds
+# the inputs from blocks/resolved photos and emits the brand colours; this layer
+# is the algorithm only — no BuilderElement, no theme, no I/O — so it is unit-
+# testable in isolation.
+
+Band = Literal["light", "dark"]
+
+
+def _opposite_band(band: Band) -> Band:
+    return "light" if band == "dark" else "dark"
+
+
+@dataclass(frozen=True)
+class SectionVisualInput:
+    """One section's inputs to the luminance pass.
+
+    Only large background-capable sections that carry a visual_policy
+    `participate`; everything else (grids, unscoped sections) is transparent to
+    the rhythm and never gets a band.
+    """
+
+    participates: bool = False
+    # Carries its own featured/content image → ANCHORED: band is fixed opposite
+    # the image so the image pops against its container (rule 2).
+    anchored: bool = False
+    # The featured image's OWN band (anchored sections only). None when no colour
+    # hint was available → container defaults light (§8.4).
+    image_band: Band | None = None
+    # Flexible full-bleed photo → seeds DARK when it has no left neighbour (§3.5).
+    is_photo_background: bool = False
+    # Escape hatch; wins over all derivation when set.
+    band_override: Band | None = None
+
+
+@dataclass(frozen=True)
+class SectionBandPlan:
+    """Resolved band for one section. `band is None` for non-participants."""
+
+    band: Band | None = None
+    anchored: bool = False
+    # True when this participant is forced to the same band as the previous
+    # participant (an unavoidable anchor collision) → render a separator so the
+    # seam stays visible (§3.3 step 4).
+    separator_before: bool = False
+
+
+def resolve_section_bands(inputs: list[SectionVisualInput]) -> list[SectionBandPlan]:
+    """Resolve a per-section luminance-band plan for one page's section list.
+
+    Precedence (§3.3): band_override > anchored (image↔container contrast) >
+    strict alternation. Anchored/override bands are fixed points; flexible
+    sections alternate around them. A flexible section always flips from its
+    left neighbour, so it never collides on the left; only two adjacent *forced*
+    sections can land on the same band, and that boundary is flagged for a
+    separator (alternation yields to the hard anchor rule).
+    """
+    plans: list[SectionBandPlan] = [SectionBandPlan() for _ in inputs]
+    prev_band: Band | None = None
+
+    for i, s in enumerate(inputs):
+        if not s.participates:
+            continue
+
+        if s.band_override is not None:
+            band: Band = s.band_override
+        elif s.anchored:
+            band = _opposite_band(s.image_band) if s.image_band else "light"
+        elif prev_band is not None:
+            band = _opposite_band(prev_band)
+        else:
+            band = "dark" if s.is_photo_background else "light"
+
+        plans[i] = SectionBandPlan(
+            band=band,
+            anchored=s.anchored,
+            separator_before=(prev_band is not None and band == prev_band),
+        )
+        prev_band = band
+
+    return plans
+
+
+# Section kinds large enough to carry a background policy (§4.2).
+_POLICY_KINDS = frozenset({"hero", "about", "features", "services", "cta"})
+
+
+def _default_visual_mode_for(block: ContentBlock) -> str | None:
+    """The §5-matrix visual_mode for a block, or None if its kind doesn't
+    participate. Deterministic — content/layout drives the choice."""
+    kind = block.kind
+    if kind == "hero":
+        return (
+            "photo_background"
+            if getattr(block, "layout", None) == "background"
+            else "supporting_image"
+        )
+    if kind == "about":
+        return "supporting_image" if getattr(block, "image_query", None) else "plain"
+    if kind == "cta":
+        return "photo_background" if getattr(block, "background_query", None) else "plain"
+    if kind in ("features", "services"):
+        return "plain"
+    return None
+
+
+def assign_visual_policies(blocks: list[ContentBlock]) -> None:
+    """Set visual_policy on the large background-capable blocks per the §5 matrix.
+
+    Deterministic and idempotent: skips any block that already carries a policy
+    (so an explicit/LLM-provided one wins) and any kind that doesn't participate.
+    This is the Phase-5 activation step — gated by settings.luminance_rhythm_enabled
+    at the call site. Mutates blocks in place. See SECTION_VISUAL_POLICY_SPEC.md §5.
+    """
+    for block in blocks:
+        if block.kind not in _POLICY_KINDS:
+            continue
+        if getattr(block, "visual_policy", None) is not None:
+            continue
+        mode = _default_visual_mode_for(block)
+        if mode is not None:
+            block.visual_policy = VisualPolicy(visual_mode=mode)
+
+
+def _infer_visual_mode(block: ContentBlock) -> str:
+    """Best-effort visual_mode when the planner left it 'auto'."""
+    layout = getattr(block, "layout", None)
+    if layout == "background":
+        return "photo_background"
+    if layout == "split":
+        return "supporting_image"
+    if getattr(block, "background_query", None):  # CTA atmospheric background
+        return "photo_background"
+    if getattr(block, "image_query", None):  # about/hero supporting image
+        return "supporting_image"
+    return "plain"
+
+
+def section_visual_input_for(
+    block: ContentBlock, *, image_band: Band | None = None
+) -> SectionVisualInput:
+    """Derive the luminance-pass input from a block's visual_policy.
+
+    Blocks with no policy don't participate — the legacy apply_section_rhythm
+    still handles them (back-compat). `image_band` is the band of the section's
+    resolved featured image (captured in plan_to_site, Phase 4b); it only matters
+    for anchored sections. None → anchored sections default light per §8.4.
+    """
+    policy = getattr(block, "visual_policy", None)
+    if policy is None:
+        return SectionVisualInput(participates=False)
+
+    mode = policy.visual_mode
+    if mode == "auto":
+        mode = _infer_visual_mode(block)
+
+    override = policy.band_override if policy.band_override != "auto" else None
+    anchored = mode == "supporting_image"
+    return SectionVisualInput(
+        participates=True,
+        anchored=anchored,
+        image_band=image_band if anchored else None,
+        is_photo_background=(mode == "photo_background"),
+        band_override=override,
+    )
+
+
+def _is_own_surface(styles: dict[str, Any]) -> bool:
+    """Whether an element carries its own (non-transparent) surface — a card or
+    solid button whose text keeps its own colour, not the band's font."""
+    if styles.get("background"):
+        return True
+    bg = styles.get("backgroundColor")
+    return bg not in (None, "transparent", "rgba(0,0,0,0)")
+
+
+def _recolor_text_for_dark(
+    node: BuilderElement, color: str, *, inside_surface: bool = False
+) -> None:
+    """Recolour a dark-band section's text to `color`, skipping any subtree under
+    its own surface (cards / solid buttons keep their designed colours)."""
+    content = node.content
+    if not isinstance(content, list):
+        return
+    for child in content:
+        cs = child.styles or {}
+        child_surface = inside_surface or _is_own_surface(cs)
+        if child.type == "text" and not child_surface:
+            child.styles = {**cs, "color": color}
+        _recolor_text_for_dark(child, color, inside_surface=child_surface)
+
+
+def apply_luminance_rhythm(
+    sections: list[BuilderElement],
+    inputs: list[SectionVisualInput],
+    palette: ColorPalette,
+) -> list[SectionBandPlan]:
+    """Emit brand band colours + a contrasting font onto participating sections.
+
+    Resolves the band plan, then for each participating section sets
+    `backgroundColor` to the band's brand colour, recolours child text on dark
+    bands (protecting cards/solid buttons), and applies a within-band luminance
+    step + hairline border on forced anchor collisions (§3.3 step 4). Returns the
+    plans so the caller can run the legacy rhythm over the non-participants.
+    Mutates `sections` in place. See SECTION_VISUAL_POLICY_SPEC.md §6/§7.
+    """
+    plans = resolve_section_bands(inputs)
+    for section, plan in zip(sections, plans):
+        if plan.band is None:
+            continue
+        bg, fg = band_colors(palette, plan.band)
+        if plan.separator_before:
+            bg = _adjust_lightness(bg, 0.07 if plan.band == "dark" else -0.05)
+        styles = dict(section.styles or {})
+        styles["backgroundColor"] = bg
+        if plan.separator_before:
+            styles["borderTop"] = f"1px solid {_adjust_lightness(bg, 0.12)}"
+        section.styles = styles
+        if plan.band == "dark":
+            _recolor_text_for_dark(section, fg)
+    return plans
 
 
 def apply_section_rhythm(sections: list[BuilderElement]) -> None:

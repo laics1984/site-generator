@@ -39,6 +39,11 @@ class PhotoResult:
     # Average colour hex (Pexels returns this for free). Drives the adaptive
     # dark-overlay intensity for photo backgrounds. None when unknown.
     avg_color: str | None = None
+    # Luminance-band classification, derived from the dominant colour by the
+    # resolver (SECTION_VISUAL_POLICY_SPEC.md §4.3). Consumed by the
+    # schema_builder luminance pass; None until set / when no colour is known.
+    luminance: float | None = None  # WCAG relative luminance, 0.0..1.0
+    band: Literal["light", "dark"] | None = None
 
     @property
     def attribution(self) -> str | None:

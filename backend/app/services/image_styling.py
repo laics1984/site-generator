@@ -12,6 +12,7 @@ scraped images can be sampled with Pillow upstream).
 from __future__ import annotations
 
 import colorsys
+from typing import Literal
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -30,6 +31,26 @@ def relative_luminance(hex_color: str) -> float:
     """WCAG relative luminance in [0,1] (0 = black, 1 = white)."""
     r, g, b = _hex_to_rgb(hex_color)
     return 0.2126 * _srgb_to_linear(r) + 0.7152 * _srgb_to_linear(g) + 0.0722 * _srgb_to_linear(b)
+
+
+# Luminance midpoint that splits the light vs dark band. Matches the white /
+# near-black flip in theme._text_for_background, so a section's band and its font
+# colour always agree. See SECTION_VISUAL_POLICY_SPEC.md §4.3/§6.
+BAND_LUMINANCE_THRESHOLD = 0.5
+
+
+def band_for_luminance(
+    lum: float, *, threshold: float = BAND_LUMINANCE_THRESHOLD
+) -> Literal["light", "dark"]:
+    """Classify a WCAG relative luminance into a luminance band."""
+    return "light" if lum >= threshold else "dark"
+
+
+def band_for_color(
+    avg_hex: str, *, threshold: float = BAND_LUMINANCE_THRESHOLD
+) -> Literal["light", "dark"]:
+    """Classify a dominant/average colour hex into a luminance band."""
+    return band_for_luminance(relative_luminance(avg_hex), threshold=threshold)
 
 
 def overlay_alpha(avg_hex: str, *, min_alpha: float = 0.30, max_alpha: float = 0.62) -> float:
