@@ -1573,9 +1573,18 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
 
     member_cards: list[list[BuilderElement]] = []
     for member in block.members:
-        photo = await ctx.resolver.resolve(
-            member.photo_query, intent="avatar", alt_fallback=member.name
-        )
+        if member.photo_url:
+            photo = PhotoResult(
+                url=member.photo_url,
+                alt=member.photo_alt or member.name,
+                photographer=None,
+                photographer_url=None,
+                source="scraped",
+            )
+        else:
+            photo = await ctx.resolver.resolve(
+                member.photo_query, intent="avatar", alt_fallback=member.name
+            )
         card: list[BuilderElement] = [
             _image_from_photo(
                 photo,
@@ -1587,6 +1596,12 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                     "height": "112px",
                     "alignSelf": "center",
                     "marginBottom": "12px",
+                    "overflow": "hidden",
+                    "border": "3px solid rgba(255,255,255,0.96)",
+                    "boxShadow": (
+                        f"0 0 0 4px {_hairline(ctx.theme.palette.primary, 0.10)}, "
+                        "0 14px 30px rgba(15,23,42,0.18)"
+                    ),
                 },
             ),
             _text(
@@ -1594,8 +1609,9 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                 name="Member name",
                 styles={
                     "fontFamily": ctx.theme.typography.heading_font,
-                    "fontSize": "18px",
-                    "fontWeight": 600,
+                    "fontSize": "20px",
+                    "lineHeight": "1.25",
+                    "fontWeight": 800,
                     "color": ctx.theme.palette.secondary,
                     "margin": "0",
                     "textAlign": "center",
@@ -1606,19 +1622,30 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                 name="Member role",
                 styles={
                     **s.body,
-                    "fontSize": "14px",
+                    "fontSize": "12px",
+                    "lineHeight": "1.35",
                     "color": ctx.theme.palette.primary,
                     "textAlign": "center",
-                    "fontWeight": 600,
+                    "fontWeight": 800,
+                    "letterSpacing": "0.08em",
+                    "textTransform": "uppercase",
                 },
             ),
         ]
-        if member.bio:
+        bio = getattr(member, "bio", None) or getattr(member, "description", None)
+        if bio:
             card.append(
                 _text(
-                    member.bio,
+                    bio,
                     name="Member bio",
-                    styles={**s.body, "fontSize": "14px", "textAlign": "center", "marginTop": "8px"},
+                    styles={
+                        **s.body,
+                        "fontSize": "14px",
+                        "lineHeight": "1.65",
+                        "textAlign": "center",
+                        "marginTop": "8px",
+                        "maxWidth": "280px",
+                    },
                 )
             )
         member_cards.append(card)
@@ -1637,7 +1664,19 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
         else:
             rows.append(_container(triplet[0], name="Member card", styles=s.cards))
 
-    _apply_card_styles(rows, {**s.cards, "alignItems": "stretch"})
+    _apply_card_styles(
+        rows,
+        {
+            **s.cards,
+            "alignItems": "stretch",
+            "gap": "8px",
+            "padding": "34px 28px 30px",
+            "borderRadius": "24px",
+            "backgroundColor": "rgba(255,255,255,0.94)",
+            "border": "1px solid rgba(148,163,184,0.18)",
+            "boxShadow": "0 16px 40px rgba(15,23,42,0.08)",
+        },
+    )
     return _section(ctx, [header, *rows], name="Team")
 
 

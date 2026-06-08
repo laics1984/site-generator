@@ -33,7 +33,22 @@ logger = logging.getLogger(__name__)
 _TYPE_HINTS: list[tuple[PageType, tuple[str, ...]]] = [
     ("contact", ("contact", "get-in-touch", "reach-us")),
     ("pricing", ("pricing", "plans", "subscriptions")),
-    ("team", ("team", "people", "leadership", "staff", "board")),
+    (
+        "team",
+        (
+            "team",
+            "people",
+            "leadership",
+            "staff",
+            "board",
+            "committee",
+            "committees",
+            "council",
+            "governance",
+            "trustees",
+            "board-members",
+        ),
+    ),
     ("blog", ("blog", "news", "insights", "articles", "press", "media-centre", "newsroom")),
     ("faq", ("faq", "faqs", "help", "support-faq", "questions")),
     ("work", ("work", "portfolio", "case-studies", "projects", "clients", "case-study")),
@@ -150,6 +165,7 @@ def _title_from_page(page: SourceContent, fallback_slug: str) -> str:
             if sep in raw:
                 raw = raw.split(sep, 1)[0].strip()
                 break
+        raw = re.sub(r"\s*[\|\-–—:]+\s*$", "", raw).strip()
         if raw:
             return raw
     if not fallback_slug:
@@ -336,3 +352,20 @@ def optional_pool_for(
             continue
         pool.append(c)
     return pool
+
+
+def core_pages_not_in_inferred(
+    core: list[PageScaffold], inferred: list[PageScaffold]
+) -> list[PageScaffold]:
+    """Keep template core pages only when the crawl didn't already cover them.
+
+    For non-legal pages we treat an inferred page of the same semantic type as
+    covering that core page, even when the source slug differs, e.g.
+    ``about-us`` should suppress template ``about``.
+    """
+    inferred_slugs = {s.slug for s in inferred}
+    inferred_types = {s.page_type for s in inferred if not s.is_legal}
+    return [
+        c for c in core
+        if c.is_legal or (c.slug not in inferred_slugs and c.page_type not in inferred_types)
+    ]

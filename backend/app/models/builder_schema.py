@@ -190,8 +190,8 @@ class GeneratedSite(BaseModel):
     media_credits: list[str] = Field(
         default_factory=list,
         description=(
-            "Attribution lines for third-party media (e.g. Pexels). Surface these "
-            "in the footer to comply with provider attribution requirements."
+            "Attribution lines for third-party media when a source requires "
+            "visible credits."
         ),
     )
     # Theme + chrome. These let the webtree builder display the site as designed.

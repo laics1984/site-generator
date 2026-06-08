@@ -80,6 +80,7 @@ def _brand_payload(
         name=name or "Untitled",
         logo_data_url=extraction.logo_data_url,
         extracted_palette=extraction.palette,
+        logo_is_light=extraction.logo_is_light,
         mood=mood,  # type: ignore[arg-type]
     )
     return brand.model_dump(mode="json")

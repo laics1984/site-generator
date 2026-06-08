@@ -32,7 +32,7 @@ from bs4 import BeautifulSoup, Tag
 from playwright.async_api import async_playwright
 
 from app.models.brand import BrandIdentity
-from app.models.content_blocks import ImageMetadata, SourceContent
+from app.models.content_blocks import ImageMetadata, ProfileCandidate, SourceContent
 from app.services.fast_fetch import (
     FastFetchResult,
     FastFetchSkipped,
@@ -191,6 +191,30 @@ async def _autoscroll(page, *, max_steps: int = 12, step_px: int = 1200) -> None
         pass
 
 
+async def _stamp_computed_backgrounds(page) -> None:
+    """Expose computed CSS backgrounds to the static BeautifulSoup parser."""
+    try:
+        await page.evaluate(
+            """
+            () => {
+              const extractUrl = (value) => {
+                if (!value || value === 'none') return null;
+                const match = value.match(/url\\(["']?([^"')]+)["']?\\)/);
+                return match ? match[1] : null;
+              };
+              for (const el of Array.from(document.querySelectorAll('body *'))) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width < 200 || rect.height < 120) continue;
+                const url = extractUrl(getComputedStyle(el).backgroundImage);
+                if (url) el.setAttribute('data-webtree-bg-image', url);
+              }
+            }
+            """
+        )
+    except Exception:
+        pass
+
+
 async def _goto_and_render(
     context, url: str, *, timeout_ms: int
 ) -> tuple[str, str]:
@@ -236,6 +260,7 @@ async def _goto_and_render(
         # below-the-fold copy before we snapshot. Without this, paragraphs that
         # only mount on scroll never make it into page.content().
         await _autoscroll(page)
+        await _stamp_computed_backgrounds(page)
         html = await page.content()
         final_url = page.url
     finally:
@@ -287,6 +312,41 @@ _BAD_IMG_HINTS = (
     "loader",
     "loading",
 )
+_PROFILE_CONTAINER_HINTS = (
+    "team",
+    "member",
+    "profile",
+    "person",
+    "people",
+    "staff",
+    "leadership",
+    "committee",
+    "council",
+    "board",
+    "trustee",
+    "governance",
+    "director",
+)
+_PROFILE_NAME_HINTS = ("name", "person-name", "member-name", "profile-name")
+_PROFILE_ROLE_HINTS = (
+    "role",
+    "title",
+    "position",
+    "designation",
+    "job",
+    "office",
+)
+_GENERIC_PROFILE_NAMES = {
+    "team",
+    "our team",
+    "meet the team",
+    "committee",
+    "our committee",
+    "board",
+    "our board",
+    "leadership",
+    "staff",
+}
 
 # Matches background-image / background shorthand containing a url().
 # Handles quoted and unquoted URLs, with optional whitespace.
@@ -322,6 +382,76 @@ def _parse_int(value: str | None) -> int | None:
         return None
     m = re.search(r"\d+", value)
     return int(m.group(0)) if m else None
+
+
+def _best_srcset_candidate(srcset: str | None) -> str | None:
+    """Return the highest-density/width URL from a srcset string."""
+    if not srcset:
+        return None
+    best_url: str | None = None
+    best_score = -1.0
+    for raw_part in srcset.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        pieces = part.split()
+        url = pieces[0]
+        score = 1.0
+        if len(pieces) > 1:
+            descriptor = pieces[1].lower()
+            try:
+                if descriptor.endswith("w"):
+                    score = float(descriptor[:-1])
+                elif descriptor.endswith("x"):
+                    score = float(descriptor[:-1]) * 1000.0
+            except ValueError:
+                score = 1.0
+        if score > best_score:
+            best_score = score
+            best_url = url
+    return best_url
+
+
+def _image_src_from_tag(img: Tag) -> str | None:
+    """Prefer real responsive image URLs over placeholders."""
+    src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
+    if isinstance(src, list):
+        src = src[0] if src else None
+    src = src if isinstance(src, str) else None
+
+    srcset = (
+        img.get("srcset")
+        or img.get("data-srcset")
+        or img.get("data-lazy-srcset")
+    )
+    if isinstance(srcset, list):
+        srcset = srcset[0] if srcset else None
+    srcset = srcset if isinstance(srcset, str) else None
+    srcset_candidate = _best_srcset_candidate(srcset)
+
+    source = img.find_previous_sibling("source")
+    if source is None and isinstance(img.parent, Tag) and img.parent.name == "picture":
+        sources = [s for s in img.parent.find_all("source") if isinstance(s, Tag)]
+        source = sources[-1] if sources else None
+    if isinstance(source, Tag):
+        source_srcset = source.get("srcset") or source.get("data-srcset")
+        if isinstance(source_srcset, list):
+            source_srcset = source_srcset[0] if source_srcset else None
+        picture_candidate = _best_srcset_candidate(
+            source_srcset if isinstance(source_srcset, str) else None
+        )
+        if picture_candidate:
+            srcset_candidate = picture_candidate
+
+    src_low = (src or "").lower().split("?", 1)[0]
+    if srcset_candidate and (
+        not src
+        or _looks_like_icon(src, "")
+        or src_low.endswith(".svg")
+        or "placeholder" in src_low
+    ):
+        return srcset_candidate
+    return src or srcset_candidate
 
 
 def _guess_bg_intent(tag: Tag, prior: list[ImageCandidate]) -> str:
@@ -369,6 +499,23 @@ def _extract_bg_images(
     candidates: list[ImageCandidate] = []
 
     # --- Level 1: inline style="background-image: url(...)" --------------------
+    for tag in soup.find_all(attrs={"data-webtree-bg-image": True}):
+        if not isinstance(tag, Tag):
+            continue
+        raw = tag.get("data-webtree-bg-image")
+        if not isinstance(raw, str):
+            continue
+        abs_url = _absolute_url(base_url, raw.strip())
+        if not abs_url or abs_url in seen:
+            continue
+        if _looks_like_icon(abs_url, ""):
+            continue
+        intent = _guess_bg_intent(tag, prior + candidates)
+        seen.add(abs_url)
+        candidates.append(
+            ImageCandidate(url=abs_url, alt="", width=None, height=None, intent=intent)
+        )
+
     for tag in soup.find_all(style=True):
         if not isinstance(tag, Tag):
             continue
@@ -428,9 +575,7 @@ def _extract_images(
     for img in soup.find_all("img"):
         if not isinstance(img, Tag):
             continue
-        src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-        if isinstance(src, list):
-            src = src[0] if src else None
+        src = _image_src_from_tag(img)
         abs_url = _absolute_url(base_url, src or "")
         if not abs_url or abs_url in seen:
             continue
@@ -482,6 +627,216 @@ def _extract_images(
     candidates.extend(bg_candidates)
 
     return candidates[:30]  # cap
+
+
+def _attr_haystack(tag: Tag) -> str:
+    parts: list[str] = []
+    for attr in ("class", "id", "itemprop"):
+        value = tag.get(attr)
+        if isinstance(value, list):
+            parts.extend(str(v) for v in value)
+        elif isinstance(value, str):
+            parts.append(value)
+    return " ".join(parts).lower()
+
+
+def _has_any_hint(tag: Tag, hints: tuple[str, ...]) -> bool:
+    haystack = _attr_haystack(tag)
+    return any(hint in haystack for hint in hints)
+
+
+def _clean_line(value: str) -> str:
+    return " ".join(value.replace("\xa0", " ").split())
+
+
+def _text_lines(tag: Tag) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw in tag.stripped_strings:
+        line = _clean_line(str(raw))
+        key = line.lower()
+        if line and key not in seen:
+            seen.add(key)
+            lines.append(line)
+    return lines
+
+
+def _looks_like_person_name(value: str) -> bool:
+    text = _clean_line(value).strip(" :|-")
+    if not text:
+        return False
+    low = text.lower()
+    if low in _GENERIC_PROFILE_NAMES:
+        return False
+    if "@" in text or "http" in low:
+        return False
+    tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
+    if len(tokens) < 2 or len(tokens) > 7:
+        return False
+    return True
+
+
+def _nearest_profile_container(img: Tag) -> Tag | None:
+    current = img.parent
+    fallback: Tag | None = None
+    depth = 0
+    while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 7:
+        if _has_any_hint(current, _PROFILE_CONTAINER_HINTS):
+            img_count = len([i for i in current.find_all("img") if isinstance(i, Tag)])
+            if img_count > 1 and fallback is not None:
+                return fallback
+            return current
+        if fallback is None and current.find(["h2", "h3", "h4", "h5"]):
+            fallback = current
+        current = current.parent
+        depth += 1
+    return fallback
+
+
+def _row_text_sibling_for_profile(img: Tag) -> Tag | None:
+    """Fallback for layouts where portrait and profile copy live in sibling columns."""
+    current = img.parent
+    depth = 0
+    while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 6:
+        children = [child for child in current.find_all(recursive=False) if isinstance(child, Tag)]
+        if len(children) >= 2:
+            row_hints = _has_any_hint(current, ("row", "columns", "grid")) or any(
+                _has_any_hint(child, ("column", "col", "cell")) for child in children
+            )
+            if row_hints:
+                owner = next(
+                    (
+                        child
+                        for child in children
+                        if child is img or child.find(lambda t: t is img) is not None
+                    ),
+                    None,
+                )
+                if owner is not None:
+                    for sibling in children:
+                        if sibling is owner:
+                            continue
+                        if not _extract_profile_name(sibling):
+                            continue
+                        text = _clean_line(sibling.get_text(" ", strip=True))
+                        if len(text) < 24:
+                            continue
+                        return sibling
+        current = current.parent
+        depth += 1
+    return None
+
+
+def _find_text_by_hints(container: Tag, hints: tuple[str, ...]) -> str | None:
+    for el in container.find_all(True):
+        if not isinstance(el, Tag):
+            continue
+        if not _has_any_hint(el, hints):
+            continue
+        text = _clean_line(el.get_text(" ", strip=True))
+        if text:
+            return text
+    return None
+
+
+def _extract_profile_name(container: Tag) -> str | None:
+    hinted = _find_text_by_hints(container, _PROFILE_NAME_HINTS)
+    if hinted and _looks_like_person_name(hinted):
+        return hinted
+
+    for heading in container.find_all(["h2", "h3", "h4", "h5"]):
+        if not isinstance(heading, Tag):
+            continue
+        text = _clean_line(heading.get_text(" ", strip=True))
+        if _looks_like_person_name(text):
+            return text
+
+    for line in _text_lines(container)[:5]:
+        if _looks_like_person_name(line):
+            return line
+    return None
+
+
+def _extract_profile_role(container: Tag, name: str) -> str | None:
+    hinted = _find_text_by_hints(container, _PROFILE_ROLE_HINTS)
+    if hinted and hinted != name and len(hinted) <= 90:
+        return hinted
+
+    lines = _text_lines(container)
+    try:
+        name_index = next(i for i, line in enumerate(lines) if line == name)
+    except StopIteration:
+        name_index = -1
+    for line in lines[name_index + 1 : name_index + 4]:
+        if line == name or _looks_like_person_name(line):
+            continue
+        if len(line) <= 90:
+            return line
+    return None
+
+
+def _extract_profile_bio(container: Tag, name: str, role: str | None) -> str | None:
+    kept: list[str] = []
+    for line in _text_lines(container):
+        if line == name or (role and line == role):
+            continue
+        if len(line) <= 3:
+            continue
+        kept.append(line)
+    if not kept:
+        return None
+    bio = " ".join(kept)
+    return bio[:280]
+
+
+def _extract_profile_candidates(
+    soup: BeautifulSoup, base_url: str
+) -> list[ProfileCandidate]:
+    """Extract likely profile cards where a portrait and nearby person text agree."""
+    profiles: list[ProfileCandidate] = []
+    seen: set[tuple[str, str | None]] = set()
+
+    for img in soup.find_all("img"):
+        if not isinstance(img, Tag):
+            continue
+        src = _image_src_from_tag(img)
+        photo_url = _absolute_url(base_url, src or "")
+        if not photo_url:
+            continue
+        alt = (img.get("alt") or "").strip() if isinstance(img.get("alt"), str) else ""
+        if _looks_like_icon(photo_url, alt):
+            continue
+        width = _parse_int(img.get("width") if isinstance(img.get("width"), str) else None)
+        height = _parse_int(img.get("height") if isinstance(img.get("height"), str) else None)
+        if (width and width < 80) or (height and height < 80):
+            continue
+
+        container = _nearest_profile_container(img)
+        if container is None:
+            container = _row_text_sibling_for_profile(img)
+        if container is None:
+            continue
+        name = _extract_profile_name(container)
+        if not name:
+            continue
+        role = _extract_profile_role(container, name)
+        key = (name.lower(), photo_url)
+        if key in seen:
+            continue
+        seen.add(key)
+        profiles.append(
+            ProfileCandidate(
+                name=name,
+                role=role,
+                bio=_extract_profile_bio(container, name, role),
+                photo_url=photo_url,
+                photo_alt=alt or f"{name} portrait",
+                source_url=base_url,
+                confidence=0.9 if role else 0.8,
+            )
+        )
+
+    return profiles[:24]
 
 
 def _guess_intent(img: Tag, prior: list[ImageCandidate]) -> str:
@@ -742,6 +1097,7 @@ async def _build_brand_candidate(
         logo_url=logo_url,
         logo_data_url=extraction.logo_data_url,
         extracted_palette=extraction.palette,
+        logo_is_light=extraction.logo_is_light,
         mood=None,
     )
 
@@ -789,6 +1145,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
 
     headings = _extract_headings(soup)
     image_candidates = _extract_images(soup, final_url)
+    profile_candidates = _extract_profile_candidates(soup, final_url)
     links = _extract_links(soup, final_url)
     logo_url = _extract_logo_candidate(soup, final_url)
 
@@ -812,6 +1169,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
             )
             for c in image_candidates
         ],
+        profile_candidates=profile_candidates,
     )
     return _ParsedPage(
         final_url=final_url,

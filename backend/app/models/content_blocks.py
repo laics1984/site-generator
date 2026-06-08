@@ -284,11 +284,37 @@ class PricingBlock(BaseModel):
 class TeamMember(BaseModel):
     name: str
     role: str
-    bio: str | None = None
+    bio: str | None = Field(
+        default=None,
+        description="Optional profile bio scraped from the source or written by the LLM.",
+    )
+    description: str | None = Field(
+        default=None,
+        description="Deprecated alias for bio; kept for backward compatibility.",
+    )
+    photo_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped portrait URL for this real person. Filled by code "
+            "after planning; leave null in LLM output."
+        ),
+    )
+    photo_alt: str | None = Field(
+        default=None,
+        description="Alt text for photo_url, usually the person's name.",
+    )
     photo_query: str | None = Field(
         default=None,
         description="Pexels-search phrase for portrait photo, e.g. 'smiling professional woman'.",
     )
+
+    @model_validator(mode="after")
+    def sync_description_aliases(self) -> "TeamMember":
+        if self.bio is None and self.description is not None:
+            self.bio = self.description
+        elif self.description is None and self.bio is not None:
+            self.description = self.bio
+        return self
 
 
 class TeamBlock(BaseModel):
@@ -569,6 +595,14 @@ class SourceContent(BaseModel):
             "for frontend thumbnail rendering; image_metadata is the rich version."
         ),
     )
+    profile_candidates: list["ProfileCandidate"] = Field(
+        default_factory=list,
+        description=(
+            "Likely team/committee profile cards extracted from the source. "
+            "Additive and optional so older payloads that only provide text/images "
+            "continue to validate unchanged."
+        ),
+    )
 
 
 class ImageMetadata(BaseModel):
@@ -579,6 +613,18 @@ class ImageMetadata(BaseModel):
     intent: Literal["hero", "about", "logo", "generic"] = "generic"
     width: int | None = None
     height: int | None = None
+
+
+class ProfileCandidate(BaseModel):
+    """A likely real person profile extracted near a source portrait."""
+
+    name: str
+    role: str | None = None
+    bio: str | None = None
+    photo_url: str | None = None
+    photo_alt: str | None = None
+    source_url: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 SourceContent.model_rebuild()

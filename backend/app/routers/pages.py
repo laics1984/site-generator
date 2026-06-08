@@ -15,7 +15,11 @@ from app.models.content_blocks import IndustryCategoryLiteral, SourceContent
 from app.models.industry import IndustryTemplate, PageRecipeResponse, PageScaffold
 from app.services.industry_templates import all_industries_summary, get_template
 from app.services.llm import LlmError
-from app.services.page_inference import infer_page_scaffolds, optional_pool_for
+from app.services.page_inference import (
+    core_pages_not_in_inferred,
+    infer_page_scaffolds,
+    optional_pool_for,
+)
 from app.services.planner import detect_brand_cached
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
@@ -65,7 +69,7 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
         industry=base.industry,
         label=base.label,
         description=base.description,
-        core_pages=_core_pages_not_in_inferred(base.core_pages, inferred),
+        core_pages=core_pages_not_in_inferred(base.core_pages, inferred),
         suggested_pages=[],
         optional_pages=optional_pool_for(industry, inferred),
     )
@@ -77,11 +81,3 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
         all_industries=all_industries_summary(),
         detected_brand=detected.model_dump() if detected else None,
     )
-
-
-def _core_pages_not_in_inferred(
-    core: list[PageScaffold], inferred: list[PageScaffold]
-) -> list[PageScaffold]:
-    """Surface core pages only when the inferred tree didn't already include them."""
-    inferred_slugs = {s.slug for s in inferred}
-    return [c for c in core if c.slug not in inferred_slugs]

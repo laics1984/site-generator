@@ -21,6 +21,7 @@ from app.models.builder_schema import (
     PageNode,
     ResponsiveStyles,
 )
+from app.services.theme import _contrast, _ensure_contrast_against, _text_for_background
 
 
 def _uid() -> str:
@@ -173,6 +174,22 @@ def _logo_mark(brand: BrandIdentity, theme: ThemeTokens) -> BuilderElement:
     )
 
 
+def _header_chrome(brand: BrandIdentity, theme: ThemeTokens) -> tuple[str, str, str]:
+    """
+    Choose a header background / foreground / divider combination that keeps
+    the logo and navigation readable.
+    """
+    if brand.logo_is_light:
+        background = theme.palette.secondary
+        foreground = _text_for_background(background)
+        if _contrast(background, foreground) < 4.5:
+            foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
+        divider = theme.palette.primary
+        return background, foreground, divider
+
+    return theme.palette.background, theme.palette.secondary, theme.palette.surface
+
+
 # --- header ---------------------------------------------------------------------
 
 
@@ -185,7 +202,8 @@ def build_header(
 ) -> BuilderElement:
     """
     Sticky header: logo · nav · CTA, max-width contained.
-    Background = theme.palette.background, subtle bottom border.
+    Background defaults to the page background, but flips to a dark neutral
+    when the uploaded logo is predominantly light-colored.
 
     Navigation is rendered as a shared ``menu`` element bound to the ``primary``
     slot — the builder resolves its items from the entity's ``menus[]`` (built in
@@ -193,6 +211,7 @@ def build_header(
     inline layout plus the mobile hamburger collapse on its own. ``nav_items`` /
     ``page_tree`` are no longer consumed here; they drive the menu list upstream.
     """
+    header_bg, header_fg, header_divider = _header_chrome(brand, theme)
     nav_menu = _menu_element(
         slot="primary",
         variant="header-inline",
@@ -200,7 +219,7 @@ def build_header(
         color_mode="manual",
         styles={
             "flex": "1 1 0%",
-            "color": theme.palette.secondary,
+            "color": header_fg,
             "fontSize": "15px",
         },
     )
@@ -260,8 +279,8 @@ def build_header(
         type="__header",
         styles={
             "width": "100%",
-            "backgroundColor": theme.palette.background,
-            "borderBottom": f"1px solid {theme.palette.surface}",
+            "backgroundColor": header_bg,
+            "borderBottom": f"1px solid {header_divider}",
             "position": "sticky",
             "top": "0",
             "zIndex": "50",

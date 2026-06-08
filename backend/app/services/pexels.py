@@ -5,8 +5,7 @@ Free API key required: https://www.pexels.com/api/
 The key has a generous free tier (200 req/hr, 20k req/month) but we still
 cache results so multi-page generations don't hammer the API.
 
-Attribution: Pexels TOS requires photographer credit. Always surface the
-PhotoResult.attribution when displaying a photo to end users.
+Photographer metadata is retained on PhotoResult for callers that need it.
 """
 
 from __future__ import annotations

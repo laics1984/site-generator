@@ -84,6 +84,7 @@ async def document_preview(file: UploadFile = File(...)) -> dict:
                 name=parsed.title or "Untitled",
                 logo_data_url=extraction.logo_data_url,
                 extracted_palette=extraction.palette,
+                logo_is_light=extraction.logo_is_light,
                 mood=None,
             )
         except Exception as exc:  # noqa: BLE001

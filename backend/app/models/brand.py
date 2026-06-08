@@ -186,5 +186,12 @@ class BrandIdentity(BaseModel):
         default_factory=list,
         description="Hex colors extracted from the logo, ordered by dominance.",
     )
+    logo_is_light: bool | None = Field(
+        default=None,
+        description=(
+            "Whether the visible logo mark itself is predominantly light-colored. "
+            "Used to choose a contrast-safe header background."
+        ),
+    )
     mood: BrandMood | None = None
     industry: str | None = None

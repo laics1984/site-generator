@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -9,10 +11,14 @@ from app.models.builder_schema import (
     PageSeo,
 )
 from app.models.content_blocks import (
+    ImageMetadata,
     IndustryCategoryLiteral,
     PagePlan,
+    ProfileCandidate,
     SitePlan,
     SourceContent,
+    TeamBlock,
+    TeamMember,
 )
 from app.models.industry import PageScaffold
 from app.services.industry_templates import get_template
@@ -57,6 +63,207 @@ def _market_cue_for(source: SourceContent) -> str:
         return ""
 
 
+def _image_pool_for(source: SourceContent) -> tuple[list[str], list[ImageMetadata]]:
+    """Flatten entry + crawled page imagery into one de-duped resolver pool."""
+    images: list[str] = []
+    metadata: list[ImageMetadata] = []
+    seen_images: set[str] = set()
+    seen_metadata: set[str] = set()
+
+    def add_page(page: SourceContent) -> None:
+        for url in page.images:
+            if url and url not in seen_images:
+                seen_images.add(url)
+                images.append(url)
+        for item in page.image_metadata:
+            if item.url and item.url not in seen_metadata:
+                seen_metadata.add(item.url)
+                metadata.append(item)
+            if item.url and item.url not in seen_images:
+                seen_images.add(item.url)
+                images.append(item.url)
+
+    add_page(source)
+    for page in source.discovered_pages:
+        add_page(page)
+
+    return images, metadata
+
+
+_NAME_TITLE_TOKENS = {
+    "dr",
+    "prof",
+    "professor",
+    "mr",
+    "mrs",
+    "ms",
+    "miss",
+    "dato",
+    "datuk",
+    "tan",
+    "sir",
+}
+
+
+def _person_name_tokens(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", value.lower())
+        if token and token not in _NAME_TITLE_TOKENS
+    ]
+
+
+def _normalized_person_name(value: str | None) -> str:
+    return " ".join(_person_name_tokens(value))
+
+
+def _profile_pool_for(source: SourceContent) -> list[ProfileCandidate]:
+    """Flatten entry + crawled profile candidates without duplicates."""
+    profiles: list[ProfileCandidate] = []
+    seen: set[tuple[str, str | None]] = set()
+
+    def add_page(page: SourceContent) -> None:
+        blocked_names = {
+            norm
+            for norm in (
+                _normalized_person_name(page.title),
+                *(_normalized_person_name(h) for h in page.headings),
+            )
+            if norm
+        }
+        for profile in page.profile_candidates:
+            key = (_normalized_person_name(profile.name), profile.photo_url)
+            if not key[0] or key[0] in blocked_names or key in seen:
+                continue
+            seen.add(key)
+            profiles.append(profile)
+
+    add_page(source)
+    for page in source.discovered_pages:
+        add_page(page)
+
+    return profiles
+
+
+def _profile_match_score(member_name: str, profile: ProfileCandidate) -> float:
+    member_norm = _normalized_person_name(member_name)
+    profile_norm = _normalized_person_name(profile.name)
+    if not member_norm or not profile_norm:
+        return 0.0
+    if member_norm == profile_norm:
+        return 1.0
+
+    member_tokens = set(member_norm.split())
+    profile_tokens = set(profile_norm.split())
+    if not member_tokens or not profile_tokens:
+        return 0.0
+    overlap = len(member_tokens & profile_tokens) / len(member_tokens)
+    same_tail = member_norm.split()[-1] == profile_norm.split()[-1]
+    if same_tail and overlap >= 0.8:
+        return 0.86
+    return 0.0
+
+
+def _enrich_plan_profile_photos(plan: SitePlan, source: SourceContent) -> None:
+    """Attach confidently matched scraped portraits to generated team members.
+
+    Mutates the plan in place. Only concrete URLs from scraper-produced
+    ProfileCandidate objects are applied, so older payloads and LLM-only plans
+    keep using the existing photo_query fallback.
+    """
+    profiles = [p for p in _profile_pool_for(source) if p.photo_url]
+    if not profiles:
+        return
+
+    used_urls: set[str] = set()
+    for page in plan.pages:
+        for block in page.blocks:
+            if block.kind != "team":
+                continue
+            for member in block.members:
+                scored = sorted(
+                    (
+                        (_profile_match_score(member.name, profile), profile)
+                        for profile in profiles
+                        if profile.photo_url not in used_urls
+                    ),
+                    key=lambda item: (item[0], item[1].confidence),
+                    reverse=True,
+                )
+                if not scored or scored[0][0] < 0.85:
+                    continue
+                matched = scored[0][1]
+                member.photo_url = matched.photo_url
+                member.photo_alt = matched.photo_alt or member.name
+                if matched.photo_url:
+                    used_urls.add(matched.photo_url)
+
+
+def _scraped_team_members(source: SourceContent) -> list[TeamMember]:
+    """Deterministic team members built from scraped profile candidates."""
+    members: list[TeamMember] = []
+    for profile in _profile_pool_for(source):
+        if not profile.photo_url:
+            continue
+        members.append(
+            TeamMember(
+                name=profile.name,
+                role=profile.role or "",
+                bio=profile.bio,
+                photo_url=profile.photo_url,
+                photo_alt=profile.photo_alt or profile.name,
+                photo_query=None,
+            )
+        )
+    return members[:12]
+
+
+def _ensure_scraped_team_blocks(plan: SitePlan, source: SourceContent) -> None:
+    """Fallback when scraped portraits exist but the final team block lost them.
+
+    The LLM sometimes omits the team section or rewrites member names enough
+    that photo matching fails. For team pages, prefer the concrete scraped
+    roster over losing the portraits entirely.
+    """
+    scraped_members = _scraped_team_members(source)
+    if not scraped_members:
+        return
+
+    for page in plan.pages:
+        team_indexes = [
+            idx for idx, block in enumerate(page.blocks) if getattr(block, "kind", None) == "team"
+        ]
+        if team_indexes:
+            for idx in team_indexes:
+                block = page.blocks[idx]
+                if any(getattr(member, "photo_url", None) for member in block.members):
+                    continue
+                page.blocks[idx] = TeamBlock(
+                    heading=block.heading,
+                    subheading=block.subheading,
+                    members=scraped_members,
+                )
+            continue
+
+        if page.page_type != "team":
+            continue
+
+        insert_at = next(
+            (idx for idx, block in enumerate(page.blocks) if getattr(block, "kind", None) == "cta"),
+            len(page.blocks),
+        )
+        page.blocks.insert(
+            insert_at,
+            TeamBlock(
+                heading="Meet the team",
+                subheading=None,
+                members=scraped_members,
+            ),
+        )
+
+
 @router.post("/from-source", response_model=GeneratedSite)
 async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     """
@@ -79,12 +286,16 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     )
     theme = build_theme(seed_hex, mood=mood)
 
+    scraped_images, scraped_metadata = _image_pool_for(payload.source)
+    _enrich_plan_profile_photos(plan, payload.source)
+    _ensure_scraped_team_blocks(plan, payload.source)
+
     return await plan_to_site(
         plan,
         brand=brand,
         theme=theme,
-        scraped_images=payload.source.images,
-        scraped_metadata=payload.source.image_metadata,
+        scraped_images=scraped_images,
+        scraped_metadata=scraped_metadata,
         contact=payload.contact,
         market_cue=_market_cue_for(payload.source),
     )
@@ -194,12 +405,16 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     ]
 
     # Generate themed site (body + header + footer + theme)
+    scraped_images, scraped_metadata = _image_pool_for(payload.source)
+    _enrich_plan_profile_photos(plan, payload.source)
+    _ensure_scraped_team_blocks(plan, payload.source)
+
     site = await plan_to_site(
         plan,
         brand=brand,
         theme=theme,
-        scraped_images=payload.source.images,
-        scraped_metadata=payload.source.image_metadata,
+        scraped_images=scraped_images,
+        scraped_metadata=scraped_metadata,
         contact=payload.contact,
         extra_footer_nav=extra_footer_nav,
         market_cue=_market_cue_for(payload.source),
@@ -288,6 +503,9 @@ def _align_pages_to_scaffolds(
 async def plan_only(source: SourceContent) -> SitePlan:
     """Debug endpoint: returns the raw SitePlan without converting to BuilderElement trees."""
     try:
-        return await plan_site(source)
+        plan = await plan_site(source)
+        _enrich_plan_profile_photos(plan, source)
+        _ensure_scraped_team_blocks(plan, source)
+        return plan
     except LlmError as exc:
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc

@@ -779,7 +779,7 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
   cta: 'Conversion-focused section with photo background + dark overlay and a single action.',
   contact: 'Heading, contact details (email/phone), and a contact form.',
   pricing: 'Tiered pricing cards with feature lists; one tier highlighted.',
-  team: 'Team member cards with photos, names, roles, and bios.',
+  team: 'Team member cards with photos, names, roles, and optional bios.',
   gallery: 'Responsive image grid for visual storytelling.',
   menu: 'Categorised menu items with names, descriptions, and prices.',
   process: 'Numbered steps explaining how you work.',

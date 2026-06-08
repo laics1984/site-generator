@@ -1,5 +1,24 @@
 export type SourceKind = 'url' | 'pdf' | 'docx'
 
+export interface ImageMetadata {
+  url: string
+  alt?: string
+  intent?: 'hero' | 'about' | 'logo' | 'generic'
+  width?: number | null
+  height?: number | null
+}
+
+export interface ProfileCandidate {
+  name: string
+  role?: string | null
+  description?: string | null
+  bio?: string | null
+  photo_url?: string | null
+  photo_alt?: string | null
+  source_url?: string | null
+  confidence?: number
+}
+
 export interface SourceContent {
   source_kind: SourceKind
   source_ref: string
@@ -8,6 +27,8 @@ export interface SourceContent {
   raw_text: string
   headings?: string[]
   images?: string[]
+  image_metadata?: ImageMetadata[]
+  profile_candidates?: ProfileCandidate[]
   links?: string[]
   /** Set on entries inside `discovered_pages`; null on the primary page. */
   url_path?: string | null
@@ -75,6 +96,7 @@ export interface BrandIdentity {
   logo_url?: string | null
   logo_data_url?: string | null
   extracted_palette: string[]
+  logo_is_light?: boolean | null
   mood?: BrandMood | null
   industry?: string | null
 }

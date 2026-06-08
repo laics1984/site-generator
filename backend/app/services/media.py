@@ -15,8 +15,8 @@ callers like the legacy /generate/from-source endpoint pass it). When it's used,
 each URL is wrapped in a minimal ImageMetadata with intent='generic' so the
 scorer can still rank them by URL-path tokens and size hints.
 
-Attribution metadata is preserved on every result so the generator can surface
-credit lines in the footer.
+Returned photos keep their source metadata, but stock photos fetched through
+Pexels are not added to footer media credits.
 """
 
 from __future__ import annotations
@@ -137,8 +137,6 @@ class ImageResolver:
             photo = await self._search_pexels(query, orientation, intent)
             if photo and photo.url not in self._seen_pexels_urls:
                 self._seen_pexels_urls.add(photo.url)
-                if photo.attribution:
-                    self._attributions.append(photo.attribution)
                 return photo
 
         # 3. Picsum deterministic fallback.
@@ -149,13 +147,11 @@ class ImageResolver:
     ) -> PhotoResult | None:
         """Search Pexels, preferring a market-cued query for people-likely slots.
         Falls back to the plain query when the cue returns nothing (availability)."""
-        if self._market_cue and intent in _PEOPLE_INTENTS:
-            cued = await self._pexels.search(
-                f"{self._market_cue} {query}", orientation=orientation
-            )
-            if cued is not None:
-                return cued
-        return await self._pexels.search(query, orientation=orientation)
+        for candidate in _stock_query_chain(query, intent, self._market_cue):
+            photo = await self._pexels.search(candidate, orientation=orientation)
+            if photo is not None:
+                return photo
+        return None
 
     async def _take_best_scraped(
         self, query: str | None, intent: str
@@ -208,6 +204,57 @@ def _picsum_photo(
         photographer_url=None,
         source="picsum",
     )
+
+
+def _stock_query_chain(query: str, intent: str, market_cue: str) -> list[str]:
+    """Ordered stock queries from specific/local to broad/contextual/plain."""
+    query = " ".join((query or "").split())
+    market_cue = " ".join((market_cue or "").split())
+    if not query:
+        return []
+    if intent not in _PEOPLE_INTENTS:
+        return [query]
+
+    out: list[str] = []
+
+    def add(value: str) -> None:
+        value = " ".join(value.split())
+        if value and value.lower() not in {q.lower() for q in out}:
+            out.append(value)
+
+    if market_cue:
+        add(f"{market_cue} {query}")
+        if "asian" in market_cue.lower() and market_cue.lower() != "asian":
+            add(f"Asian {query}")
+
+    contextual = _contextual_non_person_query(query)
+    if contextual:
+        add(contextual)
+
+    add(query)
+    return out
+
+
+def _contextual_non_person_query(query: str) -> str | None:
+    """Fallback to places/process/products when localized people stock is poor."""
+    tokens = {
+        t.lower()
+        for t in query.replace("-", " ").split()
+        if t.strip()
+    }
+    if tokens & {"clinic", "dental", "dentist", "medical", "healthcare", "therapy"}:
+        return "modern clinic interior"
+    if tokens & {"restaurant", "cafe", "coffee", "food", "dining", "menu"}:
+        return "restaurant interior food service"
+    if tokens & {"school", "classroom", "education", "training", "learning"}:
+        return "modern classroom learning space"
+    if tokens & {"factory", "manufacturing", "industrial", "warehouse"}:
+        return "modern industrial workspace"
+    if tokens & {"team", "people", "staff", "customer", "client", "professional", "meeting"}:
+        return "modern professional workspace"
+    if tokens & {"product", "retail", "ecommerce", "store"}:
+        return "modern retail product display"
+    return None
 
 
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")

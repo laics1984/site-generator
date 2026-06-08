@@ -158,16 +158,24 @@ def _contact_content(b: ContactBlock) -> dict[str, Any]:
 
 
 def _team_content(b: TeamBlock) -> dict[str, Any]:
+    def member_photo(member: Any) -> dict[str, str] | None:
+        if getattr(member, "photo_url", None):
+            return {
+                "src": member.photo_url,
+                "alt": member.photo_alt or member.name,
+            }
+        return _image(member.photo_query, member.name)
+
     return {
         "eyebrow": "Team",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
             {
-                "photo": _image(m.photo_query, m.name),
+                "photo": member_photo(m),
                 "name": m.name,
                 "role": m.role,
-                "bio": m.bio,
+                "bio": getattr(m, "bio", None) or getattr(m, "description", None),
             }
             for m in b.members
         ],
@@ -433,7 +441,7 @@ def block_to_section(
     """Map a block to (template, content). Returns None if the kind is unsupported.
 
     Layout precedence (all gated by is_feasible in select_template):
-    explicit_id → mood preference → content preference (_PREFERENCE) → pool[0].
+    explicit_id → content preference (_PREFERENCE) → mood preference → pool[0].
     """
     kind = block.kind
     mapper = _MAPPERS.get(kind)
@@ -442,8 +450,9 @@ def block_to_section(
     content = mapper(block)
     pref_fn = _PREFERENCE.get(kind)
     content_pref = pref_fn(content, block) if pref_fn else []
-    # Mood leads the layout choice; content preference is the fallback/tiebreaker.
-    preferred = mood_preferred_ids(mood, kind) + list(content_pref or [])
+    # Content leads the layout choice so available imagery is actually used.
+    # Mood remains a fallback/tiebreaker among still-feasible variants.
+    preferred = list(content_pref or []) + mood_preferred_ids(mood, kind)
     template = select_template(
         kind, content, preferred_ids=preferred, explicit_id=explicit_id
     )

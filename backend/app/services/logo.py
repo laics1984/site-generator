@@ -36,6 +36,7 @@ class LogoExtraction:
     palette: list[str]            # hex strings, most "brand-y" first
     seed_hex: str | None          # the top recommended primary color
     logo_data_url: str            # the original logo as base64 data URL
+    logo_is_light: bool           # whether the visible logo pixels are light
 
 
 def _rgb_to_hex(r: int, g: int, b: int) -> str:
@@ -72,6 +73,22 @@ def _score(hex_color: str) -> float:
     return sat * 0.7 + lum_score * 0.3
 
 
+def _is_light_logo(pixels: list[tuple[int, int, int, int]]) -> bool:
+    """
+    Detect whether the visible mark is predominantly light-colored.
+
+    We look only at opaque / semi-opaque pixels so transparent backgrounds
+    don't skew the result toward white, then count how many land in a
+    high-luminance band.
+    """
+    visible = [(r, g, b) for r, g, b, a in pixels if a >= 50]
+    if not visible:
+        return False
+
+    light_pixels = sum(1 for r, g, b in visible if _luminance(r, g, b) >= 0.72)
+    return (light_pixels / len(visible)) >= 0.6
+
+
 def extract_palette_from_image_bytes(
     image_bytes: bytes, *, max_colors: int = 6
 ) -> LogoExtraction:
@@ -91,6 +108,7 @@ def extract_palette_from_image_bytes(
 
     # Filter pixels: drop transparent, near-white, near-black.
     pixels = list(img.getdata())
+    logo_is_light = _is_light_logo(pixels)
     keep_rgb: list[tuple[int, int, int]] = []
     for r, g, b, a in pixels:
         if a < 50:
@@ -109,6 +127,7 @@ def extract_palette_from_image_bytes(
             palette=["#2563eb"],
             seed_hex="#2563eb",
             logo_data_url=_to_data_url(image_bytes, img.format or "PNG"),
+            logo_is_light=logo_is_light,
         )
 
     # Quantise via median cut.
@@ -120,7 +139,8 @@ def extract_palette_from_image_bytes(
     counts_by_index = {idx: count for count, idx in color_counts}
 
     candidates: list[tuple[float, int, str]] = []
-    for i in range(max_colors):
+    palette_entries = min(max_colors, len(palette_data) // 3)
+    for i in range(palette_entries):
         r, g, b = palette_data[i * 3 : i * 3 + 3]
         if (r, g, b) == (0, 0, 0):
             continue
@@ -139,6 +159,7 @@ def extract_palette_from_image_bytes(
         palette=palette,
         seed_hex=seed,
         logo_data_url=_to_data_url(image_bytes, img.format or "PNG"),
+        logo_is_light=logo_is_light,
     )
 
 
