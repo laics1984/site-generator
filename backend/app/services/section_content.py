@@ -316,6 +316,81 @@ _PREFERENCE: dict[str, Callable[[dict[str, Any], Any], list[str]]] = {
 }
 
 
+# --- interior-page hero CTA policy ----------------------------------------------
+#
+# A homepage hero is a *conversion* hero — it keeps its CTA(s). Every interior
+# page hero is an *orientation* header: its job is to say where you are, not to
+# convert. Whether it carries a button depends on the hero's HEIGHT, which the
+# chosen variant encodes:
+#
+#   * Full-bleed background hero (hero-background-bold) pushes the page's real
+#     content below the fold. There a single "scroll cue" CTA that smooth-scrolls
+#     down to this page's first content section is genuinely helpful — the content
+#     isn't visible yet. It points AT the page's own next section (an in-page
+#     anchor), never off-page; the off-page conversion ask lives in the closing
+#     `cta` block.
+#
+#   * Compact heroes (split / gradient / centered-minimal) sit directly above
+#     content that is already visible, so a button would only point at what the
+#     user can already see. These drop the hero CTA entirely.
+#
+# The decision is made here, in code, AFTER the variant is chosen — so it
+# overrides whatever (often self-referential) CTA the planner LLM emitted.
+
+# Variants whose hero fills the viewport, hiding the content below the fold.
+_FULLBLEED_HERO_IDS = frozenset({"hero-background-bold"})
+
+# Scroll-cue label by the kind of section the hero scrolls down to. Framed as an
+# invitation to read/see the content, never a generic "Get started".
+_SCROLL_CUE_LABEL: dict[str, str] = {
+    "testimonials": "Read the reviews",
+    "gallery": "View the gallery",
+    "menu": "See the menu",
+    "team": "Meet the team",
+    "services": "Explore services",
+    "features": "See what's inside",
+    "pricing": "See pricing",
+    "process": "How it works",
+    "faq": "Read the FAQ",
+    "about": "Read more",
+    "contact": "Get in touch",
+}
+_SCROLL_CUE_FALLBACK = "Explore"
+
+
+def hero_scroll_anchor(target_kind: str) -> str:
+    """Stable in-page anchor id for the section a hero scrolls down to."""
+    return f"sec-{target_kind}"
+
+
+def apply_hero_cta_policy(
+    content: dict[str, Any],
+    template_id: str,
+    *,
+    is_homepage: bool,
+    scroll_target_kind: str | None,
+) -> None:
+    """Mutate hero ``content`` so interior-page heroes follow the orientation rule.
+
+    Homepage heroes are left untouched (conversion hero). Interior heroes either
+    get a single scroll-cue CTA (full-bleed variants, when there is a content
+    section to scroll to) or no CTA at all (compact variants). See module notes.
+    """
+    if is_homepage:
+        return
+    # Interior heroes carry one action at most — never a secondary button.
+    content["secondary_cta"] = None
+    is_fullbleed = template_id in _FULLBLEED_HERO_IDS
+    if is_fullbleed and scroll_target_kind:
+        label = _SCROLL_CUE_LABEL.get(scroll_target_kind, _SCROLL_CUE_FALLBACK)
+        content["primary_cta"] = {
+            "innerText": label,
+            "href": f"#{hero_scroll_anchor(scroll_target_kind)}",
+        }
+    else:
+        content["primary_cta"] = None
+
+
 # --- feasibility + selection ----------------------------------------------------
 
 
@@ -665,11 +740,17 @@ def block_to_section(
     *,
     explicit_id: str | None = None,
     mood: BrandMood | None = None,
+    is_homepage: bool = True,
+    hero_scroll_target_kind: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Map a block to (template, content). Returns None if the kind is unsupported.
 
     Layout precedence (all gated by is_feasible in select_template):
     explicit_id → content preference (_PREFERENCE) → mood preference → pool[0].
+
+    For a hero, ``is_homepage`` / ``hero_scroll_target_kind`` drive the interior-
+    page CTA policy (see ``apply_hero_cta_policy``); the default (homepage hero)
+    leaves the CTA untouched.
     """
     kind = block.kind
     mapper = _MAPPERS.get(kind)
@@ -686,4 +767,12 @@ def block_to_section(
     )
     if template is None:
         return None
+    # The CTA policy runs AFTER selection so it can key off the chosen variant.
+    if kind == "hero":
+        apply_hero_cta_policy(
+            content,
+            template["id"],
+            is_homepage=is_homepage,
+            scroll_target_kind=hero_scroll_target_kind,
+        )
     return template, content

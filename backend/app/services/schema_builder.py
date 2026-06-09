@@ -67,6 +67,7 @@ from app.services.section_content import (
     apply_section_rhythm,
     assign_visual_policies,
     block_to_section,
+    hero_scroll_anchor,
     section_visual_input_for,
 )
 from app.services.template_filler import fill_template
@@ -2009,12 +2010,21 @@ _IMAGE_INTENT = {"hero": "hero", "about": "about", "cta": "cta_bg", "team": "ava
 
 
 async def block_to_element(
-    block: ContentBlock, ctx: RenderContext
+    block: ContentBlock,
+    ctx: RenderContext,
+    *,
+    is_homepage: bool = True,
+    hero_scroll_target_kind: str | None = None,
 ) -> BuilderElement:
     # Catalogue path: for section types that have shared builder templates, the
     # LLM-mapped content fills a chosen template (selection by feasibility +
     # preference). Theme flows via CSS vars + builderStyles — no inline colours.
-    mapped = block_to_section(block, mood=ctx.theme.mood)
+    mapped = block_to_section(
+        block,
+        mood=ctx.theme.mood,
+        is_homepage=is_homepage,
+        hero_scroll_target_kind=hero_scroll_target_kind,
+    )
     if mapped is not None:
         template, content = mapped
         intent = _IMAGE_INTENT.get(block.kind, "generic")
@@ -2050,6 +2060,14 @@ async def block_to_element(
     if not builder:
         raise ValueError(f"No schema builder registered for block kind: {block.kind}")
     return await builder(block, ctx)  # type: ignore[arg-type]
+
+
+def _has_link_to(element: BuilderElement, href: str) -> bool:
+    """True if any leaf link in ``element``'s subtree points at ``href``."""
+    content = element.content
+    if isinstance(content, list):
+        return any(_has_link_to(child, href) for child in content)
+    return getattr(content, "href", None) == href
 
 
 def _nav_items_from_pages(pages: list[GeneratedPage]) -> list[tuple[str, str]]:
@@ -2144,6 +2162,15 @@ async def plan_to_site(
         # Inputs to the luminance pass, built in lockstep with `elements` so they
         # align index-for-index (SECTION_VISUAL_POLICY_SPEC.md).
         visual_inputs: list[SectionVisualInput] = []
+        # Interior-page hero CTA policy: an interior hero either drops its CTA
+        # (compact variants) or becomes a scroll cue to this page's FIRST content
+        # section (full-bleed variants). Precompute that target so the hero's CTA
+        # can anchor to it; the matching anchor id is stamped on the target's
+        # section element once we know the hero actually emitted the cue.
+        content_kinds = [b.kind for b in page_plan.blocks if b.kind != "hero"]
+        hero_target_kind = content_kinds[0] if content_kinds else None
+        hero_element: BuilderElement | None = None
+        target_element: BuilderElement | None = None
         # Sub-pages get a breadcrumb prepended above the hero — a non-participant.
         if page_plan.parent_slug is not None:
             elements.append(_build_breadcrumb(page_plan, ctx))
@@ -2152,10 +2179,29 @@ async def plan_to_site(
             # Reset the per-section capture, render, then read the band of the
             # section's featured image (Phase 4b) into the pass input.
             ctx.section_image_band = None
-            elements.append(await block_to_element(block, ctx))
+            element = await block_to_element(
+                block,
+                ctx,
+                is_homepage=page_plan.is_homepage,
+                hero_scroll_target_kind=hero_target_kind,
+            )
+            elements.append(element)
+            if hero_element is None and block.kind == "hero":
+                hero_element = element
+            # Remember the first content section so its element can carry the
+            # hero's scroll anchor if the hero ended up full-bleed.
+            if target_element is None and block.kind == hero_target_kind:
+                target_element = element
             visual_inputs.append(
                 section_visual_input_for(block, image_band=ctx.section_image_band)
             )
+        # If the hero rendered a scroll cue, tag its target section with a
+        # matching anchor so the href resolves (webtree-public renders `anchorId`
+        # as the HTML id; the global `scroll-behavior: smooth` does the rest).
+        if hero_target_kind and hero_element is not None and target_element is not None:
+            anchor = hero_scroll_anchor(hero_target_kind)
+            if _has_link_to(hero_element, f"#{anchor}"):
+                target_element.anchorId = anchor
         apply_luminance_rhythm(elements, visual_inputs, theme.palette)
         # Legacy color-blocking rhythm: alternates the remaining (non-policy)
         # plain sections between page-bg and surface tint. Sections the luminance

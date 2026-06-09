@@ -1626,7 +1626,7 @@
           "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
           "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
           "display": "flex", "flexDirection": "column", "alignItems": "center", "justifyContent": "center",
-          "minHeight": "560px", "position": "relative",
+          "minHeight": "min(100dvh, 900px)", "position": "relative",
           "backgroundColor": "var(--builder-color-secondary, #0f172a)",
           "backgroundSize": "cover"
         },

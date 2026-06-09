@@ -358,8 +358,14 @@ For each page in `pages_requested`:
 - If `parent_slug` is set, this is a SUB-PAGE under another page. When
   `parent_context` is present, mirror the parent's tone and value prop — do
   not restate what the company does in the hero; instead deep-dive on this
-  specific offering. The hero CTA should encourage exploring or contacting,
-  not "Get started" generically. Use the parent's voice consistently.
+  specific offering. Use the parent's voice consistently.
+- INTERIOR-PAGE HEROES (any page that is NOT the homepage) are orientation
+  headers, not conversion blocks: focus on a strong eyebrow + headline +
+  subheadline. The layout decides the hero CTA on its own (a scroll cue for
+  full-bleed heroes, none for compact ones), so do NOT add a hero CTA that
+  points back at the same page's content (e.g. a "Testimonials" button on the
+  testimonials page). The real conversion ask belongs in the page's closing
+  `cta` block. You may still set primary_cta on the homepage hero.
 
 Hard rules:
 - Reply with ONE JSON object. No markdown, no commentary.
