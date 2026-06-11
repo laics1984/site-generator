@@ -362,7 +362,7 @@ For each page in `pages_requested`:
 - INTERIOR-PAGE HEROES (any page that is NOT the homepage) are orientation
   headers, not conversion blocks: focus on a strong eyebrow + headline +
   subheadline. The layout decides the hero CTA on its own (a scroll cue for
-  full-bleed heroes, none for compact ones), so do NOT add a hero CTA that
+  "background" heroes, none for "split" ones), so do NOT add a hero CTA that
   points back at the same page's content (e.g. a "Testimonials" button on the
   testimonials page). The real conversion ask belongs in the page's closing
   `cta` block. You may still set primary_cta on the homepage hero.
@@ -390,7 +390,7 @@ Block schemas (give the block's `kind` exactly).
 (Counts below are MAXIMUMS plus the floor needed to keep the section. Fill with
 real items only; if you can't reach the floor with real content, omit the block.)
 - hero: { kind:"hero", eyebrow?, headline, subheadline?, primary_cta_label, primary_cta_href,
-          secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, layout }
+          secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, layout:"split"|"background" }
 - features: { kind:"features", heading, subheading?, items: [{title, description}] }  (1-6 real items)
 - services: { kind:"services", heading, subheading?, items: [{title, description, cta_label?, cta_href?}] }  (1-8 real items)
 - testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews only — omit if none)

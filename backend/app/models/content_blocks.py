@@ -148,8 +148,17 @@ class HeroBlock(BaseModel):
     @field_validator("layout", mode="before")
     @classmethod
     def heal_layout(cls, v: object) -> object:
-        # LLM sometimes omits layout entirely → treat None as "split"
-        return _default_if_blank(v, "split")
+        # The LLM sometimes omits layout, and sometimes invents adjectives
+        # ("compact", "minimal", "full-bleed") despite the schema. A layout
+        # word must never fail the whole plan: known full-bleed synonyms map
+        # to "background", anything else degrades to "split".
+        if isinstance(v, str):
+            token = v.strip().lower()
+            if token in ("split", "background"):
+                return token
+            if token in ("full-bleed", "fullbleed", "full_bleed", "overlay", "photo", "image", "immersive"):
+                return "background"
+        return "split"
 
 
 class FeatureItem(BaseModel):
