@@ -15,6 +15,7 @@ from app.models.content_blocks import IndustryCategoryLiteral, SourceContent
 from app.models.industry import IndustryTemplate, PageRecipeResponse, PageScaffold
 from app.services.industry_templates import all_industries_summary, get_template
 from app.services.llm import LlmError
+from app.services.nav_extraction import strip_chrome_lines
 from app.services.page_inference import (
     core_pages_not_in_inferred,
     infer_page_scaffolds,
@@ -42,6 +43,11 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
     crawl was empty). ``template`` still surfaces the optional pool the user
     can opt into.
     """
+    # Idempotent re-pass: covers sources assembled outside scrape_url (extend
+    # crawl merges, doc uploads) where repeated template menu strips may still
+    # pollute raw_text.
+    strip_chrome_lines(payload.source)
+
     detected = None
     if payload.industry_override:
         industry = payload.industry_override

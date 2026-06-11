@@ -46,6 +46,8 @@ class PageScaffold(BaseModel):
     rationale: str = ""     # one-line why-this-page, shown in the UI picker
     parent_slug: str | None = None  # set on sub-pages, references the parent's slug
     source_url: str | None = None   # URL the sub-page was discovered/crawled at
+    nav_rank: int | None = None     # source-nav position (0-based); None ⇒ not in the source header nav
+    from_source: bool = False       # page evidenced by the source (crawled / nav / strip) vs template-injected
 
 
 class IndustryTemplate(BaseModel):

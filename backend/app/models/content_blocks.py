@@ -443,6 +443,26 @@ class ProcessBlock(BaseModel):
         return data
 
 
+class LinkBarLink(BaseModel):
+    label: str
+    href: str
+
+
+class LinkBarBlock(BaseModel):
+    """Announcement / quick-links strap — a slim accent-colored bar with a short
+    label and a row of links (e.g. "Current Releases: Dart Sass · LibSass").
+
+    Never produced by the LLM: it's injected deterministically when the scrape
+    finds a one-off link strap in the source page body (nav_extraction.
+    find_linkbar_cluster). Kept in the ContentBlock union so it flows through
+    PagePlan → schema_builder like any other section.
+    """
+
+    kind: Literal["linkbar"] = "linkbar"
+    label: str | None = None
+    links: list[LinkBarLink] = Field(min_length=1, max_length=6)
+
+
 # Discriminated union — Pydantic dispatches on the `kind` field, so a malformed
 # block produces a focused error list against just that variant instead of all 8.
 ContentBlock = Annotated[
@@ -458,7 +478,8 @@ ContentBlock = Annotated[
     | TeamBlock
     | GalleryBlock
     | MenuBlock
-    | ProcessBlock,
+    | ProcessBlock
+    | LinkBarBlock,
     Field(discriminator="kind"),
 ]
 
@@ -480,6 +501,8 @@ class PagePlan(BaseModel):
     seo_description: str
     seo_keywords: list[str] = Field(default_factory=list)
     parent_slug: str | None = None
+    nav_rank: int | None = None  # source-nav position from the scaffold; never set by the LLM
+    from_source: bool = False    # page evidenced by the source site; never set by the LLM
 
     @field_validator("description", mode="before")
     @classmethod
@@ -643,6 +666,32 @@ class SourceContent(BaseModel):
             "continue to validate unchanged."
         ),
     )
+    nav_links: list["NavLink"] = Field(
+        default_factory=list,
+        description=(
+            "The source page's header navigation as an ordered tree: top-level "
+            "items in display order, dropdown items nested as children. This is "
+            "the site owner's own curation — page_inference uses membership, "
+            "order, and nesting as hierarchy + priority evidence."
+        ),
+    )
+    body_link_clusters: list["LinkCluster"] = Field(
+        default_factory=list,
+        description=(
+            "Link-dense blocks found inside the page body (outside header/nav/"
+            "footer). Template menu strips that live in the content container "
+            "land here; clusters repeated across sibling pages are classified "
+            "as chrome (local subnav / duplicated nav) rather than content."
+        ),
+    )
+    social_links: list["NavLink"] = Field(
+        default_factory=list,
+        description=(
+            "Social profile links found anywhere on the page (label = platform "
+            "name, href = full profile URL). One per platform, share/intent "
+            "URLs excluded. Feeds the generated site's menu-social."
+        ),
+    )
 
 
 class ImageMetadata(BaseModel):
@@ -673,4 +722,38 @@ class ProfileCandidate(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class NavLink(BaseModel):
+    """One navigation item from the source site's header nav.
+
+    ``href`` is kept as the raw same-site path (e.g. ``/services/web-design``
+    or ``/#pricing``) so inference can map it onto discovered pages or anchors.
+    ``children`` carries dropdown/submenu items, one level is typical but the
+    extractor preserves whatever nesting the markup has.
+    """
+
+    label: str
+    href: str
+    children: list["NavLink"] = Field(default_factory=list)
+
+
+class LinkCluster(BaseModel):
+    """A link-dense block found in the page body during extraction.
+
+    ``links`` is the ordered (label, href) list; ``href_key`` is a stable hash
+    of the sorted href set so repeated template strips can be matched across
+    pages without comparing labels (which may vary in active-state markup).
+    """
+
+    links: list[NavLink] = Field(default_factory=list)
+    href_key: str = ""
+    context_label: str = Field(
+        default="",
+        description=(
+            "The block's non-link text (e.g. 'Current Releases:'), used as the "
+            "label when the cluster is promoted to a linkbar section."
+        ),
+    )
+
+
+NavLink.model_rebuild()
 SourceContent.model_rebuild()

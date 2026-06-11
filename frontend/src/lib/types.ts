@@ -175,6 +175,8 @@ export interface PageScaffold {
   parent_slug?: string | null
   /** Original URL where this sub-page was discovered, if from the crawler. */
   source_url?: string | null
+  /** Position in the source site's header nav (0-based); null/absent ⇒ not in it. */
+  nav_rank?: number | null
 }
 
 export interface IndustryTemplate {

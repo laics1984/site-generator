@@ -19,9 +19,10 @@ import logging
 import re
 from urllib.parse import urlparse
 
-from app.models.content_blocks import PageType, SectionType, SourceContent
+from app.models.content_blocks import NavLink, PageType, SectionType, SourceContent
 from app.models.industry import IndustryCategory, PageScaffold
 from app.services.industry_templates import get_template
+from app.services.nav_extraction import find_repeated_cluster_keys
 
 logger = logging.getLogger(__name__)
 
@@ -156,10 +157,22 @@ def _humanize(slug_part: str) -> str:
     return " ".join(w.capitalize() for w in re.split(r"[-_]", slug_part) if w)
 
 
-def _title_from_page(page: SourceContent, fallback_slug: str) -> str:
-    """Prefer the source's own title, strip site-name suffix, fall back to slug."""
+def _title_from_page(
+    page: SourceContent, fallback_slug: str, *, site_name: str | None = None
+) -> str:
+    """Prefer the source's own title, strip brand prefix/suffix, fall back to slug."""
     raw = (page.title or "").strip()
     if raw:
+        # Strip leading "Brand: " / "Brand | " / "Brand - " prefixes (e.g.
+        # "Sass: Install Sass" → "Install Sass") when we know the brand name.
+        if site_name:
+            prefix = re.match(
+                rf"^\s*{re.escape(site_name.strip())}\s*[:\|\-–—]\s+(.+)$",
+                raw,
+                flags=re.IGNORECASE,
+            )
+            if prefix and prefix.group(1).strip():
+                raw = prefix.group(1).strip()
         # Strip common " | Brand" / " — Brand" / " - Brand" suffixes
         for sep in (" | ", " — ", " – ", " - "):
             if sep in raw:
@@ -172,6 +185,183 @@ def _title_from_page(page: SourceContent, fallback_slug: str) -> str:
         return "Home"
     last = fallback_slug.rsplit("/", 1)[-1]
     return _humanize(last)
+
+
+# --- source navigation evidence --------------------------------------------------
+
+
+# Page types whose pages typically *list* a family of sub-pages. Used to pick
+# the parent when a repeated in-body menu strip links a set of sibling pages.
+_LISTING_TYPES: set[PageType] = {
+    "services", "work", "team", "blog", "menu", "gallery", "pricing", "faq", "process",
+}
+
+
+def _slugify(label: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+    return slug or "section"
+
+
+def _explicit_page_type(slug: str) -> PageType | None:
+    """Like ``_infer_page_type`` but only when a hint actually matched.
+
+    The inference fallback types every unknown top-level slug as "services",
+    which would make every strip target look like a listing page — here we
+    need to know the type was *evidenced*, not defaulted.
+    """
+    haystack = slug.lower()
+    for page_type, hints in _TYPE_HINTS:
+        for hint in hints:
+            if hint == slug.split("/", 1)[0] or hint in haystack:
+                return page_type
+    return None
+
+
+def _is_explicit_listing(slug: str) -> bool:
+    return "/" not in slug and _explicit_page_type(slug) in _LISTING_TYPES
+
+
+def _href_to_slug(href: str) -> str | None:
+    """Nav href → page slug. ``"/"`` ⇒ ``""`` (home); pure anchors ⇒ None."""
+    path = href.split("#", 1)[0]
+    if "#" in href and path in ("", "/"):
+        return None  # same-page anchor, not a page
+    if not path or path == "/":
+        return ""
+    return path.strip("/").lower()
+
+
+class _NavEvidence:
+    """What the source site's own navigation tells us.
+
+    ``rank``       — top-level slug → 0-based position in the header nav.
+    ``parent_of``  — child slug → parent slug, from dropdown nesting.
+    ``synth_parents`` — (slug, label, rank) for dropdown parents that have no
+                     page of their own (href="#") — we synthesize a hub page.
+    """
+
+    def __init__(self) -> None:
+        self.rank: dict[str, int] = {}
+        self.parent_of: dict[str, str] = {}
+        self.synth_parents: list[tuple[str, str, int]] = []
+        self.labels: dict[str, str] = {}  # slug → nav label (owner's naming)
+
+    @property
+    def nav_slugs(self) -> set[str]:
+        return set(self.rank) | set(self.parent_of)
+
+
+def _gather_nav_evidence(nav_links: list[NavLink]) -> _NavEvidence:
+    ev = _NavEvidence()
+    position = 0
+    for item in nav_links:
+        parent_slug = _href_to_slug(item.href) if item.href != "#" else None
+        if parent_slug is None and not item.children:
+            continue  # anchor-only top-level item — no page behind it
+        if parent_slug is None:
+            # Unlinked dropdown toggle ("Services ▾" with no /services page):
+            # synthesize a hub-page slug from the label so children have a home.
+            parent_slug = _slugify(item.label)
+            ev.synth_parents.append((parent_slug, item.label, position))
+        if parent_slug:  # home ("") keeps its fixed first position
+            ev.rank.setdefault(parent_slug, position)
+            ev.labels.setdefault(parent_slug, item.label)
+            position += 1
+        for child in item.children:
+            child_slug = _href_to_slug(child.href)
+            if child_slug and parent_slug and child_slug != parent_slug:
+                ev.parent_of.setdefault(child_slug, parent_slug)
+                ev.labels.setdefault(child_slug, child.label)
+    return ev
+
+
+def _page_link_slugs(pages: list[SourceContent]) -> dict[str, set[str]]:
+    """slug → set of same-site slugs that page links out to."""
+    out: dict[str, set[str]] = {}
+    for page in pages:
+        slug = _path_to_slug(page.url_path)
+        link_slugs: set[str] = set()
+        for url in page.links:
+            path = urlparse(url).path or "/"
+            target = _path_to_slug(path)
+            if target:
+                link_slugs.add(target)
+        out[slug] = link_slugs
+    return out
+
+
+def _subnav_edges(
+    source: SourceContent,
+    *,
+    nav_slugs: set[str],
+    known_slugs: set[str],
+) -> dict[str, str]:
+    """Hierarchy edges from repeated in-body menu strips.
+
+    A cluster counts as *local subnav* (rather than a duplicated primary nav or
+    a quick-links row) when it repeats across pages, isn't a subset of the
+    header nav, and is self-referencing — at least one page carrying the strip
+    is itself one of the strip's targets. That's the signature of a template's
+    section menu: every service page shows the same strip of all services.
+    """
+    repeated = find_repeated_cluster_keys(source)
+    if not repeated:
+        return {}
+    pages = [source, *source.discovered_pages]
+    edges: dict[str, str] = {}
+
+    for key in repeated:
+        instance = None
+        carriers: set[str] = set()
+        for page in pages:
+            for cluster in page.body_link_clusters:
+                if cluster.href_key == key:
+                    instance = instance or cluster
+                    carriers.add(_path_to_slug(page.url_path))
+                    break
+        if instance is None:
+            continue
+        targets = {
+            slug
+            for slug in (_href_to_slug(link.href) for link in instance.links)
+            if slug  # drop anchors and home
+        }
+        if len(targets) < 2:
+            continue
+        if targets <= nav_slugs:
+            continue  # the template repeats the primary nav in the body — ignore
+        if not carriers & targets:
+            continue  # not self-referencing — likely a content list, leave it alone
+
+        # Parent, first choice: the single listing-type page among the targets
+        # (strips that include their own section landing, e.g. "All Services").
+        listing = [t for t in targets if _is_explicit_listing(t)]
+        parent: str | None = None
+        if len(listing) == 1 and listing[0] in known_slugs:
+            parent = listing[0]
+        else:
+            # Second choice: a unique listing-type page *outside* the strip
+            # whose own links cover the strip's targets — the section landing
+            # page listing its detail pages.
+            covering = [
+                slug
+                for slug, link_slugs in _page_link_slugs(pages).items()
+                if slug not in targets
+                and slug in known_slugs
+                and _is_explicit_listing(slug)
+                and len(targets & link_slugs) >= max(2, len(targets) - 1)
+            ]
+            if len(covering) == 1:
+                parent = covering[0]
+        if parent is None:
+            continue  # ambiguous — don't guess
+        for target in targets:
+            if target == parent or "/" in target:
+                continue
+            if target in nav_slugs:
+                continue  # the owner promoted it to the header — respect that
+            edges.setdefault(target, parent)
+    return edges
 
 
 # --- main entry -----------------------------------------------------------------
@@ -196,15 +386,20 @@ def infer_page_scaffolds(
     in the footer; we add them so the generated site is complete).
     """
     template = get_template(industry)
+    evidence = _gather_nav_evidence(source.nav_links)
 
     if not source.discovered_pages:
         # Thin site or crawl disabled: return the industry template's
         # core + suggested set verbatim. The recipe endpoint will surface
-        # optional_pages separately.
+        # optional_pages separately. Source-nav order still applies where
+        # template slugs happen to match (about, services, contact...).
         logger.info(
             "No discovered pages — falling back to '%s' industry template", industry
         )
-        return [*template.core_pages, *template.suggested_pages]
+        fallback = [*template.core_pages, *template.suggested_pages]
+        for scaffold in fallback:
+            scaffold.nav_rank = evidence.rank.get(scaffold.slug)
+        return fallback
 
     # Build a map of slug → SourceContent for every discovered page (and the
     # primary, which represents the homepage).
@@ -232,7 +427,14 @@ def infer_page_scaffolds(
             continue
         page = by_slug[slug]
         segments = slug.split("/")
-        title = _title_from_page(page, slug)
+        # The owner's nav label is the best name for a page ("Install", not
+        # "Sass: Install Sass" from the <title> tag) — prefer it when present.
+        nav_label = (evidence.labels.get(slug) or "").strip()
+        title = (
+            nav_label
+            if 0 < len(nav_label) <= 40
+            else _title_from_page(page, slug, site_name=site_name)
+        )
 
         if len(segments) == 1:
             # Top-level page
@@ -248,6 +450,7 @@ def infer_page_scaffolds(
                     sections=_sections_for(page_type, parent_type=None),
                     rationale=f"Discovered at /{slug} in the source site.",
                     source_url=page.source_ref,
+                    from_source=True,
                 )
             )
             seen_slugs.add(slug)
@@ -267,6 +470,7 @@ def infer_page_scaffolds(
                         title=parent_title,
                         sections=_sections_for(parent_type, parent_type=None),
                         rationale=f"Parent section inferred from /{slug}.",
+                        from_source=True,
                     )
                 )
                 seen_slugs.add(parent_slug)
@@ -289,9 +493,84 @@ def infer_page_scaffolds(
                     rationale=f"Sub-page of /{parent_slug} discovered in the source.",
                     parent_slug=parent_slug,
                     source_url=page.source_ref,
+                    from_source=True,
                 )
             )
             seen_slugs.add(slug)
+
+    # 2b. Re-parent flat pages using the source's own navigation structure.
+    #     Dropdown nesting in the header nav and self-referencing in-body menu
+    #     strips both reveal hierarchy that flat URLs hide (e.g. /web-design
+    #     belongs under /services even though the path doesn't say so).
+    forced_parent: dict[str, str] = _subnav_edges(
+        source, nav_slugs=evidence.nav_slugs, known_slugs=seen_slugs
+    )
+    forced_parent.update(evidence.parent_of)  # nav nesting beats cluster inference
+
+    # Synthesized hub pages for unlinked dropdown toggles, only when at least
+    # one child edge actually points at them.
+    for synth_slug, synth_label, _rank in evidence.synth_parents:
+        if synth_slug in seen_slugs:
+            continue
+        if not any(parent == synth_slug for parent in forced_parent.values()):
+            continue
+        synth_type = _infer_page_type(synth_slug, synth_label)
+        scaffolds.append(
+            PageScaffold(
+                page_type=synth_type,
+                slug=synth_slug,
+                title=synth_label,
+                sections=_sections_for(synth_type, parent_type=None),
+                rationale=f"Hub page for the '{synth_label}' dropdown in the source navigation.",
+                from_source=True,
+            )
+        )
+        seen_slugs.add(synth_slug)
+
+    # Nav items the bounded crawl never reached are still real pages the owner
+    # curated into their header — scaffold them from the nav link alone.
+    for nav_slug, _rank in sorted(evidence.rank.items(), key=lambda kv: kv[1]):
+        if nav_slug in seen_slugs or "/" in nav_slug:
+            continue
+        label = evidence.labels.get(nav_slug) or _humanize(nav_slug)
+        nav_type = _infer_page_type(nav_slug, label)
+        if nav_type in ("privacy", "terms"):
+            continue
+        scaffolds.append(
+            PageScaffold(
+                page_type=nav_type,
+                slug=nav_slug,
+                title=label,
+                sections=_sections_for(nav_type, parent_type=None),
+                rationale="Linked in the source site's header navigation.",
+                from_source=True,
+            )
+        )
+        seen_slugs.add(nav_slug)
+
+    by_scaffold_slug = {s.slug: s for s in scaffolds}
+    for child_slug, parent_slug in forced_parent.items():
+        child = by_scaffold_slug.get(child_slug)
+        parent = by_scaffold_slug.get(parent_slug)
+        if child is None or parent is None or child is parent:
+            continue
+        if child.parent_slug or child.is_homepage or child.is_legal:
+            continue  # already nested (deep URL) or not nestable
+        if parent.parent_slug or parent_slug in forced_parent:
+            continue  # keep the tree one level deep — no chained nesting
+        child.parent_slug = parent_slug
+        if child.page_type == parent.page_type:
+            child.page_type = "landing"
+        child.sections = _sections_for(child.page_type, parent_type=parent.page_type)
+        child.rationale = (
+            child.rationale or f"Grouped under /{parent_slug} by the source navigation."
+        )
+
+    # 2c. Source-nav order → nav_rank on top-level scaffolds. menu_builder uses
+    #     this to order and cap the primary menu.
+    for scaffold in scaffolds:
+        if scaffold.parent_slug is None and not scaffold.is_homepage:
+            scaffold.nav_rank = evidence.rank.get(scaffold.slug)
 
     # 3. Ensure About / Contact are present — they often live in the footer
     #    rather than the nav, so the crawler misses them on small sites.
@@ -327,6 +606,9 @@ def _home_scaffold(home_source: SourceContent | None) -> PageScaffold:
         is_homepage=True,
         sections=["hero", "features", "testimonials", "cta"],
         rationale="Always present — first impression, value proposition, CTA.",
+        # Only called on the crawl path, where the entry page is real source
+        # evidence. Template-fallback homes come from the template verbatim.
+        from_source=True,
     )
 
 

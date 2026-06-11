@@ -96,6 +96,8 @@ def _image(
     *,
     name: str = "Brand Logo",
     styles: dict[str, Any] | None = None,
+    href: str | None = None,
+    aria_label: str | None = None,
 ) -> BuilderElement:
     # The element NAME matters: the builder only treats a header image as the
     # brand logo (auto aspect, no min-height, no cover-crop) when its name
@@ -109,7 +111,9 @@ def _image(
         name=name,
         type="image",
         styles=styles or {"height": "32px", "width": "auto"},
-        content=BuilderElementContent(src=src, alt=alt),
+        content=BuilderElementContent(
+            src=src, alt=alt, href=href, ariaLabel=aria_label
+        ),
     )
 
 
@@ -119,10 +123,14 @@ def _logo_mark(brand: BrandIdentity, theme: ThemeTokens) -> BuilderElement:
     monogram. Both are themed against the palette.
     """
     if brand.logo_url or brand.logo_data_url:
+        # The logo IS the home link — standard convention, and it lets the
+        # primary menu drop the redundant "Home" item entirely.
         return _image(
             brand.logo_url or brand.logo_data_url or "",
             alt=brand.name,
             styles={"height": "36px", "width": "auto", "display": "block"},
+            href="/",
+            aria_label=f"{brand.name} — home",
         )
 
     # Typographic mark: first letter in a circle in primary color.
@@ -153,15 +161,21 @@ def _logo_mark(brand: BrandIdentity, theme: ThemeTokens) -> BuilderElement:
                     "display": "flex",
                 },
             ),
-            _text(
-                brand.name,
+            # Wordmark is a link to home — same convention as the image logo.
+            BuilderElement(
+                id=_uid(),
                 name="Wordmark",
+                type="link",
                 styles={
                     "fontFamily": theme.typography.heading_font,
                     "fontWeight": 700,
                     "fontSize": "18px",
                     "color": theme.palette.secondary,
+                    "textDecoration": "none",
                 },
+                content=BuilderElementContent(
+                    innerText=brand.name, href="/", ariaLabel=f"{brand.name} — home"
+                ),
             ),
         ],
         name="Brand",
@@ -301,6 +315,7 @@ def build_footer(
     media_credits: list[str] | None = None,
     page_tree: list[PageNode] | None = None,
     extra_legal_nav: list[tuple[str, str]] | None = None,
+    social_links: list[tuple[str, str]] | None = None,
 ) -> BuilderElement:
     """
     Themed footer with grouped sub-page navigation.
@@ -460,6 +475,18 @@ def build_footer(
         styles={"color": on_dark_muted, "fontSize": "12px"},
     )
     bottom_children: list[BuilderElement] = [legal_left]
+    if social_links:
+        # Items come from the entity's menu-social (built in menu_builder from
+        # the scraped profile URLs) — the element only binds the slot.
+        bottom_children.append(
+            _menu_element(
+                slot="social",
+                variant="social-inline",
+                label="Social",
+                color_mode="auto",
+                styles={"width": "auto", "fontSize": "12px"},
+            )
+        )
     if has_legal:
         bottom_children.append(
             _menu_element(

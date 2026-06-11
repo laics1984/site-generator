@@ -36,6 +36,47 @@ FOOTER_MENU_ID = "menu-footer"
 LEGAL_MENU_ID = "menu-legal"
 SOCIAL_MENU_ID = "menu-social"
 
+# Primary nav cap, including Home and Contact. Standard UX guidance is 5–7
+# top-level items; pages that don't make the cut stay reachable via the
+# footer columns and their parent's hub page.
+MAX_PRIMARY_ITEMS = 7
+
+# Max children per primary-menu dropdown. Beyond this the parent's hub page
+# and the footer column carry the full list.
+MAX_DROPDOWN_ITEMS = 8
+
+# Fallback ordering for pages the source nav didn't rank, keyed on the
+# inferred page type. Lower ⇒ earlier in the header. Contact is handled
+# separately (always included, always last).
+_TYPE_NAV_WEIGHT: dict[str, int] = {
+    "services": 0,
+    "menu": 1,
+    "work": 1,
+    "pricing": 2,
+    "about": 3,
+    "team": 4,
+    "blog": 5,
+    "process": 6,
+    "faq": 7,
+    "gallery": 8,
+    "testimonials": 9,
+}
+_DEFAULT_NAV_WEIGHT = 9
+
+
+def _fallback_weight(node: PageNode) -> int:
+    # Local import: page_inference imports nothing from this module, so this
+    # stays cycle-free while reusing the slug/title → page-type heuristics.
+    from app.services.page_inference import _infer_page_type
+
+    return _TYPE_NAV_WEIGHT.get(_infer_page_type(node.slug, node.title), _DEFAULT_NAV_WEIGHT)
+
+
+def _is_contact(node: PageNode) -> bool:
+    from app.services.page_inference import _infer_page_type
+
+    return _infer_page_type(node.slug, node.title) == "contact"
+
 
 def _uid() -> str:
     return str(uuid4())
@@ -45,6 +86,7 @@ def build_menus(
     page_tree: list[PageNode] | None,
     *,
     legal_pages: list[tuple[str, str]] | None = None,
+    social_links: list[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build the SiteMenu list webtree expects in PUT /layout.
@@ -56,17 +98,70 @@ def build_menus(
     Returns at minimum a primary menu. Adds footer + legal menus when there
     are pages to fill them. Empty menus are omitted (the builder treats slots
     referencing a missing menu as "no menu" — harmless).
+
+    Primary-menu policy (header is *curated*, footer is *complete*):
+      * Home never appears — the header logo links to the homepage.
+      * If the source nav was captured (any node carries ``nav_rank``), the
+        owner's curation is authoritative: their items, their order, nothing
+        added. "Get Involved" may well matter more than Contact — we don't
+        re-rank what the owner already ranked.
+      * Without nav evidence, fall back to page-type weights with Contact
+        last — but Contact only when the source actually had a contact page
+        (``from_source``), or when there's no source evidence at all (doc
+        uploads / thin crawls, where convention is the best guess).
+      * Hard cap at ``MAX_PRIMARY_ITEMS``; overflow pages stay in the footer
+        menu only.
+      * Parents carry one level of children (capped at ``MAX_DROPDOWN_ITEMS``)
+        — desktop dropdown flyouts, indented mobile-drawer entries.
     """
     legal_pages = legal_pages or []
     primary_items: list[dict[str, Any]] = []
     if page_tree:
-        for node in page_tree:
-            slug = node.slug.lower()
-            if slug in ("privacy", "terms"):
-                # Legal pages live in their own menu, not the primary nav.
-                continue
-            href = "/" if node.is_homepage else f"/{node.slug}"
-            primary_items.append(_menu_item(node.title, href))
+        candidates = [
+            n
+            for n in page_tree
+            if not n.is_homepage and n.slug.lower() not in ("privacy", "terms")
+        ]
+        nav_curated = any(n.nav_rank is not None for n in candidates)
+
+        if nav_curated:
+            # The owner's header nav, verbatim. Pages the owner left out of
+            # their nav stay out of ours (footer carries them).
+            ranked = sorted(
+                (n for n in candidates if n.nav_rank is not None),
+                key=lambda n: n.nav_rank,  # type: ignore[arg-type, return-value]
+            )
+            selected = ranked[:MAX_PRIMARY_ITEMS]
+            demoted = ranked[MAX_PRIMARY_ITEMS:]
+        else:
+            has_source_evidence = any(n.from_source for n in page_tree)
+            contact_nodes = [n for n in candidates if _is_contact(n)]
+            include_contact = [
+                n
+                for n in contact_nodes[:1]
+                if not has_source_evidence or n.from_source
+            ]
+            others = [n for n in candidates if not _is_contact(n)]
+            others.sort(key=lambda n: (_fallback_weight(n), n.slug))
+            budget = MAX_PRIMARY_ITEMS - len(include_contact)
+            selected = [*others[:budget], *include_contact]
+            demoted = others[budget:]
+
+        if demoted:
+            logger.info(
+                "primary menu capped at %d items — footer-only pages: %s",
+                MAX_PRIMARY_ITEMS,
+                ", ".join(n.slug for n in demoted),
+            )
+
+        for node in selected:
+            dropdown = [
+                _menu_item(child.title, f"/{child.slug}")
+                for child in node.children[:MAX_DROPDOWN_ITEMS]
+            ]
+            primary_items.append(
+                _menu_item(node.title, f"/{node.slug}", children=dropdown or None)
+            )
 
     menus: list[dict[str, Any]] = [
         _menu(PRIMARY_MENU_ID, "Primary", "primary", primary_items),
@@ -112,6 +207,21 @@ def build_menus(
                 "Legal",
                 "legal",
                 [_menu_item(label, href) for label, href in legal_pages],
+            )
+        )
+
+    # Social menu: profile links scraped from the source — external, so they
+    # open in a new tab.
+    if social_links:
+        menus.append(
+            _menu(
+                SOCIAL_MENU_ID,
+                "Social",
+                "social",
+                [
+                    _menu_item(label, href, target="_blank", rel="noopener noreferrer")
+                    for label, href in social_links
+                ],
             )
         )
 
@@ -178,6 +288,8 @@ def _menu_item(
     href: str,
     *,
     children: list[dict[str, Any]] | None = None,
+    target: str | None = None,
+    rel: str | None = None,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {
         "id": _uid(),
@@ -185,6 +297,10 @@ def _menu_item(
         "href": href,
         "visible": True,
     }
+    if target:
+        item["target"] = target
+    if rel:
+        item["rel"] = rel
     if children:
         item["children"] = children
     return item

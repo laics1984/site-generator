@@ -153,6 +153,8 @@ class GeneratedPage(BaseModel):
     body_schema: BodySchema
     seo: PageSeo
     parent_slug: str | None = None  # set on sub-pages for breadcrumbs + nav grouping
+    nav_rank: int | None = None     # source-nav position carried from the scaffold; None ⇒ not in source nav
+    from_source: bool = False       # page evidenced by the source site vs template-injected
 
 
 class PageNode(BaseModel):
@@ -166,6 +168,8 @@ class PageNode(BaseModel):
     slug: str
     title: str
     is_homepage: bool = False
+    nav_rank: int | None = None  # source-nav position; menu_builder uses it to order + cap the primary menu
+    from_source: bool = False    # page evidenced by the source site; gates Contact in the heuristic menu
     children: list["PageNode"] = Field(default_factory=list)
 
 
@@ -192,6 +196,14 @@ class GeneratedSite(BaseModel):
         description=(
             "Attribution lines for third-party media when a source requires "
             "visible credits."
+        ),
+    )
+    social_links: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "(label, url) social profile links scraped from the source. "
+            "menu_builder turns these into the entity's menu-social; the "
+            "footer's social-inline menu element binds that slot."
         ),
     )
     # Theme + chrome. These let the webtree builder display the site as designed.

@@ -365,7 +365,11 @@ async def push_site(req: PushRequest) -> PushReport:
             for p in req.site.pages
             if p.slug.lower() in ("privacy", "terms")
         ]
-        menus = build_menus(req.site.page_tree, legal_pages=legal_pages)
+        menus = build_menus(
+            req.site.page_tree,
+            legal_pages=legal_pages,
+            social_links=req.site.social_links,
+        )
         if req.site.header_schema is None or req.site.footer_schema is None:
             raise CmsApiError(
                 500,

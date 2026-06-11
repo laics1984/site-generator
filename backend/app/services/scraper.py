@@ -39,6 +39,12 @@ from app.services.fast_fetch import (
     try_fast_fetch,
 )
 from app.services.logo import extract_palette_from_image_bytes
+from app.services.nav_extraction import (
+    extract_body_link_clusters,
+    extract_nav_links,
+    extract_social_links,
+    strip_chrome_lines,
+)
 from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
 
 logger = logging.getLogger(__name__)
@@ -1148,6 +1154,9 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
     profile_candidates = _extract_profile_candidates(soup, final_url)
     links = _extract_links(soup, final_url)
     logo_url = _extract_logo_candidate(soup, final_url)
+    nav_links = extract_nav_links(soup, final_url)
+    body_link_clusters = extract_body_link_clusters(soup, final_url)
+    social_links = extract_social_links(soup, final_url)
 
     source_content = SourceContent(
         source_kind="url",
@@ -1158,6 +1167,9 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         headings=headings,
         images=[c.url for c in image_candidates],
         links=links,
+        nav_links=nav_links,
+        body_link_clusters=body_link_clusters,
+        social_links=social_links,
         url_path=urlparse(final_url).path or "/",
         image_metadata=[
             ImageMetadata(
@@ -1487,6 +1499,10 @@ async def scrape_url(
                 entry.source_content.discovered_pages = [
                     p.source_content for p in discovered
                 ]
+                # With the full page set known, body link clusters repeated
+                # across pages are template chrome — purge their labels from
+                # every page's raw_text so they don't read as content.
+                strip_chrome_lines(entry.source_content)
                 logger.info(
                     "crawl found %d additional pages, %d more in unvisited frontier",
                     len(discovered),

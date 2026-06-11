@@ -13,8 +13,13 @@ from app.models.builder_schema import (
 from app.models.content_blocks import (
     ImageMetadata,
     IndustryCategoryLiteral,
+    LinkBarBlock,
+    LinkBarLink,
+    LinkCluster,
     PagePlan,
     ProfileCandidate,
+    ServiceItem,
+    ServicesBlock,
     SitePlan,
     SourceContent,
     TeamBlock,
@@ -30,6 +35,7 @@ from app.services.planner import (
     plan_site,
     plan_site_with_scaffolds,
 )
+from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
 from app.services.scaffold_enforcement import align_page_to_scaffold
 from app.services.locale import detect_market, image_query_cue
 from app.services.schema_builder import plan_to_site
@@ -298,6 +304,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         scraped_metadata=scraped_metadata,
         contact=payload.contact,
         market_cue=_market_cue_for(payload.source),
+        social_links=_social_links_for(payload.source),
     )
 
 
@@ -375,6 +382,13 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     )
     theme = build_theme(seed_hex, mood=mood)
 
+    # Announcement/quick-links strap: claim it BEFORE planning so its text is
+    # out of raw_text (the LLM must not also narrate it into a paragraph);
+    # the strap itself is re-injected as a linkbar section after alignment.
+    linkbar_cluster = find_linkbar_cluster(payload.source)
+    if linkbar_cluster is not None:
+        strip_linkbar_lines(payload.source, linkbar_cluster)
+
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
     try:
         scaffolded = await plan_site_with_scaffolds(
@@ -397,6 +411,11 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             brand_name=scaffolded.site_name or detected.site_name or "Untitled",
         ),
     )
+    # Hub-page guarantee: every child page is reachable from its parent's body,
+    # not just from the footer. Runs after alignment so appended items survive.
+    _ensure_hub_child_links(plan.pages)
+    if linkbar_cluster is not None:
+        _inject_linkbar(plan.pages, linkbar_cluster)
 
     # Legal pages will be appended after plan_to_site, but they need to appear in
     # the footer nav. Pass their titles + slugs through.
@@ -418,6 +437,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         contact=payload.contact,
         extra_footer_nav=extra_footer_nav,
         market_cue=_market_cue_for(payload.source),
+        social_links=_social_links_for(payload.source),
     )
 
     # Bolt on legal pages from boilerplate
@@ -481,19 +501,112 @@ def _align_pages_to_scaffolds(
                 parent_slug=s.parent_slug,
             )
 
-        # Force scaffold identity (including hierarchy)
+        # Force scaffold identity (including hierarchy + nav priority)
         match = match.model_copy(
             update={
                 "slug": s.slug,
                 "title": s.title,
                 "is_homepage": s.is_homepage,
                 "parent_slug": s.parent_slug,
+                "nav_rank": s.nav_rank,
+                "from_source": s.from_source,
             }
         )
         # Enforce section structure
         match = align_page_to_scaffold(match, s, brand_name=brand_name)
         aligned.append(match)
     return aligned
+
+
+def _social_links_for(source: SourceContent) -> list[tuple[str, str]]:
+    return [(link.label, link.href) for link in source.social_links]
+
+
+def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:
+    """Recreate the source's announcement strap as a linkbar section.
+
+    Inserted right after the homepage hero — where these straps live on real
+    sites. Links are kept only when they resolve inside the generated site
+    (a generated page's slug, or a homepage anchor); a strap reduced to fewer
+    than two working links is dropped rather than rendered half-broken.
+    """
+    home = next((p for p in pages if p.is_homepage), None)
+    if home is None:
+        return
+
+    generated_slugs = {p.slug for p in pages}
+    links: list[LinkBarLink] = []
+    for link in cluster.links[:6]:
+        href = link.href
+        path = href.split("#", 1)[0].strip("/").lower()
+        is_home_anchor = "#" in href and path == ""
+        if not (is_home_anchor or path in generated_slugs):
+            continue
+        links.append(LinkBarLink(label=link.label, href=href))
+    if len(links) < 2:
+        return
+
+    block = LinkBarBlock(
+        label=cluster.context_label or None,
+        links=links,
+    )
+    hero_index = next(
+        (i for i, b in enumerate(home.blocks) if b.kind == "hero"), None
+    )
+    insert_at = hero_index + 1 if hero_index is not None else 0
+    home.blocks.insert(insert_at, block)
+
+
+def _ensure_hub_child_links(pages: list[PagePlan]) -> None:
+    """Make every parent page's services block cover all of its child pages.
+
+    schema_builder already cross-links service items to children whose titles
+    match (``_match_child_by_title``); what it can't do is invent an item for a
+    child the LLM never mentioned. Here we append a minimal linked item per
+    uncovered child, within the block's max-items bound. Pages without a
+    services block are left alone — their children stay reachable via the
+    footer columns.
+    """
+    children_by_parent: dict[str, list[PagePlan]] = {}
+    for p in pages:
+        if p.parent_slug:
+            children_by_parent.setdefault(p.parent_slug, []).append(p)
+    if not children_by_parent:
+        return
+
+    # Lazy import: schema_builder is heavy and generate.py already depends on
+    # it at call time via plan_to_site.
+    from app.services.schema_builder import ChildPageRef, _match_child_by_title
+
+    by_slug = {p.slug: p for p in pages}
+    for parent_slug, kids in children_by_parent.items():
+        parent = by_slug.get(parent_slug)
+        if parent is None:
+            continue
+        services = next(
+            (b for b in parent.blocks if isinstance(b, ServicesBlock)), None
+        )
+        if services is None:
+            continue
+        for kid in kids:
+            ref = ChildPageRef(slug=kid.slug, title=kid.title, page_type=kid.page_type)
+            covered = any(
+                _match_child_by_title(item.title, [ref]) is not None
+                for item in services.items
+            )
+            if covered:
+                continue
+            if len(services.items) >= 8:  # ServicesBlock max_length
+                break
+            services.items.append(
+                ServiceItem(
+                    title=kid.title,
+                    description=kid.description
+                    or f"Find out more about {kid.title.lower()}.",
+                    cta_label="Learn more",
+                    cta_href=f"/{kid.slug}",
+                )
+            )
 
 
 # --- debug ---------------------------------------------------------------------

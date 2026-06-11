@@ -46,6 +46,7 @@ from app.models.content_blocks import (
     GalleryBlock,
     HeroBlock,
     ImageMetadata,
+    LinkBarBlock,
     MenuBlock,
     PagePlan,
     PricingBlock,
@@ -1983,6 +1984,66 @@ def _apply_card_styles(rows: list[BuilderElement], card_styles: dict[str, Any]) 
         visit(row)
 
 
+async def _build_linkbar(block: LinkBarBlock, ctx: RenderContext) -> BuilderElement:
+    """Slim announcement strap — accent-colored bar with a label + inline links.
+
+    Mirrors the source-site pattern it was detected from (release banners,
+    promo bars). Always renders on the brand primary; the rhythm passes skip
+    it because it carries its own backgroundColor.
+    """
+    text_color = ctx.theme.buttons.text
+    row: list[BuilderElement] = []
+    if block.label:
+        row.append(
+            _text(
+                block.label,
+                name="Strap label",
+                styles={
+                    "width": "auto",
+                    "fontWeight": 700,
+                    "fontSize": "14px",
+                    "color": text_color,
+                    "margin": "0",
+                },
+            )
+        )
+    for link in block.links:
+        row.append(
+            BuilderElement(
+                id=_uid(),
+                name="Strap link",
+                type="link",
+                styles={
+                    "fontWeight": 600,
+                    "fontSize": "14px",
+                    "color": text_color,
+                    "textDecoration": "underline",
+                    "textUnderlineOffset": "3px",
+                },
+                content=BuilderElementContent(innerText=link.label, href=link.href),
+            )
+        )
+    return _section(
+        ctx,
+        [
+            _container(
+                row,
+                name="Announcement bar",
+                styles={
+                    "flexDirection": "row",
+                    "flexWrap": "wrap",
+                    "alignItems": "center",
+                    "justifyContent": "center",
+                    "gap": "20px",
+                },
+            )
+        ],
+        name="Linkbar",
+        surface_override=ctx.theme.palette.primary,
+        extra_styles={"paddingTop": "14px", "paddingBottom": "14px"},
+    )
+
+
 # --- dispatch + top-level entry -------------------------------------------------
 
 
@@ -2000,6 +2061,7 @@ _DISPATCH = {
     "gallery": _build_gallery,
     "menu": _build_menu,
     "process": _build_process,
+    "linkbar": _build_linkbar,
 }
 
 
@@ -2090,6 +2152,7 @@ async def plan_to_site(
     contact: dict[str, str] | None = None,
     extra_footer_nav: list[tuple[str, str]] | None = None,
     market_cue: str | None = None,
+    social_links: list[tuple[str, str]] | None = None,
 ) -> GeneratedSite:
     """
     Build a complete, themed site from a SitePlan.
@@ -2225,6 +2288,8 @@ async def plan_to_site(
                     ogDescription=page_plan.seo_description,
                 ),
                 parent_slug=page_plan.parent_slug,
+                nav_rank=page_plan.nav_rank,
+                from_source=page_plan.from_source,
             )
         )
 
@@ -2250,6 +2315,7 @@ async def plan_to_site(
         media_credits=resolver.attributions,
         page_tree=page_tree,
         extra_legal_nav=extra_footer_nav,
+        social_links=social_links,
     )
 
     return GeneratedSite(
@@ -2260,6 +2326,7 @@ async def plan_to_site(
         pages=pages,
         page_tree=page_tree,
         media_credits=resolver.attributions,
+        social_links=social_links or [],
         theme=theme,
         builder_styles=theme.to_builder_styles(),
         google_fonts=theme.typography.google_fonts,
@@ -2279,7 +2346,11 @@ def _build_page_tree(pages: list[GeneratedPage]) -> list[PageNode]:
     nodes_by_slug: dict[str, PageNode] = {}
     for p in pages:
         nodes_by_slug[p.slug] = PageNode(
-            slug=p.slug, title=p.title, is_homepage=p.is_homepage
+            slug=p.slug,
+            title=p.title,
+            is_homepage=p.is_homepage,
+            nav_rank=p.nav_rank,
+            from_source=p.from_source,
         )
 
     roots: list[PageNode] = []
@@ -2289,6 +2360,14 @@ def _build_page_tree(pages: list[GeneratedPage]) -> list[PageNode]:
             nodes_by_slug[p.parent_slug].children.append(node)
         else:
             roots.append(node)
-    # Homepage to the front
-    roots.sort(key=lambda n: (not n.is_homepage, n.slug))
+    # Homepage first, then source-nav order (unranked pages after ranked ones,
+    # alphabetical within each group).
+    roots.sort(
+        key=lambda n: (
+            not n.is_homepage,
+            n.nav_rank is None,
+            n.nav_rank if n.nav_rank is not None else 0,
+            n.slug,
+        )
+    )
     return roots
