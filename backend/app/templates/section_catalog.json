@@ -94,7 +94,7 @@
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                       "textAlign": "left", "opacity": "100%",
                       "color": "var(--builder-color-secondary, #0f172a)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "56px", "lineHeight": "1.05", "letterSpacing": "-0.04em",
                       "fontWeight": 800, "marginBottom": "16px"
@@ -321,7 +321,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "left", "opacity": "100%",
                   "color": "var(--builder-color-text, #111827)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -394,7 +394,7 @@
                           "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                           "textAlign": "left", "opacity": "100%",
                           "color": "var(--builder-color-text, #111827)",
-                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                           "width": "100%", "fontSize": "21px", "fontWeight": 700, "marginBottom": "14px"
                         }
                       },
@@ -491,7 +491,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "56px", "lineHeight": "1.05",
                   "letterSpacing": "-0.04em", "fontWeight": 800
                 },
@@ -662,7 +662,7 @@
                           "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                           "textAlign": "left", "opacity": "100%",
                           "color": "var(--builder-color-text, #111827)",
-                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                           "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                           "letterSpacing": "-0.03em", "fontWeight": 800
                         },
@@ -722,7 +722,7 @@
                           "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                           "textAlign": "left", "opacity": "100%",
                           "color": "var(--builder-color-text, #111827)",
-                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                           "width": "100%", "fontSize": "40px", "fontWeight": 800, "letterSpacing": "-0.03em", "marginBottom": "10px"
                         }
                       },
@@ -825,7 +825,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "left", "opacity": "100%",
                   "color": "var(--builder-color-text, #111827)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -895,7 +895,7 @@
                           "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                           "textAlign": "left", "opacity": "100%",
                           "color": "var(--builder-color-text, #111827)",
-                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                           "width": "100%", "fontSize": "21px", "fontWeight": 700, "marginBottom": "14px"
                         }
                       },
@@ -1007,7 +1007,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "left", "opacity": "100%",
                   "color": "var(--builder-color-text, #111827)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -1165,7 +1165,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "#ffffff",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "38px", "lineHeight": "1.12",
                   "letterSpacing": "-0.03em", "fontWeight": 800, "marginBottom": "12px"
                 },
@@ -1316,7 +1316,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "left", "opacity": "100%",
                   "color": "var(--builder-color-text, #111827)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -1499,7 +1499,7 @@
                           "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                           "textAlign": "left", "opacity": "100%",
                           "color": "var(--builder-color-text, #111827)",
-                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                           "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                           "letterSpacing": "-0.03em", "fontWeight": 800
                         },
@@ -1679,7 +1679,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "#ffffff",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "56px", "lineHeight": "1.05",
                   "letterSpacing": "-0.04em", "fontWeight": 800,
                   "textShadow": "0 2px 16px rgba(0,0,0,0.35)"
@@ -1833,7 +1833,7 @@
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                       "textAlign": "left", "opacity": "100%",
                       "color": "var(--builder-color-secondary, #0f172a)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                       "letterSpacing": "-0.03em", "fontWeight": 800
                     },
@@ -1960,7 +1960,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "44px", "lineHeight": "1.08",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -2097,7 +2097,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "40px", "lineHeight": "1.12",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -2198,7 +2198,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "left", "opacity": "100%",
                   "color": "var(--builder-color-text, #111827)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -2268,7 +2268,7 @@
                           "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                           "textAlign": "left", "opacity": "100%",
                           "color": "var(--builder-color-text, #111827)",
-                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                           "width": "100%", "fontSize": "21px", "fontWeight": 700, "marginBottom": "14px"
                         }
                       },
@@ -2370,7 +2370,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "left", "opacity": "100%",
                   "color": "var(--builder-color-text, #111827)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "40px", "lineHeight": "1.1",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -2440,7 +2440,7 @@
                           "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                           "textAlign": "left", "opacity": "100%",
                           "color": "var(--builder-color-text, #111827)",
-                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                           "width": "100%", "fontSize": "21px", "fontWeight": 700, "marginBottom": "14px"
                         }
                       },
@@ -2544,7 +2544,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "30px", "lineHeight": "1.4",
                   "fontWeight": 600, "letterSpacing": "-0.01em"
                 },
@@ -2648,7 +2648,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "36px", "lineHeight": "1.12",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -2723,7 +2723,7 @@
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                       "textAlign": "center", "opacity": "100%",
                       "color": "var(--builder-color-secondary, #0f172a)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%", "fontSize": "20px", "lineHeight": "1.25",
                       "fontWeight": 800
                     }
@@ -2836,7 +2836,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "36px", "lineHeight": "1.12",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -2984,7 +2984,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "36px", "lineHeight": "1.12",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -3052,7 +3052,7 @@
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                       "textAlign": "left", "opacity": "100%",
                       "color": "var(--builder-color-secondary, #0f172a)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%", "fontSize": "20px", "fontWeight": 700
                     }
                   },
@@ -3161,7 +3161,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "36px", "lineHeight": "1.12",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -3212,7 +3212,7 @@
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                       "textAlign": "left", "opacity": "100%",
                       "color": "var(--builder-color-secondary, #0f172a)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%", "fontSize": "22px", "fontWeight": 700,
                       "marginBottom": "8px", "paddingBottom": "8px",
                       "borderBottom": "2px solid var(--builder-color-primary, #2563eb)"
@@ -3388,7 +3388,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "var(--builder-color-secondary, #0f172a)",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "36px", "lineHeight": "1.12",
                   "letterSpacing": "-0.03em", "fontWeight": 800
                 },
@@ -3457,7 +3457,7 @@
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                       "textAlign": "left", "opacity": "100%",
                       "color": "var(--builder-color-secondary, #0f172a)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%", "fontSize": "20px", "fontWeight": 700
                     }
                   },
@@ -3467,7 +3467,7 @@
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                       "textAlign": "left", "opacity": "100%",
                       "color": "var(--builder-color-secondary, #0f172a)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%", "fontSize": "34px", "fontWeight": 800, "margin": "6px 0"
                     }
                   },
@@ -3877,7 +3877,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "#ffffff",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "40px", "lineHeight": "1.12",
                   "letterSpacing": "-0.03em", "fontWeight": 800,
                   "textShadow": "0 2px 16px rgba(0,0,0,0.35)"
@@ -4020,7 +4020,7 @@
                   "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                   "textAlign": "center", "opacity": "100%",
                   "color": "#ffffff",
-                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                   "width": "100%", "fontSize": "56px", "lineHeight": "1.05",
                   "letterSpacing": "-0.04em", "fontWeight": 800
                 },
@@ -5114,7 +5114,7 @@
                               "textAlign": "left",
                               "opacity": "100%",
                               "color": "var(--builder-color-secondary, #0f172a)",
-                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                               "width": "100%",
                               "fontSize": "22px",
                               "fontWeight": 700,
@@ -5831,7 +5831,7 @@
                               "textAlign": "left",
                               "opacity": "100%",
                               "color": "var(--builder-color-secondary, #0f172a)",
-                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                               "width": "100%",
                               "fontSize": "22px",
                               "fontWeight": 700,
@@ -6356,7 +6356,7 @@
                       "textAlign": "left",
                       "opacity": "100%",
                       "color": "var(--builder-color-secondary, #0f172a)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "22px",
                       "fontWeight": 700,
