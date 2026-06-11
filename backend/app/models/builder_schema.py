@@ -99,6 +99,26 @@ class ResponsiveStyles(BaseModel):
     tablet: dict[str, Any] | None = None
 
 
+MotionIntensity = Literal["off", "subtle", "balanced", "expressive"]
+
+
+class BuilderElementMotion(BaseModel):
+    """Mirrors BuilderElementMotion in webtree/builder/src/lib/site-navigation.ts.
+
+    Declarative entrance/scroll motion executed by the public renderer.
+    ``preset`` is a registry id (builder/src/lib/motion-presets.ts); renderers
+    ignore unknown presets so the field is always safe to carry.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    preset: str
+    delay: float | None = None
+    duration: float | None = None
+    stagger: float | None = None
+    intensity: MotionIntensity | None = None
+
+
 class BuilderElement(BaseModel):
     """
     Mirrors the BuilderElement type in
@@ -120,6 +140,7 @@ class BuilderElement(BaseModel):
     classes: str | None = None
     visible: bool | None = None
     responsiveStyles: ResponsiveStyles | None = None
+    motion: BuilderElementMotion | None = None
 
 
 BuilderElement.model_rebuild()

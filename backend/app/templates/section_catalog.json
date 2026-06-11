@@ -292,6 +292,7 @@
         "content": [
           {
             "name": "Section Intro",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -341,6 +342,7 @@
           },
           {
             "name": "Feature Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "3Col",
             "$repeat": "items",
             "styles": {
@@ -605,6 +607,7 @@
         "content": [
           {
             "name": "About Columns",
+            "motion": { "preset": "rise", "stagger": 0.12 },
             "type": "2Col",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -630,6 +633,7 @@
                 "content": [
                   {
                     "name": "Section Intro",
+                    "motion": { "preset": "rise" },
                     "type": "container",
                     "styles": {
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -792,6 +796,7 @@
         "content": [
           {
             "name": "Section Intro",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -841,6 +846,7 @@
           },
           {
             "name": "Services Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "3Col",
             "$repeat": "items",
             "styles": {
@@ -972,6 +978,7 @@
         "content": [
           {
             "name": "Section Intro",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -1021,6 +1028,7 @@
           },
           {
             "name": "Testimonial Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "3Col",
             "$repeat": "items",
             "styles": {
@@ -1135,6 +1143,7 @@
         "content": [
           {
             "name": "CTA Banner",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -1278,6 +1287,7 @@
         "content": [
           {
             "name": "Section Intro",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -1327,6 +1337,7 @@
           },
           {
             "name": "FAQ Stack",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "container",
             "$repeat": "items",
             "styles": {
@@ -1432,6 +1443,7 @@
         "content": [
           {
             "name": "Contact Columns",
+            "motion": { "preset": "rise", "stagger": 0.12 },
             "type": "2Col",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -1458,6 +1470,7 @@
                 "content": [
                   {
                     "name": "Section Intro",
+                    "motion": { "preset": "rise" },
                     "type": "container",
                     "styles": {
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -1777,6 +1790,7 @@
         "content": [
           {
             "name": "About Columns",
+            "motion": { "preset": "rise", "stagger": 0.12 },
             "type": "2Col",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -1916,6 +1930,7 @@
         "content": [
           {
             "name": "CTA Minimal Content",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -2154,6 +2169,7 @@
         "content": [
           {
             "name": "Section Intro",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -2203,6 +2219,7 @@
           },
           {
             "name": "Feature Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "2Col",
             "$repeat": "items",
             "styles": {
@@ -2324,6 +2341,7 @@
         "content": [
           {
             "name": "Section Intro",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -2373,6 +2391,7 @@
           },
           {
             "name": "Services Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "2Col",
             "$repeat": "items",
             "styles": {
@@ -2495,6 +2514,7 @@
         "content": [
           {
             "name": "Quote Block",
+            "motion": { "preset": "scale-in" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -2598,6 +2618,7 @@
         "content": [
           {
             "name": "Section Header",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -2649,6 +2670,7 @@
           },
           {
             "name": "Team Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "3Col",
             "$repeat": "items",
             "$gridFit": true,
@@ -2784,6 +2806,7 @@
         "content": [
           {
             "name": "Section Header",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -2835,6 +2858,7 @@
           },
           {
             "name": "Gallery Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "3Col",
             "$repeat": "items",
             "$gridFit": true,
@@ -2930,6 +2954,7 @@
         "content": [
           {
             "name": "Section Header",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -2981,6 +3006,7 @@
           },
           {
             "name": "Process Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "3Col",
             "$repeat": "items",
             "$gridFit": true,
@@ -3105,6 +3131,7 @@
         "content": [
           {
             "name": "Section Header",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -3156,6 +3183,7 @@
           },
           {
             "name": "Menu List",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "container",
             "$repeat": "categories",
             "styles": {
@@ -3330,6 +3358,7 @@
         "content": [
           {
             "name": "Section Header",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -3381,6 +3410,7 @@
           },
           {
             "name": "Pricing Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "3Col",
             "$repeat": "items",
             "$gridFit": true,
@@ -3829,6 +3859,7 @@
         "content": [
           {
             "name": "CTA Content",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
@@ -4139,6 +4170,7 @@
         "content": [
           {
             "name": "About Columns",
+            "motion": { "preset": "rise", "stagger": 0.12 },
             "type": "2Col",
             "styles": {
               "backgroundPosition": "center",
@@ -4853,6 +4885,7 @@
         "content": [
           {
             "name": "Features Columns",
+            "motion": { "preset": "rise", "stagger": 0.12 },
             "type": "2Col",
             "styles": {
               "backgroundPosition": "center",
@@ -5215,6 +5248,7 @@
         "content": [
           {
             "name": "CTA Columns",
+            "motion": { "preset": "rise", "stagger": 0.12 },
             "type": "2Col",
             "styles": {
               "backgroundPosition": "center",
@@ -5570,6 +5604,7 @@
         "content": [
           {
             "name": "Services Columns",
+            "motion": { "preset": "rise", "stagger": 0.12 },
             "type": "2Col",
             "styles": {
               "backgroundPosition": "center",
@@ -5923,6 +5958,7 @@
         "content": [
           {
             "name": "Pull Quote",
+            "motion": { "preset": "scale-in" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center",
@@ -6144,6 +6180,7 @@
         "content": [
           {
             "name": "Section Intro",
+            "motion": { "preset": "rise" },
             "type": "container",
             "styles": {
               "backgroundPosition": "center",
@@ -6245,6 +6282,7 @@
           },
           {
             "name": "Bento Grid",
+            "motion": { "preset": "rise", "stagger": 0.08 },
             "type": "container",
             "$bento": "items",
             "styles": {

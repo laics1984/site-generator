@@ -85,6 +85,8 @@ def _base_fields(node: dict[str, Any], styles: dict[str, Any]) -> dict[str, Any]
         out["visible"] = node["visible"]
     if node.get("responsiveStyles") is not None:
         out["responsiveStyles"] = node["responsiveStyles"]
+    if node.get("motion") is not None:
+        out["motion"] = node["motion"]
     return out
 
 

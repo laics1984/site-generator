@@ -26,6 +26,23 @@ BrandMood = Literal[
 
 PageWidthMode = Literal["contained", "full"]
 
+# Mirrors MotionIntensity in webtree/builder/src/lib/site-navigation.ts. The
+# public renderer scales every motion preset's distance/duration by this;
+# "off" disables motion site-wide.
+MotionIntensity = Literal["off", "subtle", "balanced", "expressive"]
+
+# Default motion personality per brand mood. Reserved moods (technical,
+# editorial) get quieter reveals; playful brands get showier ones. Sites can
+# always change this in the builder's Styles tab afterwards.
+MOOD_MOTION_INTENSITY: dict[BrandMood, MotionIntensity] = {
+    "modern": "balanced",
+    "luxury": "balanced",
+    "friendly": "balanced",
+    "technical": "subtle",
+    "editorial": "subtle",
+    "playful": "expressive",
+}
+
 
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -135,6 +152,10 @@ class ThemeTokens(BaseModel):
         default=None,
         description="Optional oversized display font stack for hero headlines; falls back to heading_font.",
     )
+    motion_intensity: MotionIntensity | None = Field(
+        default=None,
+        description="Site-wide motion intensity. None → derived from mood (MOOD_MOTION_INTENSITY).",
+    )
 
     def to_builder_styles(self) -> dict[str, Any]:
         """Serialize as the exact `BuilderStyles` shape the webtree builder expects."""
@@ -164,6 +185,10 @@ class ThemeTokens(BaseModel):
                 "widthMode": self.page.width_mode,
                 "maxWidth": self.page.max_width,
                 "background": self.page.background,
+            },
+            "motion": {
+                "intensity": self.motion_intensity
+                or MOOD_MOTION_INTENSITY.get(self.mood, "balanced"),
             },
         }
 
