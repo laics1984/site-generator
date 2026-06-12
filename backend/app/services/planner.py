@@ -19,7 +19,7 @@ import json
 import logging
 import time
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.content_blocks import (
     BrandMood,
@@ -29,6 +29,8 @@ from app.models.content_blocks import (
     PagePlan,
     SitePlan,
     SourceContent,
+    heal_brand_mood_value,
+    heal_industry_value,
 )
 from app.models.industry import PageScaffold
 from app.services.llm import OllamaClient, get_llm
@@ -114,6 +116,18 @@ class DetectedBrand(BaseModel):
     brand_mood: BrandMood = "modern"
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
+
+    # The LLM sometimes invents moods/industries despite the enumerated prompt.
+    # A wrong adjective must never fail brand detection — degrade to defaults.
+    @field_validator("brand_mood", mode="before")
+    @classmethod
+    def heal_mood(cls, v: object) -> object:
+        return heal_brand_mood_value(v)
+
+    @field_validator("industry_category", mode="before")
+    @classmethod
+    def heal_industry(cls, v: object) -> object:
+        return heal_industry_value(v)
 
 
 DETECT_BRAND_PROMPT = """You are a brand and industry analyst.
@@ -222,6 +236,16 @@ class ScaffoldedSitePlan(BaseModel):
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
     pages: list[PagePlan]
+
+    @field_validator("brand_mood", mode="before")
+    @classmethod
+    def heal_mood(cls, v: object) -> object:
+        return heal_brand_mood_value(v)
+
+    @field_validator("industry_category", mode="before")
+    @classmethod
+    def heal_industry(cls, v: object) -> object:
+        return heal_industry_value(v)
 
 
 def _scaffolds_to_prompt_payload(

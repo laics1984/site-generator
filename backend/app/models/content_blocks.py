@@ -21,9 +21,9 @@ Robustness strategy:
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 SectionType = Literal[
@@ -73,6 +73,31 @@ def _default_if_blank(value: object, default: str) -> object:
     return value
 
 
+def _coerce_literal(value: object, allowed: frozenset[str], default: str) -> str:
+    """Coerce an LLM-emitted enum-ish value onto its Literal set.
+
+    Known values pass through (case/whitespace-normalised); anything else —
+    None, an invented adjective, the wrong type — degrades to the field's safe
+    default instead of failing the whole plan (same policy as
+    HeroBlock.heal_layout).
+    """
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token in allowed:
+            return token
+    return default
+
+
+def heal_brand_mood_value(value: object) -> str:
+    """Coerce an LLM brand_mood onto the BrandMood Literal, default 'modern'."""
+    return _coerce_literal(value, frozenset(get_args(BrandMood)), "modern")
+
+
+def heal_industry_value(value: object) -> str:
+    """Coerce an LLM industry_category onto its Literal, default 'other'."""
+    return _coerce_literal(value, frozenset(get_args(IndustryCategoryLiteral)), "other")
+
+
 class VisualPolicy(BaseModel):
     """
     Per-section visual INTENT, consumed by the schema_builder luminance pass.
@@ -106,6 +131,22 @@ class VisualPolicy(BaseModel):
     # Escape hatch. Bands are normally derived (anchored from image luminance, or
     # flexible from the page pass). Set to force a band against the rhythm.
     band_override: Literal["light", "dark", "auto"] = "auto"
+
+    @field_validator(
+        "visual_mode",
+        "image_source_preference",
+        "calm_treatment",
+        "band_override",
+        mode="before",
+    )
+    @classmethod
+    def heal_policy_enums(cls, v: object, info: ValidationInfo) -> object:
+        # These are intent enums the LLM occasionally embellishes ("soft",
+        # "muted", "scraped_only"). An invented adjective must never fail the
+        # whole plan: every field's safe default is "auto" (no opinion — the
+        # engine derives the treatment), so unknown values degrade to that.
+        allowed = frozenset(get_args(cls.model_fields[info.field_name].annotation))
+        return _coerce_literal(v, allowed, "auto")
 
 
 class HeroBlock(BaseModel):
@@ -513,6 +554,15 @@ class PagePlan(BaseModel):
     nav_rank: int | None = None  # source-nav position from the scaffold; never set by the LLM
     from_source: bool = False    # page evidenced by the source site; never set by the LLM
 
+    @field_validator("page_type", mode="before")
+    @classmethod
+    def heal_page_type(cls, v: object) -> object:
+        # Scaffolds hand the LLM a page_type to echo verbatim, but it sometimes
+        # rewrites it ("home page", "landing-page"). An unknown page_type must
+        # never fail the plan — degrade to the generic "landing". is_homepage
+        # carries homepage-ness separately, so nothing is lost.
+        return _coerce_literal(v, frozenset(get_args(PageType)), "landing")
+
     @field_validator("description", mode="before")
     @classmethod
     def heal_description(cls, v: object) -> object:
@@ -620,9 +670,13 @@ class SitePlan(BaseModel):
     @field_validator("brand_mood", mode="before")
     @classmethod
     def heal_mood(cls, v: object) -> object:
-        if v is None or (isinstance(v, str) and not v.strip()):
-            return "modern"
-        return v
+        # Coerces invented moods ("minimalist", "bold") as well as None/blank.
+        return heal_brand_mood_value(v)
+
+    @field_validator("industry_category", mode="before")
+    @classmethod
+    def heal_industry(cls, v: object) -> object:
+        return heal_industry_value(v)
 
 
 class SourceContent(BaseModel):
