@@ -6888,7 +6888,7 @@
         "name": "Hero - Statement",
         "type": "container",
         "motion": {
-          "preset": "rise"
+          "preset": "aurora"
         },
         "styles": {
           "backgroundPosition": "center",
@@ -7407,6 +7407,9 @@
       "tree": {
         "name": "CTA - Gradient",
         "type": "container",
+        "motion": {
+          "preset": "silk"
+        },
         "styles": {
           "backgroundPosition": "center",
           "objectFit": "cover",
