@@ -41,6 +41,7 @@ class OllamaClient:
         schema: type[T],
         temperature: float = 0.4,
         num_ctx: int = 4096,
+        images: list[str] | None = None,
     ) -> T:
         """
         Send a chat request expecting JSON back, then validate against `schema`.
@@ -50,12 +51,18 @@ class OllamaClient:
 
         num_ctx must be set explicitly — Ollama's default of 2048 is too small
         for most generation tasks. Callers can override for larger payloads.
+
+        `images`: base64-encoded image payloads attached to the user message
+        (Ollama's multimodal chat format). Requires a vision-capable model.
         """
+        user_message: dict[str, Any] = {"role": "user", "content": user_prompt}
+        if images:
+            user_message["images"] = images
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                user_message,
             ],
             "format": "json",
             # Stream the response so httpx's read timeout applies to the gap

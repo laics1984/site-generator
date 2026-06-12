@@ -69,24 +69,40 @@ class PexelsClient:
         *,
         orientation: PhotoOrientation = "landscape",
         size: PhotoSize = "large",
-        per_page: int = 5,
+        per_page: int = 5,  # kept for API compat; results come from search_many
     ) -> PhotoResult | None:
         """
         Returns the first matching photo for `query`, or None if Pexels is
         unconfigured / errors / returns no results.
         """
+        results = await self.search_many(query, orientation=orientation, size=size)
+        return results[0] if results else None
+
+    async def search_many(
+        self,
+        query: str,
+        *,
+        orientation: PhotoOrientation = "landscape",
+        size: PhotoSize = "large",
+    ) -> list[PhotoResult]:
+        """
+        Returns up to _API_PER_PAGE matching photos for `query` (empty list if
+        Pexels is unconfigured / errors / returns no results), so the caller
+        can re-rank by alt-text relevance instead of trusting Pexels' first
+        hit. One API call either way — candidates beyond the first are free.
+        """
         if not self.configured:
-            return None
+            return []
 
         cache_key = _cache_key(query, orientation, size)
         cached = _cache_get(cache_key)
         if cached is not None:
-            return cached
+            return list(cached)
 
         params = {
             "query": query,
             "orientation": orientation,
-            "per_page": str(per_page),
+            "per_page": str(_API_PER_PAGE),
             "size": "medium",  # quality tier; we pick the URL below
         }
         headers = {"Authorization": self.api_key or ""}
@@ -100,35 +116,39 @@ class PexelsClient:
                 payload = response.json()
         except httpx.HTTPError as exc:
             logger.warning("Pexels search failed for %r: %s", query, exc)
-            return None
+            return []
 
-        photos = payload.get("photos") or []
-        if not photos:
-            return None
+        results: list[PhotoResult] = []
+        for photo in payload.get("photos") or []:
+            src = photo.get("src") or {}
+            url = src.get(size) or src.get("large") or src.get("medium")
+            if not url:
+                continue
+            results.append(
+                PhotoResult(
+                    url=url,
+                    alt=photo.get("alt") or query,
+                    photographer=photo.get("photographer"),
+                    photographer_url=photo.get("photographer_url"),
+                    source="pexels",
+                    avg_color=photo.get("avg_color"),
+                )
+            )
+        if results:
+            _cache_put(cache_key, results)
+        return results
 
-        photo = photos[0]
-        src = photo.get("src") or {}
-        url = src.get(size) or src.get("large") or src.get("medium")
-        if not url:
-            return None
 
-        result = PhotoResult(
-            url=url,
-            alt=photo.get("alt") or query,
-            photographer=photo.get("photographer"),
-            photographer_url=photo.get("photographer_url"),
-            source="pexels",
-            avg_color=photo.get("avg_color"),
-        )
-        _cache_put(cache_key, result)
-        return result
+# Results requested per API call. Pexels prices by request, not by result
+# count, so we always fetch a rankable batch (callers re-rank by alt text).
+_API_PER_PAGE = 15
 
 
 # Simple LRU cache. We deliberately don't use functools.lru_cache on an async
 # method because httpx clients are not safely shared across event loops; instead
-# we cache just the PhotoResult by key.
+# we cache just the PhotoResult list by key.
 
-_CACHE: dict[str, PhotoResult] = {}
+_CACHE: dict[str, list[PhotoResult]] = {}
 _CACHE_ORDER: list[str] = []
 _CACHE_LOCK = asyncio.Lock()
 
@@ -137,11 +157,11 @@ def _cache_key(query: str, orientation: str, size: str) -> str:
     return f"{orientation}|{size}|{query.strip().lower()}"
 
 
-def _cache_get(key: str) -> PhotoResult | None:
+def _cache_get(key: str) -> list[PhotoResult] | None:
     return _CACHE.get(key)
 
 
-def _cache_put(key: str, value: PhotoResult) -> None:
+def _cache_put(key: str, value: list[PhotoResult]) -> None:
     if key in _CACHE:
         return
     _CACHE[key] = value

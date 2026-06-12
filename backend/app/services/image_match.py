@@ -96,14 +96,23 @@ class ImageScore:
 
 
 def _lexical_score(query: str, candidate: ImageMetadata) -> tuple[float, tuple[str, ...]]:
-    """Jaccard-style overlap between query tokens and (alt + url path) tokens.
+    """Jaccard-style overlap between query tokens and (alt + url path +
+    vision caption) tokens.
+
+    The vision caption (when the opt-in pass ran) is what rescues authentic
+    photos with hashed CDN filenames and empty alt text — without it they
+    have zero lexical evidence and always lose to stock.
 
     Returns (score in [0, 0.6], matched tokens).
     """
     q_tokens = _tokens(query)
     if not q_tokens:
         return 0.0, ()
-    c_tokens = _tokens(candidate.alt) | _path_tokens(candidate.url)
+    c_tokens = (
+        _tokens(candidate.alt)
+        | _path_tokens(candidate.url)
+        | _tokens(candidate.vision_caption or "")
+    )
     if not c_tokens:
         return 0.0, ()
     matched = q_tokens & c_tokens
@@ -164,6 +173,17 @@ CONFIDENT_THRESHOLD = 0.55
 AMBIGUOUS_THRESHOLD = 0.30
 TIE_BAND = 0.10
 
+# Measured roles that can never fill a content slot, whatever their lexical
+# score. The scraper already drops decorations on the render path; this gate
+# also covers doc-upload and legacy callers that build ImageMetadata directly.
+_EXCLUDED_ROLES = frozenset({"decoration", "logo"})
+
+# Vision kinds that must never be intent-pinned as the site's authentic
+# hero/about visual: a promo banner or UI screenshot in the hero slot is the
+# classic scrape failure. They stay rankable for ordinary slots (a screenshot
+# is legitimate for a SaaS feature card) — this only vetoes the pin.
+_UNPINNABLE_VISION_KINDS = frozenset({"logo", "banner", "screenshot", "graphic", "map"})
+
 # Slots where exactly one real image usually exists on the source and the
 # scraper has already identified it (the hero / lead about image). For these,
 # an exact intent match is decisive on its own — we prefer the site's authentic
@@ -196,14 +216,20 @@ def rank_candidates(
     Use rank_candidates_with_llm_tiebreaker() if you want the LLM judge to
     settle ambiguous cases.
     """
+    candidates = [c for c in candidates if c.role not in _EXCLUDED_ROLES]
     if not candidates:
         return RankResult(chosen=None, chosen_score=0.0, decision="fallback", scores=[])
 
     # Primary slots (hero / about): an exact intent match is decisive — pin the
     # site's authentic image and skip the lexical gate. Pick the largest /
-    # best-described one when several match.
+    # best-described one when several match. Candidates the vision pass
+    # identified as banners/screenshots/graphics are not pinnable.
     if slot_intent in PRIMARY_INTENTS:
-        intent_matches = [c for c in candidates if c.intent == slot_intent]
+        intent_matches = [
+            c for c in candidates
+            if c.intent == slot_intent
+            and (c.vision_kind is None or c.vision_kind not in _UNPINNABLE_VISION_KINDS)
+        ]
         if intent_matches:
             pinned = sorted(
                 (score_candidate(query or "", slot_intent, c) for c in intent_matches),

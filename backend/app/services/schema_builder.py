@@ -2152,6 +2152,7 @@ async def plan_to_site(
     contact: dict[str, str] | None = None,
     extra_footer_nav: list[tuple[str, str]] | None = None,
     market_cue: str | None = None,
+    place_cue: str | None = None,
     social_links: list[tuple[str, str]] | None = None,
 ) -> GeneratedSite:
     """
@@ -2187,6 +2188,8 @@ async def plan_to_site(
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
         market_cue=market_cue,
+        industry_category=plan.industry_category,
+        place_cue=place_cue,
     )
 
     # Pre-compute parent/child relationships so listing blocks (services /

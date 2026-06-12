@@ -12,6 +12,10 @@ Design notes:
 - We do not OCR images, summarise, or call any LLM here. Pure extraction.
 - Image candidates are filtered (no tracking pixels, no tiny icons) and
   *categorised by likely intent* so the schema_builder gets better matches.
+- On the Playwright path, the render stamps measured geometry onto every
+  image (_stamp_render_evidence); services/image_evidence.py turns that into
+  visual roles (hero/background/content/gallery/portrait/decoration), which
+  replace the DOM-order intent guesses and exclude decorations entirely.
 - robots.txt is honoured by default; pass `respect_robots=False` to bypass.
 """
 
@@ -38,6 +42,7 @@ from app.services.fast_fetch import (
     FastFetchSkipped,
     try_fast_fetch,
 )
+from app.services.image_evidence import ImageEvidence, classify_role, parse_evidence
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.nav_extraction import (
     extract_body_link_clusters,
@@ -62,6 +67,10 @@ class ImageCandidate:
     width: int | None
     height: int | None
     intent: str  # 'hero' | 'about' | 'logo' | 'generic'
+    # Visual role measured from render evidence (image_evidence.classify_role).
+    # 'unknown' when the page came through the httpx fast path (no stamps).
+    role: str = "unknown"
+    evidence: ImageEvidence | None = None
 
 
 @dataclass
@@ -197,22 +206,84 @@ async def _autoscroll(page, *, max_steps: int = 12, step_px: int = 1200) -> None
         pass
 
 
-async def _stamp_computed_backgrounds(page) -> None:
-    """Expose computed CSS backgrounds to the static BeautifulSoup parser."""
+async def _stamp_render_evidence(page) -> None:
+    """Expose render-time visual evidence to the static BeautifulSoup parser.
+
+    Two kinds of stamps (parsed by services/image_evidence.py):
+    - every <img> gets `data-webtree-evidence`: natural size, layout box,
+      viewport size, and how many similar-size sibling images share its grid;
+    - every large CSS-background element gets `data-webtree-bg-image` (the
+      resolved URL, as before) plus `data-webtree-bg-evidence` with the layout
+      box and the length of text rendered inside it (text over a background
+      marks the image as a backdrop, not content).
+
+    Runs after _autoscroll scrolled back to the top, so scrollX/scrollY are ~0
+    and document coordinates equal viewport-relative ones.
+    """
     try:
         await page.evaluate(
             """
             () => {
+              const vw = Math.max(1, window.innerWidth);
+              const vh = Math.max(1, window.innerHeight);
               const extractUrl = (value) => {
                 if (!value || value === 'none') return null;
                 const match = value.match(/url\\(["']?([^"')]+)["']?\\)/);
                 return match ? match[1] : null;
               };
+              const boxOf = (el) => {
+                const r = el.getBoundingClientRect();
+                return {
+                  x: Math.round(r.left + window.scrollX),
+                  y: Math.round(r.top + window.scrollY),
+                  w: Math.round(r.width),
+                  h: Math.round(r.height),
+                };
+              };
+              // Count sibling cells holding exactly one similar-area image —
+              // >=3 means this image is one tile of a card/portrait grid.
+              const gridCount = (img) => {
+                const mine = img.getBoundingClientRect();
+                const myArea = mine.width * mine.height;
+                if (myArea <= 0) return 0;
+                let node = img.parentElement;
+                for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+                  const cells = Array.from(node.children);
+                  if (cells.length < 3) continue;
+                  let similar = 0;
+                  for (const cell of cells) {
+                    const imgs = cell.tagName === 'IMG'
+                      ? [cell]
+                      : Array.from(cell.querySelectorAll('img'));
+                    if (imgs.length !== 1) continue;
+                    const r = imgs[0].getBoundingClientRect();
+                    const area = r.width * r.height;
+                    if (area >= myArea * 0.4 && area <= myArea * 2.5) similar += 1;
+                  }
+                  if (similar >= 3) return similar;
+                }
+                return 0;
+              };
+              for (const img of Array.from(document.images)) {
+                img.setAttribute('data-webtree-evidence', JSON.stringify({
+                  nw: img.naturalWidth || 0,
+                  nh: img.naturalHeight || 0,
+                  ...boxOf(img),
+                  vw, vh,
+                  grid: gridCount(img),
+                }));
+              }
               for (const el of Array.from(document.querySelectorAll('body *'))) {
                 const rect = el.getBoundingClientRect();
                 if (rect.width < 200 || rect.height < 120) continue;
                 const url = extractUrl(getComputedStyle(el).backgroundImage);
-                if (url) el.setAttribute('data-webtree-bg-image', url);
+                if (!url) continue;
+                el.setAttribute('data-webtree-bg-image', url);
+                el.setAttribute('data-webtree-bg-evidence', JSON.stringify({
+                  ...boxOf(el),
+                  vw, vh,
+                  text: ((el.innerText || '').trim()).length,
+                }));
               }
             }
             """
@@ -266,7 +337,7 @@ async def _goto_and_render(
         # below-the-fold copy before we snapshot. Without this, paragraphs that
         # only mount on scroll never make it into page.content().
         await _autoscroll(page)
-        await _stamp_computed_backgrounds(page)
+        await _stamp_render_evidence(page)
         html = await page.content()
         final_url = page.url
     finally:
@@ -352,6 +423,44 @@ _GENERIC_PROFILE_NAMES = {
     "our board",
     "leadership",
     "staff",
+    # Name-shaped section headings (2+ capitalised tokens) that are never a
+    # person. _nearest_profile_container's fallback accepts any ancestor with
+    # an h2-h5, so ordinary content sections reach the name check.
+    "our story",
+    "our mission",
+    "our values",
+    "our vision",
+    "our services",
+    "our history",
+    "our approach",
+    "our work",
+    "our people",
+    "our partners",
+    "about us",
+    "contact us",
+    "who we are",
+    "what we do",
+    "why choose us",
+    "get in touch",
+    "join us",
+}
+
+# A real name never starts with a determiner/possessive/CTA verb. Catches the
+# long tail of headings the exact-match set above can't enumerate
+# ("Our Community Programmes", "Meet Your Dentists", "Why Families Trust Us").
+_NON_NAME_LEAD_TOKENS = {
+    "our", "the", "your", "my", "their", "this", "these", "a", "an",
+    "meet", "about", "why", "what", "how", "who", "where", "when",
+    "welcome", "contact", "discover", "explore", "join", "visit", "view",
+    "see", "find", "get", "learn", "read", "book", "call",
+}
+
+# Lowercase tokens allowed inside a capitalised name ("Siti binti Rahman",
+# "Jan van der Berg"). Everything else lowercase marks a sentence fragment,
+# not a name.
+_NAME_PARTICLES = {
+    "bin", "binti", "binte", "van", "der", "de", "den", "da", "di",
+    "del", "della", "von", "al", "el", "le", "la", "ter", "ten",
 }
 
 # Matches background-image / background shorthand containing a url().
@@ -460,8 +569,19 @@ def _image_src_from_tag(img: Tag) -> str | None:
     return src or srcset_candidate
 
 
+def _tag_classes(tag: Tag) -> str:
+    return " ".join(
+        tag.get("class") if isinstance(tag.get("class"), list) else []
+    ).lower()
+
+
+def _bg_about_hint(tag: Tag) -> bool:
+    return any(k in _tag_classes(tag) for k in ("about", "story", "team", "who-we-are"))
+
+
 def _guess_bg_intent(tag: Tag, prior: list[ImageCandidate]) -> str:
-    """Intent heuristic for a CSS background-image element.
+    """Intent heuristic for a CSS background-image element without render
+    evidence.
 
     Checks tag name and class names for hero/about signals.  Falls back to
     'generic'.  Never assigns 'hero' if one is already in ``prior`` so the
@@ -469,9 +589,7 @@ def _guess_bg_intent(tag: Tag, prior: list[ImageCandidate]) -> str:
     """
     hero_taken = any(c.intent == "hero" for c in prior)
     tag_name = (tag.name or "").lower()
-    classes = " ".join(
-        tag.get("class") if isinstance(tag.get("class"), list) else []
-    ).lower()
+    classes = _tag_classes(tag)
 
     if not hero_taken:
         if tag_name in ("header", "section"):
@@ -479,10 +597,36 @@ def _guess_bg_intent(tag: Tag, prior: list[ImageCandidate]) -> str:
         if any(k in classes for k in ("hero", "banner", "jumbotron", "cover", "splash", "masthead")):
             return "hero"
 
-    if any(k in classes for k in ("about", "story", "team", "who-we-are")):
+    if _bg_about_hint(tag):
         return "about"
 
     return "generic"
+
+
+def _bg_candidate_from_tag(
+    tag: Tag, abs_url: str, prior: list[ImageCandidate]
+) -> ImageCandidate | None:
+    """Build a candidate for a CSS-background element, evidence-aware.
+
+    With render evidence: classify the measured role (None for decorations);
+    hero intent is left to _promote_hero_by_evidence. Without evidence: legacy
+    class/tag-name intent guess.
+    """
+    evidence = parse_evidence(tag.get("data-webtree-bg-evidence"))
+    if evidence is not None:
+        role = classify_role(evidence, is_background=True)
+        if role == "decoration":
+            return None
+        intent = "about" if _bg_about_hint(tag) else "generic"
+        return ImageCandidate(
+            url=abs_url, alt="", width=evidence.width or None,
+            height=evidence.height or None, intent=intent, role=role,
+            evidence=evidence,
+        )
+    return ImageCandidate(
+        url=abs_url, alt="", width=None, height=None,
+        intent=_guess_bg_intent(tag, prior),
+    )
 
 
 def _extract_bg_images(
@@ -503,6 +647,12 @@ def _extract_bg_images(
         engine.  Data URIs and obvious icon paths are filtered.
     """
     candidates: list[ImageCandidate] = []
+    # Render stamps anywhere on the page ⇒ legacy first-seen hero promotion is
+    # disabled; _promote_hero_by_evidence picks the measured hero instead.
+    page_has_evidence = (
+        soup.find(attrs={"data-webtree-evidence": True}) is not None
+        or soup.find(attrs={"data-webtree-bg-evidence": True}) is not None
+    )
 
     # --- Level 1: inline style="background-image: url(...)" --------------------
     for tag in soup.find_all(attrs={"data-webtree-bg-image": True}):
@@ -516,11 +666,10 @@ def _extract_bg_images(
             continue
         if _looks_like_icon(abs_url, ""):
             continue
-        intent = _guess_bg_intent(tag, prior + candidates)
+        candidate = _bg_candidate_from_tag(tag, abs_url, prior + candidates)
         seen.add(abs_url)
-        candidates.append(
-            ImageCandidate(url=abs_url, alt="", width=None, height=None, intent=intent)
-        )
+        if candidate is not None:
+            candidates.append(candidate)
 
     for tag in soup.find_all(style=True):
         if not isinstance(tag, Tag):
@@ -535,11 +684,10 @@ def _extract_bg_images(
                 continue
             if _looks_like_icon(abs_url, ""):
                 continue
-            intent = _guess_bg_intent(tag, prior + candidates)
+            candidate = _bg_candidate_from_tag(tag, abs_url, prior + candidates)
             seen.add(abs_url)
-            candidates.append(
-                ImageCandidate(url=abs_url, alt="", width=None, height=None, intent=intent)
-            )
+            if candidate is not None:
+                candidates.append(candidate)
 
     # --- Level 2: <style> tag CSS text ----------------------------------------
     for style_tag in soup.find_all("style"):
@@ -556,9 +704,15 @@ def _extract_bg_images(
             if _looks_like_icon(abs_url, ""):
                 continue
             seen.add(abs_url)
-            # Can't infer intent from a CSS selector → generic, but promote
-            # the first one to hero if nothing better has been found yet.
-            intent = "hero" if not any(c.intent == "hero" for c in prior + candidates) else "generic"
+            # Can't infer intent from a CSS selector → generic, but on
+            # evidence-less pages promote the first one to hero if nothing
+            # better has been found yet.
+            intent = (
+                "hero"
+                if not page_has_evidence
+                and not any(c.intent == "hero" for c in prior + candidates)
+                else "generic"
+            )
             candidates.append(
                 ImageCandidate(url=abs_url, alt="", width=None, height=None, intent=intent)
             )
@@ -573,6 +727,11 @@ def _extract_images(
     Collect all <img> + og:image + apple-touch-icon, filter and rank.
     Returns candidates ordered: hero → about → generic. Logos are surfaced
     separately by _extract_logo_candidate.
+
+    When the page carries render-evidence stamps (Playwright path), roles come
+    from measured geometry, decorations are dropped, and the hero is the
+    measured lead visual (_promote_hero_by_evidence) instead of the first
+    image in DOM order.
     """
     seen: set[str] = set()
     candidates: list[ImageCandidate] = []
@@ -594,15 +753,34 @@ def _extract_images(
             # Still allow if size hints big enough
             pass
 
+        evidence = parse_evidence(img.get("data-webtree-evidence"))
         width = _parse_int(img.get("width") if isinstance(img.get("width"), str) else None)
         height = _parse_int(img.get("height") if isinstance(img.get("height"), str) else None)
+        if evidence is not None:
+            # Measured sizes beat declared attributes: natural is the true
+            # bitmap size; the rendered box is a usable proxy when the bitmap
+            # never finished loading.
+            width = evidence.natural_width or width or evidence.width or None
+            height = evidence.natural_height or height or evidence.height or None
         # Drop tiny declared sizes (decoration / icons)
         if (width and width < 200) or (height and height < 120):
             continue
 
-        intent = _guess_intent(img, candidates)
+        if evidence is not None:
+            role = classify_role(evidence)
+            if role == "decoration":
+                continue
+            # Hero is assigned by _promote_hero_by_evidence after all
+            # candidates (incl. CSS backgrounds) are measured.
+            intent = "about" if _about_hint(img) else "generic"
+        else:
+            role = "unknown"
+            intent = _guess_intent(img, candidates)
         candidates.append(
-            ImageCandidate(url=abs_url, alt=alt, width=width, height=height, intent=intent)
+            ImageCandidate(
+                url=abs_url, alt=alt, width=width, height=height,
+                intent=intent, role=role, evidence=evidence,
+            )
         )
         seen.add(abs_url)
 
@@ -631,6 +809,9 @@ def _extract_images(
     # CSS background-image URLs (inline styles + <style> blocks)
     bg_candidates = _extract_bg_images(soup, base_url, seen, candidates)
     candidates.extend(bg_candidates)
+
+    # Rendered pages: hero = the measured lead visual, not DOM order.
+    _promote_hero_by_evidence(candidates)
 
     return candidates[:30]  # cap
 
@@ -678,6 +859,15 @@ def _looks_like_person_name(value: str) -> bool:
         return False
     tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
     if len(tokens) < 2 or len(tokens) > 7:
+        return False
+    if tokens[0].lower() in _NON_NAME_LEAD_TOKENS:
+        return False
+    # Every token must be capitalised (or a known name particle): rejects
+    # sentence fragments like "Serving Penang since 1998" while keeping
+    # "Dr Aisha Rahman", "Siti binti Rahman", and all-caps name plaques.
+    for token in tokens:
+        if token[0].isupper() or token.lower() in _NAME_PARTICLES:
+            continue
         return False
     return True
 
@@ -816,6 +1006,11 @@ def _extract_profile_candidates(
         height = _parse_int(img.get("height") if isinstance(img.get("height"), str) else None)
         if (width and width < 80) or (height and height < 80):
             continue
+        # Render evidence: icon-size boxes next to a name are social/link
+        # icons, not the portrait (declared width/height is usually absent).
+        evidence = parse_evidence(img.get("data-webtree-evidence"))
+        if evidence is not None and (evidence.width < 80 or evidence.height < 80):
+            continue
 
         container = _nearest_profile_container(img)
         if container is None:
@@ -845,22 +1040,45 @@ def _extract_profile_candidates(
     return profiles[:24]
 
 
-def _guess_intent(img: Tag, prior: list[ImageCandidate]) -> str:
-    """
-    Cheap heuristic: first big image we see is "hero"; subsequent are "about"
-    or "generic" based on nearby text.
-    """
-    if not any(c.intent == "hero" for c in prior):
-        return "hero"
-    # Look at nearest section heading for "about" / "team" hints
+def _about_hint(img: Tag) -> bool:
+    """True when the nearest section heading reads like an about/team section."""
     section = img.find_parent(["section", "article", "div"])
     if isinstance(section, Tag):
         heading = section.find(["h1", "h2", "h3"])
         if isinstance(heading, Tag):
             text = heading.get_text(strip=True).lower()
-            if any(t in text for t in ("about", "story", "team", "who we are")):
-                return "about"
-    return "generic"
+            return any(t in text for t in ("about", "story", "team", "who we are"))
+    return False
+
+
+def _guess_intent(img: Tag, prior: list[ImageCandidate]) -> str:
+    """
+    Cheap heuristic for pages without render evidence: first big image we see
+    is "hero"; subsequent are "about" or "generic" based on nearby text.
+    """
+    if not any(c.intent == "hero" for c in prior):
+        return "hero"
+    return "about" if _about_hint(img) else "generic"
+
+
+def _promote_hero_by_evidence(candidates: list[ImageCandidate]) -> None:
+    """Give the 'hero' intent to the strongest evidence-backed lead visual.
+
+    Replaces the legacy "first big image wins" guess on rendered pages: the
+    hero is the measured-hero (or an above-the-fold backdrop) with the largest
+    viewport coverage. Evidence-bearing candidates never receive 'hero' during
+    extraction, so this is the only place rendered pages assign it. No-op on
+    fast-path pages (no evidence ⇒ legacy heuristics already picked a hero).
+    """
+    contenders = [
+        c for c in candidates
+        if c.evidence is not None
+        and (c.role == "hero" or (c.role == "background" and c.evidence.above_fold))
+    ]
+    if not contenders:
+        return
+    best = max(contenders, key=lambda c: c.evidence.coverage)  # type: ignore[union-attr]
+    best.intent = "hero"
 
 
 def _extract_logo_candidate(soup: BeautifulSoup, base_url: str) -> str | None:
@@ -1176,6 +1394,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
                 url=c.url,
                 alt=c.alt,
                 intent=c.intent,  # type: ignore[arg-type]
+                role=c.role,  # type: ignore[arg-type]
                 width=c.width,
                 height=c.height,
             )

@@ -33,6 +33,9 @@ Override defaults via env vars or a `.env` file:
 | `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | Recommended for M1 16GB |
 | `OLLAMA_MODEL_QUALITY` | `qwen2.5:14b-instruct` | Optional quality mode |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | |
+| `OLLAMA_VISION_MODEL` | unset | Opt-in: multimodal model (e.g. `qwen2.5vl:7b`, `moondream`) that captions/classifies scraped images for better slot matching + profile verification. Unset ⇒ pass skipped |
+| `VISION_MAX_IMAGES` | `12` | Vision annotation cap per generation |
+| `PEXELS_API_KEY` | unset | Free key at pexels.com/api — stock photo fallback (Picsum without it) |
 | `CMS_API_BASE_URL` | `http://localhost:8000` | webtree CMS API |
 
 ## Endpoints (Phase 1)

@@ -763,8 +763,23 @@ class ImageMetadata(BaseModel):
     url: str
     alt: str = ""
     intent: Literal["hero", "about", "logo", "generic"] = "generic"
+    # Visual role measured from rendered geometry (services/image_evidence.py).
+    # 'unknown' on the httpx fast path and for doc-upload images, where no
+    # render evidence exists — the matcher then relies on intent alone.
+    role: Literal[
+        "hero", "background", "content", "gallery", "portrait", "logo", "decoration", "unknown"
+    ] = "unknown"
     width: int | None = None
     height: int | None = None
+    # Vision-pass annotations (services/image_vision.py). All None until the
+    # opt-in pass runs. vision_caption feeds the matcher's lexical scoring so
+    # alt-less, hash-named images can still be ranked against slot queries.
+    vision_caption: str | None = None
+    vision_kind: Literal[
+        "photo", "logo", "banner", "screenshot", "graphic", "map", "other"
+    ] | None = None
+    vision_people: int | None = None  # visible people count
+    vision_portrait: bool | None = None  # single face/head-and-shoulders subject
     # Luminance-band inputs for the schema_builder pass (SECTION_VISUAL_POLICY_SPEC.md
     # §4.3). Dominant colour comes free from Pexels avg_color or a generated base —
     # NO pixel download. luminance/band stay None until set by media.py.

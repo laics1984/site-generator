@@ -1,3 +1,4 @@
+import logging
 import re
 
 from fastapi import APIRouter, HTTPException
@@ -37,9 +38,12 @@ from app.services.planner import (
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
 from app.services.scaffold_enforcement import align_page_to_scaffold
-from app.services.locale import detect_market, image_query_cue
+from app.services.image_vision import VisionAnnotation, annotate_image_pool
+from app.services.locale import detect_market, image_query_cue, place_query_cue
 from app.services.schema_builder import plan_to_site
 from app.services.theme import build_theme
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
 
@@ -56,17 +60,19 @@ class GenerateRequest(BaseModel):
     contact: dict[str, str] | None = None
 
 
-def _market_cue_for(source: SourceContent) -> str:
-    """Best-effort regional cue for image queries (e.g. "Southeast Asian").
+def _market_cues_for(source: SourceContent) -> tuple[str, str]:
+    """Best-effort (demonym, place) cues for image queries — e.g.
+    ("Southeast Asian", "Malaysia").
 
     Locale detection is an enhancement, never load-bearing — any failure must
-    not break generation, so we swallow errors and fall back to no cue.
+    not break generation, so we swallow errors and fall back to no cues.
     """
     try:
         urls = [source.source_ref, *source.links, *source.images]
-        return image_query_cue(detect_market(source.raw_text, urls=urls))
+        market = detect_market(source.raw_text, urls=urls)
+        return image_query_cue(market), place_query_cue(market)
     except Exception:  # noqa: BLE001 — image localisation must not 500 a generation
-        return ""
+        return "", ""
 
 
 def _image_pool_for(source: SourceContent) -> tuple[list[str], list[ImageMetadata]]:
@@ -172,14 +178,53 @@ def _profile_match_score(member_name: str, profile: ProfileCandidate) -> float:
     return 0.0
 
 
-def _enrich_plan_profile_photos(plan: SitePlan, source: SourceContent) -> None:
+async def _annotate_source_images(
+    source: SourceContent, metadata: list[ImageMetadata]
+) -> dict[str, VisionAnnotation]:
+    """Run the opt-in vision pass over the resolver pool + profile portraits.
+
+    Returns {} instantly when no vision model is configured. Like locale
+    detection, this is an enhancement — any failure must not break generation.
+    """
+    try:
+        profile_urls = [
+            p.photo_url for p in _profile_pool_for(source) if p.photo_url
+        ]
+        return await annotate_image_pool(metadata, extra_urls=profile_urls)
+    except Exception:  # noqa: BLE001 — vision must not 500 a generation
+        logger.exception("Vision annotation pass failed; continuing without it")
+        return {}
+
+
+def _profile_photo_vision_ok(
+    photo_url: str | None, annotations: dict[str, VisionAnnotation] | None
+) -> bool:
+    """False when the vision pass saw the 'portrait' and it isn't one (a logo,
+    a banner, an empty room). Unannotated photos keep the benefit of the doubt
+    — the vision pass is opt-in and bounded, never a gate."""
+    if not annotations or not photo_url:
+        return True
+    annotation = annotations.get(photo_url)
+    if annotation is None:
+        return True
+    return annotation.kind == "photo" and annotation.people_count >= 1
+
+
+def _enrich_plan_profile_photos(
+    plan: SitePlan,
+    source: SourceContent,
+    annotations: dict[str, VisionAnnotation] | None = None,
+) -> None:
     """Attach confidently matched scraped portraits to generated team members.
 
     Mutates the plan in place. Only concrete URLs from scraper-produced
     ProfileCandidate objects are applied, so older payloads and LLM-only plans
     keep using the existing photo_query fallback.
     """
-    profiles = [p for p in _profile_pool_for(source) if p.photo_url]
+    profiles = [
+        p for p in _profile_pool_for(source)
+        if p.photo_url and _profile_photo_vision_ok(p.photo_url, annotations)
+    ]
     if not profiles:
         return
 
@@ -207,11 +252,16 @@ def _enrich_plan_profile_photos(plan: SitePlan, source: SourceContent) -> None:
                     used_urls.add(matched.photo_url)
 
 
-def _scraped_team_members(source: SourceContent) -> list[TeamMember]:
+def _scraped_team_members(
+    source: SourceContent,
+    annotations: dict[str, VisionAnnotation] | None = None,
+) -> list[TeamMember]:
     """Deterministic team members built from scraped profile candidates."""
     members: list[TeamMember] = []
     for profile in _profile_pool_for(source):
         if not profile.photo_url:
+            continue
+        if not _profile_photo_vision_ok(profile.photo_url, annotations):
             continue
         members.append(
             TeamMember(
@@ -226,14 +276,18 @@ def _scraped_team_members(source: SourceContent) -> list[TeamMember]:
     return members[:12]
 
 
-def _ensure_scraped_team_blocks(plan: SitePlan, source: SourceContent) -> None:
+def _ensure_scraped_team_blocks(
+    plan: SitePlan,
+    source: SourceContent,
+    annotations: dict[str, VisionAnnotation] | None = None,
+) -> None:
     """Fallback when scraped portraits exist but the final team block lost them.
 
     The LLM sometimes omits the team section or rewrites member names enough
     that photo matching fails. For team pages, prefer the concrete scraped
     roster over losing the portraits entirely.
     """
-    scraped_members = _scraped_team_members(source)
+    scraped_members = _scraped_team_members(source, annotations)
     if not scraped_members:
         return
 
@@ -293,9 +347,11 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     theme = build_theme(seed_hex, mood=mood)
 
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
-    _enrich_plan_profile_photos(plan, payload.source)
-    _ensure_scraped_team_blocks(plan, payload.source)
+    annotations = await _annotate_source_images(payload.source, scraped_metadata)
+    _enrich_plan_profile_photos(plan, payload.source, annotations)
+    _ensure_scraped_team_blocks(plan, payload.source, annotations)
 
+    market_cue, place_cue = _market_cues_for(payload.source)
     return await plan_to_site(
         plan,
         brand=brand,
@@ -303,7 +359,8 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
         contact=payload.contact,
-        market_cue=_market_cue_for(payload.source),
+        market_cue=market_cue,
+        place_cue=place_cue,
         social_links=_social_links_for(payload.source),
     )
 
@@ -425,9 +482,11 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
 
     # Generate themed site (body + header + footer + theme)
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
-    _enrich_plan_profile_photos(plan, payload.source)
-    _ensure_scraped_team_blocks(plan, payload.source)
+    annotations = await _annotate_source_images(payload.source, scraped_metadata)
+    _enrich_plan_profile_photos(plan, payload.source, annotations)
+    _ensure_scraped_team_blocks(plan, payload.source, annotations)
 
+    market_cue, place_cue = _market_cues_for(payload.source)
     site = await plan_to_site(
         plan,
         brand=brand,
@@ -436,7 +495,8 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         scraped_metadata=scraped_metadata,
         contact=payload.contact,
         extra_footer_nav=extra_footer_nav,
-        market_cue=_market_cue_for(payload.source),
+        market_cue=market_cue,
+        place_cue=place_cue,
         social_links=_social_links_for(payload.source),
     )
 

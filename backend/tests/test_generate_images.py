@@ -133,3 +133,60 @@ class GenerateImagePoolTest(unittest.TestCase):
         member = plan.pages[0].blocks[0].members[0]
         self.assertEqual(member.photo_url, "https://example.my/aisha.jpg")
         self.assertEqual(member.photo_alt, "Dr Aisha Rahman portrait")
+
+    def test_vision_annotation_blocks_non_portrait_profile_photo(self):
+        from app.services.image_vision import VisionAnnotation
+
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Committee members include Dr Aisha Rahman, Chairperson.",
+            profile_candidates=[
+                ProfileCandidate(
+                    name="Dr Aisha Rahman",
+                    role="Chairperson",
+                    photo_url="https://example.my/partner-logo.jpg",
+                    photo_alt="Dr Aisha Rahman portrait",
+                    source_url="https://example.my/about",
+                    confidence=0.9,
+                )
+            ],
+        )
+        plan = SitePlan(
+            site_name="Example",
+            pages=[
+                PagePlan(
+                    page_type="team",
+                    slug="committee",
+                    title="Committee",
+                    blocks=[
+                        TeamBlock(
+                            heading="Committee",
+                            members=[
+                                TeamMember(
+                                    name="Dr Aisha Rahman",
+                                    role="Chairperson",
+                                    photo_query="professional portrait",
+                                )
+                            ],
+                        )
+                    ],
+                    seo_title="Committee - Example",
+                    seo_description="Meet the committee.",
+                )
+            ],
+        )
+        # The vision pass saw the "portrait" and it's a sponsor logo, not a person.
+        annotations = {
+            "https://example.my/partner-logo.jpg": VisionAnnotation(
+                caption="company logo on white background", kind="logo", people_count=0
+            )
+        }
+
+        generate._enrich_plan_profile_photos(plan, source, annotations)
+
+        member = plan.pages[0].blocks[0].members[0]
+        self.assertIsNone(member.photo_url)
+        self.assertEqual(
+            generate._scraped_team_members(source, annotations), []
+        )

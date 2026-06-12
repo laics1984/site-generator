@@ -9,6 +9,15 @@ class Settings(BaseSettings):
     ollama_model_quality: str = "qwen2.5:14b-instruct"
     ollama_timeout_seconds: float = 180.0
 
+    # Vision pass over scraped images (services/image_vision.py). Opt-in: set
+    # to a multimodal Ollama model (e.g. "qwen2.5vl:7b" or "moondream") to
+    # caption/classify scraped images for better slot matching and profile
+    # verification. Unset ⇒ the pass is skipped entirely.
+    ollama_vision_model: str | None = None
+    vision_max_images: int = 12  # annotation cap per generation
+    vision_image_max_bytes: int = 4_000_000  # skip downloads larger than this
+    vision_fetch_timeout_seconds: float = 8.0
+
     cms_api_base_url: str = "http://localhost:8000"
 
     # Luminance-band section rhythm (SECTION_VISUAL_POLICY_SPEC.md). Off by

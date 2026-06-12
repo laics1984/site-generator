@@ -1,9 +1,17 @@
+import json
 import unittest
 
 from bs4 import BeautifulSoup
 
 import app.services.scraper as scraper
 from app.services.scraper import _extract_images
+
+
+def _stamp(**overrides) -> str:
+    """Render-evidence JSON like _stamp_render_evidence produces (1280x800)."""
+    base = {"nw": 0, "nh": 0, "x": 0, "y": 0, "w": 0, "h": 0, "vw": 1280, "vh": 800}
+    base.update(overrides)
+    return json.dumps(base)
 
 
 class ScraperImageExtractionTest(unittest.TestCase):
@@ -50,6 +58,211 @@ class ScraperImageExtractionTest(unittest.TestCase):
 
         self.assertEqual(images[0].url, "https://example.my/computed-hero.jpg")
         self.assertEqual(images[0].intent, "hero")
+
+    def test_evidence_picks_measured_hero_over_dom_order(self):
+        # DOM order says the small inline photo comes first; measurement says
+        # the second image is the lead visual. Evidence must win.
+        soup = BeautifulSoup(
+            f"""
+            <html>
+              <body>
+                <img src="/inline-story.jpg"
+                     data-webtree-evidence='{_stamp(nw=600, nh=400, x=40, y=1500, w=300, h=200)}' />
+                <img src="/big-hero.jpg"
+                     data-webtree-evidence='{_stamp(nw=1920, nh=900, x=0, y=0, w=1280, h=640)}' />
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        images = _extract_images(soup, "https://example.my")
+
+        by_url = {c.url.rsplit("/", 1)[-1]: c for c in images}
+        self.assertEqual(by_url["big-hero.jpg"].intent, "hero")
+        self.assertEqual(by_url["big-hero.jpg"].role, "hero")
+        self.assertEqual(by_url["inline-story.jpg"].intent, "generic")
+        self.assertEqual(by_url["inline-story.jpg"].role, "content")
+
+    def test_evidence_decoration_is_dropped(self):
+        soup = BeautifulSoup(
+            f"""
+            <html>
+              <body>
+                <img src="/badge.jpg"
+                     data-webtree-evidence='{_stamp(nw=320, nh=320, y=300, w=40, h=40)}' />
+                <img src="/award-strip.jpg"
+                     data-webtree-evidence='{_stamp(nw=2400, nh=200, y=900, w=1200, h=100)}' />
+                <img src="/real-photo.jpg"
+                     data-webtree-evidence='{_stamp(nw=800, nh=600, y=1200, w=600, h=450)}' />
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        images = _extract_images(soup, "https://example.my")
+
+        urls = [c.url.rsplit("/", 1)[-1] for c in images]
+        self.assertEqual(urls, ["real-photo.jpg"])
+
+    def test_evidence_natural_size_fills_missing_dimensions(self):
+        soup = BeautifulSoup(
+            f"""
+            <html>
+              <body>
+                <img src="/no-declared-size.jpg"
+                     data-webtree-evidence='{_stamp(nw=1600, nh=900, y=2000, w=700, h=394)}' />
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        images = _extract_images(soup, "https://example.my")
+
+        self.assertEqual(images[0].width, 1600)
+        self.assertEqual(images[0].height, 900)
+
+    def test_bg_evidence_with_text_is_background_and_promotable_to_hero(self):
+        soup = BeautifulSoup(
+            f"""
+            <html>
+              <body>
+                <section
+                  data-webtree-bg-image="/backdrop.jpg"
+                  data-webtree-bg-evidence='{_stamp(y=0, w=1280, h=600, text=85)}'>
+                  <h1>Community dental care in Penang</h1>
+                </section>
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        images = _extract_images(soup, "https://example.my")
+
+        self.assertEqual(images[0].url, "https://example.my/backdrop.jpg")
+        self.assertEqual(images[0].role, "background")
+        self.assertEqual(images[0].intent, "hero")
+
+    def test_evidence_team_grid_keeps_portrait_role(self):
+        # 400px headshots rendered as 112px circles in a 4-up grid.
+        cell = _stamp(nw=400, nh=400, y=1800, w=112, h=112, grid=4)
+        soup = BeautifulSoup(
+            f"""
+            <html>
+              <body>
+                <img src="/aisha.jpg" data-webtree-evidence='{cell}' />
+                <img src="/marcus.jpg" data-webtree-evidence='{cell}' />
+                <img src="/siti.jpg" data-webtree-evidence='{cell}' />
+                <img src="/wei.jpg" data-webtree-evidence='{cell}' />
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        images = _extract_images(soup, "https://example.my")
+
+        self.assertEqual(len(images), 4)
+        self.assertEqual({c.role for c in images}, {"portrait"})
+        self.assertNotIn("hero", {c.intent for c in images})
+
+    def test_no_evidence_keeps_legacy_first_image_hero(self):
+        soup = BeautifulSoup(
+            """
+            <html>
+              <body>
+                <img src="/first.jpg" alt="storefront" />
+                <img src="/second.jpg" alt="our team at work" />
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        images = _extract_images(soup, "https://example.my")
+
+        self.assertEqual(images[0].url, "https://example.my/first.jpg")
+        self.assertEqual(images[0].intent, "hero")
+        self.assertEqual(images[0].role, "unknown")
+
+    def test_profile_extraction_skips_icon_size_rendered_images(self):
+        soup = BeautifulSoup(
+            f"""
+            <html>
+              <body>
+                <section class="committee">
+                  <article class="committee-member">
+                    <img src="/icons/linkedin.jpg"
+                         data-webtree-evidence='{_stamp(nw=48, nh=48, y=1800, w=24, h=24)}' />
+                    <h3>Dr Aisha Rahman</h3>
+                    <p class="role">Chairperson</p>
+                  </article>
+                </section>
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my/about")
+
+        self.assertEqual(profiles, [])
+
+    def test_profile_extraction_ignores_content_section_headings(self):
+        # An "Our story" content section with an inline photo must not become
+        # a team member named "Our story" — neither via the exact blocklist
+        # nor via the determiner-led heading path ("Our Community Programmes").
+        soup = BeautifulSoup(
+            """
+            <html>
+              <body>
+                <section class="story">
+                  <h2>Our story</h2>
+                  <p>We provide affordable community dental care across Penang.
+                  Serving Penang since 1998 with mobile clinics.</p>
+                  <img src="/inline-story.jpg" alt="" />
+                </section>
+                <section class="programmes">
+                  <h2>Our Community Programmes</h2>
+                  <p>School screenings every first Saturday of the month.</p>
+                  <img src="/programme.jpg" alt="" />
+                </section>
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my")
+
+        self.assertEqual(profiles, [])
+
+    def test_looks_like_person_name_rejects_headings_keeps_names(self):
+        rejected = [
+            "Our Story",
+            "Our Mission",
+            "Meet Your Dentists",
+            "Why Families Trust Us",
+            "What We Do",
+            "Get in Touch",
+            "Serving Penang since 1998",
+            "Book an Appointment",
+        ]
+        accepted = [
+            "Dr Aisha Rahman",
+            "Marcus Ong",
+            "Siti binti Rahman",
+            "Jan van der Berg",
+            "MARCUS ONG",
+        ]
+
+        for value in rejected:
+            self.assertFalse(scraper._looks_like_person_name(value), value)
+        for value in accepted:
+            self.assertTrue(scraper._looks_like_person_name(value), value)
 
     def test_extract_profile_candidates_links_committee_portrait_to_profile_text(self):
         extractor = getattr(scraper, "_extract_profile_candidates", None)

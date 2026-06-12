@@ -17,6 +17,9 @@ services:
       OLLAMA_BASE_URL: "http://host.docker.internal:11434"
       OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:7b-instruct}"
       OLLAMA_TIMEOUT_SECONDS: "${OLLAMA_TIMEOUT_SECONDS:-180}"
+      # Opt-in vision pass over scraped images (e.g. "qwen2.5vl:7b").
+      # Empty ⇒ skipped entirely.
+      OLLAMA_VISION_MODEL: "${OLLAMA_VISION_MODEL:-}"
       # Pexels free API key for real photos. Falls back to Picsum if empty.
       PEXELS_API_KEY: "${PEXELS_API_KEY:-}"
       CMS_API_BASE_URL: "${CMS_API_BASE_URL:-http://host.docker.internal:8000}"
