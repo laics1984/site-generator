@@ -41,7 +41,7 @@ from app.services.scaffold_enforcement import align_page_to_scaffold
 from app.services.image_vision import VisionAnnotation, annotate_image_pool
 from app.services.locale import detect_market, image_query_cue, place_query_cue
 from app.services.schema_builder import plan_to_site
-from app.services.theme import build_theme
+from app.services.theme import build_theme, resolve_color_scheme
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class GenerateRequest(BaseModel):
     source: SourceContent
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
+    color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
     contact: dict[str, str] | None = None
 
 
@@ -344,7 +345,20 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         (brand.extracted_palette[0] if brand and brand.extracted_palette else None)
         or plan.primary_color_hint
     )
-    theme = build_theme(seed_hex, mood=mood)
+    theme = build_theme(
+        seed_hex,
+        mood=mood,
+        # Per-site font pool + curated-palette selection (auto: curated palette only
+        # when there's no usable logo hue, else the brand-driven Tailwind snap).
+        font_seed=(brand.name if brand else plan.site_name),
+        industry=plan.industry_category,
+        palette_mode="auto",
+        color_scheme=resolve_color_scheme(
+            payload.color_scheme_override,
+            brand.color_scheme if brand else None,
+            brand.logo_is_light if brand else None,
+        ),
+    )
 
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
@@ -382,6 +396,7 @@ class GenerateWithPagesRequest(BaseModel):
     industry: IndustryCategoryLiteral = "other"
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
+    color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
     contact: dict[str, str] | None = None
     jurisdiction: str | None = None
     legal_contact_email: str | None = None
@@ -437,7 +452,16 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         (brand.extracted_palette[0] if brand.extracted_palette else None)
         or detected.primary_color_hint
     )
-    theme = build_theme(seed_hex, mood=mood)
+    theme = build_theme(
+        seed_hex,
+        mood=mood,
+        font_seed=brand.name,
+        industry=industry,
+        palette_mode="auto",
+        color_scheme=resolve_color_scheme(
+            payload.color_scheme_override, brand.color_scheme, brand.logo_is_light
+        ),
+    )
 
     # Announcement/quick-links strap: claim it BEFORE planning so its text is
     # out of raw_text (the LLM must not also narrate it into a paragraph);

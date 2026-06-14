@@ -88,9 +88,12 @@ def _coerce_literal(value: object, allowed: frozenset[str], default: str) -> str
     return default
 
 
-def heal_brand_mood_value(value: object) -> str:
-    """Coerce an LLM brand_mood onto the BrandMood Literal, default 'modern'."""
-    return _coerce_literal(value, frozenset(get_args(BrandMood)), "modern")
+def heal_brand_mood_value(value: object) -> str | None:
+    """Coerce an LLM brand_mood onto the BrandMood Literal; None when missing or
+    invalid, so callers can fall back to an industry-derived default rather than a
+    blanket 'modern' (see industry_default_mood)."""
+    healed = _coerce_literal(value, frozenset(get_args(BrandMood)), "")
+    return healed or None
 
 
 def heal_industry_value(value: object) -> str:
@@ -632,14 +635,38 @@ IndustryCategoryLiteral = Literal[
 ]
 
 
+# Industry → default brand mood, used when the LLM gives no usable mood so the
+# fallback reflects the industry instead of a blanket "modern". Grounded in the
+# ui-ux-pro-max typography/style reasoning (MIT) and brand.py's mood taxonomy:
+# modern=SaaS/professional; friendly=consumer/hospitality/cause; editorial=
+# agency/portfolio; technical=B2B/expertise. (luxury/playful stay LLM-driven —
+# no IndustryCategory maps cleanly to them.)
+INDUSTRY_MOOD: dict[str, str] = {
+    "restaurant": "friendly",
+    "agency": "editorial",
+    "saas": "modern",
+    "professional-services": "modern",
+    "ecommerce": "friendly",
+    "consultancy": "technical",
+    "nonprofit": "friendly",
+    "personal": "editorial",
+    "other": "modern",
+}
+
+
+def industry_default_mood(industry: object) -> str:
+    """The default brand mood for an industry (→ 'modern' when unknown)."""
+    return INDUSTRY_MOOD.get(str(industry or "").strip().lower(), "modern")
+
+
 class SitePlan(BaseModel):
     """The LLM's blueprint for the entire site."""
 
     site_name: str
     tagline: str | None = None
     brand_summary: str = ""
-    brand_mood: BrandMood = Field(
-        default="modern",
+    brand_mood: BrandMood | None = Field(
+        default=None,
         description=(
             "The brand's visual personality. Drives typography pairing, button radius, "
             "and section rhythm. Pick the closest match: "
@@ -677,6 +704,14 @@ class SitePlan(BaseModel):
     @classmethod
     def heal_industry(cls, v: object) -> object:
         return heal_industry_value(v)
+
+    @model_validator(mode="after")
+    def _mood_from_industry(self) -> "SitePlan":
+        # No usable mood from the LLM → derive one from the industry instead of a
+        # blanket "modern". An explicit, valid mood is always kept.
+        if self.brand_mood is None:
+            self.brand_mood = industry_default_mood(self.industry_category)  # type: ignore[assignment]
+        return self
 
 
 class SourceContent(BaseModel):

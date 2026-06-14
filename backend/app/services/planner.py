@@ -19,7 +19,7 @@ import json
 import logging
 import time
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.content_blocks import (
     BrandMood,
@@ -31,6 +31,7 @@ from app.models.content_blocks import (
     SourceContent,
     heal_brand_mood_value,
     heal_industry_value,
+    industry_default_mood,
 )
 from app.models.industry import PageScaffold
 from app.services.llm import OllamaClient, get_llm
@@ -113,7 +114,7 @@ class DetectedBrand(BaseModel):
     site_name: str
     tagline: str | None = None
     brand_summary: str = ""
-    brand_mood: BrandMood = "modern"
+    brand_mood: BrandMood | None = None
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
 
@@ -128,6 +129,14 @@ class DetectedBrand(BaseModel):
     @classmethod
     def heal_industry(cls, v: object) -> object:
         return heal_industry_value(v)
+
+    @model_validator(mode="after")
+    def _mood_from_industry(self):
+        # No usable mood from the LLM → derive one from the industry instead of a
+        # blanket "modern". An explicit, valid mood is always kept.
+        if self.brand_mood is None:
+            self.brand_mood = industry_default_mood(self.industry_category)
+        return self
 
 
 DETECT_BRAND_PROMPT = """You are a brand and industry analyst.
@@ -232,7 +241,7 @@ class ScaffoldedSitePlan(BaseModel):
     site_name: str
     tagline: str | None = None
     brand_summary: str = ""
-    brand_mood: BrandMood = "modern"
+    brand_mood: BrandMood | None = None
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
     pages: list[PagePlan]
@@ -246,6 +255,14 @@ class ScaffoldedSitePlan(BaseModel):
     @classmethod
     def heal_industry(cls, v: object) -> object:
         return heal_industry_value(v)
+
+    @model_validator(mode="after")
+    def _mood_from_industry(self):
+        # No usable mood from the LLM → derive one from the industry instead of a
+        # blanket "modern". An explicit, valid mood is always kept.
+        if self.brand_mood is None:
+            self.brand_mood = industry_default_mood(self.industry_category)
+        return self
 
 
 def _scaffolds_to_prompt_payload(

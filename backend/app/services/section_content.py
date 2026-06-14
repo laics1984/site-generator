@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from app.models.brand import BrandMood, ColorPalette
-from app.models.builder_schema import BuilderElement
+from app.models.builder_schema import BuilderElement, BuilderElementContent
 from app.models.content_blocks import (
     AboutBlock,
     ContactBlock,
@@ -43,7 +43,7 @@ from app.models.content_blocks import (
     VisualPolicy,
 )
 from app.services.template_filler import get_template, templates_for_type
-from app.services.theme import _adjust_lightness, band_colors
+from app.services.theme import _adjust_lightness, _relative_luminance, band_colors
 
 
 def _link(label: str | None, href: str | None) -> dict[str, str] | None:
@@ -432,10 +432,10 @@ def is_feasible(template: dict[str, Any], content: dict[str, Any]) -> bool:
 # chosen. Single-variant section types (faq, contact, team, …) are unaffected.
 _MOOD_LAYOUT_PREFERENCE: dict[BrandMood, list[str]] = {
     "modern": ["bento", "split", "grid", "gradient", "banner"],
-    "luxury": ["centered", "editorial", "narrative", "minimal", "split", "single"],
+    "luxury": ["centered", "editorial", "asymmetric", "narrative", "minimal", "split", "single"],
     "friendly": ["split", "grid", "banner", "background"],
     "technical": ["grid", "minimal", "stacked", "centered", "split"],
-    "editorial": ["editorial", "split", "narrative", "single", "background"],
+    "editorial": ["editorial", "asymmetric", "split", "narrative", "single", "background"],
     "playful": ["bento", "background", "gradient", "banner", "grid"],
 }
 
@@ -711,6 +711,83 @@ def apply_luminance_rhythm(
         if plan.band == "dark":
             _recolor_text_for_dark(section, fg)
     return plans
+
+
+import re as _re
+
+_RGBA = _re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)")
+_HEX6 = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _bg_follows_theme(bg: str | None) -> bool:
+    """True when a background tracks the theme (page / surface / none) and so flips
+    to dark in dark mode. Fixed hex, gradients, photos and primary/secondary/accent
+    fills are False — text on those is handled elsewhere or intentionally fixed."""
+    if bg is None:
+        return True
+    b = bg.strip().lower()
+    if b in ("", "transparent"):
+        return True
+    return any(
+        token in b
+        for token in (
+            "var(--builder-page-background",
+            "var(--builder-color-surface",
+            "var(--builder-color-background",
+        )
+    )
+
+
+def _dark_unsafe_text_color(color: object) -> tuple[bool, str | None]:
+    """Is this text colour invisible on a dark page? Returns (unsafe, alpha)."""
+    if not isinstance(color, str):
+        return False, None
+    c = color.strip().lower()
+    if "var(--builder-color-secondary" in c:  # secondary is dark in both schemes
+        return True, None
+    m = _RGBA.search(c)
+    if m:
+        hexv = "#%02x%02x%02x" % (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        return (_relative_luminance(hexv) < 0.4), m.group(4)
+    if _HEX6.match(c):
+        return (_relative_luminance(c) < 0.4), None
+    return False, None
+
+
+def enforce_dark_text_safety(elements: list[BuilderElement]) -> int:
+    """Dark-scheme only: retarget hardcoded-dark / `secondary` text colours that sit
+    on a theme-following background to `var(--builder-color-text)` so legacy catalog
+    sections stay legible on a dark page. Text on fixed/colored surfaces (cards,
+    photos, dark bands, buttons) is left untouched. Mutates in place; returns the
+    count changed. Light mode never calls this — zero light-mode risk."""
+    changed = 0
+
+    def walk(node: BuilderElement, inherits_follow: bool) -> None:
+        nonlocal changed
+        styles = node.styles if isinstance(node.styles, dict) else {}
+        bg = styles.get("backgroundColor") or styles.get("background")
+        has_image = bool(styles.get("backgroundImage"))
+        follows = False if has_image else (_bg_follows_theme(bg) if bg is not None else inherits_follow)
+
+        content = node.content
+        if isinstance(content, BuilderElementContent):
+            if node.type == "text" and follows:
+                unsafe, alpha = _dark_unsafe_text_color(styles.get("color"))
+                if unsafe:
+                    new_styles = dict(styles)
+                    new_styles["color"] = "var(--builder-color-text, #0f172a)"
+                    if alpha is not None and "opacity" not in new_styles:
+                        new_styles["opacity"] = f"{round(float(alpha) * 100)}%"
+                    node.styles = new_styles
+                    changed += 1
+        elif isinstance(content, list):
+            for child in content:
+                if isinstance(child, BuilderElement):
+                    walk(child, follows)
+
+    for el in elements:
+        walk(el, True)
+    return changed
 
 
 def apply_section_rhythm(sections: list[BuilderElement]) -> None:

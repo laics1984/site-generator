@@ -25,6 +25,7 @@ import {
 import type {
   BrandIdentity,
   BrandMood,
+  ColorSchemeChoice,
   BuilderStylesShape,
   CrawlJob,
   DetectedBrand,
@@ -51,6 +52,8 @@ export default function App() {
   const [manualBrand, setManualBrand] = useState(false)
   const [brandName, setBrandName] = useState('')
   const [mood, setMood] = useState<BrandMood>('modern')
+  // 'auto' → send null so the backend decides from the logo (light logo ⇒ dark).
+  const [colorScheme, setColorScheme] = useState<ColorSchemeChoice>('auto')
   const [themePreview, setThemePreview] = useState<BuilderStylesShape | null>(null)
   const [googleFonts, setGoogleFonts] = useState<string[]>([])
 
@@ -318,6 +321,7 @@ export default function App() {
         source,
         brand: effectiveBrand(),
         mood_override: mood,
+        color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
       })
       setSite(result)
       setSelectedSlug(result.pages[0]?.slug ?? null)
@@ -351,6 +355,7 @@ export default function App() {
         industry: industryOverride || 'other',
         brand: effectiveBrand(),
         mood_override: mood,
+        color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
         detected_brand: detectedBrand,
       })
       setSite(result)
@@ -414,6 +419,8 @@ export default function App() {
                   setGoogleFonts={setGoogleFonts}
                   mood={mood}
                   setMood={setMood}
+                  colorScheme={colorScheme}
+                  setColorScheme={setColorScheme}
                 />
               </div>
             </div>

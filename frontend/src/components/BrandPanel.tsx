@@ -1,7 +1,12 @@
 import { useRef, useState } from 'react'
 
 import { extractBrandFromLogo } from '@/lib/api'
-import type { BrandExtractionResult, BrandIdentity, BrandMood } from '@/lib/types'
+import type {
+  BrandExtractionResult,
+  BrandIdentity,
+  BrandMood,
+  ColorSchemeChoice,
+} from '@/lib/types'
 
 const MOODS: { id: BrandMood; label: string; hint: string }[] = [
   { id: 'modern', label: 'Modern', hint: 'SaaS, fintech, tech' },
@@ -10,6 +15,12 @@ const MOODS: { id: BrandMood; label: string; hint: string }[] = [
   { id: 'technical', label: 'Technical', hint: 'B2B, engineering' },
   { id: 'editorial', label: 'Editorial', hint: 'Media, agencies' },
   { id: 'playful', label: 'Playful', hint: 'Entertainment, food' },
+]
+
+const SCHEMES: { id: ColorSchemeChoice; label: string; hint: string }[] = [
+  { id: 'auto', label: 'Auto', hint: 'From logo' },
+  { id: 'light', label: 'Light', hint: 'Light pages' },
+  { id: 'dark', label: 'Dark', hint: 'Dark pages' },
 ]
 
 interface BrandPanelProps {
@@ -23,6 +34,8 @@ interface BrandPanelProps {
   setGoogleFonts: (fonts: string[]) => void
   mood: BrandMood
   setMood: (mood: BrandMood) => void
+  colorScheme: ColorSchemeChoice
+  setColorScheme: (scheme: ColorSchemeChoice) => void
 }
 
 export function BrandPanel({
@@ -35,6 +48,8 @@ export function BrandPanel({
   setGoogleFonts,
   mood,
   setMood,
+  colorScheme,
+  setColorScheme,
 }: BrandPanelProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -90,6 +105,35 @@ export function BrandPanel({
               >
                 <div className="font-semibold">{m.label}</div>
                 <div className="text-slate-500">{m.hint}</div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-sm font-medium text-slate-700">Color scheme</div>
+        <p className="mt-1 text-xs text-slate-500">
+          Light or dark site. <span className="font-medium">Auto</span> follows the logo — a
+          light logo defaults to dark.
+        </p>
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          {SCHEMES.map((s) => {
+            const active = s.id === colorScheme
+            return (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => setColorScheme(s.id)}
+                className={
+                  'rounded-lg border px-2.5 py-2 text-left text-xs transition ' +
+                  (active
+                    ? 'border-blue-600 bg-blue-50 text-blue-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300')
+                }
+              >
+                <div className="font-semibold">{s.label}</div>
+                <div className="text-slate-500">{s.hint}</div>
               </button>
             )
           })}

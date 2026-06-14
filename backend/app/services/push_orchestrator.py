@@ -682,6 +682,8 @@ def _decode_data_url(src: str) -> tuple[bytes, str, str]:
     except Exception as exc:  # noqa: BLE001
         raise _ResolveSkip(f"base64 decode failed: {exc}") from exc
     ext = content_type.split("/")[-1] if "/" in content_type else "png"
+    if ext == "svg+xml":
+        ext = "svg"
     filename = f"upload.{ext}"
     return decoded, content_type, filename
 

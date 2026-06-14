@@ -26,6 +26,7 @@ Methodologies applied (the "best practice" the user asked for):
 from __future__ import annotations
 
 import colorsys
+import hashlib
 from dataclasses import dataclass
 from typing import Literal
 
@@ -132,6 +133,48 @@ def band_colors(palette: ColorPalette, band: Literal["light", "dark"]) -> tuple[
 
 
 @dataclass(frozen=True)
+class FontPairing:
+    """One heading/body type pairing plus the Google Fonts specs to load it.
+
+    `heading_font`/`body_font` are complete CSS font-family strings (with system
+    fallbacks) so the public site renders before the web fonts load. `google_fonts`
+    are the `Family:wght@...` specs the <link> loader needs. `display_font` is an
+    optional oversized hero face; None reuses the heading font.
+
+    Alternate pairings are curated from the ui-ux-pro-max typography catalogue
+    (MIT, github.com/nextlevelbuilder/ui-ux-pro-max-skill), bucketed by mood.
+    """
+
+    heading_font: str
+    body_font: str
+    google_fonts: tuple[str, ...]
+    display_font: str | None = None
+    # Industry/use-case descriptors (from the catalogue's "Best For" + keywords).
+    # Used to prefer the pairing that best fits the site's industry; see
+    # _pick_pairing. Empty tags simply never win an industry match.
+    tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CuratedPalette:
+    """A hand-designed, industry-tagged palette from the ui-ux-pro-max colour
+    catalogue (MIT, github.com/nextlevelbuilder/ui-ux-pro-max-skill).
+
+    Stored as source tokens; `_palette_from_curated` maps them onto the builder's
+    6-token ColorPalette while preserving our light-background / dark-band model:
+    `dark` (the catalogue's Foreground) becomes both the body text and the dark
+    section background, `tint` becomes the light section surface.
+    """
+
+    name: str
+    categories: tuple[str, ...]  # IndustryCategory values this palette suits
+    primary: str
+    accent: str
+    dark: str  # darkest token → body text + dark-band background
+    tint: str  # light page tint → light section surface
+
+
+@dataclass(frozen=True)
 class MoodSpec:
     radius: int
     secondary_lightness: float  # final L for the secondary (dark neutral)
@@ -146,6 +189,28 @@ class MoodSpec:
     background_strategy: str = "flat"  # flat | mesh | grain | mesh+grain
     shadow_scale: str = "soft"  # soft | elevated | dramatic
     display_font: str | None = None  # None → reuse heading_font
+    # The ui-ux-pro-max style this mood embodies (catalogue style name). Carried
+    # onto ThemeTokens as design lineage; the trend tokens above are the tuned
+    # expression of it, not derived from it.
+    style: str = ""
+    # Industry/use-case tags for the default pairing (the scalar fields above).
+    default_font_tags: tuple[str, ...] = ()
+    # Curated alternate pairings for this mood (same personality, different faces).
+    # The scalar fields above are the default pairing (pool index 0); build_theme
+    # picks one from `font_pool` by industry fit, then by a per-site seed.
+    alt_pairings: tuple[FontPairing, ...] = ()
+
+    @property
+    def font_pool(self) -> tuple[FontPairing, ...]:
+        """Default pairing (from the scalar fields) followed by the alternates."""
+        default = FontPairing(
+            heading_font=self.heading_font,
+            body_font=self.body_font,
+            google_fonts=self.google_fonts,
+            display_font=self.display_font,
+            tags=self.default_font_tags,
+        )
+        return (default, *self.alt_pairings)
 
 
 # Tuned per mood. Heading/body picks aim for distinctive but legible pairings.
@@ -153,6 +218,7 @@ class MoodSpec:
 # preload them via <link rel="stylesheet">.
 MOOD_SPECS: dict[BrandMood, MoodSpec] = {
     "modern": MoodSpec(
+        style="Glassmorphism",
         radius=12,
         secondary_lightness=0.16,
         surface_tint_strength=0.05,
@@ -168,8 +234,36 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         background_strategy="mesh",
         shadow_scale="elevated",
         display_font='"Schibsted Grotesk", system-ui, sans-serif',
+        default_font_tags=("saas", "fintech", "tech", "startup", "software", "app"),
+        alt_pairings=(
+            FontPairing(
+                heading_font='"Space Grotesk", system-ui, sans-serif',
+                body_font='"DM Sans", system-ui, sans-serif',
+                google_fonts=(
+                    "Space Grotesk:wght@400;500;600;700",
+                    "DM Sans:wght@400;500;700",
+                ),
+                tags=("tech", "startup", "saas", "developer", "ai", "software"),
+            ),
+            FontPairing(
+                heading_font='"Outfit", system-ui, sans-serif',
+                body_font='"Work Sans", system-ui, sans-serif',
+                google_fonts=(
+                    "Outfit:wght@300;400;500;600;700",
+                    "Work Sans:wght@300;400;500;600;700",
+                ),
+                tags=("portfolio", "agency", "landing", "creative", "brand"),
+            ),
+            FontPairing(
+                heading_font='"Plus Jakarta Sans", system-ui, sans-serif',
+                body_font='"Plus Jakarta Sans", system-ui, sans-serif',
+                google_fonts=("Plus Jakarta Sans:wght@400;500;600;700",),
+                tags=("dashboard", "tools", "health", "minimal", "showcase"),
+            ),
+        ),
     ),
     "luxury": MoodSpec(
+        style="Minimalism & Swiss Style",
         radius=4,
         secondary_lightness=0.12,
         surface_tint_strength=0.04,
@@ -185,8 +279,51 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         background_strategy="grain",
         shadow_scale="soft",
         display_font='"Cormorant Garamond", Georgia, serif',
+        default_font_tags=(
+            "luxury", "hospitality", "jewellery", "jewelry", "real estate",
+            "premium", "fashion",
+        ),
+        alt_pairings=(
+            FontPairing(
+                heading_font='"Playfair Display", Georgia, serif',
+                body_font='"Inter", system-ui, sans-serif',
+                google_fonts=(
+                    "Playfair Display:wght@400;500;600;700",
+                    "Inter:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "luxury", "fashion", "spa", "beauty", "editorial",
+                    "magazine", "ecommerce", "e-commerce",
+                ),
+            ),
+            FontPairing(
+                heading_font='"Cormorant", Georgia, serif',
+                body_font='"Montserrat", system-ui, sans-serif',
+                google_fonts=(
+                    "Cormorant:wght@400;500;600;700",
+                    "Montserrat:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "fashion", "luxury", "jewelry", "jewellery",
+                    "ecommerce", "e-commerce",
+                ),
+            ),
+            FontPairing(
+                heading_font='"Cinzel", Georgia, serif',
+                body_font='"Josefin Sans", system-ui, sans-serif',
+                google_fonts=(
+                    "Cinzel:wght@400;500;600;700",
+                    "Josefin Sans:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "real estate", "property", "architecture",
+                    "interior design", "luxury",
+                ),
+            ),
+        ),
     ),
     "friendly": MoodSpec(
+        style="Soft UI Evolution",
         radius=20,
         secondary_lightness=0.20,
         surface_tint_strength=0.10,
@@ -202,8 +339,46 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         background_strategy="mesh",
         shadow_scale="elevated",
         display_font='"Gabarito", system-ui, sans-serif',
+        default_font_tags=(
+            "consumer", "lifestyle", "wellness", "friendly", "community",
+        ),
+        alt_pairings=(
+            FontPairing(
+                heading_font='"Fredoka", system-ui, sans-serif',
+                body_font='"Nunito", system-ui, sans-serif',
+                google_fonts=(
+                    "Fredoka:wght@400;500;600;700",
+                    "Nunito:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "children", "kids", "education", "gaming",
+                    "creative", "entertainment",
+                ),
+            ),
+            FontPairing(
+                heading_font='"Varela Round", system-ui, sans-serif',
+                body_font='"Nunito Sans", system-ui, sans-serif',
+                google_fonts=(
+                    "Varela Round",
+                    "Nunito Sans:wght@300;400;500;600;700",
+                ),
+                tags=("children", "kids", "pet", "wellness", "friendly"),
+            ),
+            FontPairing(
+                heading_font='"Lora", Georgia, serif',
+                body_font='"Raleway", system-ui, sans-serif',
+                google_fonts=(
+                    "Lora:wght@400;500;600;700",
+                    "Raleway:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "health", "wellness", "spa", "meditation", "yoga", "organic",
+                ),
+            ),
+        ),
     ),
     "technical": MoodSpec(
+        style="Flat Design",
         radius=6,
         secondary_lightness=0.14,
         surface_tint_strength=0.03,
@@ -219,8 +394,44 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         background_strategy="flat",
         shadow_scale="soft",
         display_font='"Chivo", system-ui, sans-serif',
+        default_font_tags=(
+            "engineering", "b2b", "developer", "dev tools", "technical", "dashboard",
+        ),
+        alt_pairings=(
+            FontPairing(
+                heading_font='"JetBrains Mono", ui-monospace, monospace',
+                body_font='"IBM Plex Sans", system-ui, sans-serif',
+                google_fonts=(
+                    "JetBrains Mono:wght@400;500;600;700",
+                    "IBM Plex Sans:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "developer", "documentation", "code", "tech blog",
+                    "cli", "saas",
+                ),
+            ),
+            FontPairing(
+                heading_font='"Fira Code", ui-monospace, monospace',
+                body_font='"Fira Sans", system-ui, sans-serif',
+                google_fonts=(
+                    "Fira Code:wght@400;500;600;700",
+                    "Fira Sans:wght@300;400;500;600;700",
+                ),
+                tags=("dashboard", "analytics", "data", "admin", "saas"),
+            ),
+            FontPairing(
+                heading_font='"Exo", system-ui, sans-serif',
+                body_font='"Roboto Mono", ui-monospace, monospace',
+                google_fonts=(
+                    "Exo:wght@300;400;500;600;700",
+                    "Roboto Mono:wght@300;400;500;700",
+                ),
+                tags=("science", "research", "documentation", "data"),
+            ),
+        ),
     ),
     "editorial": MoodSpec(
+        style="Storytelling-Driven",
         radius=8,
         secondary_lightness=0.14,
         surface_tint_strength=0.05,
@@ -236,8 +447,36 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         background_strategy="grain",
         shadow_scale="dramatic",
         display_font='"Fraunces", Georgia, serif',
+        default_font_tags=(
+            "media", "agency", "portfolio", "editorial", "magazine", "blog",
+        ),
+        alt_pairings=(
+            FontPairing(
+                heading_font='"Newsreader", Georgia, serif',
+                body_font='"Roboto", system-ui, sans-serif',
+                google_fonts=(
+                    "Newsreader:wght@400;500;600;700",
+                    "Roboto:wght@300;400;500;700",
+                ),
+                tags=(
+                    "news", "blog", "magazine", "journalism", "media", "content",
+                ),
+            ),
+            FontPairing(
+                heading_font='"Libre Bodoni", Georgia, serif',
+                body_font='"Public Sans", system-ui, sans-serif',
+                google_fonts=(
+                    "Libre Bodoni:wght@400;500;600;700",
+                    "Public Sans:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "magazine", "publication", "editorial", "journalism", "media",
+                ),
+            ),
+        ),
     ),
     "playful": MoodSpec(
+        style="Vibrant & Block-based",
         radius=24,
         secondary_lightness=0.18,
         surface_tint_strength=0.08,
@@ -253,6 +492,43 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         background_strategy="mesh+grain",
         shadow_scale="dramatic",
         display_font='"Syne", system-ui, sans-serif',
+        default_font_tags=(
+            "entertainment", "food", "restaurant", "gaming", "playful", "events",
+        ),
+        alt_pairings=(
+            FontPairing(
+                heading_font='"Abril Fatface", Georgia, serif',
+                body_font='"Merriweather", Georgia, serif',
+                google_fonts=(
+                    "Abril Fatface",
+                    "Merriweather:wght@300;400;700",
+                ),
+                tags=(
+                    "vintage", "brewery", "restaurant", "food",
+                    "portfolio", "creative",
+                ),
+            ),
+            FontPairing(
+                heading_font='"Righteous", system-ui, sans-serif',
+                body_font='"Poppins", system-ui, sans-serif',
+                google_fonts=(
+                    "Righteous",
+                    "Poppins:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "music", "entertainment", "events", "festival", "performance",
+                ),
+            ),
+            FontPairing(
+                heading_font='"Barlow Condensed", system-ui, sans-serif',
+                body_font='"Barlow", system-ui, sans-serif',
+                google_fonts=(
+                    "Barlow Condensed:wght@400;500;600;700",
+                    "Barlow:wght@300;400;500;600;700",
+                ),
+                tags=("sports", "fitness", "gym", "athletic"),
+            ),
+        ),
     ),
 }
 
@@ -377,10 +653,244 @@ def _snap_palette(seed_hex: str) -> ColorPalette:
     )
 
 
+def _dark_palette(seed_hex: str) -> ColorPalette:
+    """A dark-scheme palette: dark page + surfaces, light text, vivid brand
+    primary/accent. Three dark shades give the section rhythm room (background =
+    page, surface = elevated band, secondary = darkest/CTA band); text and band
+    fonts come out light via the same `_text_for_background` path the light theme
+    uses. Greyscale seeds fall back to a tasteful blue. WCAG guards still apply in
+    build_theme (light text ≥ 7:1 on the dark page; button ≥ 4.5:1)."""
+    h, _, s = _rgb_to_hls(*_hex_to_rgb(seed_hex))
+    tint = 0.18 if s >= 0.12 else 0.05  # subtle hue tint in the neutrals
+    background = _rgb_to_hex(*_hls_to_rgb(h, 0.11, tint))
+    surface = _rgb_to_hex(*_hls_to_rgb(h, 0.17, tint))
+    secondary = _rgb_to_hex(*_hls_to_rgb(h, 0.07, tint))
+    if s >= 0.12:
+        primary = _rgb_to_hex(*_hls_to_rgb(h, 0.60, max(s, 0.55)))
+    else:
+        primary = TAILWIND["blue"]["500"]
+    accent_hex = _rotate_hue(primary, 150)
+    ah, _, _ = _rgb_to_hls(*_hex_to_rgb(accent_hex))
+    accent = _rgb_to_hex(*_hls_to_rgb(ah, 0.62, 0.70))
+    text = _ensure_contrast_against(background, "#f8fafc", min_ratio=7.0)
+    return ColorPalette(
+        primary=primary,
+        secondary=secondary,
+        accent=accent,
+        text=text,
+        background=background,
+        surface=surface,
+    )
+
+
+# Hand-designed palettes from the ui-ux-pro-max colour catalogue (MIT), each
+# tagged with the IndustryCategory values it suits. Only light-background palettes
+# are kept (our model is light bg + dark text + dark band); dark-themed catalogue
+# entries are intentionally excluded. `dark` = catalogue Foreground, `tint` =
+# catalogue Background.
+_CURATED_PALETTES: tuple[CuratedPalette, ...] = (
+    # restaurant
+    CuratedPalette("Restaurant", ("restaurant",), "#DC2626", "#A16207", "#450A0A", "#FEF2F2"),
+    CuratedPalette("Bakery / Cafe", ("restaurant",), "#92400E", "#B45309", "#78350F", "#FEF3C7"),
+    CuratedPalette("Brewery / Winery", ("restaurant",), "#7C2D12", "#A16207", "#450A0A", "#FEF2F2"),
+    # agency
+    CuratedPalette("Creative Agency", ("agency",), "#EC4899", "#0891B2", "#831843", "#FDF2F8"),
+    CuratedPalette("Design Studio", ("agency",), "#4F46E5", "#EA580C", "#312E81", "#EEF2FF"),
+    CuratedPalette("Coworking / Studio", ("agency",), "#F59E0B", "#2563EB", "#78350F", "#FFFBEB"),
+    # saas
+    CuratedPalette("SaaS", ("saas",), "#2563EB", "#EA580C", "#1E293B", "#F8FAFC"),
+    CuratedPalette("Analytics", ("saas",), "#1E40AF", "#D97706", "#1E3A8A", "#F8FAFC"),
+    CuratedPalette("AI Platform", ("saas",), "#7C3AED", "#0891B2", "#1E1B4B", "#FAF5FF"),
+    # professional-services
+    CuratedPalette("B2B Service", ("professional-services",), "#0F172A", "#0369A1", "#020617", "#F8FAFC"),
+    CuratedPalette("Legal", ("professional-services", "consultancy"), "#1E3A8A", "#B45309", "#0F172A", "#F8FAFC"),
+    CuratedPalette("Real Estate", ("professional-services",), "#0F766E", "#0369A1", "#134E4A", "#F0FDFA"),
+    CuratedPalette("Medical Clinic", ("professional-services",), "#0891B2", "#16A34A", "#134E4A", "#F0FDFA"),
+    # ecommerce
+    CuratedPalette("E-commerce", ("ecommerce",), "#059669", "#EA580C", "#064E3B", "#ECFDF5"),
+    CuratedPalette("E-commerce Luxury", ("ecommerce",), "#1C1917", "#A16207", "#0C0A09", "#FAFAF9"),
+    CuratedPalette("Subscription Box", ("ecommerce",), "#D946EF", "#EA580C", "#86198F", "#FDF4FF"),
+    CuratedPalette("Marketplace", ("ecommerce",), "#7C3AED", "#16A34A", "#4C1D95", "#FAF5FF"),
+    # consultancy
+    CuratedPalette("Banking / Finance", ("consultancy",), "#0F172A", "#A16207", "#020617", "#F8FAFC"),
+    CuratedPalette("Insurance", ("consultancy",), "#0369A1", "#16A34A", "#0C4A6E", "#F0F9FF"),
+    # nonprofit
+    CuratedPalette("Non-profit / Charity", ("nonprofit",), "#0891B2", "#EA580C", "#164E63", "#ECFEFF"),
+    CuratedPalette("Community", ("nonprofit",), "#7C3AED", "#16A34A", "#4C1D95", "#FAF5FF"),
+    CuratedPalette("Religious / Faith", ("nonprofit",), "#7C3AED", "#A16207", "#4C1D95", "#FAF5FF"),
+    # personal
+    CuratedPalette("Portfolio", ("personal",), "#18181B", "#2563EB", "#09090B", "#FAFAFA"),
+    CuratedPalette("Freelancer", ("personal",), "#6366F1", "#16A34A", "#312E81", "#EEF2FF"),
+    CuratedPalette("Magazine / Blog", ("personal",), "#18181B", "#EC4899", "#09090B", "#FAFAFA"),
+)
+
+
+def _palette_from_curated(c: CuratedPalette) -> ColorPalette:
+    """Map a curated palette's source tokens onto the builder's 6-token palette,
+    keeping our light-bg / dark-band invariants and the WCAG text guard."""
+    background = "#ffffff"
+    # Light section surface: the catalogue's page tint, clamped to stay clearly
+    # light (so body text keeps contrast on alternating sections).
+    surface = c.tint if _relative_luminance(c.tint) >= 0.9 else "#f8fafc"
+    # `dark` doubles as the dark-band background and the body text colour.
+    text = _ensure_contrast_against(background, c.dark, min_ratio=7.0)
+    return ColorPalette(
+        primary=c.primary,
+        secondary=c.dark,
+        accent=c.accent,
+        text=text,
+        background=background,
+        surface=surface,
+    )
+
+
+def _has_brand_hue(seed_hex: str) -> bool:
+    """True when the seed carries a usable brand hue (not greyscale). Mirrors the
+    saturation threshold _nearest_tailwind_hue uses to fall back to generic blue."""
+    return _rgb_to_hls(*_hex_to_rgb(seed_hex))[2] >= 0.12
+
+
+def _curated_palette(
+    seed_hex: str | None, industry: str | None, font_seed: str | None
+) -> ColorPalette:
+    """Pick a curated palette by industry fit, then by nearest hue to the brand
+    seed (so the logo colour still steers the choice); the seed breaks ties. With
+    no usable brand hue (no/greyscale logo), falls back to a font-seed-deterministic
+    pick. Unknown/empty industries consider the whole set."""
+    norm = (industry or "").strip().lower()
+    candidates = [c for c in _CURATED_PALETTES if norm in c.categories] or list(
+        _CURATED_PALETTES
+    )
+    if seed_hex and _has_brand_hue(seed_hex):
+        seed_h = _rgb_to_hls(*_hex_to_rgb(seed_hex))[0] * 360.0
+
+        def hue_dist(c: CuratedPalette) -> float:
+            ph = _rgb_to_hls(*_hex_to_rgb(c.primary))[0] * 360.0
+            return abs(((ph - seed_h + 180.0) % 360.0) - 180.0)
+
+        nearest = min(hue_dist(c) for c in candidates)
+        near = [c for c in candidates if hue_dist(c) - nearest < 1e-9]
+        chosen = near[_seeded_index(font_seed, len(near))]
+    else:
+        chosen = candidates[_seeded_index(font_seed, len(candidates))]
+    return _palette_from_curated(chosen)
+
+
+# Maps the generator's controlled IndustryCategory vocabulary (and free-text
+# industry strings) to keywords we look for in a FontPairing's tags. "other" and
+# unknown industries yield no keywords → selection falls back to seeded variety.
+_INDUSTRY_FONT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "restaurant": ("restaurant", "food", "cafe", "dining", "brewery", "culinary"),
+    "agency": ("agency", "creative", "portfolio", "studio", "brand", "media"),
+    "saas": (
+        "saas", "software", "startup", "tech", "app", "dashboard", "developer",
+        "data", "analytics", "ai", "cli", "documentation",
+    ),
+    "professional services": (
+        "professional", "corporate", "business", "consulting", "services",
+        "finance", "legal", "real estate", "property",
+    ),
+    "ecommerce": (
+        "ecommerce", "e-commerce", "shop", "retail", "store", "fashion",
+        "jewelry", "jewellery", "product",
+    ),
+    "consultancy": (
+        "consulting", "consultancy", "corporate", "business", "professional",
+        "advisory", "finance",
+    ),
+    "nonprofit": ("nonprofit", "charity", "community", "cause", "social", "foundation"),
+    "personal": (
+        "personal", "portfolio", "blog", "creator", "resume", "music",
+        "entertainment",
+    ),
+}
+
+
+def _industry_keywords(industry: str | None) -> tuple[str, ...]:
+    """Keywords to match against pairing tags for a given industry signal.
+
+    Accepts both the controlled IndustryCategory values and free-text industry
+    strings. Returns () for empty/"other"/unknown so selection degrades to the
+    seeded variety pick.
+    """
+    if not industry:
+        return ()
+    norm = industry.strip().lower().replace("-", " ")
+    if not norm or norm == "other":
+        return ()
+    kws = set(_INDUSTRY_FONT_KEYWORDS.get(norm, ()))
+    # Fold in the industry's own words too, so free-text industries still match.
+    kws.update(w for w in norm.split() if len(w) > 2)
+    return tuple(kws)
+
+
+def _seeded_index(font_seed: str | None, n: int) -> int:
+    """Stable index in [0, n) from a seed (0 when no seed or single option).
+
+    Uses a stable hash (not Python's per-process-salted `hash()`) so the same
+    seed always resolves to the same index across process restarts.
+    """
+    if not font_seed or n <= 1:
+        return 0
+    return int(hashlib.sha256(font_seed.encode("utf-8")).hexdigest(), 16) % n
+
+
+def resolve_color_scheme(
+    override: str | None = None,
+    brand_color_scheme: str | None = None,
+    logo_is_light: bool | None = None,
+) -> str:
+    """Resolve light vs dark with SOP precedence (most explicit wins):
+
+      1. `override` — an explicit per-generation choice (UI toggle / payload).
+      2. `brand_color_scheme` — a stored brand preference.
+      3. smart default — a predominantly *light* logo is usually drawn for a dark
+         canvas, so default such brands to dark. The logo only sets the default;
+         any explicit choice above overrides it (never a silent force).
+      4. light.
+    """
+    for choice in (override, brand_color_scheme):
+        if choice in ("light", "dark"):
+            return choice  # type: ignore[return-value]
+    return "dark" if logo_is_light else "light"
+
+
+def _pick_pairing(
+    spec: MoodSpec, font_seed: str | None, industry: str | None = None
+) -> FontPairing:
+    """Choose one pairing from the mood's pool.
+
+    Selection order:
+      1. **Industry fit** — prefer the pairing whose tags best match the site's
+         industry. Ties are broken by the seed, so the choice stays meaningful
+         *and* stable.
+      2. **Seeded variety** — no pairing matches the industry (or no industry
+         signal) → pick deterministically from the whole pool via `font_seed`, so
+         same-mood sites still vary.
+      3. **Default** — no seed and no match → the mood's default pairing (index 0),
+         reproducing the original single-pairing behaviour.
+    """
+    pool = spec.font_pool
+    keywords = _industry_keywords(industry)
+    if keywords:
+        def score(p: FontPairing) -> int:
+            blob = " ".join(p.tags).lower()
+            return sum(1 for k in keywords if k in blob)
+
+        best = max(score(p) for p in pool)
+        if best > 0:
+            matches = [p for p in pool if score(p) == best]
+            return matches[_seeded_index(font_seed, len(matches))]
+    return pool[_seeded_index(font_seed, len(pool))]
+
+
 def build_theme(
     seed_hex: str | None,
     mood: BrandMood = "modern",
     palette_mode: str = "tailwind",
+    font_seed: str | None = None,
+    industry: str | None = None,
+    color_scheme: str = "light",
 ) -> ThemeTokens:
     """
     Top-level factory. `seed_hex` is the primary color (usually from the logo).
@@ -389,17 +899,43 @@ def build_theme(
     `palette_mode`:
       - "tailwind" (default): snap the brand hue to a curated Tailwind family —
         modern, accessible, on-trend colours.
+      - "curated": pick a hand-designed, industry-tagged palette nearest the brand
+        hue (see _curated_palette).
+      - "auto": "curated" when the seed has no usable brand hue (greyscale / no
+        logo colour, where "tailwind" would just fall back to generic blue),
+        otherwise "tailwind".
       - "derive": the legacy free-form HSL derivation.
     Either way `mood` still drives typography, radius, and page width.
-    """
-    seed = (seed_hex or "#2563eb").lower()
-    if not seed.startswith("#") or len(seed) != 7:
-        seed = "#2563eb"
 
-    palette = (
-        _snap_palette(seed) if palette_mode == "tailwind" else _build_palette(seed, mood)
-    )
+    `color_scheme="dark"` overrides the palette with a dark-scheme one (dark page +
+    surfaces, light text, vivid brand primary/accent); typography/mood are unchanged
+    and the existing band/rhythm machinery handles light text automatically.
+
+    Font pairing is chosen from the mood's pool by (1) `industry` fit when given,
+    then (2) `font_seed` (a stable per-site id, typically the brand name) for
+    variety/tie-breaks. With neither, the mood's default pairing is used —
+    preserving the original single-pairing behaviour.
+    """
+    raw = (seed_hex or "").strip().lower()
+    has_seed = raw.startswith("#") and len(raw) == 7
+    seed = raw if has_seed else "#2563eb"
+
+    # A real, non-greyscale logo colour drives the brand-tailwind snap. No colour
+    # at all (or greyscale) → "auto" prefers a curated industry palette over the
+    # generic-blue fallback.
+    brand_hue = has_seed and _has_brand_hue(seed)
+    if color_scheme == "dark":
+        # Dark scheme owns palette construction (the curated/Tailwind paths are
+        # light-only); brand hue still drives the primary/accent.
+        palette = _dark_palette(seed)
+    elif palette_mode == "curated" or (palette_mode == "auto" and not brand_hue):
+        palette = _curated_palette(seed if has_seed else None, industry, font_seed)
+    elif palette_mode in ("tailwind", "auto"):
+        palette = _snap_palette(seed)
+    else:
+        palette = _build_palette(seed, mood)
     spec = MOOD_SPECS[mood]
+    pairing = _pick_pairing(spec, font_seed, industry)
 
     # Button background needs ≥4.5:1 against white text.
     button_bg = palette.primary
@@ -409,9 +945,9 @@ def build_theme(
 
     typography = Typography.model_validate(
         {
-            "headingFont": spec.heading_font,
-            "bodyFont": spec.body_font,
-            "google_fonts": list(spec.google_fonts),
+            "headingFont": pairing.heading_font,
+            "bodyFont": pairing.body_font,
+            "google_fonts": list(pairing.google_fonts),
         }
     )
     buttons = Buttons(background=button_bg, text=button_text, radius=spec.radius)
@@ -439,5 +975,7 @@ def build_theme(
         use_glass=spec.use_glass,
         background_strategy=spec.background_strategy,  # type: ignore[arg-type]
         shadow_scale=spec.shadow_scale,  # type: ignore[arg-type]
-        display_font=spec.display_font,
+        display_font=pairing.display_font or pairing.heading_font,
+        color_scheme=color_scheme,  # type: ignore[arg-type]
+        style=spec.style,
     )

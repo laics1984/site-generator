@@ -117,21 +117,42 @@ def _image(
     )
 
 
-def _logo_mark(brand: BrandIdentity, theme: ThemeTokens) -> BuilderElement:
+def _logo_mark(
+    brand: BrandIdentity, theme: ThemeTokens, lockup: str | None = None
+) -> BuilderElement:
     """
     Returns a logo BuilderElement — either the uploaded image or a typographic
-    monogram. Both are themed against the palette.
+    monogram. Both are themed against the palette. When `lockup` is set (a dark
+    image logo on a dark header), the image sits in a small light chip so it stays
+    legible without lightening the whole header.
     """
     if brand.logo_url or brand.logo_data_url:
         # The logo IS the home link — standard convention, and it lets the
         # primary menu drop the redundant "Home" item entirely.
-        return _image(
+        img = _image(
             brand.logo_url or brand.logo_data_url or "",
             alt=brand.name,
             styles={"height": "36px", "width": "auto", "display": "block"},
             href="/",
             aria_label=f"{brand.name} — home",
         )
+        if lockup:
+            return _container(
+                [img],
+                name="Logo lockup",
+                styles={
+                    "backgroundColor": lockup,
+                    "paddingTop": "6px",
+                    "paddingBottom": "6px",
+                    "paddingLeft": "12px",
+                    "paddingRight": "12px",
+                    "borderRadius": "10px",
+                    "display": "inline-flex",
+                    "alignItems": "center",
+                    "width": "auto",
+                },
+            )
+        return img
 
     # Typographic mark: first letter in a circle in primary color.
     initial = brand.name.strip()[:1].upper() or "•"
@@ -188,20 +209,34 @@ def _logo_mark(brand: BrandIdentity, theme: ThemeTokens) -> BuilderElement:
     )
 
 
-def _header_chrome(brand: BrandIdentity, theme: ThemeTokens) -> tuple[str, str, str]:
+def _header_chrome(
+    brand: BrandIdentity, theme: ThemeTokens
+) -> tuple[str, str, str, str | None]:
     """
-    Choose a header background / foreground / divider combination that keeps
-    the logo and navigation readable.
+    Choose a header background / foreground / divider that keeps the logo and nav
+    readable. The 4th value, `logo_lockup`, is a light chip colour to place behind
+    a *dark* image logo on a *dark* site — SOP is to solve logo contrast locally
+    (a small light lockup) rather than flip the whole header to light over dark
+    content (a jarring seam + sticky-header flashing).
     """
     if brand.logo_is_light:
+        # A light logo wants a dark backing — true in both schemes.
         background = theme.palette.secondary
         foreground = _text_for_background(background)
         if _contrast(background, foreground) < 4.5:
             foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
-        divider = theme.palette.primary
-        return background, foreground, divider
+        return background, foreground, theme.palette.primary, None
 
-    return theme.palette.background, theme.palette.secondary, theme.palette.surface
+    if theme.color_scheme == "dark":
+        # Keep the header on the dark page. A known-dark logo gets a light lockup
+        # chip; an unknown-lightness logo is left as-is (we can't be sure).
+        background = theme.palette.background
+        foreground = _text_for_background(background)
+        lockup = "#ffffff" if brand.logo_is_light is False else None
+        return background, foreground, theme.palette.surface, lockup
+
+    # Light scheme, dark logo → page background (light); the logo reads as-is.
+    return theme.palette.background, theme.palette.secondary, theme.palette.surface, None
 
 
 # --- header ---------------------------------------------------------------------
@@ -225,7 +260,7 @@ def build_header(
     inline layout plus the mobile hamburger collapse on its own. ``nav_items`` /
     ``page_tree`` are no longer consumed here; they drive the menu list upstream.
     """
-    header_bg, header_fg, header_divider = _header_chrome(brand, theme)
+    header_bg, header_fg, header_divider, logo_lockup = _header_chrome(brand, theme)
     nav_menu = _menu_element(
         slot="primary",
         variant="header-inline",
@@ -266,7 +301,7 @@ def build_header(
 
     bar = _container(
         [
-            _logo_mark(brand, theme),
+            _logo_mark(brand, theme, lockup=logo_lockup),
             nav_menu,
             *cta_children,
         ],

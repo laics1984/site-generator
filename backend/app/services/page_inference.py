@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 from app.models.content_blocks import NavLink, PageType, SectionType, SourceContent
 from app.models.industry import IndustryCategory, PageScaffold
 from app.services.industry_templates import get_template
+from app.services.landing_patterns import homepage_sections
 from app.services.nav_extraction import find_repeated_cluster_keys
 
 logger = logging.getLogger(__name__)
@@ -397,6 +398,14 @@ def infer_page_scaffolds(
             "No discovered pages — falling back to '%s' industry template", industry
         )
         fallback = [*template.core_pages, *template.suggested_pages]
+        # Seed the homepage pattern by site name so same-industry sites vary, even
+        # on the no-crawl fallback. Copy (don't mutate) the shared template scaffold.
+        fallback = [
+            s.model_copy(update={"sections": homepage_sections(industry, seed=site_name)})
+            if s.is_homepage
+            else s
+            for s in fallback
+        ]
         for scaffold in fallback:
             scaffold.nav_rank = evidence.rank.get(scaffold.slug)
         return fallback
@@ -413,7 +422,7 @@ def infer_page_scaffolds(
     seen_slugs: set[str] = set()
 
     # 1. Always start with home
-    scaffolds.append(_home_scaffold(by_slug.get("", source)))
+    scaffolds.append(_home_scaffold(by_slug.get("", source), industry, seed=site_name))
     seen_slugs.add("")
 
     # 2. Walk slugs in path-depth order so parents always exist before children
@@ -594,17 +603,29 @@ def infer_page_scaffolds(
     return scaffolds
 
 
-def _home_scaffold(home_source: SourceContent | None) -> PageScaffold:
+def _home_scaffold(
+    home_source: SourceContent | None,
+    industry: IndustryCategory | None = None,
+    seed: str | None = None,
+) -> PageScaffold:
     """Standard homepage scaffold — reuses the crawl's title if it has one."""
     title = "Home"
     if home_source and home_source.title:
         title = "Home"  # always literal "Home" in the nav; real headline comes from the LLM
+    # Industry-fit landing pattern; `seed` (the brand/site name) varies the choice
+    # among equally-fitting patterns so same-industry sites aren't identical. Falls
+    # back to the standard order when industry is unknown or unmatched.
+    sections = (
+        homepage_sections(industry, seed=seed)
+        if industry is not None
+        else ["hero", "features", "testimonials", "cta"]
+    )
     return PageScaffold(
         page_type="home",
         slug="",
         title=title,
         is_homepage=True,
-        sections=["hero", "features", "testimonials", "cta"],
+        sections=sections,  # type: ignore[arg-type]
         rationale="Always present — first impression, value proposition, CTA.",
         # Only called on the crawl path, where the entry page is real source
         # evidence. Template-fallback homes come from the template verbatim.

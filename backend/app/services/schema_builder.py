@@ -68,11 +68,12 @@ from app.services.section_content import (
     apply_section_rhythm,
     assign_visual_policies,
     block_to_section,
+    enforce_dark_text_safety,
     hero_scroll_anchor,
     section_visual_input_for,
 )
 from app.services.template_filler import fill_template
-from app.services.theme import build_theme
+from app.services.theme import build_theme, resolve_color_scheme
 
 
 # --- render context -------------------------------------------------------------
@@ -2181,7 +2182,23 @@ async def plan_to_site(
             if effective_brand.extracted_palette
             else plan.primary_color_hint
         )
-        theme = build_theme(seed, mood=effective_brand.mood or "modern")
+        theme = build_theme(
+            seed,
+            mood=effective_brand.mood or "modern",
+            # Stable per-site seed → same-mood sites get distinct-but-on-brand
+            # type from the mood's font pool, while one brand stays idempotent.
+            font_seed=effective_brand.name,
+            # Industry steers the pick toward the best-fitting pairing in the pool
+            # (e.g. a wellness site → calmer faces); the seed only breaks ties.
+            industry=plan.industry_category,
+            # "auto": brands with a real logo hue keep the brand-driven Tailwind
+            # snap; brands with no usable hue get a curated industry palette
+            # instead of the generic-blue fallback.
+            palette_mode="auto",
+            color_scheme=resolve_color_scheme(
+                None, effective_brand.color_scheme, effective_brand.logo_is_light
+            ),
+        )
 
     styles = make_style_tokens(theme)
     resolver = ImageResolver(
@@ -2321,7 +2338,16 @@ async def plan_to_site(
         social_links=social_links,
     )
 
-    return GeneratedSite(
+    if theme.color_scheme == "dark":
+        # Legacy catalog sections hardcode dark text that vanishes on a dark page;
+        # retarget those to the theme text colour. Dark mode only — no light risk.
+        for _page in pages:
+            enforce_dark_text_safety(_page.body_schema.elements)
+        for _chrome in (header, footer):
+            if isinstance(_chrome, BuilderElement):
+                enforce_dark_text_safety([_chrome])
+
+    site = GeneratedSite(
         site_name=plan.site_name,
         tagline=plan.tagline,
         primary_color=theme.palette.primary,
@@ -2337,6 +2363,23 @@ async def plan_to_site(
         header_schema=header,
         footer_schema=footer,
     )
+
+    # Advisory UX/accessibility audit (alt text, contrast, font size, …). Logged
+    # only; never mutates or blocks generation.
+    try:
+        import logging
+
+        from app.services.ux_audit import audit_site, summarize
+
+        findings = audit_site(site)
+        if findings:
+            logging.getLogger(__name__).info(
+                "UX audit: %d finding(s) %s", len(findings), summarize(findings)
+            )
+    except Exception:  # noqa: BLE001 — an advisory check must never break a build
+        pass
+
+    return site
 
 
 def _build_page_tree(pages: list[GeneratedPage]) -> list[PageNode]:

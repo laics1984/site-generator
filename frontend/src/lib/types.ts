@@ -90,6 +90,11 @@ export type BrandMood =
   | 'editorial'
   | 'playful'
 
+/** Baked color scheme. 'auto' is a UI-only choice → sent as null so the backend
+ * applies its logo-based default (a light logo defaults the site to dark). */
+export type ColorScheme = 'light' | 'dark'
+export type ColorSchemeChoice = 'auto' | ColorScheme
+
 export interface BrandIdentity {
   name: string
   tagline?: string | null
@@ -98,6 +103,7 @@ export interface BrandIdentity {
   extracted_palette: string[]
   logo_is_light?: boolean | null
   mood?: BrandMood | null
+  color_scheme?: ColorScheme | null
   industry?: string | null
 }
 

@@ -16,7 +16,7 @@ const TABS: { id: GeneratorMode; label: string; description: string }[] = [
   {
     id: 'document',
     label: 'Upload a document',
-    description: 'Turn a PDF or Word doc into a structured site.',
+    description: 'Generate the site from a PDF or Word doc — its titles become the pages.',
   },
 ]
 

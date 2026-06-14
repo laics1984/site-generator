@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { exportSiteDocument } from '@/lib/api'
 import type { ScrapePreview as ScrapePreviewType } from '@/lib/types'
 
 interface ScrapePreviewProps {
@@ -32,7 +33,25 @@ export function ScrapePreview({
   const sc = preview.source_content
   const [text, setText] = useState(sc.raw_text)
   const [title, setTitle] = useState(sc.title || '')
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
   const brand = preview.brand_candidate
+
+  const handleExport = async () => {
+    setExporting(true)
+    setExportError(null)
+    try {
+      // Reflect any inline edits to the primary page's title/copy in the brief.
+      await exportSiteDocument(
+        { ...sc, raw_text: text, title: title || sc.title },
+        title || sc.title || '',
+      )
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Export failed.')
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const heroImages = preview.image_candidates.filter((c) => c.intent === 'hero')
   const otherImages = preview.image_candidates.filter((c) => c.intent !== 'hero')
@@ -250,6 +269,29 @@ export function ScrapePreview({
           Discard
         </button>
       </div>
+
+      {!isDocument && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs text-slate-600">
+              Prefer to edit the content first? Download a Word brief, revise the
+              titles and copy, then re-upload it to build the site from the
+              document.
+            </div>
+            <button
+              type="button"
+              onClick={handleExport}
+              disabled={busy || exporting}
+              className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {exporting ? 'Exporting…' : 'Export as document'}
+            </button>
+          </div>
+          {exportError && (
+            <div className="mt-2 text-xs text-red-600">{exportError}</div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

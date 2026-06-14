@@ -11,7 +11,11 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.models.content_blocks import IndustryCategoryLiteral, SourceContent
+from app.models.content_blocks import (
+    IndustryCategoryLiteral,
+    SourceContent,
+    industry_default_mood,
+)
 from app.models.industry import IndustryTemplate, PageRecipeResponse, PageScaffold
 from app.services.industry_templates import all_industries_summary, get_template
 from app.services.llm import LlmError
@@ -22,6 +26,7 @@ from app.services.page_inference import (
     optional_pool_for,
 )
 from app.services.planner import detect_brand_cached
+from app.services.theme import build_theme
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
 
@@ -80,10 +85,25 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
         optional_pages=optional_pool_for(industry, inferred),
     )
 
+    # Industry-aware preview theme so the picker can show the tailored fonts/colours
+    # up front. Uses the same inputs as /generate/with-pages (industry + site name +
+    # mood), so the previewed typography matches the generated site. No logo palette
+    # exists yet here → palette_mode="auto" yields a curated industry palette unless
+    # the LLM surfaced a colour hint.
+    preview = build_theme(
+        detected.primary_color_hint if detected else None,
+        mood=(detected.brand_mood if detected else industry_default_mood(industry)),  # type: ignore[arg-type]
+        font_seed=detected.site_name if detected else None,
+        industry=industry,
+        palette_mode="auto",
+    )
+
     return PageRecipeResponse(
         industry=industry,
         template=picker_template,
         inferred_pages=inferred,
         all_industries=all_industries_summary(),
         detected_brand=detected.model_dump() if detected else None,
+        theme_preview=preview.to_builder_styles(),
+        google_fonts=preview.typography.google_fonts,
     )

@@ -7803,6 +7803,259 @@
           }
         ]
       }
+    },
+    {
+      "id": "hero-asymmetric-display",
+      "sectionType": "hero",
+      "layoutVariant": "asymmetric",
+      "styleVariant": "display",
+      "label": "Asymmetric Display Hero",
+      "description": "Type-led hero: an oversized display headline as the thesis, with supporting copy and CTAs set in an asymmetric baseline row. Text-led \u2014 no image required; theme-driven colours work in light and dark.",
+      "tags": [
+        "Hero",
+        "Editorial",
+        "Type-led"
+      ],
+      "thumbnail": "hero-minimal",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "headline",
+          "kind": "text"
+        },
+        {
+          "id": "body",
+          "kind": "text"
+        },
+        {
+          "id": "primary_cta",
+          "kind": "link"
+        },
+        {
+          "id": "secondary_cta",
+          "kind": "link",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Independent studio, est. 2014",
+        "headline": "We make the work that makes you look twice.",
+        "body": "A small team shaping brands, sites, and stories with more craft than the brief usually asks for.",
+        "primary_cta": {
+          "innerText": "See the work",
+          "href": "/work"
+        },
+        "secondary_cta": {
+          "innerText": "Start a project",
+          "href": "/contact"
+        }
+      },
+      "tree": {
+        "name": "Hero - Asymmetric Display",
+        "type": "container",
+        "styles": {
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "paddingRight": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "80px",
+            "paddingBottom": "80px",
+            "paddingLeft": "32px",
+            "paddingRight": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Eyebrow",
+            "type": "text",
+            "$slot": "eyebrow",
+            "styles": {
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-primary, #2563eb)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "fontSize": "13px",
+              "letterSpacing": "0.16em",
+              "textTransform": "uppercase",
+              "fontWeight": 700
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "fontSize": "12px"
+              },
+              "tablet": {}
+            }
+          },
+          {
+            "name": "Headline",
+            "type": "text",
+            "$slot": "headline",
+            "styles": {
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+              "fontSize": "clamp(2.75rem, 7vw, 6rem)",
+              "lineHeight": "1.0",
+              "letterSpacing": "-0.035em",
+              "fontWeight": 800,
+              "maxWidth": "15ch",
+              "margin": "0"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "fontSize": "clamp(2rem, 11vw, 3rem)",
+                "lineHeight": "1.05",
+                "maxWidth": "100%"
+              },
+              "tablet": {
+                "fontSize": "clamp(2.5rem, 8vw, 4.5rem)"
+              }
+            }
+          },
+          {
+            "name": "Hero Lower Row",
+            "type": "container",
+            "styles": {
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "row",
+              "justifyContent": "space-between",
+              "alignItems": "flex-end",
+              "gap": "40px",
+              "flexWrap": "wrap",
+              "marginTop": "8px",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "textAlign": "left"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "flexDirection": "column",
+                "alignItems": "flex-start",
+                "gap": "24px"
+              },
+              "tablet": {
+                "gap": "28px"
+              }
+            },
+            "content": [
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "body",
+                "styles": {
+                  "textAlign": "left",
+                  "opacity": "72%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "fontSize": "19px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "44ch",
+                  "margin": "0"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "17px",
+                    "maxWidth": "100%"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Hero CTAs",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "gap": "18px",
+                  "alignItems": "center",
+                  "flexWrap": "wrap",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "textAlign": "left",
+                  "flexShrink": "0"
+                },
+                "responsiveStyles": {
+                  "mobile": {},
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Link",
+                    "type": "link",
+                    "$slot": "primary_cta",
+                    "styles": {
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-button-text, #ffffff)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "backgroundColor": "var(--builder-button-background, #2563eb)",
+                      "paddingTop": "14px",
+                      "paddingRight": "30px",
+                      "paddingBottom": "14px",
+                      "paddingLeft": "30px",
+                      "borderRadius": "var(--builder-button-radius, 14px)",
+                      "textDecoration": "none",
+                      "display": "inline-flex",
+                      "alignItems": "center",
+                      "justifyContent": "center",
+                      "fontWeight": 600
+                    }
+                  },
+                  {
+                    "name": "Link",
+                    "type": "link",
+                    "$slot": "secondary_cta",
+                    "styles": {
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "backgroundColor": "transparent",
+                      "paddingTop": "14px",
+                      "paddingBottom": "14px",
+                      "paddingLeft": "6px",
+                      "paddingRight": "6px",
+                      "textDecoration": "underline",
+                      "textUnderlineOffset": "4px",
+                      "display": "inline-flex",
+                      "alignItems": "center",
+                      "fontWeight": 600
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

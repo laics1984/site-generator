@@ -88,3 +88,16 @@ class PageRecipeResponse(BaseModel):
             "doesn't have to re-run the same LLM call."
         ),
     )
+    theme_preview: dict | None = Field(
+        default=None,
+        description=(
+            "Industry-aware preview theme (BuilderStyles shape) so the picker can "
+            "show the tailored typography/colours before generation. The fonts here "
+            "match what /generate/with-pages will produce (both derive from industry "
+            "+ site name + mood)."
+        ),
+    )
+    google_fonts: list[str] = Field(
+        default_factory=list,
+        description="Google Font families to preload for the preview theme.",
+    )

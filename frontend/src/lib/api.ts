@@ -2,6 +2,7 @@ import type {
   BrandExtractionResult,
   BrandIdentity,
   BrandMood,
+  ColorScheme,
   CmsConnectionTest,
   CmsPushReport,
   CrawlJob,
@@ -45,6 +46,7 @@ export interface GeneratePayload {
   source: SourceContent
   brand?: BrandIdentity | null
   mood_override?: BrandMood | null
+  color_scheme_override?: ColorScheme | null
   contact?: Record<string, string> | null
 }
 
@@ -61,6 +63,7 @@ export interface GenerateWithPagesPayload {
   industry: IndustryCategory
   brand?: BrandIdentity | null
   mood_override?: BrandMood | null
+  color_scheme_override?: ColorScheme | null
   contact?: Record<string, string> | null
   jurisdiction?: string | null
   legal_contact_email?: string | null
@@ -183,6 +186,41 @@ export async function uploadDocumentPreview(file: File): Promise<ScrapePreview> 
     throw new Error(`${response.status} ${response.statusText}: ${text}`)
   }
   return (await response.json()) as ScrapePreview
+}
+
+/**
+ * Render the scraped/uploaded source into an editable .docx content brief and
+ * trigger a download. This is the scrape → document bridge: the user edits the
+ * brief offline and re-uploads it via {@link uploadDocumentPreview} to generate
+ * the site from the document.
+ */
+export async function exportSiteDocument(
+  source: SourceContent,
+  siteName: string,
+): Promise<void> {
+  const response = await fetch('/api/document/export', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source, site_name: siteName || null }),
+  })
+  if (!response.ok) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`${response.status} ${response.statusText}: ${text}`)
+  }
+
+  const blob = await response.blob()
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const filename =
+    /filename="?([^"]+)"?/.exec(disposition)?.[1] ?? 'website-content.docx'
+
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
 }
 
 export async function extractBrandFromLogo(

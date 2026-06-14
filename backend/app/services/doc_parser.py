@@ -24,20 +24,65 @@ Both paths emit a ParsedDocument carrying:
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import logging
-import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Literal
 
 import docx as python_docx  # python-docx
 import fitz  # PyMuPDF — `import fitz` is correct for the pymupdf package
+from docx.oxml.ns import qn
 
 logger = logging.getLogger(__name__)
 
+# Image extension → MIME, shared by the PDF and DOCX paths.
+_IMG_EXT_TO_MIME = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "tiff": "image/tiff",
+    "tif": "image/tiff",
+}
+
 
 SourceKindDoc = Literal["pdf", "docx"]
+
+
+@dataclass
+class OutlineBlock:
+    """One block of the document in reading order.
+
+    ``level`` is the heading level: ``1``/``2``/``3`` for headings (1 = most
+    prominent), ``0`` for body text. Preserving order + level is what lets
+    ``doc_structure`` group body copy under the right title — the flat
+    ``raw_text``/``headings`` fields lose that association.
+    """
+
+    level: int  # 0 = body, 1/2/3 = heading levels
+    text: str
+
+
+@dataclass
+class DocImage:
+    """An image extracted in document order.
+
+    ``anchor`` is ``len(outline)`` at the moment the image was encountered, i.e.
+    it sits *after* ``outline[anchor - 1]``. That lets ``doc_structure`` tie each
+    image to the page (and nearest heading) it appears under, instead of dumping
+    every image on the homepage. ``width``/``height`` (pixels) drive both quality
+    filtering and the matcher's size bonus.
+    """
+
+    data: bytes
+    mime: str
+    width: int | None = None
+    height: int | None = None
+    anchor: int = 0
 
 
 @dataclass
@@ -47,8 +92,8 @@ class ParsedDocument:
     title: str | None
     raw_text: str
     headings: list[str] = field(default_factory=list)
-    images: list[bytes] = field(default_factory=list)  # raw bytes, in encounter order
-    image_mimes: list[str] = field(default_factory=list)  # parallel to images
+    images: list[DocImage] = field(default_factory=list)  # in document order, w/ dims + anchor
+    outline: list[OutlineBlock] = field(default_factory=list)  # ordered blocks w/ heading level
 
 
 # --- PDF ------------------------------------------------------------------------
@@ -82,27 +127,46 @@ def parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
 
     if not sizes:
         # PDF has no text layer (image-only / scanned). Caller decides how to surface.
+        title = _pdf_title(doc)
         doc.close()
         return ParsedDocument(
             source_kind="pdf",
             source_ref=filename,
-            title=_pdf_title(doc),
+            title=title,
             raw_text="",
             headings=[],
             images=[],
-            image_mimes=[],
         )
 
     body_median = Counter(sizes).most_common(1)[0][0]
     heading_threshold = body_median * _HEADING_MIN_SCALE
 
-    # Pass 2: pull text + headings, in document order
+    # PDFs carry no heading *levels* — only font sizes. Rank the distinct heading
+    # sizes (largest → H1, next → H2, rest → H3) so the outline can reconstruct a
+    # hierarchy the way DOCX styles give us for free.
+    heading_sizes = sorted(
+        {round(s) for s in sizes if s >= heading_threshold}, reverse=True
+    )
+
+    # Pass 2: pull text + headings + ordered outline + interleaved images, in
+    # document order. TEXT_PRESERVE_IMAGES surfaces image blocks (type 1) in the
+    # same block stream as text — carrying their bytes + pixel dimensions — so
+    # each image's position relative to the headings is preserved for per-page
+    # association downstream.
     text_chunks: list[str] = []
     headings: list[str] = []
+    outline: list[OutlineBlock] = []
+    images: list[DocImage] = []
     seen_headings: set[str] = set()
+    seen_image_hashes: set[bytes] = set()
+    dict_flags = fitz.TEXTFLAGS_DICT | fitz.TEXT_PRESERVE_IMAGES
     for page in doc:
-        for block in page.get_text("dict")["blocks"]:
-            if block.get("type") != 0:
+        for block in page.get_text("dict", flags=dict_flags)["blocks"]:
+            btype = block.get("type")
+            if btype == 1:  # image block
+                _collect_pdf_image(block, images, seen_image_hashes, anchor=len(outline))
+                continue
+            if btype != 0:
                 continue
             for line in block.get("lines", []):
                 line_text_parts: list[str] = []
@@ -117,39 +181,24 @@ def parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
                     continue
                 line_text = " ".join(line_text_parts)
                 text_chunks.append(line_text)
-                if (
+                is_heading = (
                     line_max_size >= heading_threshold
                     and _HEADING_MIN_LEN <= len(line_text) <= _HEADING_MAX_LEN
-                    and line_text.lower() not in seen_headings
-                ):
-                    seen_headings.add(line_text.lower())
-                    headings.append(line_text)
+                )
+                if is_heading:
+                    outline.append(
+                        OutlineBlock(
+                            level=_pdf_size_to_level(line_max_size, heading_sizes),
+                            text=line_text,
+                        )
+                    )
+                    if line_text.lower() not in seen_headings:
+                        seen_headings.add(line_text.lower())
+                        headings.append(line_text)
+                else:
+                    outline.append(OutlineBlock(level=0, text=line_text))
 
     raw_text = "\n".join(text_chunks)
-
-    # Pass 3: extract images.
-    # page.get_images() returns tuples; xref is index 0.
-    images: list[bytes] = []
-    mimes: list[str] = []
-    seen_xrefs: set[int] = set()
-    for page in doc:
-        for img_info in page.get_images(full=True):
-            xref = img_info[0]
-            if xref in seen_xrefs:
-                continue
-            seen_xrefs.add(xref)
-            try:
-                pix = fitz.Pixmap(doc, xref)
-                # Convert CMYK / alpha to RGB PNG for downstream consistency.
-                if pix.n - pix.alpha > 3:  # CMYK
-                    pix = fitz.Pixmap(fitz.csRGB, pix)
-                png_bytes = pix.tobytes("png")
-                images.append(png_bytes)
-                mimes.append("image/png")
-                pix = None
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("Skipped PDF image xref=%s: %s", xref, exc)
-                continue
 
     title = _pdf_title(doc) or (headings[0] if headings else None)
     doc.close()
@@ -161,8 +210,53 @@ def parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
         raw_text=raw_text,
         headings=headings[:50],
         images=images,
-        image_mimes=mimes,
+        outline=outline,
     )
+
+
+def _collect_pdf_image(
+    block: dict,
+    images: list[DocImage],
+    seen_hashes: set[bytes],
+    *,
+    anchor: int,
+) -> None:
+    """Append a dict image block as a :class:`DocImage`, de-duped by content.
+
+    The same logo/photo repeated on every page shares identical bytes, so we
+    hash to keep only the first occurrence (and its document position)."""
+    data = block.get("image")
+    if not data:
+        return
+    digest = hashlib.sha1(data).digest()
+    if digest in seen_hashes:
+        return
+    seen_hashes.add(digest)
+    ext = (block.get("ext") or "png").lower()
+    images.append(
+        DocImage(
+            data=data,
+            mime=_IMG_EXT_TO_MIME.get(ext, "image/png"),
+            width=block.get("width"),
+            height=block.get("height"),
+            anchor=anchor,
+        )
+    )
+
+
+def _pdf_size_to_level(size: float, heading_sizes: list[int]) -> int:
+    """Map a heading's font size to a 1-3 level using the document's size tiers.
+
+    ``heading_sizes`` is sorted largest-first. The largest distinct size is H1,
+    the next is H2, everything smaller collapses to H3 so deeply varied PDFs
+    don't explode into many levels. Falls back to level 1 if the size isn't a
+    known tier (shouldn't happen, but keeps a heading from becoming body).
+    """
+    rounded = round(size)
+    for idx, tier in enumerate(heading_sizes[:3]):
+        if rounded >= tier:
+            return idx + 1
+    return min(len(heading_sizes), 3) or 1
 
 
 def _pdf_title(doc) -> str | None:
@@ -179,16 +273,8 @@ def _pdf_title(doc) -> str | None:
 
 
 _HEADING_STYLE_PREFIXES = ("heading", "title", "subtitle")
-_DOCX_IMAGE_DIR = "word/media/"
-_DOCX_IMAGE_EXTS_TO_MIME = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-    ".tiff": "image/tiff",
-}
+_DOCX_BLIP = qn("a:blip")
+_DOCX_EMBED = qn("r:embed")
 
 
 def parse_docx(file_bytes: bytes, filename: str) -> ParsedDocument:
@@ -200,57 +286,51 @@ def parse_docx(file_bytes: bytes, filename: str) -> ParsedDocument:
 
     text_parts: list[str] = []
     headings: list[str] = []
+    outline: list[OutlineBlock] = []
+    images: list[DocImage] = []
     seen_headings: set[str] = set()
+    seen_image_hashes: set[bytes] = set()
     title_from_style: str | None = None
 
+    # Walk paragraphs in document order. Inline images (<w:drawing><a:blip>) are
+    # collected at their paragraph's position so each one stays associated with
+    # the heading it sits under — an empty paragraph that holds only an image
+    # still contributes the image at the right anchor.
     for paragraph in document.paragraphs:
         text = (paragraph.text or "").strip()
-        if not text:
+        blips = paragraph._p.findall(".//" + _DOCX_BLIP)
+        if not text and not blips:
             continue
-        style_name = (paragraph.style.name or "").lower() if paragraph.style else ""
-        is_heading = any(style_name.startswith(p) for p in _HEADING_STYLE_PREFIXES)
-        if is_heading:
-            if _HEADING_MIN_LEN <= len(text) <= _HEADING_MAX_LEN:
-                key = text.lower()
-                if key not in seen_headings:
-                    seen_headings.add(key)
-                    headings.append(text)
-            if title_from_style is None and style_name.startswith("title"):
-                title_from_style = text
-        text_parts.append(text)
+        if text:
+            style_name = (paragraph.style.name or "").lower() if paragraph.style else ""
+            level = _docx_style_to_level(style_name)
+            if level > 0:
+                outline.append(OutlineBlock(level=level, text=text))
+                if _HEADING_MIN_LEN <= len(text) <= _HEADING_MAX_LEN:
+                    key = text.lower()
+                    if key not in seen_headings:
+                        seen_headings.add(key)
+                        headings.append(text)
+                if title_from_style is None and style_name.startswith("title"):
+                    title_from_style = text
+            else:
+                outline.append(OutlineBlock(level=0, text=text))
+            text_parts.append(text)
+        for blip in blips:
+            _collect_docx_image(
+                blip, document, images, seen_image_hashes, anchor=len(outline)
+            )
 
     # Tables — flatten cell text so the LLM sees pricing tables, hours, etc.
     for table in document.tables:
         for row in table.rows:
             cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
             if cells:
-                text_parts.append(" | ".join(cells))
+                row_text = " | ".join(cells)
+                text_parts.append(row_text)
+                outline.append(OutlineBlock(level=0, text=row_text))
 
     raw_text = "\n".join(text_parts)
-
-    # Images: DOCX is a ZIP; images live in word/media/*. Sorting by filename
-    # roughly matches encounter order in most Word exports (image1.png < image2.png).
-    images: list[bytes] = []
-    mimes: list[str] = []
-    try:
-        with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
-            media_entries = sorted(
-                [n for n in zf.namelist() if n.startswith(_DOCX_IMAGE_DIR)]
-            )
-            for entry in media_entries:
-                ext = "." + entry.rsplit(".", 1)[-1].lower() if "." in entry else ""
-                mime = _DOCX_IMAGE_EXTS_TO_MIME.get(ext)
-                if not mime:
-                    continue
-                try:
-                    raw = zf.read(entry)
-                    if raw:
-                        images.append(raw)
-                        mimes.append(mime)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("Failed reading DOCX image %s: %s", entry, exc)
-    except zipfile.BadZipFile:
-        logger.warning("DOCX file is not a valid ZIP — no images extracted")
 
     title = title_from_style or _docx_core_title(document) or (headings[0] if headings else None)
 
@@ -261,8 +341,64 @@ def parse_docx(file_bytes: bytes, filename: str) -> ParsedDocument:
         raw_text=raw_text,
         headings=headings[:50],
         images=images,
-        image_mimes=mimes,
+        outline=outline,
     )
+
+
+def _collect_docx_image(
+    blip,
+    document,
+    images: list[DocImage],
+    seen_hashes: set[bytes],
+    *,
+    anchor: int,
+) -> None:
+    """Resolve a ``<a:blip>`` to its image part and append it as a DocImage."""
+    rid = blip.get(_DOCX_EMBED)
+    if not rid:
+        return
+    part = document.part.related_parts.get(rid)
+    if part is None:
+        return
+    try:
+        data = part.blob
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Failed reading DOCX image %s: %s", rid, exc)
+        return
+    if not data:
+        return
+    digest = hashlib.sha1(data).digest()
+    if digest in seen_hashes:
+        return
+    seen_hashes.add(digest)
+    img = getattr(part, "image", None)
+    images.append(
+        DocImage(
+            data=data,
+            mime=getattr(part, "content_type", None) or "image/png",
+            width=getattr(img, "px_width", None),
+            height=getattr(img, "px_height", None),
+            anchor=anchor,
+        )
+    )
+
+
+def _docx_style_to_level(style_name: str) -> int:
+    """Map a (lowercased) DOCX paragraph style to an outline level.
+
+    ``Title`` → 1 and ``Subtitle`` → 2 so a cover-page title/tagline anchors the
+    hierarchy; ``Heading N`` maps to ``min(N, 3)``; everything else is body (0).
+    """
+    if style_name.startswith("title"):
+        return 1
+    if style_name.startswith("subtitle"):
+        return 2
+    if style_name.startswith("heading"):
+        digits = "".join(ch for ch in style_name if ch.isdigit())
+        if digits:
+            return min(int(digits), 3)
+        return 1
+    return 0
 
 
 def _docx_core_title(document) -> str | None:

@@ -14,6 +14,12 @@ Palette extraction strategy (Pillow median-cut quantisation):
 5. Score each bucket by its "brand-ness": penalise greys (low saturation)
    and extreme lightness, reward saturated mid-luminance colors.
 6. Return ordered hex strings.
+
+SVG logos can't be rasterised by Pillow, so they take a separate path: the
+palette is derived from `fill` / `stroke` / `stop-color` values declared in
+the markup (attributes or inline <style> CSS), scored the same way as the
+quantised buckets above. The original SVG bytes are kept for `logo_data_url`
+since browsers render SVG data URLs natively.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -73,6 +80,106 @@ def _score(hex_color: str) -> float:
     return sat * 0.7 + lum_score * 0.3
 
 
+# Matches color values assigned to fill/stroke/stop-color, whether as an XML
+# attribute (fill="#ff6600") or inline CSS (fill:#ff6600). Deliberately only
+# matches #hex and rgb(...) — named colors and url(#gradientId) references
+# aren't brand colors we can score.
+_SVG_COLOR_PROP_RE = re.compile(
+    r"(?:fill|stroke|stop-color)\s*[:=]\s*[\"']?\s*"
+    r"(#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?|rgb\([^)]*\))",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_svg(data: bytes) -> bool:
+    """Sniff the first KB for an <svg> root element, with or without an XML
+    declaration / doctype preamble."""
+    head = data[:2048].lstrip()
+    return head.startswith(b"<svg") or (head.startswith(b"<?xml") and b"<svg" in head)
+
+
+def _normalize_svg_color(token: str) -> tuple[int, int, int] | None:
+    token = token.strip()
+    if token.startswith("#"):
+        hexpart = token[1:]
+        if len(hexpart) == 3:
+            hexpart = "".join(c * 2 for c in hexpart)
+        if len(hexpart) != 6:
+            return None
+        return _hex_to_rgb("#" + hexpart)
+    if token.lower().startswith("rgb"):
+        nums = [int(n) for n in re.findall(r"\d+", token)[:3]]
+        if len(nums) == 3 and all(0 <= n <= 255 for n in nums):
+            return nums[0], nums[1], nums[2]
+    return None
+
+
+def _extract_palette_from_svg_bytes(
+    svg_bytes: bytes, *, max_colors: int = 6
+) -> LogoExtraction:
+    try:
+        text = svg_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        text = svg_bytes.decode("latin-1")
+
+    rgb_values: list[tuple[int, int, int]] = []
+    for match in _SVG_COLOR_PROP_RE.finditer(text):
+        rgb = _normalize_svg_color(match.group(1))
+        if rgb is not None:
+            rgb_values.append(rgb)
+
+    logo_data_url = _to_data_url(svg_bytes, "svg+xml")
+
+    if not rgb_values:
+        # No literal colors declared (currentColor / CSS classes we can't
+        # resolve) — fall back to the same neutral default as the raster path.
+        return LogoExtraction(
+            palette=["#2563eb"],
+            seed_hex="#2563eb",
+            logo_data_url=logo_data_url,
+            logo_is_light=False,
+        )
+
+    logo_is_light = _is_light_logo([(r, g, b, 255) for r, g, b in rgb_values])
+
+    counts: dict[str, int] = {}
+    for r, g, b in rgb_values:
+        hex_color = _rgb_to_hex(r, g, b)
+        counts[hex_color] = counts.get(hex_color, 0) + 1
+
+    total = len(rgb_values)
+    candidates: list[tuple[float, str]] = []
+    for hex_color, count in counts.items():
+        r, g, b = _hex_to_rgb(hex_color)
+        lum = _luminance(r, g, b)
+        sat = _saturation(r, g, b)
+        if lum > 0.95 and sat < 0.15:  # near-white
+            continue
+        if lum < 0.05:  # near-black
+            continue
+        score = _score(hex_color)
+        combined = score * 0.7 + (count / total) * 0.3
+        candidates.append((combined, hex_color))
+
+    if not candidates:
+        return LogoExtraction(
+            palette=["#2563eb"],
+            seed_hex="#2563eb",
+            logo_data_url=logo_data_url,
+            logo_is_light=logo_is_light,
+        )
+
+    candidates.sort(reverse=True)
+    palette = [hex_color for _, hex_color in candidates[:max_colors]]
+
+    return LogoExtraction(
+        palette=palette,
+        seed_hex=palette[0],
+        logo_data_url=logo_data_url,
+        logo_is_light=logo_is_light,
+    )
+
+
 def _is_light_logo(pixels: list[tuple[int, int, int, int]]) -> bool:
     """
     Detect whether the visible mark is predominantly light-colored.
@@ -97,6 +204,9 @@ def extract_palette_from_image_bytes(
     Always returns a LogoExtraction — falls back to a sensible default if
     the image has no usable colors.
     """
+    if _looks_like_svg(image_bytes):
+        return _extract_palette_from_svg_bytes(image_bytes, max_colors=max_colors)
+
     img = Image.open(io.BytesIO(image_bytes))
     img = img.convert("RGBA")
 
@@ -165,7 +275,12 @@ def extract_palette_from_image_bytes(
 
 def _to_data_url(image_bytes: bytes, image_format: str) -> str:
     fmt = image_format.lower()
-    mime = "image/png" if fmt == "png" else f"image/{fmt}"
+    if fmt in ("svg", "svg+xml"):
+        mime = "image/svg+xml"
+    elif fmt == "png":
+        mime = "image/png"
+    else:
+        mime = f"image/{fmt}"
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime};base64,{encoded}"
 

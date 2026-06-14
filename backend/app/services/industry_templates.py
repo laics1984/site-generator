@@ -17,16 +17,25 @@ the LLM can still adapt the copy intelligently — the structure stays.
 from __future__ import annotations
 
 from app.models.industry import IndustryCategory, IndustryTemplate, PageScaffold
+from app.services.landing_patterns import homepage_sections
 
 
 # --- common page recipes used across industries ---------------------------------
 
 
-def _core_home(extra_sections: list[str] | None = None) -> PageScaffold:
-    sections = ["hero", "features", "testimonials", "cta"]
-    if extra_sections:
-        # insert extras between testimonials and cta for visual rhythm
-        sections = ["hero", "features", *extra_sections, "testimonials", "cta"]
+def _core_home(
+    industry: IndustryCategory | None = None,
+    extra_sections: list[str] | None = None,
+) -> PageScaffold:
+    if industry is not None:
+        # Industry-fit landing pattern (conversion-optimized order); extras merged
+        # in before the closing CTA. Falls back to the standard order internally.
+        sections = homepage_sections(industry, extra_sections=extra_sections)
+    else:
+        sections = ["hero", "features", "testimonials", "cta"]
+        if extra_sections:
+            # insert extras between testimonials and cta for visual rhythm
+            sections = ["hero", "features", *extra_sections, "testimonials", "cta"]
     return PageScaffold(
         page_type="home",
         slug="",
@@ -204,7 +213,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="restaurant",
         label="Restaurant / Café",
         description="Hospitality businesses where menu, vibe, and reservations drive bookings.",
-        core_pages=_core_set(_core_home(extra_sections=["gallery"])),
+        core_pages=_core_set(_core_home("restaurant", extra_sections=["gallery"])),
         suggested_pages=[_menu_page(), _gallery_page()],
         optional_pages=[_faq_page(), _testimonials_page()],
     ),
@@ -212,7 +221,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="agency",
         label="Agency / Studio",
         description="Creative or marketing agencies where work + process win pitches.",
-        core_pages=_core_set(_core_home()),
+        core_pages=_core_set(_core_home("agency")),
         suggested_pages=[_services_page(), _work_page(), _process_page()],
         optional_pages=[_team_page(), _testimonials_page(), _blog_page(), _faq_page()],
     ),
@@ -220,7 +229,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="saas",
         label="SaaS / Software",
         description="Software products where pricing and feature depth drive sign-ups.",
-        core_pages=_core_set(_core_home()),
+        core_pages=_core_set(_core_home("saas")),
         suggested_pages=[_pricing_page(), _faq_page()],
         optional_pages=[_testimonials_page(), _blog_page(), _team_page()],
     ),
@@ -228,7 +237,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="professional-services",
         label="Professional Services (legal, dental, medical)",
         description="Service businesses where trust and credentials drive bookings.",
-        core_pages=_core_set(_core_home()),
+        core_pages=_core_set(_core_home("professional-services")),
         suggested_pages=[_services_page(), _team_page(), _faq_page(), _testimonials_page()],
         optional_pages=[_process_page(), _blog_page()],
     ),
@@ -236,7 +245,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="ecommerce",
         label="E-commerce",
         description="Product-led businesses. (Storefront integration is out of scope — these pages set the brand around it.)",
-        core_pages=_core_set(_core_home(extra_sections=["gallery"])),
+        core_pages=_core_set(_core_home("ecommerce", extra_sections=["gallery"])),
         suggested_pages=[_gallery_page(), _faq_page()],
         optional_pages=[_blog_page(), _testimonials_page()],
     ),
@@ -244,7 +253,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="consultancy",
         label="Consultancy",
         description="Expertise-led businesses where case studies and team bios drive engagement.",
-        core_pages=_core_set(_core_home()),
+        core_pages=_core_set(_core_home("consultancy")),
         suggested_pages=[_services_page(), _work_page(), _team_page()],
         optional_pages=[_process_page(), _testimonials_page(), _blog_page(), _faq_page()],
     ),
@@ -252,7 +261,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="nonprofit",
         label="Non-profit / Charity",
         description="Mission-led organizations where impact stories and donation paths matter most.",
-        core_pages=_core_set(_core_home()),
+        core_pages=_core_set(_core_home("nonprofit")),
         suggested_pages=[_services_page(), _team_page(), _testimonials_page()],
         optional_pages=[_blog_page(), _faq_page(), _gallery_page()],
     ),
@@ -260,7 +269,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="personal",
         label="Personal / Portfolio",
         description="Solo professionals and creators where personality and work samples matter.",
-        core_pages=_core_set(_core_home()),
+        core_pages=_core_set(_core_home("personal")),
         suggested_pages=[_work_page(), _testimonials_page()],
         optional_pages=[_blog_page(), _services_page()],
     ),
@@ -268,7 +277,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="other",
         label="Other / General",
         description="Generic small-business template when nothing else fits.",
-        core_pages=_core_set(_core_home()),
+        core_pages=_core_set(_core_home("other")),
         suggested_pages=[_services_page(), _faq_page()],
         optional_pages=[_testimonials_page(), _blog_page(), _team_page(), _gallery_page()],
     ),

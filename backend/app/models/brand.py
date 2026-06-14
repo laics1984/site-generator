@@ -118,6 +118,12 @@ class ThemeTokens(BaseModel):
     page: PageTokens
 
     mood: BrandMood = "modern"
+    # Light vs dark scheme. Drives palette construction in build_theme; the band
+    # rhythm + text colours follow automatically. Renderers need nothing extra —
+    # the dark hexes flow through the existing builderStyles colour tokens.
+    color_scheme: Literal["light", "dark"] = "light"
+    # The ui-ux-pro-max style this mood embodies (design lineage / debug metadata).
+    style: str = ""
     # Section background rotation drives visual rhythm (avoid wall-of-white).
     # Indices reference palette keys: "background", "surface", "primary".
     section_rotation: list[Literal["background", "surface", "primary"]] = Field(
@@ -159,15 +165,22 @@ class ThemeTokens(BaseModel):
 
     def to_builder_styles(self) -> dict[str, Any]:
         """Serialize as the exact `BuilderStyles` shape the webtree builder expects."""
+        colors = {
+            "primary": self.palette.primary,
+            "secondary": self.palette.secondary,
+            "accent": self.palette.accent,
+            "text": self.palette.text,
+            "background": self.palette.background,
+            "surface": self.palette.surface,
+        }
         return {
-            "colors": {
-                "primary": self.palette.primary,
-                "secondary": self.palette.secondary,
-                "accent": self.palette.accent,
-                "text": self.palette.text,
-                "background": self.palette.background,
-                "surface": self.palette.surface,
-            },
+            "colors": colors,
+            # Preserved brand baseline. `colors` is the active palette the
+            # builder mutates via tone presets / manual edits; `brand` is the
+            # immutable anchor the builder's "Brand" reset reverts to. Seeded
+            # equal to `colors` here — the generated palette IS the brand.
+            # Builder-only; the public renderer never reads it.
+            "brand": dict(colors),
             "typography": {
                 "headingFont": self.typography.heading_font,
                 "bodyFont": self.typography.body_font,
@@ -220,3 +233,6 @@ class BrandIdentity(BaseModel):
     )
     mood: BrandMood | None = None
     industry: str | None = None
+    # Optional light/dark preference (e.g. set by the frontend or an LLM cue).
+    # None → light. Threaded into build_theme on the generation path.
+    color_scheme: Literal["light", "dark"] | None = None
