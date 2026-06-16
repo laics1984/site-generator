@@ -95,6 +95,10 @@ export type BrandMood =
 export type ColorScheme = 'light' | 'dark'
 export type ColorSchemeChoice = 'auto' | ColorScheme
 
+/** Hero photo-background height, site-wide. 'full' = full-bleed full-screen hero;
+ * 'banded' = bounded-height full-bleed photo hero (content sits closer to top). */
+export type HeroHeight = 'full' | 'banded'
+
 export interface BrandIdentity {
   name: string
   tagline?: string | null

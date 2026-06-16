@@ -9,6 +9,7 @@ import type {
   DetectedBrand,
   ExtendCrawlResult,
   GeneratedSite,
+  HeroHeight,
   IndustryCategory,
   PageRecipeResponse,
   PageScaffold,
@@ -47,6 +48,7 @@ export interface GeneratePayload {
   brand?: BrandIdentity | null
   mood_override?: BrandMood | null
   color_scheme_override?: ColorScheme | null
+  hero_height?: HeroHeight
   contact?: Record<string, string> | null
 }
 
@@ -64,6 +66,7 @@ export interface GenerateWithPagesPayload {
   brand?: BrandIdentity | null
   mood_override?: BrandMood | null
   color_scheme_override?: ColorScheme | null
+  hero_height?: HeroHeight
   contact?: Record<string, string> | null
   jurisdiction?: string | null
   legal_contact_email?: string | null

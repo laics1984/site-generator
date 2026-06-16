@@ -305,5 +305,24 @@ class DarkSchemeTest(unittest.TestCase):
         self.assertEqual(light.typography.heading_font, dark.typography.heading_font)
 
 
+class HeroHeightTokenTest(unittest.TestCase):
+    """to_builder_styles emits the hero token only when banded, so default
+    ("full") sites carry no hero override and fall back to the full-screen look."""
+
+    def test_full_omits_hero_token(self):
+        theme = build_theme("#2563eb", mood="modern")
+        self.assertEqual(theme.hero_background_height, "full")
+        self.assertNotIn("hero", theme.to_builder_styles())
+
+    def test_banded_emits_min_height(self):
+        from app.models.brand import HERO_BANDED_MIN_HEIGHT
+
+        theme = build_theme("#2563eb", mood="modern")
+        theme.hero_background_height = "banded"
+        self.assertEqual(
+            theme.to_builder_styles()["hero"], {"minHeight": HERO_BANDED_MIN_HEIGHT}
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

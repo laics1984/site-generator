@@ -4,7 +4,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.models.brand import BrandIdentity, BrandMood
+from app.models.brand import BrandIdentity, BrandMood, HeroBackgroundHeight
 from app.models.builder_schema import (
     BodySchema,
     GeneratedPage,
@@ -58,6 +58,7 @@ class GenerateRequest(BaseModel):
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
     color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
+    hero_height: HeroBackgroundHeight = "full"  # full-screen vs bounded photo hero, site-wide
     contact: dict[str, str] | None = None
 
 
@@ -101,6 +102,29 @@ def _image_pool_for(source: SourceContent) -> tuple[list[str], list[ImageMetadat
         add_page(page)
 
     return images, metadata
+
+
+def _page_images_by_slug(source: SourceContent) -> dict[str, list[ImageMetadata]]:
+    """Map each page's slug to the images the source placed on THAT page.
+
+    Keyed by the same slug the planner/scaffolds use — ``_path_to_slug`` of the
+    page's ``url_path``, with the homepage (``url_path`` None) keyed ``""``. The
+    renderer hands a page's own list to the resolver as a ranking preference so
+    each hero/section uses its page's photo rather than the biggest one site-wide.
+    """
+    out: dict[str, list[ImageMetadata]] = {}
+
+    def add_page(page: SourceContent) -> None:
+        if not page.image_metadata:
+            return
+        slug = (page.url_path or "").strip("/").lower()
+        out.setdefault(slug, []).extend(page.image_metadata)
+
+    add_page(source)
+    for page in source.discovered_pages:
+        add_page(page)
+
+    return out
 
 
 _NAME_TITLE_TOKENS = {
@@ -359,6 +383,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
             brand.logo_is_light if brand else None,
         ),
     )
+    theme.hero_background_height = payload.hero_height
 
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
@@ -372,6 +397,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         theme=theme,
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
+        page_images=_page_images_by_slug(payload.source),
         contact=payload.contact,
         market_cue=market_cue,
         place_cue=place_cue,
@@ -397,6 +423,7 @@ class GenerateWithPagesRequest(BaseModel):
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
     color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
+    hero_height: HeroBackgroundHeight = "full"  # full-screen vs bounded photo hero, site-wide
     contact: dict[str, str] | None = None
     jurisdiction: str | None = None
     legal_contact_email: str | None = None
@@ -462,6 +489,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             payload.color_scheme_override, brand.color_scheme, brand.logo_is_light
         ),
     )
+    theme.hero_background_height = payload.hero_height
 
     # Announcement/quick-links strap: claim it BEFORE planning so its text is
     # out of raw_text (the LLM must not also narrate it into a paragraph);
@@ -517,6 +545,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         theme=theme,
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
+        page_images=_page_images_by_slug(payload.source),
         contact=payload.contact,
         extra_footer_nav=extra_footer_nav,
         market_cue=market_cue,

@@ -123,6 +123,11 @@ class RenderContext:
     current_parent_slug: str | None = None  # set when rendering a sub-page (for breadcrumbs)
     children_by_parent: dict[str, list[ChildPageRef]] = field(default_factory=dict)
     page_title_by_slug: dict[str, str] = field(default_factory=dict)
+    # Images the source placed on the page currently being rendered. The resolver
+    # ranks these ahead of the site-wide pool so each page's hero/sections use
+    # their OWN photos, not the biggest image found anywhere. Empty for sources
+    # without per-page placement (then resolution stays pool-wide as before).
+    page_images: list[ImageMetadata] = field(default_factory=list)
     # Transient: the band of the FIRST image resolved for the current section,
     # captured by block_to_element's resolve_image closure and read by
     # plan_to_site to feed the luminance pass. Reset per block. (Phase 4b)
@@ -2071,6 +2076,46 @@ _DISPATCH = {
 # atmospheric Pexels imagery).
 _IMAGE_INTENT = {"hero": "hero", "about": "about", "cta": "cta_bg", "team": "avatar"}
 
+# Photo sources that count as a "genuine" hero image. A `picsum` result is the
+# resolver's last-resort placeholder — it means no scraped/document match AND no
+# stock photo — so we render the brand gradient header instead of a meaningless
+# random image. See _apply_hero_photo_policy.
+_GENUINE_PHOTO_SOURCES = frozenset({"scraped", "pexels"})
+
+
+async def _apply_hero_photo_policy(block: HeroBlock, ctx: RenderContext) -> PhotoResult:
+    """Resolve the hero image once and normalise the block to ONE consistent
+    treatment across every page.
+
+    The planner LLM decides each page's hero ``image_query`` / ``layout``
+    independently, so some heroes came back full-bleed with a photo and others
+    image-less (a short gradient) on the same site. This re-decides it
+    deterministically from the resolver's *actual* result:
+
+      * a genuine photo (a matching scraped/document image, or a stock photo when
+        Pexels is configured) -> full-bleed background hero;
+      * only a Picsum placeholder available (no scraped match, no stock) -> drop
+        ``image_query`` so selection lands on the gradient header.
+
+    Returns the resolved photo so the caller can reuse it without re-picking
+    (which would consume a different pooled image for the same slot).
+    """
+    photo = await ctx.resolver.resolve(
+        block.image_query,
+        intent="hero",
+        alt_fallback=block.image_alt or block.headline,
+        prefer=ctx.page_images,
+    )
+    if photo.source in _GENUINE_PHOTO_SOURCES:
+        block.layout = "background"
+        # The background variant is only feasible with an image slot; if the LLM
+        # left image_query blank, give it one so selection keeps the photo.
+        if not (block.image_query or "").strip():
+            block.image_query = block.image_alt or block.headline or "brand photo"
+    else:
+        block.image_query = None
+    return photo
+
 
 async def block_to_element(
     block: ContentBlock,
@@ -2079,6 +2124,13 @@ async def block_to_element(
     is_homepage: bool = True,
     hero_scroll_target_kind: str | None = None,
 ) -> BuilderElement:
+    # Heroes get one consistent treatment site-wide (see _apply_hero_photo_policy).
+    # The photo is resolved up front so the gradient-vs-photo choice can key off
+    # the resolver's real source; the closure below reuses it (no second pick).
+    hero_photo: PhotoResult | None = None
+    if block.kind == "hero":
+        hero_photo = await _apply_hero_photo_policy(block, ctx)
+
     # Catalogue path: for section types that have shared builder templates, the
     # LLM-mapped content fills a chosen template (selection by feasibility +
     # preference). Theme flows via CSS vars + builderStyles — no inline colours.
@@ -2093,8 +2145,14 @@ async def block_to_element(
         intent = _IMAGE_INTENT.get(block.kind, "generic")
 
         async def resolve_image(query: str) -> tuple[str, str | None]:
-            photo = await ctx.resolver.resolve(
-                query, intent=intent, alt_fallback=query
+            # Reuse the hero photo already resolved by the policy above; for every
+            # other slot, resolve normally.
+            photo = (
+                hero_photo
+                if hero_photo is not None
+                else await ctx.resolver.resolve(
+                    query, intent=intent, alt_fallback=query, prefer=ctx.page_images
+                )
             )
             # Capture the FIRST resolved image's band as the section's featured
             # image for the luminance pass (Phase 4b). Later images (e.g. grid
@@ -2150,6 +2208,7 @@ async def plan_to_site(
     theme: ThemeTokens | None = None,
     scraped_images: list[str] | None = None,
     scraped_metadata: list[ImageMetadata] | None = None,
+    page_images: dict[str, list[ImageMetadata]] | None = None,
     contact: dict[str, str] | None = None,
     extra_footer_nav: list[tuple[str, str]] | None = None,
     market_cue: str | None = None,
@@ -2234,6 +2293,7 @@ async def plan_to_site(
             current_parent_slug=page_plan.parent_slug,
             children_by_parent=children_by_parent,
             page_title_by_slug=page_title_by_slug,
+            page_images=(page_images or {}).get(page_plan.slug, []),
         )
         # Phase 5 activation (gated): deterministically assign visual_policy per
         # the §5 matrix so the luminance pass engages. Off by default — when the

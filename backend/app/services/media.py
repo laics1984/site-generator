@@ -146,13 +146,21 @@ class ImageResolver:
         *,
         intent: ImageIntent = "generic",
         alt_fallback: str | None = None,
+        prefer: list[ImageMetadata] | None = None,
     ) -> PhotoResult:
-        """Returns a usable PhotoResult. Always succeeds — Picsum is the final fallback."""
+        """Returns a usable PhotoResult. Always succeeds — Picsum is the final fallback.
+
+        `prefer`: images that belong to the page being rendered. They're ranked
+        ahead of the rest of the site-wide pool so a page's hero/section uses the
+        photo the source actually placed on THAT page, not the biggest one
+        anywhere on the site. Falls through to the full pool when none of the
+        page's own images fit the slot.
+        """
         orientation = _INTENT_TO_ORIENTATION[intent]
 
         # 1. Scraped pool — rank against the slot's image_query
         if intent in _SCRAPED_ELIGIBLE_INTENTS:
-            picked = await self._take_best_scraped(query, intent)
+            picked = await self._take_best_scraped(query, intent, prefer=prefer)
             if picked is not None:
                 self._used_urls.add(picked.url)
                 # Carry the band when the scraper supplied a colour hint; else
@@ -201,10 +209,13 @@ class ImageResolver:
         return None
 
     async def _take_best_scraped(
-        self, query: str | None, intent: str
+        self, query: str | None, intent: str, *, prefer: list[ImageMetadata] | None = None
     ) -> ImageMetadata | None:
         """Rank unused scraped candidates against the slot. Returns None if the
         best match doesn't clear the threshold — caller falls through to Pexels.
+
+        When `prefer` is given, the page's own images are ranked first; only if
+        none of them fit the slot do we consider the rest of the site-wide pool.
         """
         candidates = [
             c for c in self._pool
@@ -213,13 +224,21 @@ class ImageResolver:
         if not candidates:
             return None
 
-        if self._use_llm_tiebreaker:
-            result = await rank_candidates_with_llm_tiebreaker(
-                query, intent, candidates
-            )
-        else:
-            result = rank_candidates(query, intent, candidates)
+        # Page-local first: a confident match among THIS page's images wins over
+        # a (possibly bigger) image that belongs to another page.
+        if prefer:
+            prefer_urls = {c.url for c in prefer}
+            local = [c for c in candidates if c.url in prefer_urls]
+            if local:
+                result = await self._rank(query, intent, local)
+                if result.chosen is not None:
+                    logger.debug(
+                        "Page-local scraped image for '%s' (intent=%s): score=%.2f decision=%s",
+                        query, intent, result.chosen_score, result.decision,
+                    )
+                    return result.chosen
 
+        result = await self._rank(query, intent, candidates)
         if result.chosen is not None:
             logger.debug(
                 "Scraped image picked for '%s' (intent=%s): score=%.2f decision=%s",
@@ -232,6 +251,12 @@ class ImageResolver:
             result.scores[0].score if result.scores else 0.0,
         )
         return None
+
+    async def _rank(self, query: str | None, intent: str, candidates: list[ImageMetadata]):
+        """Heuristic ranking, optionally with the bounded LLM tiebreaker."""
+        if self._use_llm_tiebreaker:
+            return await rank_candidates_with_llm_tiebreaker(query, intent, candidates)
+        return rank_candidates(query, intent, candidates)
 
 
 def _picsum_photo(

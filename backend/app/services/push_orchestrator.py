@@ -435,7 +435,13 @@ async def push_site(req: PushRequest) -> PushReport:
     if req.push_builder_styles and req.site.builder_styles:
         try:
             await client.mint_builder_session(req.entity_token)
-            await client.update_builder_styles(req.site.builder_styles)
+            styles_result = await client.update_builder_styles(req.site.builder_styles)
+            # Saving builder_styles mints a new layout version and makes it the
+            # entity's active version — refresh layout_version_id so the publish
+            # step's expectedLayoutVersionId isn't stale (else LAYOUT_VERSION_CONFLICT).
+            new_layout = (styles_result.get("data") or {}).get("layout") or {}
+            if new_layout.get("versionId"):
+                layout_version_id = new_layout["versionId"]
             report.record(PushStep(name="builder_styles", ok=True, detail="Theme applied"))
         except CmsApiError as exc:
             # Non-fatal — site already pushed; theme can be set manually.

@@ -104,6 +104,16 @@ class PageTokens(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+# Bounded min-height for the "banded" hero. The full-bleed hero template falls
+# back to min(100dvh, 900px) when this token is absent, so omitting it (the
+# "full" default) keeps existing sites full-screen and byte-identical.
+HERO_BANDED_MIN_HEIGHT = "460px"
+
+# Site-wide hero photo-background height. "full" = full-bleed full-screen hero;
+# "banded" = bounded-height full-bleed photo hero.
+HeroBackgroundHeight = Literal["full", "banded"]
+
+
 class ThemeTokens(BaseModel):
     """
     Full design system for a generated site.
@@ -162,6 +172,10 @@ class ThemeTokens(BaseModel):
         default=None,
         description="Site-wide motion intensity. None → derived from mood (MOOD_MOTION_INTENSITY).",
     )
+    # Hero photo-background height, a site-wide choice. "full" = full-bleed
+    # full-screen hero; "banded" = bounded-height full-bleed photo hero. Part of
+    # BuilderStyles (emitted below) so it's editable globally in the builder.
+    hero_background_height: HeroBackgroundHeight = "full"
 
     def to_builder_styles(self) -> dict[str, Any]:
         """Serialize as the exact `BuilderStyles` shape the webtree builder expects."""
@@ -173,7 +187,7 @@ class ThemeTokens(BaseModel):
             "background": self.palette.background,
             "surface": self.palette.surface,
         }
-        return {
+        styles: dict[str, Any] = {
             "colors": colors,
             # Preserved brand baseline. `colors` is the active palette the
             # builder mutates via tone presets / manual edits; `brand` is the
@@ -204,6 +218,11 @@ class ThemeTokens(BaseModel):
                 or MOOD_MOTION_INTENSITY.get(self.mood, "balanced"),
             },
         }
+        # Only emit the hero token when banded; absence → the template's
+        # full-screen fallback, so "full" sites stay byte-identical.
+        if self.hero_background_height == "banded":
+            styles["hero"] = {"minHeight": HERO_BANDED_MIN_HEIGHT}
+        return styles
 
 
 class BrandIdentity(BaseModel):

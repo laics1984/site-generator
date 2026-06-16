@@ -30,6 +30,15 @@ class SectionContentTemplateSelectionTest(unittest.TestCase):
         self.assertIn(template["id"], {"hero-modern-split", "hero-background-bold", "hero-editorial"})
         self.assertTrue(any(slot["id"] == "image" for slot in template["slots"]))
 
+    def test_full_bleed_hero_height_is_tokenized_with_full_screen_fallback(self):
+        # Hero height is now driven by the --builder-hero-min-height token so the
+        # builder can change it globally; the fallback keeps today's full-screen look.
+        bold = get_template("hero-background-bold")
+        self.assertEqual(
+            bold["tree"]["styles"]["minHeight"],
+            "var(--builder-hero-min-height, min(100dvh, 900px))",
+        )
+
     def test_cta_with_background_query_prefers_photo_background_before_mood(self):
         block = CtaBlock(
             headline="Book your appointment",

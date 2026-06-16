@@ -6,7 +6,7 @@ from app.services.theme import build_theme
 
 
 class HeaderContrastTest(unittest.TestCase):
-    def test_build_header_uses_dark_background_for_light_logo(self):
+    def test_light_logo_on_light_site_keeps_light_header_and_gets_dark_lockup(self):
         brand = BrandIdentity(
             name="Acme",
             logo_data_url="data:image/png;base64,abc",
@@ -17,8 +17,10 @@ class HeaderContrastTest(unittest.TestCase):
 
         header = build_header(brand, theme, nav_items=[])
 
-        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.secondary)
-        self.assertNotEqual(header.styles.get("backgroundColor"), theme.palette.background)
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
+        chip = _find(header, "Logo lockup")
+        self.assertIsNotNone(chip)
+        self.assertEqual(chip.styles.get("backgroundColor"), theme.palette.secondary)
 
 
 def _find(node, name):
@@ -45,17 +47,21 @@ class HeaderLogoLockupTest(unittest.TestCase):
         return build_header(brand, theme, nav_items=[])
 
     def test_dark_logo_on_dark_site_gets_light_lockup(self):
-        # SOP: keep the dark header, give the dark logo a light chip — no light bar.
         header = self._header(dark=True, logo_is_light=False)
-        self.assertNotEqual(header.styles.get("backgroundColor"), "#ffffff")
+        theme = build_theme("#2563eb", color_scheme="dark")
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
         chip = _find(header, "Logo lockup")
         self.assertIsNotNone(chip)
         self.assertEqual(chip.styles.get("backgroundColor"), "#ffffff")
 
     def test_dark_logo_on_light_site_has_no_lockup(self):
-        self.assertIsNone(_find(self._header(dark=False, logo_is_light=False), "Logo lockup"))
+        header = self._header(dark=False, logo_is_light=False)
+        theme = build_theme("#2563eb", color_scheme="light")
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
+        self.assertIsNone(_find(header, "Logo lockup"))
 
     def test_light_logo_on_dark_site_has_no_lockup(self):
-        # Light logo already pops on the dark header bar — no chip needed.
         header = self._header(dark=True, logo_is_light=True)
+        theme = build_theme("#2563eb", color_scheme="dark")
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
         self.assertIsNone(_find(header, "Logo lockup"))

@@ -6,6 +6,7 @@ import type {
   BrandIdentity,
   BrandMood,
   ColorSchemeChoice,
+  HeroHeight,
 } from '@/lib/types'
 
 const MOODS: { id: BrandMood; label: string; hint: string }[] = [
@@ -23,6 +24,11 @@ const SCHEMES: { id: ColorSchemeChoice; label: string; hint: string }[] = [
   { id: 'dark', label: 'Dark', hint: 'Dark pages' },
 ]
 
+const HERO_HEIGHTS: { id: HeroHeight; label: string; hint: string }[] = [
+  { id: 'full', label: 'Full screen', hint: 'Immersive hero' },
+  { id: 'banded', label: 'Banded', hint: 'Content closer to top' },
+]
+
 interface BrandPanelProps {
   brandName: string
   onBrandNameChange: (value: string) => void
@@ -36,6 +42,8 @@ interface BrandPanelProps {
   setMood: (mood: BrandMood) => void
   colorScheme: ColorSchemeChoice
   setColorScheme: (scheme: ColorSchemeChoice) => void
+  heroHeight: HeroHeight
+  setHeroHeight: (height: HeroHeight) => void
 }
 
 export function BrandPanel({
@@ -50,6 +58,8 @@ export function BrandPanel({
   setMood,
   colorScheme,
   setColorScheme,
+  heroHeight,
+  setHeroHeight,
 }: BrandPanelProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -134,6 +144,35 @@ export function BrandPanel({
               >
                 <div className="font-semibold">{s.label}</div>
                 <div className="text-slate-500">{s.hint}</div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-sm font-medium text-slate-700">Hero height</div>
+        <p className="mt-1 text-xs text-slate-500">
+          Photo heroes fill the screen, or sit in a shorter band so page content
+          starts higher. Editable later in the builder.
+        </p>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          {HERO_HEIGHTS.map((h) => {
+            const active = h.id === heroHeight
+            return (
+              <button
+                key={h.id}
+                type="button"
+                onClick={() => setHeroHeight(h.id)}
+                className={
+                  'rounded-lg border px-2.5 py-2 text-left text-xs transition ' +
+                  (active
+                    ? 'border-blue-600 bg-blue-50 text-blue-900'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300')
+                }
+              >
+                <div className="font-semibold">{h.label}</div>
+                <div className="text-slate-500">{h.hint}</div>
               </button>
             )
           })}

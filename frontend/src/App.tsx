@@ -31,6 +31,7 @@ import type {
   DetectedBrand,
   GeneratedSite,
   GeneratorMode,
+  HeroHeight,
   IndustryCategory,
   PageScaffold,
   ScrapePreview as ScrapePreviewType,
@@ -54,6 +55,8 @@ export default function App() {
   const [mood, setMood] = useState<BrandMood>('modern')
   // 'auto' → send null so the backend decides from the logo (light logo ⇒ dark).
   const [colorScheme, setColorScheme] = useState<ColorSchemeChoice>('auto')
+  // Hero photo-background height, site-wide. 'full' = full-screen hero (default).
+  const [heroHeight, setHeroHeight] = useState<HeroHeight>('full')
   const [themePreview, setThemePreview] = useState<BuilderStylesShape | null>(null)
   const [googleFonts, setGoogleFonts] = useState<string[]>([])
 
@@ -322,6 +325,7 @@ export default function App() {
         brand: effectiveBrand(),
         mood_override: mood,
         color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
+        hero_height: heroHeight,
       })
       setSite(result)
       setSelectedSlug(result.pages[0]?.slug ?? null)
@@ -356,6 +360,7 @@ export default function App() {
         brand: effectiveBrand(),
         mood_override: mood,
         color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
+        hero_height: heroHeight,
         detected_brand: detectedBrand,
       })
       setSite(result)
@@ -421,6 +426,8 @@ export default function App() {
                   setMood={setMood}
                   colorScheme={colorScheme}
                   setColorScheme={setColorScheme}
+                  heroHeight={heroHeight}
+                  setHeroHeight={setHeroHeight}
                 />
               </div>
             </div>

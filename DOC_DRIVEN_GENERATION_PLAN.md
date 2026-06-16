@@ -193,6 +193,29 @@ Docker; run `npm run build` in the frontend container to typecheck).
 
 ---
 
+## 9. Images — extracted, filtered, placed per page (implemented)
+
+Doc images are not used as feature images indiscriminately. The matcher
+([image_match.py](backend/app/services/image_match.py)) scores on alt/filename
+lexical overlap + intent + size, and doc images arrive with none of those — so we
+manufacture the signals:
+
+1. **Dimensions at extraction.** `DocImage` carries `width`/`height` — PDF from
+   `get_text("dict", flags=…|TEXT_PRESERVE_IMAGES)` image blocks, DOCX from the
+   inline image part's `px_width`/`px_height`. Unlocks filtering + the size bonus.
+2. **Filter junk.** `document.py` drops images whose short side < 200px (icons,
+   rules, small logos); identical bytes are de-duped in the parser.
+3. **Logo ≠ hero.** A small cover-graphic (`_select_logo`) becomes the brand seed
+   and is kept out of the feature pool; a large first image is left as a hero.
+4. **Per-page placement.** Each `DocImage` records an `anchor` = its position in
+   the outline. `split_into_pages` attaches it to the page + nearest heading it
+   sits under, sets **alt = that heading** (so a photo under "Our Team" routes to
+   the team slot via the existing global matcher), and tags the first image on
+   each page `hero`, the rest `generic`.
+
+`doc_export.py` benefits for free: per-page images now caption under their own
+page. Tests: [test_doc_images.py](backend/tests/test_doc_images.py) (8).
+
 ## Resolved decisions
 
 1. **PDF export** — ✅ defer; **docx-only v1**.

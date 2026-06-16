@@ -122,9 +122,9 @@ def _logo_mark(
 ) -> BuilderElement:
     """
     Returns a logo BuilderElement — either the uploaded image or a typographic
-    monogram. Both are themed against the palette. When `lockup` is set (a dark
-    image logo on a dark header), the image sits in a small light chip so it stays
-    legible without lightening the whole header.
+    monogram. Both are themed against the palette. When `lockup` is set, the
+    image sits in a contrast chip so it stays legible on header chrome that is
+    too close to the logo's own brightness.
     """
     if brand.logo_url or brand.logo_data_url:
         # The logo IS the home link — standard convention, and it lets the
@@ -214,29 +214,23 @@ def _header_chrome(
 ) -> tuple[str, str, str, str | None]:
     """
     Choose a header background / foreground / divider that keeps the logo and nav
-    readable. The 4th value, `logo_lockup`, is a light chip colour to place behind
-    a *dark* image logo on a *dark* site — SOP is to solve logo contrast locally
-    (a small light lockup) rather than flip the whole header to light over dark
-    content (a jarring seam + sticky-header flashing).
+    readable. The 4th value, `logo_lockup`, is a contrast chip for uploaded
+    logos only when the logo would blend into the actual header background:
+    dark header + dark logo => white chip; light header + light logo => dark chip.
     """
-    if brand.logo_is_light:
-        # A light logo wants a dark backing — true in both schemes.
-        background = theme.palette.secondary
-        foreground = _text_for_background(background)
-        if _contrast(background, foreground) < 4.5:
-            foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
-        return background, foreground, theme.palette.primary, None
+    background = theme.palette.background
+    foreground = _text_for_background(background)
+    if _contrast(background, foreground) < 4.5:
+        foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
 
-    if theme.color_scheme == "dark":
-        # Keep the header on the dark page. A known-dark logo gets a light lockup
-        # chip; an unknown-lightness logo is left as-is (we can't be sure).
-        background = theme.palette.background
-        foreground = _text_for_background(background)
-        lockup = "#ffffff" if brand.logo_is_light is False else None
-        return background, foreground, theme.palette.surface, lockup
+    header_is_dark = foreground == "#ffffff"
+    lockup = None
+    if brand.logo_is_light is False and header_is_dark:
+        lockup = "#ffffff"
+    elif brand.logo_is_light is True and not header_is_dark:
+        lockup = theme.palette.secondary
 
-    # Light scheme, dark logo → page background (light); the logo reads as-is.
-    return theme.palette.background, theme.palette.secondary, theme.palette.surface, None
+    return background, foreground, theme.palette.surface, lockup
 
 
 # --- header ---------------------------------------------------------------------
