@@ -47,10 +47,10 @@ logger = logging.getLogger(__name__)
 # --- legacy free-form prompt (kept for back-compat with /from-source) ----------
 
 
-LEGACY_SYSTEM_PROMPT = """You are a senior web editor and SEO copywriter.
+LEGACY_SYSTEM_PROMPT = """You are a senior web developer and experienced SEO copywriter.
 
 You are given raw content extracted from a source (a website or document) belonging to a business.
-Your job: REWRITE that content into a cleaner, better-organised, search-optimised website. You
+Your job: REWRITE that content into a cleaner, better-organised, search-optimised, award winning design website. You
 improve the language; you do not invent a new business.
 
 Hard rules:
@@ -76,8 +76,8 @@ For a typical small business produce 4 pages: home, services, about, contact.
 """
 
 
-def _build_user_prompt(source: SourceContent) -> str:
-    truncated_text = source.raw_text[:12000]
+def _build_user_prompt(source: SourceContent, max_chars: int = 12000) -> str:
+    truncated_text = source.raw_text[:max_chars]
     return json.dumps(
         {
             "source_kind": source.source_kind,
@@ -171,13 +171,22 @@ Reply with ONE JSON object matching this schema — no markdown, no commentary:
 """
 
 
+# Brand detection only needs enough source to name the business and pick an
+# industry/mood — not the full 12k content-generation budget. This is the FIRST
+# Ollama call in the flow, so it also eats any cold model-load; a leaner prompt
+# keeps time-to-first-token (prefill) inside the read timeout. 4k chars also fits
+# comfortably inside num_ctx=4096, so nothing we prefill gets silently truncated.
+# Large PDFs were the trigger for the ReadTimeout 502 here.
+_BRAND_DETECTION_MAX_CHARS = 4000
+
+
 async def detect_brand(
     source: SourceContent, llm: OllamaClient | None = None
 ) -> DetectedBrand:
     client = llm or get_llm()
     return await client.chat_json(
         system_prompt=DETECT_BRAND_PROMPT,
-        user_prompt=_build_user_prompt(source),
+        user_prompt=_build_user_prompt(source, max_chars=_BRAND_DETECTION_MAX_CHARS),
         schema=DetectedBrand,
         temperature=0.3,
     )

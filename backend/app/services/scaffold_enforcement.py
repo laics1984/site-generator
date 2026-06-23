@@ -17,6 +17,7 @@ those we keep with a minimal, placeholder-only default so the page isn't blank.
 from __future__ import annotations
 
 import logging
+import re
 
 from app.models.content_blocks import (
     AboutBlock,
@@ -25,6 +26,7 @@ from app.models.content_blocks import (
     CtaBlock,
     HeroBlock,
     PagePlan,
+    TeamBlock,
 )
 from app.models.industry import PageScaffold
 
@@ -42,10 +44,128 @@ logger = logging.getLogger(__name__)
 # didn't produce it we drop it instead of inventing content.
 _STRUCTURAL_FALLBACK_KINDS = frozenset({"hero", "about", "cta", "contact"})
 
+_NON_PERSON_EXACT_NAMES = {
+    "board",
+    "committee",
+    "leadership",
+    "management",
+    "management team",
+    "marketing team",
+    "meet the team",
+    "our team",
+    "specialists",
+    "team",
+    "web design",
+}
+_NON_PERSON_NAME_TOKENS = {
+    "achievement",
+    "achievements",
+    "award",
+    "awards",
+    "certification",
+    "certifications",
+    "department",
+    "departments",
+    "design",
+    "engineering",
+    "leadership",
+    "management",
+    "marketing",
+    "portfolio",
+    "product",
+    "products",
+    "service",
+    "services",
+    "solution",
+    "solutions",
+    "specialist",
+    "specialists",
+    "stack",
+    "support",
+    "team",
+    "technology",
+    "values",
+    "web",
+}
+_NON_NAME_LEAD_TOKENS = {
+    "a",
+    "about",
+    "an",
+    "how",
+    "meet",
+    "our",
+    "the",
+    "these",
+    "this",
+    "what",
+    "when",
+    "where",
+    "who",
+    "why",
+    "your",
+}
+_NAME_PARTICLES = {
+    "al",
+    "bin",
+    "binte",
+    "binti",
+    "da",
+    "de",
+    "del",
+    "della",
+    "den",
+    "der",
+    "di",
+    "el",
+    "la",
+    "le",
+    "ter",
+    "ten",
+    "van",
+    "von",
+}
+
 
 def _block_kind(block: ContentBlock) -> str:
     """Pydantic discriminated union — pull `kind` off the discriminator."""
     return block.kind  # type: ignore[attr-defined]
+
+
+def looks_like_team_member_name(value: str | None) -> bool:
+    """Conservative final gate for generated/scraped team member names."""
+    if not value:
+        return False
+    text = " ".join(value.replace("\xa0", " ").split()).strip(" :|-")
+    if not text:
+        return False
+    low = text.lower()
+    if low in _NON_PERSON_EXACT_NAMES:
+        return False
+    if "@" in text or "http" in low:
+        return False
+    tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
+    if len(tokens) < 2 or len(tokens) > 7:
+        return False
+    lowered = [t.lower() for t in tokens]
+    if lowered[0] in _NON_NAME_LEAD_TOKENS:
+        return False
+    if any(t in _NON_PERSON_NAME_TOKENS for t in lowered):
+        return False
+    for token in tokens:
+        if token[0].isupper() or token.lower() in _NAME_PARTICLES:
+            continue
+        return False
+    return True
+
+
+def _sanitize_team_block(block: TeamBlock) -> TeamBlock | None:
+    members = [
+        member for member in block.members
+        if looks_like_team_member_name(member.name)
+    ]
+    if not members:
+        return None
+    return block.model_copy(update={"members": members})
 
 
 def align_page_to_scaffold(
@@ -76,7 +196,14 @@ def align_page_to_scaffold(
     for kind in required_kinds:
         bucket = by_kind.get(kind, [])
         if bucket:
-            aligned_blocks.append(bucket.pop(0))
+            block = bucket.pop(0)
+            if kind == "team" and isinstance(block, TeamBlock):
+                sanitized = _sanitize_team_block(block)
+                if sanitized is None:
+                    omitted.append(kind)
+                    continue
+                block = sanitized
+            aligned_blocks.append(block)
         elif kind in _STRUCTURAL_FALLBACK_KINDS:
             aligned_blocks.append(_default_block(kind, page=page, brand_name=brand_name))
             structural_filled.append(kind)

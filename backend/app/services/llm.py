@@ -69,7 +69,12 @@ class OllamaClient:
             # BETWEEN tokens, not the whole generation. A long multi-section
             # generation can't ReadTimeout as long as tokens keep flowing — only
             # a genuine stall trips the timeout. _post_chat reassembles the chunks.
+            # NB: streaming does NOT cover time-to-first-token (model load +
+            # prompt prefill); keep prompts within num_ctx to bound that.
             "stream": True,
+            # Keep the model resident between the recipe and generate calls so the
+            # second request doesn't cold-load and trip the read timeout.
+            "keep_alive": settings.ollama_keep_alive,
             "options": {"temperature": temperature, "num_ctx": num_ctx},
         }
 

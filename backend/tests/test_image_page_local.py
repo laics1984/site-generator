@@ -58,6 +58,21 @@ class PageLocalPreferenceTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(photo.url, "https://x/services.jpg")
 
+    async def test_page_local_size_fallback_when_no_lexical_match(self):
+        # Scraped image has no alt text so lexical scoring returns nothing —
+        # the resolver should still prefer the real page photo over Pexels.
+        pool = [_meta("https://x/page.jpg", 800, 600, intent="generic")]
+        resolver = ImageResolver(
+            scraped_metadata=pool, pexels=UnconfiguredPexels(), use_llm_tiebreaker=False
+        )
+        photo = await resolver.resolve(
+            "office workspace",
+            intent="feature",
+            prefer=[_meta("https://x/page.jpg", 800, 600, intent="generic")],
+        )
+        self.assertEqual(photo.url, "https://x/page.jpg")
+        self.assertEqual(photo.source, "scraped")
+
 
 class PageImagesBySlugTest(unittest.TestCase):
     def test_keys_home_empty_and_pages_by_slug(self):

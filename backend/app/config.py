@@ -8,6 +8,11 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5:7b-instruct"
     ollama_model_quality: str = "qwen2.5:14b-instruct"
     ollama_timeout_seconds: float = 180.0
+    # How long Ollama keeps the model resident after a request. The picker flow
+    # fires brand detection then (after the user picks pages) generation; the
+    # default 5m can unload the model in between, forcing a cold reload that
+    # blows the read timeout. Keeping it warm avoids re-paying the load cost.
+    ollama_keep_alive: str = "30m"
 
     # Vision pass over scraped images (services/image_vision.py). Opt-in: set
     # to a multimodal Ollama model (e.g. "qwen2.5vl:7b" or "moondream") to

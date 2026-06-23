@@ -237,6 +237,16 @@ class ImageResolver:
                         query, intent, result.chosen_score, result.decision,
                     )
                     return result.chosen
+                # No lexical match — but these are the site's real page photos.
+                # Pick the largest unexcluded one rather than deferring to stock.
+                eligible = [c for c in local if c.role not in {"decoration", "logo"}]
+                if eligible:
+                    best = max(eligible, key=lambda c: (c.width or 0) * (c.height or 0))
+                    logger.debug(
+                        "Page-local size-fallback for '%s' (intent=%s): %s",
+                        query, intent, best.url,
+                    )
+                    return best
 
         result = await self._rank(query, intent, candidates)
         if result.chosen is not None:

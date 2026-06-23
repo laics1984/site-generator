@@ -37,7 +37,10 @@ from app.services.planner import (
     plan_site_with_scaffolds,
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
-from app.services.scaffold_enforcement import align_page_to_scaffold
+from app.services.scaffold_enforcement import (
+    align_page_to_scaffold,
+    looks_like_team_member_name,
+)
 from app.services.image_vision import VisionAnnotation, annotate_image_pool
 from app.services.locale import detect_market, image_query_cue, place_query_cue
 from app.services.schema_builder import plan_to_site
@@ -284,6 +287,8 @@ def _scraped_team_members(
     """Deterministic team members built from scraped profile candidates."""
     members: list[TeamMember] = []
     for profile in _profile_pool_for(source):
+        if not looks_like_team_member_name(profile.name):
+            continue
         if not profile.photo_url:
             continue
         if not _profile_photo_vision_ok(profile.photo_url, annotations):
@@ -305,16 +310,20 @@ def _ensure_scraped_team_blocks(
     plan: SitePlan,
     source: SourceContent,
     annotations: dict[str, VisionAnnotation] | None = None,
+    *,
+    team_section_slugs: set[str] | None = None,
 ) -> None:
     """Fallback when scraped portraits exist but the final team block lost them.
 
     The LLM sometimes omits the team section or rewrites member names enough
-    that photo matching fails. For team pages, prefer the concrete scraped
-    roster over losing the portraits entirely.
+    that photo matching fails. Prefer the concrete scraped roster on pages whose
+    scaffold explicitly requested a team section; legacy callers without
+    scaffold context still get the old team-page fallback.
     """
     scraped_members = _scraped_team_members(source, annotations)
     if not scraped_members:
         return
+    requested_team_slugs = team_section_slugs or set()
 
     for page in plan.pages:
         team_indexes = [
@@ -332,7 +341,7 @@ def _ensure_scraped_team_blocks(
                 )
             continue
 
-        if page.page_type != "team":
+        if page.page_type != "team" and page.slug not in requested_team_slugs:
             continue
 
         insert_at = next(
@@ -536,7 +545,14 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
     _enrich_plan_profile_photos(plan, payload.source, annotations)
-    _ensure_scraped_team_blocks(plan, payload.source, annotations)
+    _ensure_scraped_team_blocks(
+        plan,
+        payload.source,
+        annotations,
+        team_section_slugs={
+            s.slug for s in content_scaffolds if "team" in s.sections
+        },
+    )
 
     market_cue, place_cue = _market_cues_for(payload.source)
     site = await plan_to_site(

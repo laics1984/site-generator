@@ -190,3 +190,53 @@ class GenerateImagePoolTest(unittest.TestCase):
         self.assertEqual(
             generate._scraped_team_members(source, annotations), []
         )
+
+    def test_scraped_team_members_are_inserted_on_about_page_when_scaffold_requires_team(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/about",
+                    title="About",
+                    raw_text="Committee members include Dr Aisha Rahman, Chairperson.",
+                    url_path="/about",
+                    profile_candidates=[
+                        ProfileCandidate(
+                            name="Dr Aisha Rahman",
+                            role="Chairperson",
+                            bio="Guides clinical governance.",
+                            photo_url="https://example.my/aisha.jpg",
+                            photo_alt="Dr Aisha Rahman portrait",
+                            source_url="https://example.my/about",
+                            confidence=0.9,
+                        )
+                    ],
+                )
+            ],
+        )
+        plan = SitePlan(
+            site_name="Example",
+            pages=[
+                PagePlan(
+                    page_type="about",
+                    slug="about",
+                    title="About",
+                    blocks=[],
+                    seo_title="About - Example",
+                    seo_description="About Example.",
+                )
+            ],
+        )
+
+        generate._ensure_scraped_team_blocks(
+            plan, source, team_section_slugs={"about"}
+        )
+
+        self.assertEqual(len(plan.pages[0].blocks), 1)
+        block = plan.pages[0].blocks[0]
+        self.assertIsInstance(block, TeamBlock)
+        self.assertEqual(block.members[0].name, "Dr Aisha Rahman")
+        self.assertEqual(block.members[0].photo_url, "https://example.my/aisha.jpg")

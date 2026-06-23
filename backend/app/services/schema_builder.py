@@ -995,7 +995,11 @@ def _build_hero_background(
         extra_styles={
             "paddingTop": "140px",
             "paddingBottom": "140px",
-            "minHeight": "560px",
+            # Site-wide var so the builder's "Hero height" toggle (Styles tab)
+            # can resize this hero; 560px is the fallback when unset. Keep in
+            # lockstep with the builder catalog's "Hero - Background" section
+            # and toBuilderCssVars/webtree-public lib/styles.ts.
+            "minHeight": "var(--builder-hero-min-height, 560px)",
             "justifyContent": "center",
         },
     )

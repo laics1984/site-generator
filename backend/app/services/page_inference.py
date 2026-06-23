@@ -140,6 +140,10 @@ def _sections_for(page_type: PageType, parent_type: PageType | None) -> list[Sec
     return list(_SUBPAGE_SECTIONS)
 
 
+def _without_section(sections: list[SectionType], section: SectionType) -> list[SectionType]:
+    return [s for s in sections if s != section]
+
+
 # --- URL → slug helpers ---------------------------------------------------------
 
 
@@ -408,7 +412,7 @@ def infer_page_scaffolds(
         ]
         for scaffold in fallback:
             scaffold.nav_rank = evidence.rank.get(scaffold.slug)
-        return fallback
+        return _apply_team_placement(fallback)
 
     # Build a map of slug → SourceContent for every discovered page (and the
     # primary, which represents the homepage).
@@ -600,7 +604,40 @@ def infer_page_scaffolds(
             scaffolds.append(legal)
             seen_slugs.add(legal.slug)
 
-    return scaffolds
+    return _apply_team_placement(scaffolds)
+
+
+def _apply_team_placement(scaffolds: list[PageScaffold]) -> list[PageScaffold]:
+    """Place people content according to IA: Team page wins, otherwise About.
+
+    Template-suggested Team pages are not source evidence. By default the roster
+    belongs under About; a separate Team page is kept only when the crawl/nav/doc
+    actually surfaced one (``from_source=True``). When a real Team page exists,
+    remove the full team section from About to avoid duplicate rosters.
+    """
+    has_source_team_page = any(
+        s.page_type == "team"
+        and not s.is_legal
+        and s.parent_slug is None
+        and s.from_source
+        for s in scaffolds
+    )
+
+    placed: list[PageScaffold] = []
+    for scaffold in scaffolds:
+        if (
+            scaffold.page_type == "team"
+            and scaffold.parent_slug is None
+            and not scaffold.is_legal
+            and not scaffold.from_source
+        ):
+            continue
+        if has_source_team_page and scaffold.page_type == "about":
+            scaffold = scaffold.model_copy(
+                update={"sections": _without_section(scaffold.sections, "team")}
+            )
+        placed.append(scaffold)
+    return placed
 
 
 def _home_scaffold(
