@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -680,6 +681,13 @@ _LIST_BLOCK_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 _SINGLETON_KINDS = frozenset({"hero", "about", "cta", "contact"})
 
+# Kinds whose key_fields must ALL match to count as a duplicate (e.g. timeline:
+# two milestones can legitimately share a generic title like "Expansion" in
+# different years — only treat it as the same chunk-boundary repeat when BOTH
+# the title AND the year match). Everything else uses fallback/OR semantics:
+# the first non-empty field wins (e.g. gallery items that often lack a title).
+_COMPOSITE_KEY_KINDS = frozenset({"timeline"})
+
 
 def _norm_key(value: object) -> str | None:
     """Whitespace-collapsed, lowercased dedupe key — or None when not keyable."""
@@ -688,13 +696,42 @@ def _norm_key(value: object) -> str | None:
     return None
 
 
-def _item_key(item: object, key_fields: tuple[str, ...]) -> str | None:
-    """First non-empty key field of an item, normalized. None ⇒ treat as unique."""
+def _item_key(
+    item: object, key_fields: tuple[str, ...], *, composite: bool = False
+) -> str | None:
+    """Dedupe key for one item — either the first non-empty field (default,
+    OR semantics) or all fields joined together (composite=True, AND
+    semantics — every field must match for two items to collide)."""
+    if composite:
+        parts = [_norm_key(getattr(item, field, None)) or "" for field in key_fields]
+        joined = "|".join(parts)
+        return joined if joined.strip("|") else None
     for field in key_fields:
         key = _norm_key(getattr(item, field, None))
         if key is not None:
             return key
     return None
+
+
+_YEAR_RE = re.compile(r"(1[89]\d{2}|20\d{2})")
+
+
+def _sort_timeline_items_for_merge(items: list) -> list:
+    """Chronological order before the cap below truncates — otherwise, when a
+    multipass page has more milestones than TimelineBlock's max_length, the
+    cap would keep chunk-arrival order (whatever chunk happened to be unioned
+    first) instead of the earliest real history. Undated items sink to the
+    end; stable on ties so same-year items keep their relative order.
+    """
+    indexed = list(enumerate(items))
+
+    def sort_key(pair: tuple[int, object]) -> tuple[int, int, int]:
+        idx, item = pair
+        match = _YEAR_RE.search(getattr(item, "year", None) or "")
+        year = int(match.group(1)) if match else None
+        return (0, year, idx) if year is not None else (1, 0, idx)
+
+    return [item for _, item in sorted(indexed, key=sort_key)]
 
 
 def _field_max_len(model_cls: type, attr: str) -> int | None:
@@ -760,16 +797,20 @@ def _merge_blocks_of_kind(blocks: list[ContentBlock]) -> ContentBlock:
         return base
 
     attr, key_fields = spec
+    composite = kind in _COMPOSITE_KEY_KINDS
     merged: list = []
     seen: set[str] = set()
     for blk in blocks:
         for item in getattr(blk, attr, None) or []:
-            key = _item_key(item, key_fields)
+            key = _item_key(item, key_fields, composite=composite)
             if key is not None:
                 if key in seen:
                     continue
                 seen.add(key)
             merged.append(item)
+
+    if kind == "timeline":
+        merged = _sort_timeline_items_for_merge(merged)
 
     cap = _field_max_len(type(base), attr)
     if cap is not None:

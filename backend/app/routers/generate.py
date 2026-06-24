@@ -41,6 +41,7 @@ from app.services.source_router import match_scaffolds_to_pages
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
     looks_like_team_member_name,
+    sanitize_blocks_against_source,
 )
 from app.services.image_vision import VisionAnnotation, annotate_image_pool
 from app.services.locale import detect_market, image_query_cue, place_query_cue
@@ -389,6 +390,25 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         plan = await plan_site(payload.source)
     except LlmError as exc:
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
+
+    # No scaffold in this free-form flow, so it never ran through
+    # align_page_to_scaffold's fact-bearing sanitization — apply the same
+    # checks directly so fabricated testimonials/awards/clients/stats (e.g. a
+    # "John Doe" review) get dropped here too, not just on /with-pages.
+    plan = plan.model_copy(
+        update={
+            "pages": [
+                page.model_copy(
+                    update={
+                        "blocks": sanitize_blocks_against_source(
+                            page.blocks, payload.source.raw_text
+                        )
+                    }
+                )
+                for page in plan.pages
+            ]
+        }
+    )
 
     brand = payload.brand
     mood = payload.mood_override or (brand.mood if brand else None) or plan.brand_mood

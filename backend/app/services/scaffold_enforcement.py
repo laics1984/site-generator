@@ -33,6 +33,7 @@ from app.models.content_blocks import (
     TeamBlock,
     TestimonialItem,
     TestimonialsBlock,
+    TimelineBlock,
 )
 from app.models.industry import PageScaffold
 
@@ -272,6 +273,55 @@ def _sanitize_testimonials_block(
     return block.model_copy(update={"items": items})
 
 
+_YEAR_RE = re.compile(r"(1[89]\d{2}|20\d{2})")
+
+
+def _parsed_year(value: str | None) -> int | None:
+    if not value:
+        return None
+    match = _YEAR_RE.search(value)
+    return int(match.group(1)) if match else None
+
+
+def _sort_timeline_items(items: list) -> list:
+    """Chronological order by parsed year; undated items sink to the end.
+
+    Stable on ties (same year, or no year at all) so items the LLM grouped
+    together stay together rather than being shuffled.
+    """
+    indexed = list(enumerate(items))
+
+    def sort_key(pair: tuple[int, object]) -> tuple[int, int, int]:
+        idx, item = pair
+        year = _parsed_year(getattr(item, "year", None))
+        return (0, year, idx) if year is not None else (1, 0, idx)
+
+    return [item for _, item in sorted(indexed, key=sort_key)]
+
+
+def _sanitize_timeline_block(
+    block: TimelineBlock, source_text: str | None
+) -> TimelineBlock | None:
+    """Drop ungrounded milestones, then put what survives in chronological order.
+
+    A 2-page source chunked across multiple LLM calls (see
+    `_generate_page_multipass` in planner.py) can come back with milestones in
+    chunk-arrival order rather than year order — this is the single place that
+    always re-sorts, regardless of whether the page was generated in one call
+    or merged from several.
+    """
+    items = block.items
+    if source_text:
+        items = [
+            item for item in items
+            if is_grounded_in_source(item.year, source_text)
+            or is_grounded_in_source(item.title, source_text)
+        ]
+        if not items:
+            return None
+    return block.model_copy(update={"items": _sort_timeline_items(items)})
+
+
 def _sanitize_awards_block(
     block: AwardsBlock, source_text: str | None
 ) -> AwardsBlock | None:
@@ -311,6 +361,42 @@ def _sanitize_stats_block(
     if not items:
         return None
     return block.model_copy(update={"items": items})
+
+
+def sanitize_blocks_against_source(
+    blocks: list[ContentBlock], source_text: str | None
+) -> list[ContentBlock]:
+    """Scaffold-free equivalent of the per-kind sanitization inside
+    ``align_page_to_scaffold``, for the legacy free-form ``/from-source`` flow.
+
+    That flow has no PageScaffold to align against (the LLM picks pages and
+    sections freely), so it never went through ``align_page_to_scaffold`` —
+    which meant testimonials/awards/clients/stats fabrication checks never
+    ran there at all. This applies the same kind-specific sanitizers directly
+    to a page's block list, dropping any block that ends up with zero
+    surviving items. Team and structural kinds are left untouched here (team
+    keeps its existing placeholder-name check elsewhere; hero/about/cta/contact
+    carry no invented facts).
+    """
+    sanitized: list[ContentBlock] = []
+    for block in blocks:
+        kind = _block_kind(block)
+        result: ContentBlock | None = block
+        if kind == "team" and isinstance(block, TeamBlock):
+            result = _sanitize_team_block(block)
+        elif kind == "testimonials" and isinstance(block, TestimonialsBlock):
+            result = _sanitize_testimonials_block(block, source_text)
+        elif kind == "timeline" and isinstance(block, TimelineBlock):
+            result = _sanitize_timeline_block(block, source_text)
+        elif kind == "awards" and isinstance(block, AwardsBlock):
+            result = _sanitize_awards_block(block, source_text)
+        elif kind == "clients" and isinstance(block, ClientsBlock):
+            result = _sanitize_clients_block(block, source_text)
+        elif kind == "stats" and isinstance(block, StatsBlock):
+            result = _sanitize_stats_block(block, source_text)
+        if result is not None:
+            sanitized.append(result)
+    return sanitized
 
 
 def align_page_to_scaffold(
@@ -359,6 +445,12 @@ def align_page_to_scaffold(
                 block = sanitized
             elif kind == "testimonials" and isinstance(block, TestimonialsBlock):
                 sanitized = _sanitize_testimonials_block(block, source_text)
+                if sanitized is None:
+                    omitted.append(kind)
+                    continue
+                block = sanitized
+            elif kind == "timeline" and isinstance(block, TimelineBlock):
+                sanitized = _sanitize_timeline_block(block, source_text)
                 if sanitized is None:
                     omitted.append(kind)
                     continue

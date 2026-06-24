@@ -12,9 +12,14 @@ from app.models.content_blocks import (
     TeamMember,
     TestimonialItem,
     TestimonialsBlock,
+    TimelineBlock,
+    TimelineItem,
 )
 from app.models.industry import PageScaffold
-from app.services.scaffold_enforcement import align_page_to_scaffold
+from app.services.scaffold_enforcement import (
+    align_page_to_scaffold,
+    sanitize_blocks_against_source,
+)
 
 
 class ScaffoldEnforcementTest(unittest.TestCase):
@@ -268,6 +273,60 @@ class ScaffoldEnforcementTest(unittest.TestCase):
 
         self.assertIn("testimonials", [block.kind for block in aligned.blocks])
 
+    def test_timeline_items_are_reordered_chronologically(self):
+        page = PagePlan(
+            page_type="about",
+            slug="about",
+            title="About",
+            blocks=[
+                TimelineBlock(
+                    items=[
+                        TimelineItem(year="2015", title="Second location opened"),
+                        TimelineItem(year="1998", title="Founded"),
+                    ],
+                ),
+            ],
+            seo_title="About - Example",
+            seo_description="About us.",
+        )
+        scaffold = PageScaffold(
+            page_type="about", slug="about", title="About",
+            sections=["hero", "timeline", "cta"],
+        )
+        source_text = "Founded in 1998. Second location opened in 2015."
+
+        aligned = align_page_to_scaffold(
+            page, scaffold, brand_name="Example", source_text=source_text
+        )
+
+        timeline = next(block for block in aligned.blocks if block.kind == "timeline")
+        self.assertEqual([item.year for item in timeline.items], ["1998", "2015"])
+
+    def test_timeline_milestone_with_no_match_in_source_is_dropped(self):
+        page = PagePlan(
+            page_type="about",
+            slug="about",
+            title="About",
+            blocks=[
+                TimelineBlock(
+                    items=[TimelineItem(year="1998", title="Founded")],
+                ),
+            ],
+            seo_title="About - Example",
+            seo_description="About us.",
+        )
+        scaffold = PageScaffold(
+            page_type="about", slug="about", title="About",
+            sections=["hero", "timeline", "cta"],
+        )
+        source_text = "We bake fresh sourdough bread every morning."
+
+        aligned = align_page_to_scaffold(
+            page, scaffold, brand_name="Example", source_text=source_text
+        )
+
+        self.assertNotIn("timeline", [block.kind for block in aligned.blocks])
+
     def test_award_with_no_match_in_source_is_dropped(self):
         page = PagePlan(
             page_type="home",
@@ -388,6 +447,27 @@ class ScaffoldEnforcementTest(unittest.TestCase):
         )
 
         self.assertIn("stats", [block.kind for block in aligned.blocks])
+
+    def test_sanitize_blocks_against_source_drops_fabricated_testimonial(self):
+        blocks = [
+            TestimonialsBlock(
+                items=[TestimonialItem(quote="Loved it.", author="John Doe")],
+            ),
+        ]
+
+        sanitized = sanitize_blocks_against_source(blocks, "We bake bread daily.")
+
+        self.assertEqual(sanitized, [])
+
+    def test_sanitize_blocks_against_source_keeps_unrelated_kinds_untouched(self):
+        from app.models.content_blocks import HeroBlock
+
+        blocks = [HeroBlock(headline="Welcome to our bakery")]
+
+        sanitized = sanitize_blocks_against_source(blocks, "We bake bread daily.")
+
+        self.assertEqual(len(sanitized), 1)
+        self.assertEqual(sanitized[0].kind, "hero")
 
 
 if __name__ == "__main__":
