@@ -35,7 +35,7 @@ class PhotoResult:
     alt: str
     photographer: str | None
     photographer_url: str | None
-    source: Literal["pexels", "picsum", "scraped"]
+    source: Literal["pexels", "placeholder", "scraped"]
     # Average colour hex (Pexels returns this for free). Drives the adaptive
     # dark-overlay intensity for photo backgrounds. None when unknown.
     avg_color: str | None = None

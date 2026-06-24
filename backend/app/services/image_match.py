@@ -16,9 +16,13 @@ Each candidate gets a score in [0.0, 1.0] built from three signals:
 
 Decision band
 -------------
-  >= 0.55          confident match — use this candidate, skip the LLM judge
-  0.30 – 0.55      ambiguous — optionally invoke the LLM judge to break ties
+  >= 0.62          confident match — use this candidate, skip the LLM judge
+  0.30 – 0.62      ambiguous — optionally invoke the LLM judge to break ties
   <  0.30          poor fit — return None so the resolver falls through to Pexels
+
+(Raised from 0.55 — that let weak/stale scraped matches on non-primary slots
+auto-win over a more topical stock photo. hero/about still bypass this via
+intent-pinning below, so the raise only affects features/team/gallery/etc.)
 
 The LLM judge is a tiebreaker, not a per-slot evaluator. It only fires when:
 - best score is in the ambiguous band, AND
@@ -169,7 +173,7 @@ def score_candidate(
 # --- main entry: rank + decide --------------------------------------------------
 
 
-CONFIDENT_THRESHOLD = 0.55
+CONFIDENT_THRESHOLD = 0.62
 AMBIGUOUS_THRESHOLD = 0.30
 TIE_BAND = 0.10
 

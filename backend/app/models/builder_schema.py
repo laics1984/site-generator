@@ -119,6 +119,36 @@ class BuilderElementMotion(BaseModel):
     intensity: MotionIntensity | None = None
 
 
+SectionDividerShape = Literal["slant", "curve", "wave", "peak"]
+
+
+class SectionDividerEdge(BaseModel):
+    """Mirrors SectionDividerEdge in webtree/builder/src/lib/section-divider.ts.
+
+    A decorative SVG shape overlay pinned to one edge of a section-like
+    element. Renders over solid color, gradient, photo, or video backgrounds
+    alike — only the fill `color` needs to be right, conventionally set to
+    match whichever section the shape "reveals" so the edge reads as a
+    seamless handoff rather than a straight cut.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    shape: SectionDividerShape
+    height: float | None = None
+    color: str | None = None
+    flipX: bool | None = None
+
+
+class SectionDivider(BaseModel):
+    """Mirrors SectionDivider in webtree/builder/src/lib/section-divider.ts."""
+
+    model_config = ConfigDict(extra="allow")
+
+    top: SectionDividerEdge | None = None
+    bottom: SectionDividerEdge | None = None
+
+
 class BuilderElement(BaseModel):
     """
     Mirrors the BuilderElement type in
@@ -141,6 +171,7 @@ class BuilderElement(BaseModel):
     visible: bool | None = None
     responsiveStyles: ResponsiveStyles | None = None
     motion: BuilderElementMotion | None = None
+    divider: SectionDivider | None = None
 
 
 BuilderElement.model_rebuild()

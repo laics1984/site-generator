@@ -8,7 +8,8 @@ Picks the best available image for a given query+intent, in this order:
      we let Pexels supply a more topical photo.
   2. Pexels API (fallback for everything that didn't pass the match threshold,
      plus avatars and CTA backgrounds which never use scraped images).
-  3. Picsum deterministic placeholder (no key required, last resort).
+  3. On-brand gradient placeholder (no key required, last resort — a designed
+     two-tone SVG in the theme's own colours, not a random stock photo).
 
 The legacy `scraped_images: list[str]` constructor argument still works (existing
 callers like the legacy /generate/from-source endpoint pass it). When it's used,
@@ -25,6 +26,7 @@ import hashlib
 import logging
 from dataclasses import replace
 from typing import Literal
+from urllib.parse import quote
 
 from app.models.content_blocks import ImageMetadata
 from app.services.image_match import (
@@ -102,6 +104,8 @@ class ImageResolver:
         market_cue: str | None = None,
         industry_category: str | None = None,
         place_cue: str | None = None,
+        primary_hex: str | None = None,
+        secondary_hex: str | None = None,
     ) -> None:
         # Prefer rich metadata when provided; fall back to wrapping bare URLs.
         if scraped_metadata:
@@ -128,6 +132,10 @@ class ImageResolver:
         # Place name (country or region, e.g. "Malaysia") appended to
         # non-person/atmospheric queries so scenery matches the locale too.
         self._place_cue = (place_cue or "").strip()
+        # Brand colours for the last-resort placeholder gradient (see
+        # _placeholder_photo) — on-brand instead of a generic grey.
+        self._primary_hex = primary_hex or "#64748b"
+        self._secondary_hex = secondary_hex or "#1e293b"
 
     @property
     def attributions(self) -> list[str]:
@@ -148,7 +156,7 @@ class ImageResolver:
         alt_fallback: str | None = None,
         prefer: list[ImageMetadata] | None = None,
     ) -> PhotoResult:
-        """Returns a usable PhotoResult. Always succeeds — Picsum is the final fallback.
+        """Returns a usable PhotoResult. Always succeeds — the gradient placeholder is the final fallback.
 
         `prefer`: images that belong to the page being rendered. They're ranked
         ahead of the rest of the site-wide pool so a page's hero/section uses the
@@ -185,8 +193,15 @@ class ImageResolver:
                 lum, band = _band_fields(photo.avg_color)
                 return replace(photo, luminance=lum, band=band)
 
-        # 3. Picsum deterministic fallback.
-        return _picsum_photo(query or alt_fallback or "site", orientation, alt_fallback)
+        # 3. Last resort: an on-brand gradient placeholder (no network, no
+        # random stock photo) — see _placeholder_photo.
+        return _placeholder_photo(
+            query or alt_fallback or "site",
+            orientation,
+            alt_fallback,
+            primary_hex=self._primary_hex,
+            secondary_hex=self._secondary_hex,
+        )
 
     async def _search_pexels(
         self, query: str, orientation: str, intent: str
@@ -269,23 +284,59 @@ class ImageResolver:
         return rank_candidates(query, intent, candidates)
 
 
-def _picsum_photo(
-    seed: str, orientation: str, alt: str | None
+def _placeholder_photo(
+    seed: str,
+    orientation: str,
+    alt: str | None,
+    *,
+    primary_hex: str = "#64748b",
+    secondary_hex: str = "#1e293b",
 ) -> PhotoResult:
-    digest = hashlib.md5(seed.encode("utf-8")).hexdigest()[:10]
+    """Last-resort placeholder: a deterministic two-tone SVG gradient in the
+    theme's own brand colours, inlined as a data URI (no network call).
+
+    Replaces the old picsum.photos fallback — a random, unrelated stock photo
+    that read as a bug rather than a design choice. This always looks
+    intentional, and the same seed always renders the same gradient angle so
+    repeat generations of the same slot are stable.
+    """
+    digest = hashlib.md5(seed.encode("utf-8")).hexdigest()
     if orientation == "portrait":
         w, h = 600, 800
     elif orientation == "square":
         w, h = 600, 600
     else:
         w, h = 1200, 800
+    angle = int(digest[:2], 16) % 360
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+        f'viewBox="0 0 {w} {h}">'
+        f'<defs><linearGradient id="g" gradientTransform="rotate({angle} 0.5 0.5)">'
+        f'<stop offset="0%" stop-color="{primary_hex}"/>'
+        f'<stop offset="100%" stop-color="{secondary_hex}"/>'
+        f"</linearGradient></defs>"
+        f'<rect width="{w}" height="{h}" fill="url(#g)"/>'
+        f"</svg>"
+    )
+    avg_hex = _blend_hex(primary_hex, secondary_hex)
     return PhotoResult(
-        url=f"https://picsum.photos/seed/{digest}/{w}/{h}",
-        alt=alt or seed,
+        url="data:image/svg+xml;utf8," + quote(svg),
+        alt=alt or "Decorative gradient",
         photographer=None,
         photographer_url=None,
-        source="picsum",
+        source="placeholder",
+        avg_color=avg_hex,
+        luminance=relative_luminance(avg_hex),
+        band=band_for_luminance(relative_luminance(avg_hex)),
     )
+
+
+def _blend_hex(a: str, b: str) -> str:
+    """Midpoint colour between two hex codes — used to estimate the
+    placeholder gradient's average luminance for the section-band pass."""
+    ar, ag, ab = (int(a.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    br, bg, bb = (int(b.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
+    return f"#{(ar + br) // 2:02x}{(ag + bg) // 2:02x}{(ab + bb) // 2:02x}"
 
 
 def _stock_relevance(photo: PhotoResult, query: str, market_cue: str) -> float:
@@ -321,8 +372,19 @@ def _stock_query_chain(
         return []
     if intent not in _PEOPLE_INTENTS:
         # Atmospheric slots (CTA backdrops): try the locale-anchored scene
-        # first — "office skyline Malaysia" beats a random global skyline.
-        return [f"{query} {place_cue}", query] if place_cue else [query]
+        # first — "office skyline Malaysia" beats a random global skyline,
+        # then the industry's own atmospheric default, then a generic
+        # abstract texture so even an obscure query has a broad final net
+        # before the resolver gives up and falls to the placeholder.
+        out: list[str] = []
+        if place_cue:
+            out.append(f"{query} {place_cue}")
+        out.append(query)
+        industry_default = _INDUSTRY_CONTEXT_QUERIES.get(industry_category.strip().lower())
+        if industry_default and industry_default.lower() != query.lower():
+            out.append(industry_default)
+        out.append(_GENERIC_ATMOSPHERIC_FALLBACK)
+        return out
 
     out: list[str] = []
 
@@ -343,7 +405,16 @@ def _stock_query_chain(
         add(contextual)
 
     add(query)
+    # Universal safety net: an unmapped industry + a query that hits no token
+    # bucket would otherwise leave just `[query]` as the whole chain. One more
+    # broad, generic-but-real term beats giving up after a single attempt.
+    add("modern professional workspace")
     return out
+
+
+# Last-resort stock query when nothing more specific is known. Reaches Pexels'
+# huge generic catalog instead of dropping straight to the placeholder.
+_GENERIC_ATMOSPHERIC_FALLBACK = "modern abstract texture gradient"
 
 
 # Site-level contextual fallback per SitePlan.industry_category — used when

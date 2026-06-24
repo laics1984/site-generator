@@ -25,16 +25,19 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from app.models.brand import BrandIdentity, ThemeTokens
+from app.models.brand import BrandIdentity, BrandMood, ThemeTokens
 from app.models.builder_schema import (
     BodySchema,
     BuilderElement,
     BuilderElementContent,
+    BuilderElementMotion,
     GeneratedPage,
     GeneratedSite,
     PageNode,
     PageSeo,
     ResponsiveStyles,
+    SectionDivider,
+    SectionDividerEdge,
 )
 from app.models.content_blocks import (
     AboutBlock,
@@ -533,6 +536,193 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
             )
             if is_plain and not has_fill:
                 apply_section_decoration(st, theme)
+
+
+# --- motion -----------------------------------------------------------------
+
+# Industries where a visual/brand-led hero (full-bleed photo or, lacking one,
+# an atmospheric WebGL backdrop) reads on-brand. Narrower than the planner's
+# hero-layout guidance (which also names hospitality/travel/fitness) because
+# IndustryCategoryLiteral only has these three buckets for that end of the
+# spectrum — saas/professional-services/consultancy stay static by default.
+_VISUAL_LED_INDUSTRIES = frozenset({"restaurant", "agency", "ecommerce"})
+
+# Grid container types the public renderer staggers (motionRuntime.ts applies
+# a container's own preset to its direct children when `stagger` is set).
+_STAGGER_GRID_TYPES = frozenset({"3Col", "2Col"})
+
+
+def apply_motion(
+    sections: list[BuilderElement],
+    *,
+    industry: str | None,
+    hero_has_photo: bool,
+) -> None:
+    """Tag the assembled page's sections with declarative entrance/backdrop
+    motion (BuilderElementMotion). Most catalog templates already author their
+    own motion (rise + stagger on grids, occasional aurora/silk hero/CTA
+    backdrops) directly in section_catalog.json — this pass only fills gaps:
+    a runtime-only hero backdrop decision the static catalog can't make
+    (depends on whether THIS site's hero actually resolved a photo and what
+    industry it's in), plus a calm fallback reveal for any section/group a
+    template left unset (notably the legacy hand-rolled builders below, which
+    predate the catalog and carry no motion of their own). Per-element
+    `intensity` is left unset so it inherits the site-wide default the theme
+    already derives from mood (ThemeTokens.motion_intensity /
+    MOOD_MOTION_INTENSITY, see brand.py). Idempotent throughout: never
+    overwrites a `.motion` a template already set. Mutates in place."""
+    for section in sections:
+        if section.motion is None and section.name.startswith("Hero"):
+            _apply_hero_motion(section, industry=industry, hero_has_photo=hero_has_photo)
+        _apply_content_group_motion(section)
+
+
+def _apply_hero_motion(
+    section: BuilderElement, *, industry: str | None, hero_has_photo: bool
+) -> None:
+    """Backdrop motion on the hero's own section element (gsap/webgl tiers
+    bypass the entrance-reveal viewport gate, so they're the only presets
+    worth setting on above-the-fold content)."""
+    if hero_has_photo:
+        section.motion = BuilderElementMotion(preset="parallax-drift")
+    elif industry in _VISUAL_LED_INDUSTRIES:
+        section.motion = BuilderElementMotion(preset="aurora")
+
+
+def _apply_content_group_motion(section: BuilderElement) -> None:
+    """Give each of a section's top-level layout groups (its header, each card
+    row, each half of a two-column split) a calm `rise` entrance; grid rows
+    additionally stagger so cards cascade rather than popping in as one block.
+    Only touches groups that don't already carry motion — for catalog-built
+    sections that's usually none (the template already set it), so this is
+    mainly what gives the legacy hand-rolled builders (pricing/team/gallery/
+    menu/process today) any motion at all."""
+    groups = section.content if isinstance(section.content, list) else []
+    for group in groups:
+        if not isinstance(group, BuilderElement) or group.motion is not None:
+            continue
+        if group.type in _STAGGER_GRID_TYPES:
+            group.motion = BuilderElementMotion(preset="rise", stagger=0.08)
+        else:
+            group.motion = BuilderElementMotion(preset="rise")
+
+
+# --- heading alignment --------------------------------------------------------
+
+# Moods that read more confidently with left-aligned, editorial-style section
+# headers instead of the centered "brochure" default. No-op for other moods.
+_LEFT_ALIGN_MOODS = frozenset({"modern", "technical", "editorial"})
+
+# Top-level group names catalog templates use for a section's intro/heading
+# block (inconsistent across templates — "Section Intro" vs "Section Header"
+# — so we match both). Single-group sections (hero/about/cta/testimonials/
+# contact, whose only top-level child is e.g. "Hero Columns" or "Quote Block")
+# have no group with these names and are naturally left untouched: their
+# heading lives one level deeper than this pass looks, by design — hero has
+# its own template-driven layout variety, About is already asymmetric via its
+# two-column split, and CTA reads fine centered.
+_HEADER_GROUP_NAMES = frozenset({"Section Intro", "Section Header", "Section header"})
+
+
+def apply_heading_alignment(sections: list[BuilderElement], mood: BrandMood | None) -> None:
+    """Left-align a section's header/intro group for moods that read better
+    asymmetric. No-op for other moods — today's centered look stays
+    byte-identical. Mutates in place."""
+    if (mood or "modern") not in _LEFT_ALIGN_MOODS:
+        return
+    for section in sections:
+        groups = section.content if isinstance(section.content, list) else []
+        for group in groups:
+            if isinstance(group, BuilderElement) and group.name in _HEADER_GROUP_NAMES:
+                _left_align_header_group(group)
+
+
+def _left_align_header_group(group: BuilderElement) -> None:
+    """Flip a header/intro group from centered to left-aligned: the group's
+    own `alignItems`, plus each direct text child's `textAlign`, stripping the
+    auto-margins some subheads use to stay centered at their capped width."""
+    styles = dict(group.styles or {})
+    if styles.get("alignItems") == "center":
+        styles["alignItems"] = "flex-start"
+    group.styles = styles
+    children = group.content
+    if not isinstance(children, list):
+        return
+    for child in children:
+        if not isinstance(child, BuilderElement) or child.type != "text":
+            continue
+        cstyles = dict(child.styles or {})
+        if cstyles.get("textAlign") == "center":
+            cstyles["textAlign"] = "left"
+        if cstyles.get("marginLeft") == "auto":
+            cstyles.pop("marginLeft", None)
+        if cstyles.get("marginRight") == "auto":
+            cstyles.pop("marginRight", None)
+        child.styles = cstyles
+
+
+# --- section dividers ---------------------------------------------------------
+
+# Shape per mood (None → no divider; today's plain edges stay byte-identical).
+# Luxury/technical skip it entirely — a shaped edge reads as decoration their
+# minimal/flat design language deliberately avoids.
+_DIVIDER_SHAPE_BY_MOOD: dict[str, str | None] = {
+    "modern": "curve",
+    "luxury": None,
+    "friendly": "wave",
+    "technical": None,
+    "editorial": "slant",
+    "playful": "peak",
+}
+
+_DEFAULT_DIVIDER_COLOR = "var(--builder-page-background, #ffffff)"
+
+
+def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | None) -> None:
+    """Add a shaped edge at the hero→content and content→CTA handoffs — the two
+    highest-impact, lowest-noise places for one (see SECTION_DIVIDER system,
+    section-divider.ts). Deliberately NOT applied at every section boundary:
+    one per page reads as a designed accent, one at every boundary reads as
+    wallpaper. No-op for moods with no shape (luxury/technical) or single-
+    section pages. Never overwrites a divider a section already carries.
+    Mutates in place."""
+    shape = _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
+    if shape is None or len(sections) < 2:
+        return
+
+    hero_boundary: int | None = None
+    if sections[0].name.startswith("Hero") and sections[0].divider is None:
+        next_bg = _section_edge_color(sections[1])
+        sections[0].divider = SectionDivider(
+            bottom=SectionDividerEdge(shape=shape, color=next_bg)
+        )
+        hero_boundary = 0
+
+    for i in range(len(sections) - 1, 0, -1):
+        if not sections[i].name.startswith("CTA"):
+            continue
+        if sections[i].divider is not None:
+            break
+        if hero_boundary is not None and i - 1 == hero_boundary:
+            # Same boundary the hero's bottom edge already claimed (a hero
+            # immediately followed by a CTA, nothing in between) — don't
+            # double up on one seam.
+            break
+        prev_bg = _section_edge_color(sections[i - 1])
+        sections[i].divider = SectionDivider(
+            top=SectionDividerEdge(shape=shape, color=prev_bg)
+        )
+        break
+
+
+def _section_edge_color(section: BuilderElement) -> str:
+    """The color a divider should be filled with to read as "revealing" this
+    section: its own flat backgroundColor when it has one, else the page
+    background token (covers photo/gradient-background sections, which the
+    divider still renders correctly over per the SECTION_DIVIDER contract)."""
+    styles = section.styles or {}
+    bg = styles.get("backgroundColor")
+    return bg if isinstance(bg, str) and bg else _DEFAULT_DIVIDER_COLOR
 
 
 # --- low-level factories --------------------------------------------------------
@@ -2339,10 +2529,11 @@ _DISPATCH = {
 # atmospheric Pexels imagery).
 _IMAGE_INTENT = {"hero": "hero", "about": "about", "cta": "cta_bg", "team": "avatar"}
 
-# Photo sources that count as a "genuine" hero image. A `picsum` result is the
-# resolver's last-resort placeholder — it means no scraped/document match AND no
-# stock photo — so we render the brand gradient header instead of a meaningless
-# random image. See _apply_hero_photo_policy.
+# Photo sources that count as a "genuine" hero image. A `placeholder` result is
+# the resolver's last-resort on-brand gradient — it means no scraped/document
+# match AND no stock photo — so we render the brand gradient header instead of
+# stretching a decorative gradient full-bleed behind text. See
+# _apply_hero_photo_policy.
 _GENUINE_PHOTO_SOURCES = frozenset({"scraped", "pexels"})
 
 
@@ -2529,6 +2720,8 @@ async def plan_to_site(
         market_cue=market_cue,
         industry_category=plan.industry_category,
         place_cue=place_cue,
+        primary_hex=theme.palette.primary,
+        secondary_hex=theme.palette.secondary,
     )
 
     # Pre-compute parent/child relationships so listing blocks (services /
@@ -2616,6 +2809,17 @@ async def plan_to_site(
         # 2025/26 modernization: fluid type, card depth/glass, atmospheric
         # surface backgrounds — applied per-mood over the assembled sections.
         modernize_sections(elements, theme)
+        # Asymmetric headers + scroll/backdrop motion — applied last so they
+        # read the final band/background each section landed on.
+        apply_heading_alignment(elements, effective_brand.mood)
+        apply_motion(
+            elements,
+            industry=plan.industry_category,
+            hero_has_photo=bool(
+                hero_element and (hero_element.styles or {}).get("backgroundImage")
+            ),
+        )
+        apply_section_dividers(elements, effective_brand.mood)
         pages.append(
             GeneratedPage(
                 slug=page_plan.slug,

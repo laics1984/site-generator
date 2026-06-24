@@ -31,6 +31,6 @@ async def health_pexels() -> dict[str, object]:
         return {"status": "configured", "provider": "pexels"}
     return {
         "status": "missing_key",
-        "provider": "picsum_fallback",
+        "provider": "placeholder_fallback",
         "hint": "Set PEXELS_API_KEY in .env for topical photos. Get a free key at https://www.pexels.com/api/.",
     }
