@@ -181,8 +181,13 @@ async def _fill_node(
                 if el is not None:
                     children.append(el)
         # $gridFit: pick column-layout type by item count (mirror of the TS engine).
+        # Prefer 3 columns, but drop to 2 whenever a 3-wide grid would strand a lone
+        # card in the last row (count % 3 == 1, e.g. 4 → 2×2, 7 → 2+2+2+1) — a single
+        # orphan beside a big gap reads as broken. Counts that leave a 2-card last row
+        # (% 3 == 2) keep 3 columns; that row is balanced enough.
         if node.get("$gridFit"):
-            base = {**base, "type": "2Col" if len(children) <= 2 else "3Col"}
+            n = len(children)
+            base = {**base, "type": "2Col" if (n <= 2 or n % 3 == 1) else "3Col"}
         return BuilderElement(id=str(uuid4()), content=children, **base)
 
     # $bento: like $repeat, but stamp each cloned tile with varied grid spans so a

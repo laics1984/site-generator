@@ -15,7 +15,7 @@ services:
     environment:
       # host.docker.internal resolves to the macOS host from inside the container.
       OLLAMA_BASE_URL: "http://host.docker.internal:11434"
-      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:7b-instruct}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3.5:9b}"
       OLLAMA_TIMEOUT_SECONDS: "${OLLAMA_TIMEOUT_SECONDS:-180}"
       # Opt-in vision pass over scraped images (e.g. "qwen2.5vl:7b").
       # Empty ⇒ skipped entirely.

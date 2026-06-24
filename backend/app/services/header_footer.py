@@ -362,15 +362,16 @@ def build_footer(
     on_dark_text = "#ffffff"
     on_dark_muted = "rgba(255,255,255,0.65)"
 
-    # ---- brand column (logo + wordmark + tagline + contact details) -------
-    # The footer sits on a dark background, so we ALWAYS show the brand name as a
-    # light text wordmark — matching the builder's footer preset (createBrandElement
-    # light=true). It keeps brand info reliably visible even if a logo is dark or
-    # low-contrast on the dark footer. When a logo exists we also place it above
-    # the wordmark.
+    # ---- brand column (logo and/or wordmark + tagline + contact details) -------
+    # The footer sits on a dark background. When a usable logo exists we show it
+    # alone (mirroring the header) — stacking a text wordmark beneath it just
+    # duplicates the mark. We fall back to the light text wordmark only when there
+    # is no logo, or the logo is known to be dark (so it would vanish on the dark
+    # footer and the text keeps the brand reliably visible).
     brand_col_children: list[BuilderElement] = []
 
     logo_src = brand.logo_url or brand.logo_data_url
+    show_wordmark = (not logo_src) or (brand.logo_is_light is False)
     if logo_src:
         # In the footer this is a plain content image — the builder's dedicated
         # logo sizing is header-only (isBrandLogoPlaceholder requires source ===
@@ -394,19 +395,20 @@ def build_footer(
             )
         )
 
-    brand_col_children.append(
-        _text(
-            brand.name,
-            name="Brand",
-            styles={
-                "fontFamily": theme.typography.heading_font,
-                "fontSize": "24px",
-                "fontWeight": 700,
-                "letterSpacing": "-0.01em",
-                "color": on_dark_text,
-            },
+    if show_wordmark:
+        brand_col_children.append(
+            _text(
+                brand.name,
+                name="Brand",
+                styles={
+                    "fontFamily": theme.typography.heading_font,
+                    "fontSize": "24px",
+                    "fontWeight": 700,
+                    "letterSpacing": "-0.01em",
+                    "color": on_dark_text,
+                },
+            )
         )
-    )
     if brand.tagline:
         brand_col_children.append(
             _text(

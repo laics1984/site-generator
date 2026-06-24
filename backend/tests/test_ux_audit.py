@@ -10,6 +10,7 @@ from app.models.builder_schema import (
     GeneratedSite,
     PageSeo,
 )
+from app.services.theme import build_theme
 from app.services.ux_audit import audit_site, summarize
 
 
@@ -144,66 +145,89 @@ class CleanAndSummaryTest(unittest.TestCase):
         self.assertGreaterEqual(s["high"], 2)
 
 
-class DarkTextSafetyTest(unittest.TestCase):
-    """enforce_dark_text_safety fixes legacy dark text only where it sits on a
-    theme-following background, and never touches fixed/colored surfaces."""
+class TextContrastTest(unittest.TestCase):
+    """enforce_text_contrast (symmetric, scheme-agnostic) flips text that is on the
+    WRONG luminance side of its resolved band — in either scheme — and leaves
+    correct-side, photo-overlay, and own-surface text untouched."""
 
-    def _run(self, tree):
-        from app.services.section_content import enforce_dark_text_safety
-        n = enforce_dark_text_safety([tree])
+    def _run(self, tree, theme):
+        from app.services.section_content import enforce_text_contrast
+        n = enforce_text_contrast([tree], theme)
         return tree, n
 
-    def test_dark_text_on_page_bg_retargeted(self):
-        tree = _container(
-            "band",
-            [_text("copy", "Hello", color="rgba(15,23,42,0.7)")],
-            backgroundColor="var(--builder-page-background, #ffffff)",
-        )
-        tree, n = self._run(tree)
-        self.assertEqual(n, 1)
-        copy = tree.content[0]
-        self.assertEqual(copy.styles["color"], "var(--builder-color-text, #0f172a)")
-        self.assertEqual(copy.styles.get("opacity"), "70%")  # alpha preserved
-
-    def test_secondary_var_heading_retargeted(self):
+    def test_dark_secondary_text_on_dark_band_flips_to_light(self):
+        theme = build_theme("#d55d62", color_scheme="dark")
         tree = _container(
             "sec",
-            [_text("h", "Title", color="var(--builder-color-secondary, #0f172a)")],
-            backgroundColor="var(--builder-color-surface, #f8fafc)",
+            [_text("h", "Title", color="var(--builder-color-secondary)", fontSize="40px")],
+            backgroundColor="var(--builder-color-secondary)",
         )
-        tree, n = self._run(tree)
-        self.assertEqual(tree.content[0].styles["color"], "var(--builder-color-text, #0f172a)")
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 1)
+        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
 
-    def test_text_on_fixed_white_card_untouched(self):
-        # A fixed white card stays white in dark mode → its dark text must stay dark.
+    def test_dark_text_on_dark_literal_band_with_mesh_flips(self):
+        # The exact observed bug: a literal dark band carrying a decorative mesh
+        # gradient overlay (no real photo) — must still recolour the dark text.
+        theme = build_theme("#d55d62", color_scheme="dark")
         tree = _container(
-            "card",
-            [_text("copy", "Hello", color="#0f172a")],
-            backgroundColor="#ffffff",
+            "about",
+            [_text("body", "x", color="rgba(15,23,42,0.68)")],
+            backgroundColor="#332424",
+            backgroundImage="radial-gradient(at 8% 12%, rgba(213,93,98,0.34) 0px, transparent 46%)",
         )
-        tree, n = self._run(tree)
-        self.assertEqual(n, 0)
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 1)
+        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+        self.assertEqual(tree.content[0].styles.get("opacity"), "68%")  # alpha preserved
+
+    def test_light_text_on_light_band_flips_to_dark(self):
+        # Inverse case: hard-coded white text on a light surface (light scheme).
+        theme = build_theme("#2563eb", color_scheme="light")
+        tree = _container(
+            "band",
+            [_text("h", "x", color="#ffffff")],
+            backgroundColor="var(--builder-color-surface)",
+        )
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 1)
         self.assertEqual(tree.content[0].styles["color"], "#0f172a")
 
     def test_text_on_photo_untouched(self):
+        theme = build_theme("#2563eb", color_scheme="dark")
         tree = _container(
             "hero",
             [_text("copy", "Hello", color="#0f172a")],
             backgroundImage="url(photo.jpg)",
         )
-        _, n = self._run(tree)
+        _, n = self._run(tree, theme)
         self.assertEqual(n, 0)
 
-    def test_theme_var_and_primary_text_left_alone(self):
+    def test_dark_text_on_light_card_untouched(self):
+        # Dark scheme, but a light glass card keeps its dark text (correct side).
+        theme = build_theme("#2563eb", color_scheme="dark")
+        tree = _container(
+            "card",
+            [_text("copy", "Hello", color="#0f172a")],
+            backgroundColor="#ffffff",
+        )
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 0)
+        self.assertEqual(tree.content[0].styles["color"], "#0f172a")
+
+    def test_correct_side_text_left_alone(self):
+        # Light text on the dark page band is already correct → untouched even if
+        # below 7:1; brand-token text on the correct side is likewise left alone.
+        theme = build_theme("#2563eb", color_scheme="dark")
         tree = _container(
             "band",
             [
-                _text("body", "x", color="var(--builder-color-text, #0f172a)"),
-                _text("eyebrow", "y", color="var(--builder-color-primary, #2563eb)"),
+                _text("body", "x", color="var(--builder-color-text)"),
+                _text("eyebrow", "y", color="var(--builder-color-primary)"),
             ],
-            backgroundColor="var(--builder-page-background, #ffffff)",
+            backgroundColor="var(--builder-page-background)",
         )
-        _, n = self._run(tree)
+        _, n = self._run(tree, theme)
         self.assertEqual(n, 0)
 
 

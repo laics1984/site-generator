@@ -77,12 +77,12 @@ from app.services.section_content import (
     apply_section_rhythm,
     assign_visual_policies,
     block_to_section,
-    enforce_dark_text_safety,
+    enforce_text_contrast,
     hero_scroll_anchor,
     section_visual_input_for,
 )
 from app.services.template_filler import fill_template
-from app.services.theme import build_theme, resolve_color_scheme
+from app.services.theme import _adjust_lightness, build_theme, resolve_color_scheme
 
 
 # --- render context -------------------------------------------------------------
@@ -329,19 +329,22 @@ def shadow(scale: str) -> str:
 def mesh_gradient(palette: Any) -> str:
     """A soft multi-stop 'aurora' mesh, as a `backgroundImage` value.
 
-    A directional primary→accent "aurora": four offset radial hotspots anchored
-    to the corners so it reads as intentional atmosphere, not a faint wash. Alphas
-    stay moderate (≤0.34) so a colour wash over a light surface keeps its high
-    luminance and the dark body text stays WCAG-legible. Pure gradient (no url()),
-    so webtree-public renders it in place rather than via the photo-layer pipeline.
+    Four offset radial hotspots anchored to the corners so it reads as intentional
+    atmosphere, not a faint wash. Both colours stay inside the brand hue: the
+    primary plus a lighter tint of it (rather than the split-complementary accent,
+    which pairs a hue with its opposite and reads as a muddy clash — e.g. coral +
+    mint-green). Monochromatic keeps the wash on-brand on any palette. Alphas stay
+    moderate (≤0.34) so a colour wash over a light surface keeps its high luminance
+    and dark body text stays WCAG-legible. Pure gradient (no url()), so
+    webtree-public renders it in place rather than via the photo-layer pipeline.
     """
     p = palette.primary
-    a = getattr(palette, "accent", None) or p
+    glow = _adjust_lightness(p, 0.18)  # lighter sibling of the brand hue
     return (
         f"radial-gradient(at 8% 12%, {_hairline(p, 0.34)} 0px, transparent 46%), "
-        f"radial-gradient(at 92% 8%, {_hairline(a, 0.26)} 0px, transparent 44%), "
+        f"radial-gradient(at 92% 8%, {_hairline(glow, 0.26)} 0px, transparent 44%), "
         f"radial-gradient(at 74% 82%, {_hairline(p, 0.20)} 0px, transparent 48%), "
-        f"radial-gradient(at 20% 96%, {_hairline(a, 0.15)} 0px, transparent 46%)"
+        f"radial-gradient(at 20% 96%, {_hairline(glow, 0.15)} 0px, transparent 46%)"
     )
 
 
@@ -399,19 +402,33 @@ def apply_section_decoration(styles: dict[str, Any], theme: ThemeTokens) -> bool
 
 
 def glass_card_styles(theme: ThemeTokens) -> dict[str, Any]:
-    """Frosted-glass card surface (backdrop-filter), with a no-blur fallback
-    colour so it still reads on browsers without backdrop-filter support."""
+    """Frosted-glass card surface (backdrop-filter), scheme-aware so it reads as an
+    elevated panel either way.
+
+    Light scheme: a translucent white pane with a faint dark hairline. Dark scheme:
+    a faint *light film* over the dark page (a white pane would composite to a
+    washed-out grey island) with a light hairline and a deeper shadow; the catalogue
+    card's dark text is then flipped to light by `enforce_text_contrast`. A no-blur
+    fallback colour keeps it legible without backdrop-filter support."""
     palette = theme.palette
     blur = "blur(16px) saturate(140%)"
+    if getattr(theme, "color_scheme", "light") == "dark":
+        background = "rgba(255, 255, 255, 0.06)"
+        border = _hairline("#ffffff", 0.14)
+        box_shadow = "0 2px 4px rgba(0,0,0,0.24), 0 12px 28px rgba(0,0,0,0.36)"
+    else:
+        background = "rgba(255, 255, 255, 0.62)"
+        border = _hairline(palette.secondary, 0.12)
+        box_shadow = shadow(getattr(theme, "shadow_scale", "elevated"))
     return {
-        "backgroundColor": "rgba(255, 255, 255, 0.62)",
+        "backgroundColor": background,
         "backdropFilter": blur,
         "WebkitBackdropFilter": blur,
-        "border": f"1px solid {_hairline(palette.secondary, 0.12)}",
+        "border": f"1px solid {border}",
         "borderRadius": f"{max(12, theme.buttons.radius + 6)}px",
         "padding": "28px",
         "gap": "12px",
-        "boxShadow": shadow(getattr(theme, "shadow_scale", "elevated")),
+        "boxShadow": box_shadow,
     }
 
 
@@ -2883,14 +2900,15 @@ async def plan_to_site(
         social_links=social_links,
     )
 
-    if theme.color_scheme == "dark":
-        # Legacy catalog sections hardcode dark text that vanishes on a dark page;
-        # retarget those to the theme text colour. Dark mode only — no light risk.
-        for _page in pages:
-            enforce_dark_text_safety(_page.body_schema.elements)
-        for _chrome in (header, footer):
-            if isinstance(_chrome, BuilderElement):
-                enforce_dark_text_safety([_chrome])
+    # Symmetric contrast safety net (both schemes): catalogue sections hard-code a
+    # single dark text token (often `secondary`) that vanishes on a same-luminance
+    # band — dark-on-dark (dark scheme / dark CTA bands) or light-on-light. Retarget
+    # those to the band's correct foreground, keyed off the resolved band luminance.
+    for _page in pages:
+        enforce_text_contrast(_page.body_schema.elements, theme)
+    for _chrome in (header, footer):
+        if isinstance(_chrome, BuilderElement):
+            enforce_text_contrast([_chrome], theme)
 
     site = GeneratedSite(
         site_name=plan.site_name,

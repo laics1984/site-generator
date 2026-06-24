@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
-from app.models.brand import BrandMood, ColorPalette
+from app.models.brand import BrandMood, ColorPalette, ThemeTokens
 from app.models.builder_schema import BuilderElement, BuilderElementContent
 from app.models.content_blocks import (
     AboutBlock,
@@ -43,7 +43,14 @@ from app.models.content_blocks import (
     VisualPolicy,
 )
 from app.services.template_filler import get_template, templates_for_type
-from app.services.theme import _adjust_lightness, _relative_luminance, band_colors
+from app.services.theme import (
+    _adjust_lightness,
+    _contrast,
+    _hex_to_rgb,
+    _relative_luminance,
+    _text_for_background,
+    band_colors,
+)
 
 
 def _link(label: str | None, href: str | None) -> dict[str, str] | None:
@@ -715,78 +722,160 @@ def apply_luminance_rhythm(
 
 import re as _re
 
-_RGBA = _re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)")
+_RGBA = _re.compile(
+    r"rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)"
+)
 _HEX6 = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+_VAR_TOKEN = _re.compile(r"var\(\s*(--builder-[a-z-]+)")
 
 
-def _bg_follows_theme(bg: str | None) -> bool:
-    """True when a background tracks the theme (page / surface / none) and so flips
-    to dark in dark mode. Fixed hex, gradients, photos and primary/secondary/accent
-    fills are False — text on those is handled elsewhere or intentionally fixed."""
-    if bg is None:
-        return True
-    b = bg.strip().lower()
-    if b in ("", "transparent"):
-        return True
-    return any(
-        token in b
-        for token in (
-            "var(--builder-page-background",
-            "var(--builder-color-surface",
-            "var(--builder-color-background",
-        )
-    )
+def _token_hex(token: str, theme: ThemeTokens) -> str | None:
+    """Resolve a `--builder-*` custom property to its concrete hex for the active
+    scheme. Mirrors ThemeTokens.to_builder_styles(), so the contrast we compute
+    here is exactly what the renderer paints."""
+    p = theme.palette
+    return {
+        "--builder-color-primary": p.primary,
+        "--builder-color-secondary": p.secondary,
+        "--builder-color-accent": p.accent,
+        "--builder-color-text": p.text,
+        "--builder-color-background": p.background,
+        "--builder-color-surface": p.surface,
+        "--builder-page-background": theme.page.background,
+    }.get(token)
 
 
-def _dark_unsafe_text_color(color: object) -> tuple[bool, str | None]:
-    """Is this text colour invisible on a dark page? Returns (unsafe, alpha)."""
-    if not isinstance(color, str):
-        return False, None
-    c = color.strip().lower()
-    if "var(--builder-color-secondary" in c:  # secondary is dark in both schemes
-        return True, None
-    m = _RGBA.search(c)
+def _expand_hex(h: str) -> str:
+    h = h.strip()
+    if len(h) == 4:  # #abc → #aabbcc
+        return "#" + "".join(c * 2 for c in h[1:])
+    return h
+
+
+def _to_hex(rgb: tuple[int, int, int]) -> str:
+    return "#%02x%02x%02x" % rgb
+
+
+def _parse_color(
+    value: object, theme: ThemeTokens
+) -> tuple[tuple[int, int, int], float] | None:
+    """Resolve a CSS colour (hex / rgb(a) / `var(--builder-*)`) to ((r,g,b), alpha).
+
+    Returns None for gradients, url()s, `transparent`, keywords, or anything we
+    can't read as a flat colour — callers treat those as "not a solid surface"."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    if not v or "gradient(" in v or "url(" in v:
+        return None
+    if v.lower() in ("transparent", "none", "currentcolor", "inherit"):
+        return None
+    m = _VAR_TOKEN.search(v)
     if m:
-        hexv = "#%02x%02x%02x" % (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        return (_relative_luminance(hexv) < 0.4), m.group(4)
-    if _HEX6.match(c):
-        return (_relative_luminance(c) < 0.4), None
-    return False, None
+        hexv = _token_hex(m.group(1), theme)
+        return (_hex_to_rgb(_expand_hex(hexv)), 1.0) if hexv else None
+    if _HEX6.match(v):
+        return _hex_to_rgb(_expand_hex(v)), 1.0
+    mm = _RGBA.search(v)
+    if mm:
+        a = float(mm.group(4)) if mm.group(4) is not None else 1.0
+        rgb = (int(float(mm.group(1))), int(float(mm.group(2))), int(float(mm.group(3))))
+        return rgb, a
+    return None
 
 
-def enforce_dark_text_safety(elements: list[BuilderElement]) -> int:
-    """Dark-scheme only: retarget hardcoded-dark / `secondary` text colours that sit
-    on a theme-following background to `var(--builder-color-text)` so legacy catalog
-    sections stay legible on a dark page. Text on fixed/colored surfaces (cards,
-    photos, dark bands, buttons) is left untouched. Mutates in place; returns the
-    count changed. Light mode never calls this — zero light-mode risk."""
+def _composite(
+    fg: tuple[int, int, int], alpha: float, bg: tuple[int, int, int]
+) -> tuple[int, int, int]:
+    """Alpha-composite a semi-transparent colour over an opaque background."""
+    return tuple(round(alpha * f + (1 - alpha) * b) for f, b in zip(fg, bg))  # type: ignore[return-value]
+
+
+def _has_real_photo(styles: dict[str, Any]) -> bool:
+    """True if a background carries a genuine photo (a non-`data:` url). Decorative
+    gradients and `url(data:…svg…)` grain are transparent overlays, not photos."""
+    for key in ("backgroundImage", "background"):
+        v = styles.get(key)
+        if isinstance(v, str):
+            for m in _re.finditer(r"url\(\s*['\"]?([^'\")]+)", v):
+                if not m.group(1).strip().lower().startswith("data:"):
+                    return True
+    return False
+
+
+def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) -> int:
+    """Scheme-agnostic contrast safety net. Retargets any text whose colour fails
+    contrast against its *resolved* band background to that band's correct
+    foreground (white on a dark band, dark ink on a light band).
+
+    Catalogue sections hard-code a single palette token for text — often
+    `secondary`, which is dark in *every* scheme — so it vanishes whenever the
+    section lands on a same-luminance band: dark-on-dark (dark scheme, or a dark
+    CTA band in a light scheme) or light-on-light. Because the replacement is
+    chosen from the band's luminance, not the global scheme, this works in both
+    schemes. It only flips text that is on the *wrong* side of its background
+    (the flip must strictly improve contrast and differ from the current colour),
+    so photo overlays, cards that paint their own surface, and brand-colour text
+    that is merely low-contrast-but-correct are left untouched. Mutates in place;
+    returns the count changed."""
+    page_rgb = _hex_to_rgb(_expand_hex(theme.page.background))
+    # Brand-hued text (primary/accent eyebrows, links) is intentional even when it
+    # lands a little under AA on a band — never recolour it. The vanishing-text bug
+    # is always `secondary`/slate, never a brand colour.
+    brand_rgb = {
+        _hex_to_rgb(_expand_hex(theme.palette.primary)),
+        _hex_to_rgb(_expand_hex(theme.palette.accent)),
+    }
     changed = 0
 
-    def walk(node: BuilderElement, inherits_follow: bool) -> None:
+    def walk(node: BuilderElement, bg_rgb: tuple[int, int, int], photo: bool) -> None:
         nonlocal changed
         styles = node.styles if isinstance(node.styles, dict) else {}
-        bg = styles.get("backgroundColor") or styles.get("background")
-        has_image = bool(styles.get("backgroundImage"))
-        follows = False if has_image else (_bg_follows_theme(bg) if bg is not None else inherits_follow)
+        # A genuine photo owns its subtree's text (its overlay handles contrast).
+        if _has_real_photo(styles):
+            photo = True
+        # A solid / semi-transparent own background updates the effective surface
+        # and (painting over whatever is beneath) clears the photo-owned flag.
+        own = _parse_color(styles.get("backgroundColor"), theme) or _parse_color(
+            styles.get("background"), theme
+        )
+        if own is not None:
+            (r, g, b), a = own
+            bg_rgb = (r, g, b) if a >= 0.999 else _composite((r, g, b), a, bg_rgb)
+            photo = False
 
         content = node.content
         if isinstance(content, BuilderElementContent):
-            if node.type == "text" and follows:
-                unsafe, alpha = _dark_unsafe_text_color(styles.get("color"))
-                if unsafe:
-                    new_styles = dict(styles)
-                    new_styles["color"] = "var(--builder-color-text, #0f172a)"
-                    if alpha is not None and "opacity" not in new_styles:
-                        new_styles["opacity"] = f"{round(float(alpha) * 100)}%"
-                    node.styles = new_styles
-                    changed += 1
+            if node.type == "text" and not photo:
+                fg = _parse_color(styles.get("color"), theme)
+                if fg is not None and fg[0] not in brand_rgb:
+                    fg_hex, bg_hex = _to_hex(fg[0]), _to_hex(bg_rgb)
+                    # Only "wrong-side" text — the same luminance tone as its band —
+                    # is the vanishing-text bug (dark-on-dark / light-on-light). Text
+                    # on the correct side that is merely muted (a soft caption, a
+                    # low-contrast-but-legible accent) is left as designed.
+                    same_side = (_relative_luminance(fg_hex) < 0.5) == (
+                        _relative_luminance(bg_hex) < 0.5
+                    )
+                    safe = _text_for_background(bg_hex)
+                    if (
+                        same_side
+                        and _contrast(fg_hex, bg_hex) < 4.5
+                        and safe.lower() != fg_hex.lower()
+                    ):
+                        new_styles = dict(styles)
+                        new_styles["color"] = safe
+                        if fg[1] < 1.0 and "opacity" not in new_styles:
+                            new_styles["opacity"] = f"{round(fg[1] * 100)}%"
+                        node.styles = new_styles
+                        changed += 1
         elif isinstance(content, list):
             for child in content:
                 if isinstance(child, BuilderElement):
-                    walk(child, follows)
+                    walk(child, bg_rgb, photo)
 
     for el in elements:
-        walk(el, True)
+        walk(el, page_rgb, False)
     return changed
 
 

@@ -6794,7 +6794,7 @@
                       "width": "100%",
                       "minHeight": "104px",
                       "borderRadius": "24px",
-                      "background": "linear-gradient(135deg, var(--builder-color-primary, #2563eb), var(--builder-color-accent, #f59e0b))"
+                      "background": "linear-gradient(135deg, var(--builder-color-primary, #2563eb), var(--builder-color-secondary, #0f172a))"
                     },
                     "responsiveStyles": {
                       "mobile": {
@@ -6819,8 +6819,8 @@
                       "width": "100%",
                       "minHeight": "104px",
                       "borderRadius": "24px",
-                      "background": "var(--builder-color-surface, #f8fafc)",
-                      "border": "1px solid rgba(148,163,184,0.22)"
+                      "background": "linear-gradient(315deg, var(--builder-color-secondary, #0f172a), var(--builder-color-primary, #2563eb))",
+                      "border": "1px solid rgba(255,255,255,0.18)"
                     },
                     "responsiveStyles": {
                       "mobile": {
