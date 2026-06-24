@@ -5,7 +5,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5:7b-instruct"
+    # Single resident model for both content and design-brain calls — picked to
+    # fit comfortably in 16GB unified memory (M1) with headroom, so the two
+    # passes never fight over which model is loaded. A generation newer than
+    # qwen2.5 at the same footprint.
+    ollama_model: str = "qwen3.5:9b"
     ollama_model_quality: str = "qwen2.5:14b-instruct"
     ollama_timeout_seconds: float = 180.0
     # How long Ollama keeps the model resident after a request. The picker flow
@@ -13,6 +17,19 @@ class Settings(BaseSettings):
     # default 5m can unload the model in between, forcing a cold reload that
     # blows the read timeout. Keeping it warm avoids re-paying the load cost.
     ollama_keep_alive: str = "30m"
+
+    # Temperature for the design-brain pass (services/design_brain.py), which
+    # picks per-section template variety/drama. Deliberately higher than the
+    # 0.3 content/fidelity calls — bolder, less repetitive choices are exactly
+    # what this call is for, and its output is constrained to a feasibility-
+    # checked enum (template ids), so a less predictable model can't break a
+    # page, only pick a less expected (but still valid) layout.
+    design_temperature: float = 0.7
+    # Off switch for the design-brain pass (services/design_brain.py) without a
+    # code change — e.g. if Ollama is unavailable in an environment. Disabling
+    # it is always a safe no-op: generation falls back to the deterministic
+    # mood-ordered template selection that ran before this pass existed.
+    design_brain_enabled: bool = True
 
     # Vision pass over scraped images (services/image_vision.py). Opt-in: set
     # to a multimodal Ollama model (e.g. "qwen2.5vl:7b" or "moondream") to

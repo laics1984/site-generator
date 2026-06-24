@@ -42,6 +42,7 @@ class OllamaClient:
         temperature: float = 0.4,
         num_ctx: int = 4096,
         images: list[str] | None = None,
+        think: bool = False,
     ) -> T:
         """
         Send a chat request expecting JSON back, then validate against `schema`.
@@ -54,6 +55,11 @@ class OllamaClient:
 
         `images`: base64-encoded image payloads attached to the user message
         (Ollama's multimodal chat format). Requires a vision-capable model.
+
+        `think`: hybrid-thinking models (Qwen3/3.5) can emit a `<think>...</think>`
+        preamble before the JSON body, which breaks `format='json'` parsing.
+        Defaults to False so every caller gets clean JSON; non-thinking models
+        (e.g. Qwen 2.5) ignore the unknown field harmlessly.
         """
         user_message: dict[str, Any] = {"role": "user", "content": user_prompt}
         if images:
@@ -65,6 +71,7 @@ class OllamaClient:
                 user_message,
             ],
             "format": "json",
+            "think": think,
             # Stream the response so httpx's read timeout applies to the gap
             # BETWEEN tokens, not the whole generation. A long multi-section
             # generation can't ReadTimeout as long as tokens keep flowing — only

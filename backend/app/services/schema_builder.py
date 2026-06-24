@@ -63,6 +63,7 @@ from app.models.content_blocks import (
     TestimonialsBlock,
     TimelineBlock,
 )
+from app.services.design_brain import DesignRecipe, generate_design_recipe
 from app.services.header_footer import build_footer, build_header
 from app.services.media import ImageResolver
 from app.services.pexels import PhotoResult
@@ -2577,6 +2578,7 @@ async def block_to_element(
     *,
     is_homepage: bool = True,
     hero_scroll_target_kind: str | None = None,
+    explicit_template_id: str | None = None,
 ) -> BuilderElement:
     # Heroes get one consistent treatment site-wide (see _apply_hero_photo_policy).
     # The photo is resolved up front so the gradient-vs-photo choice can key off
@@ -2588,11 +2590,16 @@ async def block_to_element(
     # Catalogue path: for section types that have shared builder templates, the
     # LLM-mapped content fills a chosen template (selection by feasibility +
     # preference). Theme flows via CSS vars + builderStyles — no inline colours.
+    # `explicit_template_id` (the design-brain's pick, if any) is only used when
+    # it actually belongs to this block's section type AND is feasible for its
+    # content — select_template() enforces both, silently falling back to the
+    # deterministic mood order otherwise (see app/services/design_brain.py).
     mapped = block_to_section(
         block,
         mood=ctx.theme.mood,
         is_homepage=is_homepage,
         hero_scroll_target_kind=hero_scroll_target_kind,
+        explicit_id=explicit_template_id,
     )
     if mapped is not None:
         template, content = mapped
@@ -2770,11 +2777,21 @@ async def plan_to_site(
         hero_target_kind = content_kinds[0] if content_kinds else None
         hero_element: BuilderElement | None = None
         target_element: BuilderElement | None = None
+        # Design-brain pass: picks a template variant per section so sites of
+        # the same mood/industry stop converging on one identical layout. A
+        # failed/disabled call returns an empty recipe — every lookup below
+        # then yields None and selection falls back to today's deterministic
+        # mood-ordered choice, unchanged.
+        design_recipe: DesignRecipe = await generate_design_recipe(
+            mood=effective_brand.mood,
+            industry=plan.industry_category,
+            section_kinds=[b.kind for b in page_plan.blocks],
+        )
         # Sub-pages get a breadcrumb prepended above the hero — a non-participant.
         if page_plan.parent_slug is not None:
             elements.append(_build_breadcrumb(page_plan, ctx))
             visual_inputs.append(SectionVisualInput())
-        for block in page_plan.blocks:
+        for block_index, block in enumerate(page_plan.blocks):
             # Reset the per-section capture, render, then read the band of the
             # section's featured image (Phase 4b) into the pass input.
             ctx.section_image_band = None
@@ -2783,6 +2800,7 @@ async def plan_to_site(
                 ctx,
                 is_homepage=page_plan.is_homepage,
                 hero_scroll_target_kind=hero_target_kind,
+                explicit_template_id=design_recipe.template_for(block_index),
             )
             elements.append(element)
             if hero_element is None and block.kind == "hero":
