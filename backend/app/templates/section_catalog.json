@@ -379,6 +379,7 @@
                       "color": "var(--builder-color-text, #111827)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%", "padding": "36px 40px", "borderRadius": "24px",
+                      "height": "100%", "boxSizing": "border-box",
                       "backgroundColor": "rgba(248,250,252,0.96)",
                       "border": "1px solid rgba(148,163,184,0.14)",
                       "boxShadow": "0 1px 3px rgba(15,23,42,0.05), 0 4px 16px rgba(15,23,42,0.04)"
@@ -880,6 +881,7 @@
                       "color": "var(--builder-color-text, #111827)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%", "padding": "36px 40px", "borderRadius": "24px",
+                      "height": "100%", "boxSizing": "border-box",
                       "backgroundColor": "rgba(248,250,252,0.96)",
                       "border": "1px solid rgba(148,163,184,0.14)",
                       "boxShadow": "0 1px 3px rgba(15,23,42,0.05), 0 4px 16px rgba(15,23,42,0.04)"
@@ -1062,6 +1064,7 @@
                       "color": "var(--builder-color-text, #111827)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%", "padding": "36px 40px", "borderRadius": "24px",
+                      "height": "100%", "boxSizing": "border-box",
                       "backgroundColor": "rgba(248,250,252,0.96)",
                       "border": "1px solid rgba(148,163,184,0.14)",
                       "boxShadow": "0 1px 3px rgba(15,23,42,0.05), 0 4px 16px rgba(15,23,42,0.04)"
@@ -2253,6 +2256,7 @@
                       "color": "var(--builder-color-text, #111827)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%", "padding": "36px 40px", "borderRadius": "24px",
+                      "height": "100%", "boxSizing": "border-box",
                       "backgroundColor": "rgba(248,250,252,0.96)",
                       "border": "1px solid rgba(148,163,184,0.14)",
                       "boxShadow": "0 1px 3px rgba(15,23,42,0.05), 0 4px 16px rgba(15,23,42,0.04)"
@@ -2425,6 +2429,7 @@
                       "color": "var(--builder-color-text, #111827)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%", "padding": "36px 40px", "borderRadius": "24px",
+                      "height": "100%", "boxSizing": "border-box",
                       "backgroundColor": "rgba(248,250,252,0.96)",
                       "border": "1px solid rgba(148,163,184,0.14)",
                       "boxShadow": "0 1px 3px rgba(15,23,42,0.05), 0 4px 16px rgba(15,23,42,0.04)"

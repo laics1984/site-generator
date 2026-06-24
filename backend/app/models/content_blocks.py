@@ -40,6 +40,10 @@ SectionType = Literal[
     "gallery",
     "menu",
     "process",
+    "timeline",
+    "awards",
+    "clients",
+    "stats",
 ]
 
 
@@ -516,6 +520,81 @@ class LinkBarBlock(BaseModel):
     links: list[LinkBarLink] = Field(min_length=1, max_length=6)
 
 
+class TimelineItem(BaseModel):
+    year: str
+    title: str
+    description: str | None = None
+
+
+class TimelineBlock(BaseModel):
+    """Company history / milestones — only when the source evidences real dates."""
+
+    kind: Literal["timeline"] = "timeline"
+    heading: str = "Our story"
+    subheading: str | None = None
+    items: list[TimelineItem] = Field(min_length=1, max_length=10)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Our story")
+
+
+class AwardItem(BaseModel):
+    title: str
+    issuer: str | None = None
+    year: str | None = None
+
+
+class AwardsBlock(BaseModel):
+    """Real awards / certifications / recognitions — never invented."""
+
+    kind: Literal["awards"] = "awards"
+    heading: str = "Awards & recognition"
+    subheading: str | None = None
+    items: list[AwardItem] = Field(min_length=1, max_length=12)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Awards & recognition")
+
+
+class ClientItem(BaseModel):
+    name: str
+    logo_query: str | None = Field(
+        default=None,
+        description="Short phrase for a logo/brand-mark lookup, e.g. 'Acme Corp logo'.",
+    )
+
+
+class ClientsBlock(BaseModel):
+    """Logo wall of real clients/customers/partners named in the source."""
+
+    kind: Literal["clients"] = "clients"
+    heading: str = "Trusted by"
+    subheading: str | None = None
+    items: list[ClientItem] = Field(min_length=2, max_length=20)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Trusted by")
+
+
+class StatItem(BaseModel):
+    value: str
+    label: str
+
+
+class StatsBlock(BaseModel):
+    """Real, source-grounded numbers (years in business, projects delivered, etc)."""
+
+    kind: Literal["stats"] = "stats"
+    heading: str | None = None
+    items: list[StatItem] = Field(min_length=1, max_length=6)
+
+
 # Discriminated union — Pydantic dispatches on the `kind` field, so a malformed
 # block produces a focused error list against just that variant instead of all 8.
 ContentBlock = Annotated[
@@ -532,7 +611,11 @@ ContentBlock = Annotated[
     | GalleryBlock
     | MenuBlock
     | ProcessBlock
-    | LinkBarBlock,
+    | LinkBarBlock
+    | TimelineBlock
+    | AwardsBlock
+    | ClientsBlock
+    | StatsBlock,
     Field(discriminator="kind"),
 ]
 

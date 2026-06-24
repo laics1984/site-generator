@@ -130,14 +130,89 @@ _WORK_SUBPAGE_SECTIONS: list[SectionType] = ["hero", "about", "gallery", "testim
 _TEAM_SUBPAGE_SECTIONS: list[SectionType] = ["hero", "about", "testimonials", "cta"]
 
 
-def _sections_for(page_type: PageType, parent_type: PageType | None) -> list[SectionType]:
+def _sections_for(
+    page_type: PageType,
+    parent_type: PageType | None,
+    page: SourceContent | None = None,
+) -> list[SectionType]:
     if parent_type is None:
-        return list(_TOP_SECTIONS.get(page_type, _TOP_SECTIONS["services"]))
-    if parent_type == "work":
-        return list(_WORK_SUBPAGE_SECTIONS)
-    if parent_type == "team":
-        return list(_TEAM_SUBPAGE_SECTIONS)
-    return list(_SUBPAGE_SECTIONS)
+        base = list(_TOP_SECTIONS.get(page_type, _TOP_SECTIONS["services"]))
+    elif parent_type == "work":
+        base = list(_WORK_SUBPAGE_SECTIONS)
+    elif parent_type == "team":
+        base = list(_TEAM_SUBPAGE_SECTIONS)
+    else:
+        base = list(_SUBPAGE_SECTIONS)
+    return _augment_sections(base, page_type, page)
+
+
+# --- content-signal detection (timeline / awards / clients / stats) -------------
+#
+# Unlike _TOP_SECTIONS (pure URL/nav structure), these sections are only ever
+# added when the page's own text actually evidences them — a restaurant's
+# /about page doesn't get an awards section just because it's "about", but it
+# does if the text says "Awarded Best Bakery 2022". The LLM still omits the
+# section if it later finds the signal was a false positive (same fidelity
+# rule as testimonials/faq/pricing/etc in scaffold_enforcement.py).
+
+_SIGNAL_PATTERNS: dict[SectionType, re.Pattern[str]] = {
+    "timeline": re.compile(
+        r"\b(our history|our journey|founded in|established in|since (19|20)\d{2}"
+        r"|milestones?|over the years)\b",
+        re.IGNORECASE,
+    ),
+    "awards": re.compile(
+        r"\b(award[- ]?winning|awards?|certified|certifications?|recogni[sz]ed"
+        r"|winner of|accredited)\b",
+        re.IGNORECASE,
+    ),
+    "clients": re.compile(
+        r"\b(our clients|trusted by|clients include|customers include"
+        r"|partners include|as seen in|some of our clients)\b",
+        re.IGNORECASE,
+    ),
+    "stats": re.compile(
+        r"(\d+%|\d+\+\b|over \d+|years of experience)",
+        re.IGNORECASE,
+    ),
+}
+
+# page_type → which signal kinds are even eligible there. Keeps the new
+# sections off pages where they'd be noise (contact, faq, menu, pricing...).
+_SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
+    "timeline": frozenset({"home", "about"}),
+    "awards": frozenset({"home", "about", "services"}),
+    "clients": frozenset({"home", "work"}),
+    "stats": frozenset({"home", "about"}),
+}
+
+_MAX_EXTRA_SECTIONS = 2  # quality cap — don't let a page balloon past its rhythm
+
+
+def _detect_content_signals(page: SourceContent) -> list[SectionType]:
+    """Detected kinds, in `_SIGNAL_PATTERNS` order — deterministic when the cap bites."""
+    haystack = " ".join([page.raw_text or "", " ".join(page.headings or [])])
+    return [kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)]
+
+
+def _augment_sections(
+    sections: list[SectionType], page_type: PageType, page: SourceContent | None
+) -> list[SectionType]:
+    if page is None:
+        return sections
+    detected = _detect_content_signals(page)
+    extras = [
+        kind
+        for kind in detected
+        if page_type in _SIGNAL_ELIGIBLE_TYPES.get(kind, frozenset())
+        and kind not in sections
+    ][:_MAX_EXTRA_SECTIONS]
+    if not extras:
+        return sections
+    if "cta" in sections:
+        idx = sections.index("cta")
+        return [*sections[:idx], *extras, *sections[idx:]]
+    return [*sections, *extras]
 
 
 def _without_section(sections: list[SectionType], section: SectionType) -> list[SectionType]:
@@ -405,7 +480,13 @@ def infer_page_scaffolds(
         # Seed the homepage pattern by site name so same-industry sites vary, even
         # on the no-crawl fallback. Copy (don't mutate) the shared template scaffold.
         fallback = [
-            s.model_copy(update={"sections": homepage_sections(industry, seed=site_name)})
+            s.model_copy(
+                update={
+                    "sections": _augment_sections(
+                        homepage_sections(industry, seed=site_name), "home", source
+                    )
+                }
+            )
             if s.is_homepage
             else s
             for s in fallback
@@ -460,7 +541,7 @@ def infer_page_scaffolds(
                     page_type=page_type,
                     slug=slug,
                     title=title,
-                    sections=_sections_for(page_type, parent_type=None),
+                    sections=_sections_for(page_type, parent_type=None, page=page),
                     rationale=f"Discovered at /{slug} in the source site.",
                     source_url=page.source_ref,
                     from_source=True,
@@ -502,7 +583,7 @@ def infer_page_scaffolds(
                     page_type=sub_type,
                     slug=slug,
                     title=title,
-                    sections=_sections_for(sub_type, parent_type=parent_type),
+                    sections=_sections_for(sub_type, parent_type=parent_type, page=page),
                     rationale=f"Sub-page of /{parent_slug} discovered in the source.",
                     parent_slug=parent_slug,
                     source_url=page.source_ref,
@@ -657,6 +738,7 @@ def _home_scaffold(
         if industry is not None
         else ["hero", "features", "testimonials", "cta"]
     )
+    sections = _augment_sections(sections, "home", home_source)
     return PageScaffold(
         page_type="home",
         slug="",

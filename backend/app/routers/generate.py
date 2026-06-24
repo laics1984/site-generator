@@ -37,6 +37,7 @@ from app.services.planner import (
     plan_site_with_scaffolds,
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
+from app.services.source_router import match_scaffolds_to_pages
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
     looks_like_team_member_name,
@@ -358,6 +359,26 @@ def _ensure_scraped_team_blocks(
         )
 
 
+def _drop_hollow_team_pages(plan: SitePlan) -> None:
+    """Remove a Team page outright if no grounded roster ever filled it.
+
+    `align_page_to_scaffold` already sanitizes ungrounded team blocks down to
+    nothing, and `_ensure_scraped_team_blocks` only refills them when real
+    scraped members exist. A team page that still has no TeamBlock at this
+    point has no real people behind it — ship without the page rather than a
+    hero-only stub left over from "never ship a blank page".
+    """
+    keep_slugs = {
+        page.slug
+        for page in plan.pages
+        if page.page_type != "team"
+        or any(getattr(block, "kind", None) == "team" for block in page.blocks)
+    }
+    if len(keep_slugs) == len(plan.pages):
+        return
+    plan.pages = [page for page in plan.pages if page.slug in keep_slugs]
+
+
 @router.post("/from-source", response_model=GeneratedSite)
 async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     """
@@ -515,6 +536,11 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     except LlmError as exc:
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
 
+    # Same scaffold→source routing the planner used, recomputed here (cheap,
+    # no LLM call) so alignment can verify fact-bearing content against the
+    # actual page it was supposed to be grounded in.
+    source_map = match_scaffolds_to_pages(content_scaffolds, payload.source)
+
     # Build the SitePlan that schema_builder consumes.
     plan = SitePlan(
         site_name=scaffolded.site_name or detected.site_name,
@@ -527,6 +553,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             scaffolded.pages,
             content_scaffolds,
             brand_name=scaffolded.site_name or detected.site_name or "Untitled",
+            source_map=source_map,
         ),
     )
     # Hub-page guarantee: every child page is reachable from its parent's body,
@@ -553,6 +580,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             s.slug for s in content_scaffolds if "team" in s.sections
         },
     )
+    _drop_hollow_team_pages(plan)
 
     market_cue, place_cue = _market_cues_for(payload.source)
     site = await plan_to_site(
@@ -598,6 +626,7 @@ def _align_pages_to_scaffolds(
     scaffolds: list[PageScaffold],
     *,
     brand_name: str = "Untitled",
+    source_map: dict[str, SourceContent] | None = None,
 ) -> list[PagePlan]:
     """
     Make sure the LLM output respects scaffold order + slugs + section structure
@@ -641,8 +670,15 @@ def _align_pages_to_scaffolds(
                 "from_source": s.from_source,
             }
         )
-        # Enforce section structure
-        match = align_page_to_scaffold(match, s, brand_name=brand_name)
+        # Enforce section structure (+ fact-grounding for fact-bearing kinds
+        # like testimonials, when this scaffold's source page is known)
+        page_source = source_map.get(s.slug) if source_map else None
+        match = align_page_to_scaffold(
+            match,
+            s,
+            brand_name=brand_name,
+            source_text=page_source.raw_text if page_source else None,
+        )
         aligned.append(match)
     return aligned
 

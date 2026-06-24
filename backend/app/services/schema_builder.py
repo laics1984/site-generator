@@ -38,6 +38,8 @@ from app.models.builder_schema import (
 )
 from app.models.content_blocks import (
     AboutBlock,
+    AwardsBlock,
+    ClientsBlock,
     ContactBlock,
     ContentBlock,
     CtaBlock,
@@ -53,14 +55,17 @@ from app.models.content_blocks import (
     ProcessBlock,
     ServicesBlock,
     SitePlan,
+    StatsBlock,
     TeamBlock,
     TestimonialsBlock,
+    TimelineBlock,
 )
 from app.services.header_footer import build_footer, build_header
 from app.services.media import ImageResolver
 from app.services.pexels import PhotoResult
 from app.config import settings
 from app.services.section_content import (
+    _PAGE_BG,
     _SURFACE_BG,
     Band,
     SectionVisualInput,
@@ -497,6 +502,7 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
     shadow_scale = getattr(theme, "shadow_scale", "soft")
     strategy = getattr(theme, "background_strategy", "flat")
     surface_hex = theme.palette.surface
+    page_hex = theme.page.background
 
     for section in sections:
         headings: list[tuple[BuilderElement, float]] = []
@@ -514,12 +520,18 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
             lead = max(headings, key=lambda pair: pair[1])[0]
             lead.styles["fontFamily"] = display_font
 
-        # Atmospheric mesh/grain on tinted (surface) sections only — top level.
+        # Atmospheric mesh/grain on plain (non-photo, non-brand-fill) sections —
+        # both the surface-tinted band AND the flat page-background band, so
+        # decoration isn't confined to one in every three sections (the
+        # rotation's surface slot). Dark/primary CTA bands carry their own
+        # strong fill and are excluded by the backgroundColor check below.
         if strategy != "flat":
             st = section.styles
             has_fill = bool(st.get("backgroundImage") or st.get("background"))
-            is_surface = st.get("backgroundColor") in (surface_hex, _SURFACE_BG)
-            if is_surface and not has_fill:
+            is_plain = st.get("backgroundColor") in (
+                surface_hex, _SURFACE_BG, page_hex, _PAGE_BG,
+            )
+            if is_plain and not has_fill:
                 apply_section_decoration(st, theme)
 
 
@@ -2054,6 +2066,249 @@ async def _build_linkbar(block: LinkBarBlock, ctx: RenderContext) -> BuilderElem
     )
 
 
+async def _build_timeline(block: TimelineBlock, ctx: RenderContext) -> BuilderElement:
+    s = ctx.styles
+    head: list[BuilderElement] = [
+        _text(
+            block.heading,
+            name="Heading",
+            styles={**s.heading_md, "textAlign": "center"},
+            mobile=s.heading_mobile,
+        )
+    ]
+    if block.subheading:
+        head.append(_text(block.subheading, name="Subheading", styles={**s.subhead, "textAlign": "center"}))
+    header = _container(head, name="Section header", styles={"alignItems": "center", "gap": "12px"})
+
+    entries: list[BuilderElement] = []
+    for item in block.items:
+        lines: list[BuilderElement] = [
+            _text(
+                item.year,
+                name="Timeline year",
+                styles={
+                    "fontFamily": ctx.theme.typography.heading_font,
+                    "fontSize": "14px",
+                    "fontWeight": 700,
+                    "letterSpacing": "0.06em",
+                    "color": ctx.theme.palette.primary,
+                    "margin": "0",
+                },
+            ),
+            _text(
+                item.title,
+                name="Timeline title",
+                styles={
+                    "fontFamily": ctx.theme.typography.heading_font,
+                    "fontSize": "20px",
+                    "fontWeight": 700,
+                    "color": ctx.theme.palette.secondary,
+                    "margin": "0",
+                },
+            ),
+        ]
+        if item.description:
+            lines.append(_text(item.description, name="Timeline body", styles=s.body))
+        entries.append(
+            _container(
+                lines,
+                name="Timeline entry",
+                styles={
+                    "gap": "6px",
+                    "padding": "20px 0",
+                    "borderBottom": f"1px solid {_hairline(ctx.theme.palette.secondary, 0.12)}",
+                },
+            )
+        )
+    list_wrap = _container(
+        entries,
+        name="Timeline list",
+        styles={"gap": "0", "maxWidth": "720px", "marginLeft": "auto", "marginRight": "auto"},
+    )
+    return _section(ctx, [header, list_wrap], name="Timeline")
+
+
+async def _build_awards(block: AwardsBlock, ctx: RenderContext) -> BuilderElement:
+    s = ctx.styles
+    head: list[BuilderElement] = [
+        _text(
+            block.heading,
+            name="Heading",
+            styles={**s.heading_md, "textAlign": "center"},
+            mobile=s.heading_mobile,
+        )
+    ]
+    if block.subheading:
+        head.append(_text(block.subheading, name="Subheading", styles={**s.subhead, "textAlign": "center"}))
+    header = _container(head, name="Section header", styles={"alignItems": "center", "gap": "12px"})
+
+    cards: list[list[BuilderElement]] = []
+    for item in block.items:
+        card: list[BuilderElement] = [
+            _text(
+                item.title,
+                name="Award title",
+                styles={
+                    "fontFamily": ctx.theme.typography.heading_font,
+                    "fontSize": "18px",
+                    "fontWeight": 700,
+                    "color": ctx.theme.palette.secondary,
+                    "margin": "0",
+                    "textAlign": "center",
+                },
+            )
+        ]
+        meta = " · ".join(p for p in (item.issuer, item.year) if p)
+        if meta:
+            card.append(
+                _text(
+                    meta,
+                    name="Award meta",
+                    styles={
+                        **s.body,
+                        "fontSize": "13px",
+                        "textAlign": "center",
+                        "color": ctx.theme.palette.primary,
+                        "fontWeight": 700,
+                        "letterSpacing": "0.04em",
+                        "textTransform": "uppercase",
+                    },
+                )
+            )
+        cards.append(card)
+
+    rows: list[BuilderElement] = []
+    triplet: list[list[BuilderElement]] = []
+    for card in cards:
+        triplet.append(card)
+        if len(triplet) == 3:
+            rows.append(_three_col(triplet, styles={"gap": "24px"}))
+            triplet = []
+    if triplet:
+        if len(triplet) == 2:
+            rows.append(_two_col(triplet[0], triplet[1], styles={"gap": "24px"}))
+        else:
+            rows.append(_container(triplet[0], name="Award card", styles=s.cards))
+
+    _apply_card_styles(
+        rows,
+        {
+            **s.cards,
+            "alignItems": "center",
+            "gap": "8px",
+            "padding": "28px 24px",
+            "borderRadius": "20px",
+            "backgroundColor": "rgba(255,255,255,0.94)",
+            "border": "1px solid rgba(148,163,184,0.18)",
+        },
+    )
+    return _section(ctx, [header, *rows], name="Awards")
+
+
+async def _build_clients(block: ClientsBlock, ctx: RenderContext) -> BuilderElement:
+    """Logo wall of named clients/customers/partners.
+
+    Deliberately typographic rather than image-resolved: ``logo_query`` has no
+    real brand-mark source today (Pexels/scraped pool would return an unrelated
+    stock photo mislabeled as a logo), so each name renders as a wordmark chip
+    instead of a fabricated logo image.
+    """
+    s = ctx.styles
+    head: list[BuilderElement] = [
+        _text(
+            block.heading,
+            name="Heading",
+            styles={**s.heading_md, "textAlign": "center"},
+            mobile=s.heading_mobile,
+        )
+    ]
+    if block.subheading:
+        head.append(_text(block.subheading, name="Subheading", styles={**s.subhead, "textAlign": "center"}))
+    header = _container(head, name="Section header", styles={"alignItems": "center", "gap": "12px"})
+
+    chips = [
+        _text(
+            item.name,
+            name="Client name",
+            styles={
+                "fontFamily": ctx.theme.typography.heading_font,
+                "fontSize": "16px",
+                "fontWeight": 700,
+                "letterSpacing": "0.02em",
+                "color": ctx.theme.palette.secondary,
+                "textAlign": "center",
+                "padding": "16px 22px",
+                "border": f"1px solid {_hairline(ctx.theme.palette.secondary, 0.16)}",
+                "borderRadius": "12px",
+                "backgroundColor": "rgba(255,255,255,0.7)",
+                "width": "auto",
+            },
+        )
+        for item in block.items
+    ]
+    wall = _container(
+        chips,
+        name="Client wall",
+        styles={"flexDirection": "row", "flexWrap": "wrap", "justifyContent": "center", "gap": "12px"},
+    )
+    return _section(ctx, [header, wall], name="Clients")
+
+
+async def _build_stats(block: StatsBlock, ctx: RenderContext) -> BuilderElement:
+    s = ctx.styles
+    sections: list[BuilderElement] = []
+    if block.heading:
+        sections.append(
+            _container(
+                [_text(block.heading, name="Heading", styles={**s.heading_md, "textAlign": "center"}, mobile=s.heading_mobile)],
+                name="Section header",
+                styles={"alignItems": "center"},
+            )
+        )
+
+    stat_cells = [
+        _container(
+            [
+                _text(
+                    item.value,
+                    name="Stat value",
+                    styles={
+                        "fontFamily": ctx.theme.typography.heading_font,
+                        "fontSize": "40px",
+                        "fontWeight": 800,
+                        "color": ctx.theme.palette.primary,
+                        "margin": "0",
+                        "textAlign": "center",
+                    },
+                ),
+                _text(
+                    item.label,
+                    name="Stat label",
+                    styles={
+                        **s.body,
+                        "fontSize": "13px",
+                        "textAlign": "center",
+                        "letterSpacing": "0.04em",
+                        "textTransform": "uppercase",
+                        "fontWeight": 700,
+                    },
+                ),
+            ],
+            name="Stat",
+            styles={"alignItems": "center", "gap": "4px", "flex": "1 1 140px"},
+        )
+        for item in block.items
+    ]
+    sections.append(
+        _container(
+            stat_cells,
+            name="Stats row",
+            styles={"flexDirection": "row", "flexWrap": "wrap", "justifyContent": "center", "gap": "32px"},
+        )
+    )
+    return _section(ctx, sections, name="Stats")
+
+
 # --- dispatch + top-level entry -------------------------------------------------
 
 
@@ -2072,6 +2327,10 @@ _DISPATCH = {
     "menu": _build_menu,
     "process": _build_process,
     "linkbar": _build_linkbar,
+    "timeline": _build_timeline,
+    "awards": _build_awards,
+    "clients": _build_clients,
+    "stats": _build_stats,
 }
 
 

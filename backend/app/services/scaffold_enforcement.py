@@ -16,17 +16,23 @@ those we keep with a minimal, placeholder-only default so the page isn't blank.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 
 from app.models.content_blocks import (
     AboutBlock,
+    AwardsBlock,
+    ClientsBlock,
     ContactBlock,
     ContentBlock,
     CtaBlock,
     HeroBlock,
     PagePlan,
+    StatsBlock,
     TeamBlock,
+    TestimonialItem,
+    TestimonialsBlock,
 )
 from app.models.industry import PageScaffold
 
@@ -40,8 +46,9 @@ logger = logging.getLogger(__name__)
 #   - cta     → a generic call-to-action (not a factual claim)
 #   - contact → a contact form with no fabricated details
 # Every OTHER kind (features, services, testimonials, faq, pricing, team,
-# gallery, menu, process, …) makes specific factual claims, so if the LLM
-# didn't produce it we drop it instead of inventing content.
+# gallery, menu, process, timeline, awards, clients, stats, …) makes specific
+# factual claims, so if the LLM didn't produce it we drop it instead of
+# inventing content.
 _STRUCTURAL_FALLBACK_KINDS = frozenset({"hero", "about", "cta", "contact"})
 
 _NON_PERSON_EXACT_NAMES = {
@@ -168,11 +175,150 @@ def _sanitize_team_block(block: TeamBlock) -> TeamBlock | None:
     return block.model_copy(update={"members": members})
 
 
+# Generic placeholder names the LLM reaches for when it has no real reviewer
+# to cite (despite the FIDELITY rule against fabricating testimonials). Exact,
+# case-insensitive matches only — real people are occasionally named "John"
+# or "Smith", so this only catches the textbook full-name placeholders.
+_PLACEHOLDER_AUTHOR_NAMES = {
+    "john doe",
+    "jane doe",
+    "john smith",
+    "jane smith",
+    "j. doe",
+    "j. smith",
+    "test user",
+    "sample user",
+    "anonymous",
+    "anonymous customer",
+    "satisfied customer",
+    "happy customer",
+    "valued customer",
+    "customer name",
+    "your name",
+    "first last",
+    "firstname lastname",
+    "name surname",
+}
+
+
+def looks_like_placeholder_author(value: str | None) -> bool:
+    """True when a testimonial author is a textbook fabricated placeholder."""
+    if not value:
+        return False
+    normalized = " ".join(value.replace("\xa0", " ").split()).strip(" :|-").lower()
+    return normalized in _PLACEHOLDER_AUTHOR_NAMES
+
+
+def _normalize_for_grounding(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _longest_match_len(needle: str, haystack: str) -> int:
+    matcher = difflib.SequenceMatcher(None, needle, haystack, autojunk=False)
+    match = matcher.find_longest_match(0, len(needle), 0, len(haystack))
+    return match.size
+
+
+def is_grounded_in_source(text: str | None, source_text: str | None) -> bool:
+    """True when `text` plausibly came FROM `source_text`.
+
+    Catches fabrication the placeholder denylist misses (a fluent, plausible
+    quote/name the LLM invented despite the FIDELITY rule). Tolerant of minor
+    whitespace/punctuation cleanup — NOT of paraphrase, since the prompt tells
+    the LLM testimonial quotes must be preserved verbatim, not rewritten.
+    Short strings (e.g. a first-name-only author) require an exact substring;
+    longer strings accept a long contiguous fuzzy match so trivial scraping
+    noise (an extra space, a smart quote) doesn't trip a false negative.
+    """
+    if not text or not source_text:
+        return False
+    needle = _normalize_for_grounding(text)
+    haystack = _normalize_for_grounding(source_text)
+    if not needle:
+        return False
+    if needle in haystack:
+        return True
+    if len(needle) < 15:
+        return False  # too short for fuzzy matching to be meaningful
+    threshold = max(15, int(len(needle) * 0.6))
+    return _longest_match_len(needle, haystack) >= threshold
+
+
+def _sanitize_testimonials_block(
+    block: TestimonialsBlock, source_text: str | None
+) -> TestimonialsBlock | None:
+    items: list[TestimonialItem] = []
+    dropped_fabricated = 0
+    for item in block.items:
+        if looks_like_placeholder_author(item.author):
+            continue
+        # No source text to check against (e.g. legacy callers / unit tests) →
+        # fall back to the placeholder-name check only.
+        if source_text and not (
+            is_grounded_in_source(item.quote, source_text)
+            or is_grounded_in_source(item.author, source_text)
+        ):
+            dropped_fabricated += 1
+            continue
+        items.append(item)
+    if dropped_fabricated:
+        logger.info(
+            "Dropped %d testimonial(s) with no match in the page source — "
+            "likely fabricated despite the fidelity rule.",
+            dropped_fabricated,
+        )
+    if not items:
+        return None
+    return block.model_copy(update={"items": items})
+
+
+def _sanitize_awards_block(
+    block: AwardsBlock, source_text: str | None
+) -> AwardsBlock | None:
+    if not source_text:
+        return block
+    items = [
+        item for item in block.items
+        if is_grounded_in_source(item.title, source_text)
+        or is_grounded_in_source(item.issuer, source_text)
+    ]
+    if not items:
+        return None
+    return block.model_copy(update={"items": items})
+
+
+def _sanitize_clients_block(
+    block: ClientsBlock, source_text: str | None
+) -> ClientsBlock | None:
+    if not source_text:
+        return block
+    items = [item for item in block.items if is_grounded_in_source(item.name, source_text)]
+    if not items:
+        return None
+    return block.model_copy(update={"items": items})
+
+
+def _sanitize_stats_block(
+    block: StatsBlock, source_text: str | None
+) -> StatsBlock | None:
+    if not source_text:
+        return block
+    items = [
+        item for item in block.items
+        if is_grounded_in_source(item.value, source_text)
+        or is_grounded_in_source(item.label, source_text)
+    ]
+    if not items:
+        return None
+    return block.model_copy(update={"items": items})
+
+
 def align_page_to_scaffold(
     page: PagePlan,
     scaffold: PageScaffold,
     *,
     brand_name: str = "Untitled",
+    source_text: str | None = None,
 ) -> PagePlan:
     """
     Reorder + filter `page.blocks` to match `scaffold.sections`.
@@ -184,6 +330,14 @@ def align_page_to_scaffold(
     - Drop any LLM blocks whose kind isn't in scaffold.sections
     - Guarantee the page isn't blank: if nothing survived, keep a hero.
     - Returns a new PagePlan; original is unmodified
+
+    ``source_text`` is this page's own scraped/document text (the same text
+    the LLM was grounded against). When given, the fact-bearing kinds most
+    prone to plausible fabrication — testimonials, awards, clients, stats —
+    are additionally checked item-by-item against it (see
+    ``is_grounded_in_source``): an item with no match in the source is
+    dropped, not just textbook placeholders like "John Doe". When omitted,
+    only the placeholder-name check (testimonials only) applies.
     """
     required_kinds = list(scaffold.sections)
     by_kind: dict[str, list[ContentBlock]] = {}
@@ -199,6 +353,30 @@ def align_page_to_scaffold(
             block = bucket.pop(0)
             if kind == "team" and isinstance(block, TeamBlock):
                 sanitized = _sanitize_team_block(block)
+                if sanitized is None:
+                    omitted.append(kind)
+                    continue
+                block = sanitized
+            elif kind == "testimonials" and isinstance(block, TestimonialsBlock):
+                sanitized = _sanitize_testimonials_block(block, source_text)
+                if sanitized is None:
+                    omitted.append(kind)
+                    continue
+                block = sanitized
+            elif kind == "awards" and isinstance(block, AwardsBlock):
+                sanitized = _sanitize_awards_block(block, source_text)
+                if sanitized is None:
+                    omitted.append(kind)
+                    continue
+                block = sanitized
+            elif kind == "clients" and isinstance(block, ClientsBlock):
+                sanitized = _sanitize_clients_block(block, source_text)
+                if sanitized is None:
+                    omitted.append(kind)
+                    continue
+                block = sanitized
+            elif kind == "stats" and isinstance(block, StatsBlock):
+                sanitized = _sanitize_stats_block(block, source_text)
                 if sanitized is None:
                     omitted.append(kind)
                     continue

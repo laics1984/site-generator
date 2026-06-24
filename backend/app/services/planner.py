@@ -47,10 +47,10 @@ logger = logging.getLogger(__name__)
 # --- legacy free-form prompt (kept for back-compat with /from-source) ----------
 
 
-LEGACY_SYSTEM_PROMPT = """You are a senior web developer and experienced SEO copywriter.
+LEGACY_SYSTEM_PROMPT = """You are a senior web developer with extensive UIUX design experience, and experienced SEO copywriter.
 
 You are given raw content extracted from a source (a website or document) belonging to a business.
-Your job: REWRITE that content into a cleaner, better-organised, search-optimised, award winning design website. You
+Your job: REWRITE that content into a cleaner, better-organised, search-optimised, award winning design website and current web design trend. You
 improve the language; you do not invent a new business.
 
 Hard rules:
@@ -340,6 +340,20 @@ You will receive:
 If a page has no `page_source`, fall back to the top-level `source` and the
 brand summary — still grounded in real content only.
 
+DESIGN INTENT — you are writing for an award-site-calibre layout, not a
+generic template:
+- Headlines read like a confident editorial pull-quote, not boilerplate.
+  Specific > clever > generic, always.
+- Give every hero an `eyebrow` — it's the small label above the headline that
+  gives the layout visual hierarchy (e.g. "Family-owned since 1998").
+- Homepage hero `layout`: default to "background" (full-bleed photo, the
+  header floats transparent over it on the live site) for visual/brand-led
+  industries — restaurant, hospitality, agency, travel, fitness, ecommerce.
+  Use "split" for industries that read more credible as clean two-column
+  text+image — saas, professional-services, consultancy, technical/B2B.
+  This is a default lean, not a rule: follow what the source's own photography
+  and tone actually support.
+
 ═══════════════════════════════════════════════════════════════════════════
 FIDELITY RULES — these override every other instruction below:
 - Use ONLY facts present in the source. Improving language is encouraged;
@@ -354,6 +368,15 @@ FIDELITY RULES — these override every other instruction below:
     • addresses, phone numbers, emails, opening hours
     • FAQ answers that assert specifics (policies, timelines, guarantees)
     • menu items or dishes and their prices
+    • historical milestones, founding dates, or "our story" timeline events
+    • named clients, customers, or partner logos
+    • any of the above expressed as a "stats" callout (e.g. "15 years",
+      "200+ projects") — a number is only real if the source states it
+- NEVER invent a placeholder name to fill a required field ("John Doe",
+  "Jane Smith", "Test User", "Customer", "Anonymous", "Your Name", etc).
+  If a testimonial/team member/client has no real name in the source, DROP
+  that item (or the whole block) instead of writing a stand-in name — a
+  fabricated name is exactly as much a fidelity violation as a fabricated quote.
 - You MAY paraphrase, summarise, reorder, and sharpen real content. You MAY
   write general benefit statements that follow directly from what the business
   actually says it does. You MAY NOT add specifics that aren't in the source.
@@ -364,7 +387,7 @@ OMITTING SECTIONS (important):
   A shorter, honest page beats a padded one with invented content.
 - Example: `required_sections` includes "testimonials" but the source has no
   reviews → do NOT output a testimonials block. Same for faq, pricing, team,
-  menu, gallery, process, stats when the source is silent.
+  menu, gallery, process, timeline, awards, clients, stats when the source is silent.
 - Only emit a section when you can fill it with at least its minimum number of
   REAL, source-grounded items. If you can't, omit it.
 - hero, about, contact and cta are the exception: always keep these when
@@ -453,6 +476,10 @@ real items only; if you can't reach the floor with real content, omit the block.
 - gallery: { kind:"gallery", heading, subheading?, items:[{title?, caption?, image_query}] }  (1-12 items)
 - menu: { kind:"menu", heading, subheading?, categories:[{name, items:[{name, description?, price?}]}] }  (real menu only — omit if none)
 - process: { kind:"process", heading, subheading?, steps:[{title, description}] }  (1-6 real steps — omit if none)
+- timeline: { kind:"timeline", heading, subheading?, items:[{year, title, description?}] }  (1-10 real milestones — omit if the source has no dated history)
+- awards: { kind:"awards", heading, subheading?, items:[{title, issuer?, year?}] }  (1-12 real awards/certifications — omit if none)
+- clients: { kind:"clients", heading, subheading?, items:[{name, logo_query?}] }  (2-20 real client/customer/partner names — omit if fewer than 2 are named)
+- stats: { kind:"stats", heading?, items:[{value, label}] }  (1-6 real numbers stated in the source — omit if the source states none)
 
 If a page's required_sections list contains a section kind the source can't
 support, OMIT that section — do not invent content to fill it. The requested
@@ -646,6 +673,10 @@ _LIST_BLOCK_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "team": ("members", ("name",)),
     "gallery": ("items", ("title", "caption", "image_query")),
     "process": ("steps", ("title",)),
+    "timeline": ("items", ("title", "year")),
+    "awards": ("items", ("title",)),
+    "clients": ("items", ("name",)),
+    "stats": ("items", ("label",)),
 }
 _SINGLETON_KINDS = frozenset({"hero", "about", "cta", "contact"})
 

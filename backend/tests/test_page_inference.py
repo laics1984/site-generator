@@ -88,6 +88,76 @@ class PageInferenceTest(unittest.TestCase):
         self.assertNotIn("team", about.sections)
         self.assertEqual(team.sections, ["hero", "team", "cta"])
 
+    def test_homepage_with_founding_history_gets_timeline_section(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Founded in 1998, we have grown into a regional name.",
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        home = next(s for s in scaffolds if s.is_homepage)
+
+        self.assertIn("timeline", home.sections)
+
+    def test_homepage_with_award_copy_gets_awards_section(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="We are an award-winning bakery, certified by the guild.",
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        home = next(s for s in scaffolds if s.is_homepage)
+
+        self.assertIn("awards", home.sections)
+
+    def test_homepage_with_client_roster_gets_clients_section(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Trusted by some of the world's best known brands.",
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        home = next(s for s in scaffolds if s.is_homepage)
+
+        self.assertIn("clients", home.sections)
+
+    def test_homepage_with_no_signals_skips_new_sections(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="We make great coffee and serve it with a smile.",
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        home = next(s for s in scaffolds if s.is_homepage)
+
+        for kind in ("timeline", "awards", "clients", "stats"):
+            self.assertNotIn(kind, home.sections)
+
+    def test_contact_page_never_gets_clients_section_even_with_signal(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/contact",
+                    title="Contact",
+                    raw_text="Trusted by some of the world's best known brands.",
+                    url_path="/contact",
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        contact = next(s for s in scaffolds if s.slug == "contact")
+
+        self.assertNotIn("clients", contact.sections)
+
     def test_template_fallback_keeps_team_under_about_without_team_evidence(self):
         source = SourceContent(
             source_kind="url",
