@@ -122,6 +122,11 @@ class ImageResolver:
         self._pexels = pexels or get_pexels_client()
         self._attributions: list[str] = []
         self._seen_pexels_urls: set[str] = set()
+        # Per-seed placeholder counter: two slots that fall to the gradient
+        # placeholder with the SAME seed would otherwise render the identical
+        # image. We hand each repeat a distinct nonce so the gradient angle
+        # differs (first use stays byte-identical, nonce 0).
+        self._placeholder_seeds: dict[str, int] = {}
         self._use_llm_tiebreaker = use_llm_tiebreaker
         # Regional demonym (e.g. "Southeast Asian") prepended to people-likely
         # stock queries so imagery reflects the business's actual market.
@@ -194,13 +199,18 @@ class ImageResolver:
                 return replace(photo, luminance=lum, band=band)
 
         # 3. Last resort: an on-brand gradient placeholder (no network, no
-        # random stock photo) — see _placeholder_photo.
+        # random stock photo) — see _placeholder_photo. A per-seed nonce keeps
+        # repeated placeholders from rendering the identical gradient on a page.
+        seed = query or alt_fallback or "site"
+        nonce = self._placeholder_seeds.get(seed, 0)
+        self._placeholder_seeds[seed] = nonce + 1
         return _placeholder_photo(
-            query or alt_fallback or "site",
+            seed,
             orientation,
             alt_fallback,
             primary_hex=self._primary_hex,
             secondary_hex=self._secondary_hex,
+            nonce=nonce,
         )
 
     async def _search_pexels(
@@ -291,16 +301,19 @@ def _placeholder_photo(
     *,
     primary_hex: str = "#64748b",
     secondary_hex: str = "#1e293b",
+    nonce: int = 0,
 ) -> PhotoResult:
     """Last-resort placeholder: a deterministic two-tone SVG gradient in the
     theme's own brand colours, inlined as a data URI (no network call).
 
     Replaces the old picsum.photos fallback — a random, unrelated stock photo
     that read as a bug rather than a design choice. This always looks
-    intentional, and the same seed always renders the same gradient angle so
-    repeat generations of the same slot are stable.
+    intentional, and a given (seed, nonce) always renders the same gradient
+    angle so repeat generations are stable. `nonce` distinguishes repeated uses
+    of the same seed on one page (nonce 0 == the original, byte-identical).
     """
-    digest = hashlib.md5(seed.encode("utf-8")).hexdigest()
+    key = seed if nonce == 0 else f"{seed}#{nonce}"
+    digest = hashlib.md5(key.encode("utf-8")).hexdigest()
     if orientation == "portrait":
         w, h = 600, 800
     elif orientation == "square":

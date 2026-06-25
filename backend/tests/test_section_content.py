@@ -59,8 +59,8 @@ class SectionContentTemplateSelectionTest(unittest.TestCase):
         self.assertIsNotNone(photo)
         styles = photo["styles"]
 
-        self.assertEqual(styles["width"], "112px")
-        self.assertEqual(styles["height"], "112px")
+        self.assertEqual(styles["width"], "150px")
+        self.assertEqual(styles["height"], "150px")
         self.assertEqual(styles["borderRadius"], "9999px")
         self.assertEqual(styles["overflow"], "hidden")
         self.assertEqual(styles["aspectRatio"], "1 / 1")
@@ -86,3 +86,13 @@ class SectionContentTemplateSelectionTest(unittest.TestCase):
         self.assertEqual(role["styles"]["letterSpacing"], "0.08em")
         self.assertEqual(role["styles"]["textTransform"], "uppercase")
         self.assertEqual(bio["styles"]["lineHeight"], "1.65")
+
+    def test_team_grid_bio_is_clamped(self):
+        # Long bios are truncated so cards stay even: an inline line-clamp is the
+        # static fallback; the `wt-clamp` class is the hook the frontend uses to
+        # add a show-more toggle.
+        template = get_template("team-grid")
+        bio = _find_node(template["tree"], "Member Bio")
+        self.assertIn("wt-clamp", bio.get("classes", ""))
+        self.assertEqual(bio["styles"]["WebkitLineClamp"], "4")
+        self.assertEqual(bio["styles"]["overflow"], "hidden")

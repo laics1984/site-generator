@@ -525,7 +525,24 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
     surface_hex = theme.palette.surface
     page_hex = theme.page.background
 
-    for section in sections:
+    # Sections a shaped divider *reveals* must stay flat: the divider wave is a
+    # single flat fill set to the revealed section's base colour, so a mesh/grain
+    # overlay on that section would not match the wave at the seam. (A bottom
+    # divider on section i reveals i+1; a top divider reveals i-1.) The
+    # divider-owning section keeps its decoration — it shows through the wave's
+    # transparent side, which is simply itself. Requires dividers to be assigned
+    # before this pass runs (see the build order in build_site).
+    revealed: set[int] = set()
+    for i, sec in enumerate(sections):
+        div = getattr(sec, "divider", None)
+        if div is None:
+            continue
+        if getattr(div, "bottom", None) is not None and i + 1 < len(sections):
+            revealed.add(i + 1)
+        if getattr(div, "top", None) is not None and i - 1 >= 0:
+            revealed.add(i - 1)
+
+    for idx, section in enumerate(sections):
         headings: list[tuple[BuilderElement, float]] = []
         _walk_modernize(
             section,
@@ -546,7 +563,7 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
         # decoration isn't confined to one in every three sections (the
         # rotation's surface slot). Dark/primary CTA bands carry their own
         # strong fill and are excluded by the backgroundColor check below.
-        if strategy != "flat":
+        if strategy != "flat" and idx not in revealed:
             st = section.styles
             has_fill = bool(st.get("backgroundImage") or st.get("background"))
             is_plain = st.get("backgroundColor") in (
@@ -2841,6 +2858,12 @@ async def plan_to_site(
         # plain sections between page-bg and surface tint. Sections the luminance
         # pass already filled carry their own backgroundColor and are skipped.
         apply_section_rhythm(elements)
+        # Shaped section dividers are assigned before modernization so the mesh/grain
+        # pass can keep a divider-revealed section flat (its decorative overlay would
+        # not match the flat divider wave that reveals it). Divider colours read each
+        # section's backgroundColor, which modernization never changes — only adds an
+        # overlay — so the seam colours are identical either order.
+        apply_section_dividers(elements, effective_brand.mood)
         # 2025/26 modernization: fluid type, card depth/glass, atmospheric
         # surface backgrounds — applied per-mood over the assembled sections.
         modernize_sections(elements, theme)
@@ -2854,7 +2877,6 @@ async def plan_to_site(
                 hero_element and (hero_element.styles or {}).get("backgroundImage")
             ),
         )
-        apply_section_dividers(elements, effective_brand.mood)
         pages.append(
             GeneratedPage(
                 slug=page_plan.slug,

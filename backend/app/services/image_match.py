@@ -221,6 +221,16 @@ def rank_candidates(
     settle ambiguous cases.
     """
     candidates = [c for c in candidates if c.role not in _EXCLUDED_ROLES]
+    # Large featured slots (hero / about) must be real photographs. A banner,
+    # UI screenshot, graphic (e.g. a QR code) or map blown up as the hero/about
+    # image reads as a scrape failure, so exclude those vision kinds here — not
+    # just from the intent-pin below. They stay eligible for ordinary content
+    # slots (a screenshot is legitimate on a small SaaS feature card).
+    if slot_intent in PRIMARY_INTENTS:
+        candidates = [
+            c for c in candidates
+            if c.vision_kind is None or c.vision_kind not in _UNPINNABLE_VISION_KINDS
+        ]
     if not candidates:
         return RankResult(chosen=None, chosen_score=0.0, decision="fallback", scores=[])
 

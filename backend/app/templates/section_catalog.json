@@ -2713,13 +2713,13 @@
                       "textAlign": "center", "opacity": "100%",
                       "color": "var(--builder-color-text, #111827)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
-                      "width": "112px", "height": "112px", "borderRadius": "9999px", "overflow": "hidden",
-                      "aspectRatio": "1 / 1", "marginBottom": "12px",
+                      "width": "150px", "height": "150px", "borderRadius": "9999px", "overflow": "hidden",
+                      "aspectRatio": "1 / 1", "marginBottom": "16px",
                       "backgroundColor": "rgba(148,163,184,0.18)",
                       "border": "3px solid rgba(255,255,255,0.96)",
                       "boxShadow": "0 0 0 4px rgba(37,99,235,0.10), 0 14px 30px rgba(15,23,42,0.18)"
                     },
-                    "responsiveStyles": { "mobile": { "width": "96px", "height": "96px" }, "tablet": { "width": "104px", "height": "104px" } },
+                    "responsiveStyles": { "mobile": { "width": "120px", "height": "120px" }, "tablet": { "width": "136px", "height": "136px" } },
                     "content": { "caption": "" }
                   },
                   {
@@ -2746,13 +2746,15 @@
                   },
                   {
                     "name": "Member Bio", "type": "text", "$slot": "bio",
+                    "classes": "wt-clamp wt-clamp-4",
                     "styles": {
                       "backgroundPosition": "center", "objectFit": "cover", "backgroundRepeat": "no-repeat",
                       "textAlign": "center", "opacity": "100%",
                       "color": "rgba(15,23,42,0.66)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%", "fontSize": "14px", "lineHeight": "1.65",
-                      "marginTop": "8px", "maxWidth": "280px"
+                      "marginTop": "8px", "maxWidth": "280px",
+                      "display": "-webkit-box", "WebkitLineClamp": "4", "WebkitBoxOrient": "vertical", "overflow": "hidden"
                     }
                   }
                 ]
@@ -6411,7 +6413,7 @@
       "layoutVariant": "bento",
       "styleVariant": "modular",
       "label": "Modular Bento Hero",
-      "description": "Copy column beside a modular tile collage — a large photo tile over colour-block accents. Energetic, product-forward first impression for modern and playful brands. Requires a hero image.",
+      "description": "Copy column beside a large framed photo tile that fills the column. Energetic, product-forward first impression for modern and playful brands. Requires a hero image.",
       "tags": [
         "Hero",
         "Bento",
@@ -6731,9 +6733,8 @@
                   "color": "var(--builder-color-text, #111827)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
-                  "display": "grid",
-                  "gridTemplateColumns": "repeat(2, 1fr)",
-                  "gridAutoRows": "minmax(96px, auto)",
+                  "display": "flex",
+                  "flexDirection": "column",
                   "gap": "16px"
                 },
                 "responsiveStyles": {
@@ -6762,8 +6763,8 @@
                       "color": "var(--builder-color-text, #111827)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
-                      "gridColumn": "span 2",
-                      "minHeight": "280px",
+                      "flex": "1",
+                      "minHeight": "400px",
                       "borderRadius": "24px",
                       "backgroundSize": "cover",
                       "background": "var(--builder-color-surface, #f8fafc)",
@@ -6771,63 +6772,12 @@
                     },
                     "responsiveStyles": {
                       "mobile": {
-                        "minHeight": "200px",
+                        "minHeight": "240px",
                         "borderRadius": "18px"
                       },
                       "tablet": {
-                        "minHeight": "240px"
+                        "minHeight": "320px"
                       }
-                    },
-                    "content": []
-                  },
-                  {
-                    "name": "Accent Tile",
-                    "type": "container",
-                    "styles": {
-                      "backgroundPosition": "center",
-                      "objectFit": "cover",
-                      "backgroundRepeat": "no-repeat",
-                      "textAlign": "left",
-                      "opacity": "100%",
-                      "color": "var(--builder-color-text, #111827)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
-                      "width": "100%",
-                      "minHeight": "104px",
-                      "borderRadius": "24px",
-                      "background": "linear-gradient(135deg, var(--builder-color-primary, #2563eb), var(--builder-color-secondary, #0f172a))"
-                    },
-                    "responsiveStyles": {
-                      "mobile": {
-                        "minHeight": "80px",
-                        "borderRadius": "18px"
-                      },
-                      "tablet": {}
-                    },
-                    "content": []
-                  },
-                  {
-                    "name": "Surface Tile",
-                    "type": "container",
-                    "styles": {
-                      "backgroundPosition": "center",
-                      "objectFit": "cover",
-                      "backgroundRepeat": "no-repeat",
-                      "textAlign": "left",
-                      "opacity": "100%",
-                      "color": "var(--builder-color-text, #111827)",
-                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
-                      "width": "100%",
-                      "minHeight": "104px",
-                      "borderRadius": "24px",
-                      "background": "linear-gradient(315deg, var(--builder-color-secondary, #0f172a), var(--builder-color-primary, #2563eb))",
-                      "border": "1px solid rgba(255,255,255,0.18)"
-                    },
-                    "responsiveStyles": {
-                      "mobile": {
-                        "minHeight": "80px",
-                        "borderRadius": "18px"
-                      },
-                      "tablet": {}
                     },
                     "content": []
                   }

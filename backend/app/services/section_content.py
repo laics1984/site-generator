@@ -168,10 +168,17 @@ def _contact_content(b: ContactBlock) -> dict[str, Any]:
 
 
 def _team_content(b: TeamBlock) -> dict[str, Any]:
+    # A source that reuses one photo across members would otherwise repeat the
+    # same image down the grid; the second use falls back to a resolver query so
+    # each card gets a distinct image.
+    used_photo_urls: set[str] = set()
+
     def member_photo(member: Any) -> dict[str, str] | None:
-        if getattr(member, "photo_url", None):
+        url = getattr(member, "photo_url", None)
+        if url and url not in used_photo_urls:
+            used_photo_urls.add(url)
             return {
-                "src": member.photo_url,
+                "src": url,
                 "alt": member.photo_alt or member.name,
             }
         return _image(member.photo_query, member.name)

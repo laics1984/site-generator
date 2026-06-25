@@ -4,7 +4,16 @@ glass cards, and orphan-free card grids."""
 import asyncio
 import unittest
 
-from app.services.schema_builder import glass_card_styles, mesh_gradient
+from app.models.builder_schema import (
+    BuilderElement,
+    SectionDivider,
+    SectionDividerEdge,
+)
+from app.services.schema_builder import (
+    glass_card_styles,
+    mesh_gradient,
+    modernize_sections,
+)
 from app.services.template_filler import fill_template
 from app.services.theme import _adjust_lightness, _hex_to_rgb, build_theme
 
@@ -86,6 +95,36 @@ class GridFitTest(unittest.TestCase):
 
     def test_two_items_use_two_columns(self):
         self.assertEqual(self._grid_type(2), "2Col")
+
+
+class DividerMeshTest(unittest.TestCase):
+    """A section revealed by a shaped divider must stay flat — the divider wave is
+    a single flat fill, so a mesh overlay on the revealed section would not match
+    it at the seam."""
+
+    @staticmethod
+    def _section(name, bg):
+        return BuilderElement(
+            name=name, type="section",
+            styles={"backgroundColor": bg, "width": "100%"}, content=[],
+        )
+
+    def test_divider_revealed_section_skips_mesh(self):
+        theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
+        page_bg = theme.page.background
+        hero = self._section("Hero", page_bg)
+        hero.divider = SectionDivider(
+            bottom=SectionDividerEdge(shape="wave", color=page_bg)
+        )
+        revealed = self._section("Revealed", page_bg)
+        control = self._section("Control", page_bg)
+
+        modernize_sections([hero, revealed, control], theme)
+
+        # The section the divider reveals stays flat; an unrelated plain section
+        # still gets the atmospheric mesh.
+        self.assertNotIn("backgroundImage", revealed.styles)
+        self.assertIn("backgroundImage", control.styles)
 
 
 if __name__ == "__main__":
