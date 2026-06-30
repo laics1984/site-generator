@@ -636,6 +636,14 @@ def _nearest_tailwind_hue(seed_hex: str) -> str:
     return best
 
 
+def color_family_name(seed_hex: str) -> str:
+    """The nearest Tailwind colour-family name for a hex (e.g. "blue", "teal").
+
+    Public wrapper over `_nearest_tailwind_hue` for callers that want a colour
+    word — e.g. building a theme-coloured abstract image query."""
+    return _nearest_tailwind_hue(seed_hex)
+
+
 def _snap_palette(seed_hex: str) -> ColorPalette:
     """Curated palette: brand hue snapped to the nearest Tailwind family."""
     family = _nearest_tailwind_hue(seed_hex)

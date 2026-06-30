@@ -89,6 +89,39 @@ def photo_background(avg_hex: str | None, url: str, secondary_hex: str, primary_
     return f"{brand_overlay_gradient(secondary_hex, primary_hex, alpha)}, url('{url}')"
 
 
+def washed_photo_background(
+    url: str,
+    *,
+    scheme: str,
+    surface_hex: str,
+    secondary_hex: str,
+    primary_hex: str,
+) -> str:
+    """Background-image value for a SPLIT hero: an abstract photo under a heavy,
+    scheme-aware brand wash.
+
+    Unlike `photo_background` (a darker overlay tuned for white text on a
+    full-bleed hero), this keeps the section on the theme's own luminance so the
+    overlaid copy keeps its normal theme text colour and stays legible. The photo
+    reads as faint on-brand texture, not a focal image.
+
+    Light scheme → near-opaque light surface wash + a faint brand tint (dark text
+    stays legible). Dark scheme → near-opaque dark wash + a slightly stronger
+    brand tint (light text stays legible).
+    """
+    pr, pg, pb = _hex_to_rgb(primary_hex)
+    if scheme == "dark":
+        br, bg, bb = _hex_to_rgb(secondary_hex)
+        base_a, tint_a = 0.92, 0.18
+    else:
+        br, bg, bb = _hex_to_rgb(surface_hex)
+        base_a, tint_a = 0.92, 0.10
+    return (
+        f"linear-gradient(135deg, rgba({br},{bg},{bb},{base_a}), "
+        f"rgba({pr},{pg},{pb},{tint_a})), url('{url}')"
+    )
+
+
 def _hue_sat(hex_color: str) -> tuple[float, float]:
     r, g, b = (c / 255.0 for c in _hex_to_rgb(hex_color))
     h, _l, s = colorsys.rgb_to_hls(r, g, b)
@@ -109,3 +142,26 @@ def colors_harmonize(
     theme_hue, _ = _hue_sat(theme_primary_hex)
     delta = abs(((img_hue - theme_hue + 180.0) % 360.0) - 180.0)
     return delta <= max_hue_delta
+
+
+def color_distance(image_avg_hex: str, theme_hex: str) -> float:
+    """A 0..1 distance between an image's average colour and a theme colour.
+
+    Used to rank abstract stock candidates so the one whose dominant colour sits
+    CLOSEST to the theme wins (vs. a binary harmonise gate). Combines hue delta
+    (the dominant signal — a clashing hue reads worst) with a smaller luminance
+    delta so a same-hue-but-wrong-brightness wash is still mildly penalised.
+
+    A near-neutral (low-saturation) image is treated as hue-agnostic — only its
+    luminance distance counts — so a clean grey/white texture never loses to a
+    saturated off-hue one just because grey has an arbitrary hue.
+    """
+    img_hue, img_sat = _hue_sat(image_avg_hex)
+    theme_hue, _ = _hue_sat(theme_hex)
+    if img_sat < 0.18:
+        hue_term = 0.0
+    else:
+        # Normalised hue gap in [0,1] (180° apart = max).
+        hue_term = abs(((img_hue - theme_hue + 180.0) % 360.0) - 180.0) / 180.0
+    lum_term = abs(relative_luminance(image_avg_hex) - relative_luminance(theme_hex))
+    return round(0.75 * hue_term + 0.25 * lum_term, 4)

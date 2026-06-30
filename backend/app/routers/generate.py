@@ -552,10 +552,13 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         strip_linkbar_lines(payload.source, linkbar_cluster)
 
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
+    # This is the heaviest LLM pass (it writes all page copy); time it so the
+    # breakdown shows whether content generation, not design/images, dominates.
     try:
-        scaffolded = await plan_site_with_scaffolds(
-            payload.source, detected, content_scaffolds
-        )
+        with stage("content_generation"):
+            scaffolded = await plan_site_with_scaffolds(
+                payload.source, detected, content_scaffolds
+            )
     except LlmError as exc:
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
 

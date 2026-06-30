@@ -1,5 +1,15 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# App loggers default to WARNING, which silently drops the per-stage generation
+# timing (logged at INFO via app.services.timing). Configure a root handler at
+# INFO so that breakdown is visible alongside uvicorn's own logs.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:%(name)s:%(message)s",
+)
 
 from app.config import settings
 from app.routers import brand, cms, document, generate, health, pages, scrape

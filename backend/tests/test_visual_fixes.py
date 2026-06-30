@@ -5,8 +5,10 @@ import asyncio
 import unittest
 
 from app.models.builder_schema import BuilderElement
+from app.services.image_styling import color_distance
 from app.services.schema_builder import (
     apply_section_dividers,
+    cap_gradient_textures,
     glass_card_styles,
     mesh_gradient,
     modernize_sections,
@@ -95,11 +97,10 @@ class GridFitTest(unittest.TestCase):
 
 
 class DividerMeshTest(unittest.TestCase):
-    """A section revealed by a shaped divider keeps its mesh/grain decoration —
-    the divider's fill carries a matching `texture` tag instead of forcing the
-    section flat, so the seam still reads as a continuous handoff. Requires the
-    build order in build_site: modernize_sections (tags backgroundTexture) runs
-    before apply_section_dividers (reads that tag onto the divider edge)."""
+    """A shaped divider must sit only against SOLID colour: both neighbouring
+    sections are flattened (any mesh/grain dropped) and the seam fill is a plain
+    colour. The texture accent is steered onto a non-neighbour band by
+    modernize_sections, so it can still appear elsewhere on the page."""
 
     @staticmethod
     def _section(name, bg):
@@ -129,22 +130,50 @@ class DividerMeshTest(unittest.TestCase):
         self.assertNotIn("backgroundImage", s2.styles)
         self.assertNotIn("backgroundImage", s3.styles)
 
-    def test_divider_inherits_revealed_sections_texture(self):
+    def test_shaped_divider_neighbours_are_flat_and_seam_is_solid(self):
         theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
         page_bg = theme.page.background
-        # A photo hero already carries a fill, so the single texture accent lands
-        # on the next plain band — the one the hero's divider reveals.
         hero = self._section("Hero", page_bg)
-        hero.styles["backgroundImage"] = "url('https://example.com/p.jpg')"
-        revealed = self._section("Revealed", page_bg)
+        content = self._section("Features", page_bg)  # the revealed neighbour
+        cta = self._section("CTA", page_bg)
 
-        # Simulates the real build order: tag first, then assign dividers.
-        modernize_sections([hero, revealed], theme)
-        apply_section_dividers([hero, revealed], "modern")
+        # Real build order: modernize tags textures, then dividers enforce flat.
+        modernize_sections([hero, content, cta], theme)
+        apply_section_dividers([hero, content, cta], "modern")
 
-        edge = hero.divider.bottom
-        self.assertEqual(edge.texture, "mesh")
-        self.assertEqual(edge.color, revealed.styles["backgroundColor"])
+        # The hero→content seam is solid: no texture on the edge, neighbour flat.
+        self.assertIsNone(hero.divider.bottom.texture)
+        self.assertEqual(hero.divider.bottom.color, content.styles["backgroundColor"])
+        self.assertEqual(content.backgroundTexture, "flat")
+        self.assertNotIn("backgroundImage", content.styles)
+        # The content→CTA seam too.
+        self.assertIsNone(cta.divider.top.texture)
+        self.assertEqual(cta.backgroundTexture, "flat")
+
+    def test_texture_accent_avoids_divider_neighbours(self):
+        # Five sections: hero/CTA seams claim {0,1} and {3,4}; the lone texture
+        # accent must land on the only non-neighbour band (index 2).
+        theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
+        page_bg = theme.page.background
+        secs = [
+            self._section("Hero", page_bg),
+            self._section("Features", page_bg),
+            self._section("Services", page_bg),
+            self._section("About", page_bg),
+            self._section("CTA", page_bg),
+        ]
+
+        modernize_sections(secs, theme)
+        apply_section_dividers(secs, "modern")
+
+        # Neighbours stay flat; the non-neighbour keeps the mesh accent.
+        for i in (0, 1, 3, 4):
+            self.assertEqual(secs[i].backgroundTexture, "flat", f"section {i}")
+            self.assertNotIn("backgroundImage", secs[i].styles)
+        self.assertEqual(secs[2].backgroundTexture, "mesh")
+        self.assertIn("backgroundImage", secs[2].styles)
+        self.assertIsNone(secs[0].divider.bottom.texture)
+        self.assertIsNone(secs[4].divider.top.texture)
 
     def test_divider_texture_is_none_when_revealed_section_is_flat(self):
         theme = build_theme("#2563eb").model_copy(update={"background_strategy": "flat"})
@@ -156,6 +185,93 @@ class DividerMeshTest(unittest.TestCase):
         apply_section_dividers([hero, revealed], "modern")
 
         self.assertIsNone(hero.divider.bottom.texture)
+
+
+class ColorDistanceTest(unittest.TestCase):
+    """color_distance ranks abstract candidates by closeness to the theme."""
+
+    def test_same_hue_beats_clashing_hue(self):
+        theme_blue = "#2563eb"
+        near = color_distance("#1e40af", theme_blue)   # a deeper blue
+        clash = color_distance("#dc2626", theme_blue)  # red, ~opposite hue
+        self.assertLess(near, clash)
+
+    def test_neutral_is_hue_agnostic(self):
+        # A near-grey texture is judged on luminance only, so it never loses to a
+        # saturated off-hue candidate purely on hue.
+        theme = "#2563eb"
+        grey = color_distance("#9ca3af", theme)
+        off_hue = color_distance("#16a34a", theme)  # saturated green
+        self.assertLess(grey, off_hue)
+
+
+class CapGradientTexturesTest(unittest.TestCase):
+    """At most one pure gradient/texture section survives per page; the rest are
+    flattened to a solid on-brand band. Photos are never touched."""
+
+    @staticmethod
+    def _section(name, styles, content=None):
+        return BuilderElement(
+            name=name, type="section",
+            styles={"width": "100%", **styles}, content=content or [],
+        )
+
+    def test_keeps_first_gradient_flattens_later_ones(self):
+        theme = build_theme("#2563eb")
+        g1 = self._section("Hero Gradient", {"background": "linear-gradient(135deg,#0f172a,#2563eb)"})
+        g2 = self._section("CTA Gradient", {"background": "radial-gradient(90% 140% at 85% 0%,#fff,#2563eb)"})
+
+        cap_gradient_textures([g1, g2], theme)
+
+        # First survives as the single accent.
+        self.assertIn("background", g1.styles)
+        # Second is repainted as a solid band with contrast-correct text.
+        self.assertNotIn("background", g2.styles)
+        self.assertIn("backgroundColor", g2.styles)
+        self.assertIn("color", g2.styles)
+        self.assertEqual(g2.backgroundTexture, "flat")
+
+    def test_nested_gradient_band_is_detected_and_flattened(self):
+        # A CTA banner paints its gradient on an inner wrapper; the section root is
+        # the plain page colour. It must still count and flatten.
+        theme = build_theme("#2563eb")
+        first = self._section("Hero Gradient", {"background": "linear-gradient(135deg,#0f172a,#2563eb)"})
+        inner = BuilderElement(
+            name="Banner", type="container",
+            styles={"background": "linear-gradient(135deg,#0f172a,#2563eb)"}, content=[],
+        )
+        banner = self._section("CTA Banner", {"backgroundColor": "#ffffff"}, content=[inner])
+
+        cap_gradient_textures([first, banner], theme)
+
+        self.assertNotIn("background", inner.styles)  # nested gradient stripped
+        self.assertEqual(banner.backgroundTexture, "flat")
+
+    def test_photo_section_is_exempt(self):
+        # A full-bleed photo hero (real url under a brand overlay) is a photo, not a
+        # texture — it never counts against the budget and is left untouched.
+        theme = build_theme("#2563eb")
+        gradient = self._section("Hero Gradient", {"background": "linear-gradient(135deg,#0f172a,#2563eb)"})
+        photo = self._section(
+            "Photo Hero",
+            {"backgroundImage": "linear-gradient(rgba(0,0,0,.4),rgba(0,0,0,.4)), url('https://x/p.jpg')"},
+        )
+
+        cap_gradient_textures([gradient, photo], theme)
+
+        # Photo keeps its image even though it is the second texture-ish section.
+        self.assertIn("url('https://x/p.jpg')", photo.styles["backgroundImage"])
+
+    def test_mesh_decoration_counts_toward_budget(self):
+        theme = build_theme("#2563eb")
+        gradient = self._section("Hero Gradient", {"background": "linear-gradient(135deg,#0f172a,#2563eb)"})
+        mesh = self._section("Mesh Band", {"backgroundImage": mesh_gradient(theme.palette)})
+        mesh.backgroundTexture = "mesh"
+
+        cap_gradient_textures([gradient, mesh], theme)
+
+        self.assertEqual(mesh.backgroundTexture, "flat")
+        self.assertNotIn("backgroundImage", mesh.styles)
 
 
 if __name__ == "__main__":

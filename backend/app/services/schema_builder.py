@@ -64,7 +64,7 @@ from app.models.content_blocks import (
     TestimonialsBlock,
     TimelineBlock,
 )
-from app.services.design_brain import DesignRecipe, generate_design_recipe
+from app.services.design_brain import DesignRecipe, generate_site_design_recipe
 from app.services.header_footer import build_footer, build_header
 from app.services.media import ImageIntent, ImageResolver
 from app.services.timing import log_elapsed, stage
@@ -75,6 +75,7 @@ from app.services.section_content import (
     _SURFACE_BG,
     Band,
     SectionVisualInput,
+    _has_real_photo,
     apply_luminance_rhythm,
     apply_section_rhythm,
     assign_visual_policies,
@@ -84,7 +85,14 @@ from app.services.section_content import (
     section_visual_input_for,
 )
 from app.services.template_filler import fill_template
-from app.services.theme import _adjust_lightness, build_theme, resolve_color_scheme
+from app.services.image_styling import washed_photo_background
+from app.services.theme import (
+    _adjust_lightness,
+    band_colors,
+    build_theme,
+    color_family_name,
+    resolve_color_scheme,
+)
 
 
 # --- render context -------------------------------------------------------------
@@ -537,9 +545,14 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
     # Clean-UI policy: texture (mesh/grain) is an ACCENT, not a blanket. At most
     # ONE plain section per page carries it — the first eligible band — so a page
     # reads calm rather than uniformly noisy. Flat moods decorate nothing. Every
-    # other plain section is tagged "flat" so the builder's per-section control
-    # and the divider pass (which copies a revealed section's texture onto the
-    # seam) both see an honest, flat value.
+    # other plain section is tagged "flat" so the builder's per-section control and
+    # the divider pass both see an honest, flat value.
+    #
+    # A shaped divider must sit only against solid colour, so sections that will
+    # neighbour one are excluded from the accent here (apply_section_dividers also
+    # flattens them as a safety net) — the accent then lands on a non-neighbour
+    # band instead of being textured now and stripped later.
+    divider_neighbours = _shaped_divider_neighbours(sections, getattr(theme, "mood", None))
     decorated = False
     for idx, section in enumerate(sections):
         st = section.styles
@@ -552,6 +565,7 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
             is_plain
             and not has_fill
             and not decorated
+            and idx not in divider_neighbours
             and effective != "flat"
             and section_background_image(theme, effective) is not None
         )
@@ -722,30 +736,24 @@ _DIVIDER_SHAPE_BY_MOOD: dict[str, str | None] = {
 _DEFAULT_DIVIDER_COLOR = "var(--builder-page-background, #ffffff)"
 
 
-def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | None) -> None:
-    """Add a shaped edge at the hero→content and content→CTA handoffs — the two
-    highest-impact, lowest-noise places for one (see SECTION_DIVIDER system,
-    section-divider.ts). Deliberately NOT applied at every section boundary:
-    one per page reads as a designed accent, one at every boundary reads as
-    wallpaper. No-op for moods with no shape (luxury/technical) or single-
-    section pages. Never overwrites a divider a section already carries.
+def _shaped_divider_plan(
+    sections: list[BuilderElement], mood: BrandMood | None
+) -> list[tuple[int, str, int]]:
+    """The shaped-divider boundaries a page will get: ``(carrier_index, side,
+    revealed_index)`` where side is "bottom"/"top". Empty when the mood has no
+    shape or there are fewer than two sections.
 
-    Must run after modernize_sections (see build_site) — it reads each
-    section's resolved `backgroundTexture` tag to carry a matching grain/mesh
-    layer onto the divider's fill, instead of the flat cut a plain `color`
-    alone would produce against a textured section. Mutates in place."""
+    Single source of truth for both apply_section_dividers and the modernize
+    pass's "keep divider neighbours flat" rule, so the two never disagree about
+    which sections border a shaped seam."""
     shape = _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
     if shape is None or len(sections) < 2:
-        return
+        return []
 
+    plan: list[tuple[int, str, int]] = []
     hero_boundary: int | None = None
     if sections[0].name.startswith("Hero") and sections[0].divider is None:
-        next_bg = _section_edge_color(sections[1])
-        sections[0].divider = SectionDivider(
-            bottom=SectionDividerEdge(
-                shape=shape, color=next_bg, texture=_section_edge_texture(sections[1])
-            )
-        )
+        plan.append((0, "bottom", 1))
         hero_boundary = 0
 
     for i in range(len(sections) - 1, 0, -1):
@@ -755,16 +763,49 @@ def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | Non
             break
         if hero_boundary is not None and i - 1 == hero_boundary:
             # Same boundary the hero's bottom edge already claimed (a hero
-            # immediately followed by a CTA, nothing in between) — don't
-            # double up on one seam.
+            # immediately followed by a CTA) — don't double up on one seam.
             break
-        prev_bg = _section_edge_color(sections[i - 1])
-        sections[i].divider = SectionDivider(
-            top=SectionDividerEdge(
-                shape=shape, color=prev_bg, texture=_section_edge_texture(sections[i - 1])
-            )
-        )
+        plan.append((i, "top", i - 1))
         break
+    return plan
+
+
+def _shaped_divider_neighbours(
+    sections: list[BuilderElement], mood: BrandMood | None
+) -> set[int]:
+    """Indices of every section that will border a shaped divider (the section
+    carrying the edge plus the one it reveals)."""
+    out: set[int] = set()
+    for carrier, _side, revealed in _shaped_divider_plan(sections, mood):
+        out.add(carrier)
+        out.add(revealed)
+    return out
+
+
+def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | None) -> None:
+    """Add a shaped edge at the hero→content and content→CTA handoffs — the two
+    highest-impact, lowest-noise places for one (see SECTION_DIVIDER system,
+    section-divider.ts). Deliberately NOT applied at every section boundary:
+    one per page reads as a designed accent, one at every boundary reads as
+    wallpaper. No-op for moods with no shape (luxury/technical) or single-
+    section pages. Never overwrites a divider a section already carries.
+
+    A shaped seam must read against SOLID colour, so both sections bordering it
+    are flattened (any decorative mesh/grain dropped) and the edge fill is the
+    neighbour's plain background colour — no texture is carried onto the seam.
+    Runs after modernize_sections (which already steers the texture accent away
+    from these neighbours; this is the enforcing safety net). Mutates in place."""
+    shape = _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
+    for carrier, side, revealed in _shaped_divider_plan(sections, mood):
+        # Shaped edges sit only against solid colour on both sides.
+        _flatten_section_texture(sections[carrier])
+        _flatten_section_texture(sections[revealed])
+        edge = SectionDividerEdge(
+            shape=shape, color=_section_edge_color(sections[revealed])
+        )
+        sections[carrier].divider = (
+            SectionDivider(bottom=edge) if side == "bottom" else SectionDivider(top=edge)
+        )
 
 
 def _section_edge_color(section: BuilderElement) -> str:
@@ -777,13 +818,104 @@ def _section_edge_color(section: BuilderElement) -> str:
     return bg if isinstance(bg, str) and bg else _DEFAULT_DIVIDER_COLOR
 
 
-def _section_edge_texture(section: BuilderElement) -> str | None:
-    """The texture (if any) the revealed section settled on via its
-    `backgroundTexture` tag, so the divider's fill can layer a matching
-    grain/mesh on top of `color` instead of a flat cut. None for sections
-    that stayed flat or never got a tag (e.g. photo backgrounds)."""
-    texture = getattr(section, "backgroundTexture", None)
-    return texture if texture and texture != "flat" else None
+def _flatten_section_texture(section: BuilderElement) -> None:
+    """Force a section to a solid (flat) background: drop any decorative mesh/grain
+    layer (the backgroundImage + tiling props apply_section_decoration adds) and
+    tag it flat. Photo/gradient fills and the solid backgroundColor are left
+    untouched — only decoration, identified by a non-flat backgroundTexture tag,
+    is removed. Mutates in place."""
+    if getattr(section, "backgroundTexture", None) in (None, "flat"):
+        section.backgroundTexture = "flat"
+        return
+    styles = dict(section.styles or {})
+    for key in ("backgroundImage", "backgroundRepeat", "backgroundPosition", "backgroundSize"):
+        styles.pop(key, None)
+    section.styles = styles
+    section.backgroundTexture = "flat"
+
+
+def _children(el: BuilderElement) -> list[BuilderElement]:
+    """A section element's child elements (``content`` holds either a leaf
+    BuilderElementContent or a list of child BuilderElements)."""
+    content = el.content
+    return [c for c in content if isinstance(c, BuilderElement)] if isinstance(content, list) else []
+
+
+def _subtree_has_real_photo(el: BuilderElement) -> bool:
+    """True if this element or any descendant paints a genuine (non-`data:`) photo."""
+    if _has_real_photo(el.styles or {}):
+        return True
+    return any(_subtree_has_real_photo(c) for c in _children(el))
+
+
+def _subtree_has_gradient_texture(el: BuilderElement) -> bool:
+    """True if this element or any descendant paints a gradient or `data:` texture."""
+    styles = el.styles or {}
+    for key in ("background", "backgroundImage"):
+        v = styles.get(key)
+        if isinstance(v, str) and ("gradient(" in v or "data:image" in v):
+            return True
+    return any(_subtree_has_gradient_texture(c) for c in _children(el))
+
+
+def _is_pure_gradient_texture(section: BuilderElement) -> bool:
+    """True if a section reads as a *pure* gradient/mesh/grain/abstract-texture
+    band — i.e. it (or a descendant, e.g. a full-bleed CTA banner whose gradient
+    sits on an inner wrapper) carries a gradient/texture fill and NO genuine photo.
+    A real photo under a brand-overlay gradient does NOT count; photos are exempt
+    from the one-texture-per-page budget."""
+    if getattr(section, "backgroundTexture", None) not in (None, "flat"):
+        return True  # decorative mesh/grain accent
+    if _subtree_has_real_photo(section):
+        return False
+    return _subtree_has_gradient_texture(section)
+
+
+def _flatten_to_solid_band(section: BuilderElement, theme: ThemeTokens) -> None:
+    """Repaint a pure gradient/texture section as a solid on-brand band: strip the
+    gradient/texture fills throughout its subtree (leaving any photo subtree alone)
+    and give the section a flat surface colour with contrast-correct default text.
+    Nested text that was tuned for the old gradient is renormalised against the new
+    band by the later enforce_text_contrast pass. Mutates in place."""
+    bg, text = band_colors(theme.palette, "light")  # calm surface band, dark text
+
+    def strip(el: BuilderElement, *, is_root: bool) -> None:
+        styles = dict(el.styles or {})
+        if not _has_real_photo(styles):
+            for key in (
+                "background", "backgroundImage",
+                "backgroundRepeat", "backgroundPosition", "backgroundSize",
+            ):
+                styles.pop(key, None)
+        if is_root:
+            styles["backgroundColor"] = bg
+            styles["color"] = text
+        el.styles = styles
+        for child in _children(el):
+            strip(child, is_root=False)
+
+    strip(section, is_root=True)
+    section.backgroundTexture = "flat"
+
+
+def cap_gradient_textures(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """Enforce at most ONE pure gradient/texture section per page (a gradient
+    hero/CTA, a mesh/grain accent, or an abstract-texture wash with no real photo).
+
+    Keeps the FIRST such section as the page's single texture accent and flattens
+    every later one to a solid on-brand band (`_flatten_to_solid_band`). Photos —
+    full-bleed featured heroes, photo CTAs, colour-matched abstract washes that
+    resolved a real Pexels image — are never touched. Runs after modernize_sections
+    (which adds the lone mesh/grain accent) so it sees every texture source at once.
+    Mutates in place."""
+    seen = False
+    for section in sections:
+        if not _is_pure_gradient_texture(section):
+            continue
+        if not seen:
+            seen = True
+            continue
+        _flatten_to_solid_band(section, theme)
 
 
 # --- low-level factories --------------------------------------------------------
@@ -2596,38 +2728,103 @@ _IMAGE_INTENT = {"hero": "hero", "about": "about", "cta": "cta_bg", "team": "ava
 _GENUINE_PHOTO_SOURCES = frozenset({"scraped", "pexels"})
 
 
-async def _apply_hero_photo_policy(block: HeroBlock, ctx: RenderContext) -> PhotoResult:
-    """Resolve the hero image once and normalise the block to ONE consistent
-    treatment across every page.
+def _abstract_theme_query(ctx: RenderContext) -> str:
+    """A deterministic, theme-coloured abstract stock query (e.g. "abstract blue
+    gradient texture") for a hero's atmospheric background. The colour word is the
+    brand primary's nearest Tailwind family, so the background reads on-theme."""
+    family = color_family_name(ctx.theme.palette.primary)
+    return f"abstract {family} gradient texture"
 
-    The planner LLM decides each page's hero ``image_query`` / ``layout``
-    independently, so some heroes came back full-bleed with a photo and others
-    image-less (a short gradient) on the same site. This re-decides it
-    deterministically from the resolver's *actual* result:
 
-      * a genuine photo (a matching scraped/document image, or a stock photo when
-        Pexels is configured) -> full-bleed background hero;
-      * only a Picsum placeholder available (no scraped match, no stock) -> drop
-        ``image_query`` so selection lands on the gradient header.
+# Moods whose audience (SaaS / fintech / tech for `modern`; engineering / B2B /
+# dev-tools for `technical`) reads a split hero — a featured shot beside the copy
+# — as on-brand. Every other mood leads with a full-bleed photo. The lean is soft:
+# an explicit planner `layout="background"` still wins (see _apply_hero_photo_policy).
+SPLIT_INCLINED_MOODS = frozenset({"modern", "technical"})
 
-    Returns the resolved photo so the caller can reuse it without re-picking
-    (which would consume a different pooled image for the same slot).
+
+async def _apply_hero_photo_policy(
+    block: HeroBlock, ctx: RenderContext
+) -> tuple[PhotoResult, PhotoResult | None]:
+    """Resolve the hero imagery and normalise the block's layout.
+
+    Photos lead. Decided deterministically from the resolver's *actual* results:
+
+      * genuine featured photo + SaaS/professional mood (and the planner didn't
+        force a full-bleed) -> SPLIT hero: the photo fills the column AND a
+        colour-matched abstract photo washes the section (second tuple element);
+      * genuine featured photo, any other mood -> full-bleed FEATURED photo, no
+        wash (the photo-forward default);
+      * no featured photo -> full-bleed background using a colour-matched abstract
+        photo (never split);
+      * nothing resolves -> gradient hero (``image_query`` dropped).
+
+    The abstract background is the Pexels candidate whose dominant colour sits
+    closest to the theme primary (see ImageResolver.resolve_abstract_bg), so an
+    abstract wash always reads on-brand rather than as a random texture.
+
+    Returns ``(image_slot_photo, washed_bg_photo | None)``: the first is reused by
+    the caller for the template's image slot (no second pick); the second, when
+    set, is painted behind the split section by ``_apply_hero_washed_background``.
     """
-    photo = await ctx.resolver.resolve(
+    featured = await ctx.resolver.resolve(
         block.image_query,
         intent="hero",
         alt_fallback=block.image_alt or block.headline,
         prefer=ctx.page_images,
     )
-    if photo.source in _GENUINE_PHOTO_SOURCES:
-        block.layout = "background"
-        # The background variant is only feasible with an image slot; if the LLM
-        # left image_query blank, give it one so selection keeps the photo.
+    abstract_query = _abstract_theme_query(ctx)
+    primary_hex = ctx.theme.palette.primary
+
+    if featured.source in _GENUINE_PHOTO_SOURCES:
         if not (block.image_query or "").strip():
             block.image_query = block.image_alt or block.headline or "brand photo"
-    else:
-        block.image_query = None
-    return photo
+        mood = getattr(ctx.theme, "mood", None)
+        # Split only for split-inclined moods, and only when the planner didn't
+        # explicitly ask for a full-bleed photo (default layout is "split").
+        if mood in SPLIT_INCLINED_MOODS and block.layout != "background":
+            block.layout = "split"
+            washed_bg = await ctx.resolver.resolve_abstract_bg(
+                abstract_query, color_target_hex=primary_hex, intent="cta_bg"
+            )
+            return featured, washed_bg
+        # Photo-forward: the featured photo is the full-bleed hero, no wash.
+        block.layout = "background"
+        return featured, None
+
+    # No featured photo -> full-screen background using a colour-matched abstract.
+    abstract = await ctx.resolver.resolve_abstract_bg(
+        abstract_query, color_target_hex=primary_hex, intent="hero"
+    )
+    if abstract is not None:
+        block.layout = "background"
+        block.image_query = abstract_query
+        return abstract, None
+
+    # Nothing usable -> gradient hero (unchanged).
+    block.image_query = None
+    return featured, None
+
+
+def _apply_hero_washed_background(
+    element: BuilderElement, bg: PhotoResult, ctx: RenderContext
+) -> None:
+    """Paint a split hero's whole section with an abstract photo under a
+    scheme-aware brand wash. Drops the template's static ``background`` shorthand,
+    which would otherwise override ``backgroundImage``. Mutates in place."""
+    styles = dict(element.styles or {})
+    styles.pop("background", None)
+    styles["backgroundImage"] = washed_photo_background(
+        bg.url,
+        scheme=getattr(ctx.theme, "color_scheme", "light"),
+        surface_hex=ctx.theme.palette.surface,
+        secondary_hex=ctx.theme.palette.secondary,
+        primary_hex=ctx.theme.palette.primary,
+    )
+    styles["backgroundSize"] = "cover"
+    styles["backgroundPosition"] = "center"
+    styles["backgroundRepeat"] = "no-repeat"
+    element.styles = styles
 
 
 async def block_to_element(
@@ -2642,8 +2839,9 @@ async def block_to_element(
     # The photo is resolved up front so the gradient-vs-photo choice can key off
     # the resolver's real source; the closure below reuses it (no second pick).
     hero_photo: PhotoResult | None = None
+    hero_washed_bg: PhotoResult | None = None
     if block.kind == "hero":
-        hero_photo = await _apply_hero_photo_policy(block, ctx)
+        hero_photo, hero_washed_bg = await _apply_hero_photo_policy(block, ctx)
 
     # Catalogue path: for section types that have shared builder templates, the
     # LLM-mapped content fills a chosen template (selection by feasibility +
@@ -2680,7 +2878,7 @@ async def block_to_element(
                 ctx.section_image_band = photo.band
             return photo.url, photo.avg_color
 
-        return await fill_template(
+        element = await fill_template(
             template,
             content,
             resolve_image=resolve_image,
@@ -2693,6 +2891,10 @@ async def block_to_element(
                 "secondary": ctx.theme.palette.secondary,
             },
         )
+        # Split hero: wash the whole section with the abstract theme background.
+        if hero_washed_bg is not None:
+            _apply_hero_washed_background(element, hero_washed_bg, ctx)
+        return element
 
     # Legacy path: section kinds without a shared template yet (pricing, team,
     # gallery, menu, process) still use the hand-rolled builders.
@@ -2840,10 +3042,23 @@ async def plan_to_site(
             ChildPageRef(slug=pp.slug, title=pp.title, page_type=pp.page_type)
         )
 
+    # Design-brain pass: pick a template variant per section so sites of the
+    # same mood/industry stop converging on one identical layout. Batched into a
+    # ONE call for the whole site (instead of one per page) — the model picks
+    # with whole-site context and we pay a single round-trip. A failed/disabled
+    # call returns an empty recipe, so every per-page lookup below yields None
+    # and selection falls back to today's deterministic mood-ordered choice.
+    with stage("design_recipe"):
+        site_design_recipe = await generate_site_design_recipe(
+            mood=effective_brand.mood,
+            industry=plan.industry_category,
+            pages=[[b.kind for b in p.blocks] for p in plan.pages],
+        )
+
     # Build each page's body
     pages: list[GeneratedPage] = []
     _render_start = perf_counter()
-    for page_plan in plan.pages:
+    for page_index, page_plan in enumerate(plan.pages):
         # Each page resets section_index so rotation starts fresh per page.
         ctx = RenderContext(
             theme=theme,
@@ -2874,17 +3089,8 @@ async def plan_to_site(
         hero_target_kind = content_kinds[0] if content_kinds else None
         hero_element: BuilderElement | None = None
         target_element: BuilderElement | None = None
-        # Design-brain pass: picks a template variant per section so sites of
-        # the same mood/industry stop converging on one identical layout. A
-        # failed/disabled call returns an empty recipe — every lookup below
-        # then yields None and selection falls back to today's deterministic
-        # mood-ordered choice, unchanged.
-        with stage("design_recipe"):
-            design_recipe: DesignRecipe = await generate_design_recipe(
-                mood=effective_brand.mood,
-                industry=plan.industry_category,
-                section_kinds=[b.kind for b in page_plan.blocks],
-            )
+        # This page's slice of the batched site recipe (computed once above).
+        design_recipe: DesignRecipe = site_design_recipe.recipe_for(page_index)
         # Sub-pages get a breadcrumb prepended above the hero — a non-participant.
         if page_plan.parent_slug is not None:
             elements.append(_build_breadcrumb(page_plan, ctx))
@@ -2924,13 +3130,17 @@ async def plan_to_site(
         apply_section_rhythm(elements)
         # 2025/26 modernization: fluid type, card depth/glass, atmospheric
         # surface backgrounds — applied per-mood over the assembled sections.
-        # Runs BEFORE apply_section_dividers, which reads each section's
-        # resolved `backgroundTexture` tag (set here) to carry a matching
-        # grain/mesh layer onto a divider that reveals it.
+        # Runs BEFORE apply_section_dividers and already steers the texture
+        # accent away from sections that will border a shaped divider.
         modernize_sections(elements, theme)
-        # Shaped section dividers — color reads each section's backgroundColor
-        # (modernization never changes it, only adds an overlay) and texture
-        # reads the backgroundTexture tag modernize_sections just set.
+        # One gradient/texture per page: keep the first pure gradient/mesh/grain/
+        # abstract-texture section, flatten the rest to solid on-brand bands. Runs
+        # after modernize_sections (the lone mesh/grain accent is now present) and
+        # before dividers so a shaped seam reads against the final solid colour.
+        cap_gradient_textures(elements, theme)
+        # Shaped section dividers — fill colour reads each neighbour's solid
+        # backgroundColor; both neighbours are flattened so a shaped seam always
+        # sits against solid colour (never a mesh/grain band).
         apply_section_dividers(elements, effective_brand.mood)
         # Asymmetric headers + scroll/backdrop motion — applied last so they
         # read the final band/background each section landed on.

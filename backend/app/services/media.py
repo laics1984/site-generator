@@ -38,7 +38,11 @@ from app.services.image_match import (
     rank_candidates,
     rank_candidates_with_llm_tiebreaker,
 )
-from app.services.image_styling import band_for_luminance, relative_luminance
+from app.services.image_styling import (
+    band_for_luminance,
+    color_distance,
+    relative_luminance,
+)
 from app.services.pexels import PexelsClient, PhotoResult, get_pexels_client
 
 logger = logging.getLogger(__name__)
@@ -292,6 +296,44 @@ class ImageResolver:
             fresh = [p for p in photos if p.url not in self._seen_pexels_urls]
             if fresh:
                 return max(fresh, key=lambda p: _stock_relevance(p, query, self._market_cue))
+        return None
+
+    async def resolve_abstract_bg(
+        self,
+        query: str,
+        *,
+        color_target_hex: str,
+        intent: ImageIntent = "cta_bg",
+    ) -> PhotoResult | None:
+        """Resolve an abstract background photo whose dominant colour sits CLOSEST
+        to ``color_target_hex`` (the theme), rather than by text relevance.
+
+        Used for the split-hero wash and the photoless full-bleed hero: the image
+        reads as on-brand texture, so colour match matters more than topical
+        relevance. Returns the nearest-colour genuine Pexels photo, or None when
+        Pexels is unconfigured / returns nothing (the caller then decides whether
+        to fall back to a flat band or a gradient hero — we never substitute a
+        random off-colour stock photo here).
+        """
+        if not (query and self._pexels.configured):
+            return None
+        orientation = _INTENT_TO_ORIENTATION[intent]
+        chain = _stock_query_chain(
+            query, intent, self._market_cue, self._industry_category, self._place_cue
+        )
+        for candidate in chain:
+            photos = await self._pexels.search_many(candidate, orientation=orientation)
+            fresh = [
+                p for p in photos
+                if p.url not in self._seen_pexels_urls and p.avg_color
+            ]
+            if fresh:
+                best = min(
+                    fresh, key=lambda p: color_distance(p.avg_color, color_target_hex)
+                )
+                self._seen_pexels_urls.add(best.url)
+                lum, band = _band_fields(best.avg_color)
+                return replace(best, luminance=lum, band=band)
         return None
 
     async def _take_best_scraped(

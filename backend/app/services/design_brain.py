@@ -39,6 +39,8 @@ class SectionDesignChoice(BaseModel):
 
 
 class DesignRecipe(BaseModel):
+    """One page's template picks, keyed by section index within that page."""
+
     sections: list[SectionDesignChoice] = Field(default_factory=list)
 
     def template_for(self, index: int) -> str | None:
@@ -48,27 +50,56 @@ class DesignRecipe(BaseModel):
         return None
 
 
-SYSTEM_PROMPT = """You are an art director choosing page layouts for a website builder.
+class SiteSectionChoice(BaseModel):
+    page_index: int
+    section_index: int
+    template_id: str | None = None
 
-Each section below lists its content type and the EXACT template ids available
-for it. Pick ONE template id per section — the layout/composition that best
-suits the brand's mood and keeps the page feeling intentionally designed, not
-generic. Don't default to the safest-looking option every time: when a bolder
-or more editorial variant fits the mood and the section still has everything
-it needs, prefer it. Different sections on the same page should not all use
-the same structural idea (e.g. don't pick a "split" layout for every section).
+
+class SiteDesignRecipe(BaseModel):
+    """A whole site's template picks from one batched call, keyed by
+    (page_index, section_index). Page indices namespace the section indices so
+    one page's "section 0" pick never lands on another page's section 0."""
+
+    sections: list[SiteSectionChoice] = Field(default_factory=list)
+
+    def recipe_for(self, page_index: int) -> DesignRecipe:
+        """The per-page DesignRecipe for `page_index` (empty when unmatched), so
+        the render path keeps using the same `template_for(index)` lookup."""
+        return DesignRecipe(
+            sections=[
+                SectionDesignChoice(
+                    section_index=c.section_index, template_id=c.template_id
+                )
+                for c in self.sections
+                if c.page_index == page_index
+            ]
+        )
+
+
+SYSTEM_PROMPT = """You are an art director choosing page layouts for a multi-page website.
+
+Each page below lists its sections, and each section lists the EXACT template
+ids available for it. Pick ONE template id per section — the layout/composition
+that best suits the brand's mood and keeps the page feeling intentionally
+designed, not generic. Don't default to the safest-looking option every time:
+when a bolder or more editorial variant fits the mood and the section still has
+everything it needs, prefer it. Within a page, different sections should not all
+use the same structural idea (e.g. don't pick a "split" layout for every
+section). Across pages, keep a coherent design language (e.g. a consistent hero
+treatment) rather than re-deciding each page from scratch.
 
 Reply with ONE JSON object, no markdown, no commentary:
 {
   "sections": [
-    {"section_index": 0, "template_id": "<one of the ids given for that section>"},
+    {"page_index": 0, "section_index": 0, "template_id": "<one of the ids given for that section>"},
     ...
   ]
 }
 
-One entry per section listed below, using its exact section_index. Only use a
-template_id from that section's own list — never borrow an id from another
-section's list."""
+One entry per section listed below, using its exact page_index and section_index.
+Only use a template_id from that section's own list — never borrow an id from
+another section's list."""
 
 
 def _variant_label(template: dict) -> str:
@@ -77,35 +108,54 @@ def _variant_label(template: dict) -> str:
     return f"{layout}/{style}".strip("/") or template.get("id", "")
 
 
-def _section_blurb(index: int, kind: str) -> str | None:
+def _section_options(kind: str) -> list[str] | None:
+    """The indented "- id (variant)" lines for a section kind, or None when the
+    kind has fewer than two templates (nothing to choose — skip it)."""
     options = templates_for_type(kind)
     if len(options) < 2:
-        # Nothing to choose between — don't waste prompt budget on it.
         return None
-    lines = [f'  - "{t["id"]}" ({_variant_label(t)})' for t in options]
-    return f'Section {index} ("{kind}"):\n' + "\n".join(lines)
+    return [f'    - "{t["id"]}" ({_variant_label(t)})' for t in options]
 
 
-async def generate_design_recipe(
+def _page_blurb(page_index: int, section_kinds: list[str]) -> str | None:
+    """One page's section/option listing, or None when no section on the page
+    has more than one template to choose between."""
+    lines: list[str] = []
+    for s_idx, kind in enumerate(section_kinds):
+        opts = _section_options(kind)
+        if opts is None:
+            continue
+        lines.append(f'  Section {s_idx} ("{kind}"):\n' + "\n".join(opts))
+    if not lines:
+        return None
+    return f"Page {page_index}:\n" + "\n".join(lines)
+
+
+async def generate_site_design_recipe(
     *,
     mood: BrandMood | None,
     industry: str | None,
-    section_kinds: list[str],
+    pages: list[list[str]],
     llm: OllamaClient | None = None,
-) -> DesignRecipe:
-    """Pick a template variant per section. Returns an empty recipe (safe
-    no-op) on any failure, on a disabled design brain, or when no section in
-    this page actually has more than one template to choose from."""
+) -> SiteDesignRecipe:
+    """Pick a template variant per section for the WHOLE site in one LLM call.
+
+    `pages` is one list of section kinds per page, in page order. Returns an
+    empty recipe (a safe no-op — every lookup yields None, so selection falls
+    back to the deterministic mood-ordered choice) on a disabled design brain,
+    on any LLM failure, or when no section on any page has more than one
+    template to choose from. Per-section feasibility is still enforced
+    downstream, so an unfit or hallucinated pick can never break a page."""
     if not settings.design_brain_enabled:
-        return DesignRecipe()
+        return SiteDesignRecipe()
 
     blurbs = [
         blurb
-        for i, kind in enumerate(section_kinds)
-        if (blurb := _section_blurb(i, kind)) is not None
+        for p_idx, kinds in enumerate(pages)
+        if (blurb := _page_blurb(p_idx, kinds)) is not None
     ]
     if not blurbs:
-        return DesignRecipe()
+        return SiteDesignRecipe()
 
     client = llm or get_llm()
     user_prompt = (
@@ -116,10 +166,31 @@ async def generate_design_recipe(
         return await client.chat_json(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            schema=DesignRecipe,
+            schema=SiteDesignRecipe,
             temperature=settings.design_temperature,
+            # The whole-site prompt repeats each kind's option list per page, so
+            # give it more room than the 4096 default to avoid truncation.
+            num_ctx=8192,
             think=False,
         )
     except LlmError as exc:
         logger.warning("Design-brain pass failed, falling back to deterministic selection: %s", exc)
-        return DesignRecipe()
+        return SiteDesignRecipe()
+
+
+async def generate_design_recipe(
+    *,
+    mood: BrandMood | None,
+    industry: str | None,
+    section_kinds: list[str],
+    llm: OllamaClient | None = None,
+) -> DesignRecipe:
+    """Single-page convenience wrapper over `generate_site_design_recipe`.
+
+    Kept for callers that pick layouts for one page in isolation; the batched
+    site-level call is preferred when rendering a whole site (one round-trip
+    instead of one per page)."""
+    site = await generate_site_design_recipe(
+        mood=mood, industry=industry, pages=[section_kinds], llm=llm
+    )
+    return site.recipe_for(0)
