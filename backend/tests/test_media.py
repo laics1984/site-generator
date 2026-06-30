@@ -182,3 +182,61 @@ class ImageResolverStockFallbackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             pexels.queries[0], ("city skyline at dusk Malaysia", "landscape")
         )
+
+
+class CachingCountingPexels:
+    """Stub mirroring PexelsClient's per-query caching, counting only the calls
+    that would hit the network (a cache miss). Accepts the `client` kwarg that
+    prewarm_stock passes for connection pooling."""
+
+    configured = True
+
+    def __init__(self, results):
+        self.results = results
+        self.network_calls = []
+        self._cache = {}
+
+    async def search_many(self, query, *, orientation="landscape", size="large", client=None):
+        key = (query, orientation)
+        if key in self._cache:
+            return list(self._cache[key])
+        self.network_calls.append(key)
+        found = self.results.get(query)
+        res = (list(found) if isinstance(found, list) else [found]) if found else []
+        self._cache[key] = res
+        return list(res)
+
+
+class PrewarmStockTest(unittest.IsolatedAsyncioTestCase):
+    async def test_prewarm_then_resolve_hits_cache_with_no_new_network(self):
+        pexels = CachingCountingPexels(
+            {
+                "Southeast Asian dental clinic team": [
+                    _photo("https://pexels.example/clinic.jpg", "clinic team")
+                ]
+            }
+        )
+        resolver = ImageResolver(pexels=pexels, market_cue="Southeast Asian")
+
+        await resolver.prewarm_stock([("dental clinic team", "hero")])
+        calls_after_prewarm = len(pexels.network_calls)
+        self.assertGreater(calls_after_prewarm, 0)  # the chain was fetched
+
+        photo = await resolver.resolve(
+            "dental clinic team", intent="hero", alt_fallback="Team"
+        )
+
+        self.assertEqual(photo.url, "https://pexels.example/clinic.jpg")
+        # The render-time resolve found everything warm — zero new network calls.
+        self.assertEqual(len(pexels.network_calls), calls_after_prewarm)
+
+    async def test_prewarm_is_noop_when_pexels_unconfigured(self):
+        class Unconfigured(CachingCountingPexels):
+            configured = False
+
+        pexels = Unconfigured({})
+        resolver = ImageResolver(pexels=pexels)
+
+        await resolver.prewarm_stock([("anything", "hero")])
+
+        self.assertEqual(pexels.network_calls, [])

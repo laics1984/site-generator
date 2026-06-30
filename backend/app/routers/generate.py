@@ -47,6 +47,7 @@ from app.services.image_vision import VisionAnnotation, annotate_image_pool
 from app.services.locale import detect_market, image_query_cue, place_query_cue
 from app.services.schema_builder import plan_to_site
 from app.services.theme import build_theme, resolve_color_scheme
+from app.services.timing import stage
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,8 @@ async def _annotate_source_images(
         profile_urls = [
             p.photo_url for p in _profile_pool_for(source) if p.photo_url
         ]
-        return await annotate_image_pool(metadata, extra_urls=profile_urls)
+        with stage("vision_annotation"):
+            return await annotate_image_pool(metadata, extra_urls=profile_urls)
     except Exception:  # noqa: BLE001 — vision must not 500 a generation
         logger.exception("Vision annotation pass failed; continuing without it")
         return {}
@@ -499,7 +501,8 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         detected = payload.detected_brand
     else:
         try:
-            detected = await detect_brand_cached(payload.source)
+            with stage("brand_detection"):
+                detected = await detect_brand_cached(payload.source)
         except LlmError as exc:
             raise HTTPException(
                 status_code=502, detail=f"Brand detection failed: {exc}"

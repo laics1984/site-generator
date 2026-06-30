@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -65,7 +66,8 @@ from app.models.content_blocks import (
 )
 from app.services.design_brain import DesignRecipe, generate_design_recipe
 from app.services.header_footer import build_footer, build_header
-from app.services.media import ImageResolver
+from app.services.media import ImageIntent, ImageResolver
+from app.services.timing import log_elapsed, stage
 from app.services.pexels import PhotoResult
 from app.config import settings
 from app.services.section_content import (
@@ -341,14 +343,14 @@ def mesh_gradient(palette: Any) -> str:
     p = palette.primary
     glow = _adjust_lightness(p, 0.18)  # lighter sibling of the brand hue
     return (
-        f"radial-gradient(at 8% 12%, {_hairline(p, 0.34)} 0px, transparent 46%), "
-        f"radial-gradient(at 92% 8%, {_hairline(glow, 0.26)} 0px, transparent 44%), "
-        f"radial-gradient(at 74% 82%, {_hairline(p, 0.20)} 0px, transparent 48%), "
-        f"radial-gradient(at 20% 96%, {_hairline(glow, 0.15)} 0px, transparent 46%)"
+        f"radial-gradient(at 8% 12%, {_hairline(p, 0.22)} 0px, transparent 46%), "
+        f"radial-gradient(at 92% 8%, {_hairline(glow, 0.16)} 0px, transparent 44%), "
+        f"radial-gradient(at 74% 82%, {_hairline(p, 0.13)} 0px, transparent 48%), "
+        f"radial-gradient(at 20% 96%, {_hairline(glow, 0.10)} 0px, transparent 46%)"
     )
 
 
-def grain_data_uri(opacity: float = 0.55) -> str:
+def grain_data_uri(opacity: float = 0.20) -> str:
     """A tiny SVG fractal-noise grain texture as a `url(data:...)` value.
 
     Base64-encoded — the most portable form of an inline SVG data-URI (partial
@@ -532,12 +534,35 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
     surface_hex = theme.palette.surface
     page_hex = theme.page.background
 
+    # Clean-UI policy: texture (mesh/grain) is an ACCENT, not a blanket. At most
+    # ONE plain section per page carries it — the first eligible band — so a page
+    # reads calm rather than uniformly noisy. Flat moods decorate nothing. Every
+    # other plain section is tagged "flat" so the builder's per-section control
+    # and the divider pass (which copies a revealed section's texture onto the
+    # seam) both see an honest, flat value.
+    decorated = False
     for idx, section in enumerate(sections):
+        st = section.styles
+        has_fill = bool(st.get("backgroundImage") or st.get("background"))
+        is_plain = st.get("backgroundColor") in (
+            surface_hex, _SURFACE_BG, page_hex, _PAGE_BG,
+        )
+        effective = getattr(section, "backgroundTexture", None) or strategy
+        will_decorate = (
+            is_plain
+            and not has_fill
+            and not decorated
+            and effective != "flat"
+            and section_background_image(theme, effective) is not None
+        )
+
         headings: list[tuple[BuilderElement, float]] = []
         _walk_modernize(
             section,
             boost=boost,
-            use_glass=use_glass,
+            # Glass and texture never share a surface — frosted cards over a
+            # mesh/grain band read busy. The accent section keeps flat cards.
+            use_glass=use_glass and not will_decorate,
             shadow_scale=shadow_scale,
             theme=theme,
             headings=headings,
@@ -548,27 +573,13 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
             lead = max(headings, key=lambda pair: pair[1])[0]
             lead.styles["fontFamily"] = display_font
 
-        # Atmospheric mesh/grain on plain (non-photo, non-brand-fill) sections —
-        # both the surface-tinted band AND the flat page-background band, so
-        # decoration isn't confined to one in every three sections (the
-        # rotation's surface slot). Dark/primary CTA bands carry their own
-        # strong fill and are excluded by the backgroundColor check below.
-        # Tags the resolved strategy on `backgroundTexture` regardless of
-        # outcome (incl. "flat") so the builder's per-section override control
-        # has an explicit value to show, and so a divider revealing this
-        # section can copy it onto the divider's fill instead of falling back
-        # to a flat cut — see apply_section_dividers, which runs after this
-        # pass specifically so it can read this tag.
-        st = section.styles
-        has_fill = bool(st.get("backgroundImage") or st.get("background"))
-        is_plain = st.get("backgroundColor") in (
-            surface_hex, _SURFACE_BG, page_hex, _PAGE_BG,
-        )
         if is_plain and not has_fill:
-            effective = getattr(section, "backgroundTexture", None) or strategy
-            section.backgroundTexture = effective
-            if effective != "flat":
+            if will_decorate:
+                section.backgroundTexture = effective
                 apply_section_decoration(st, theme, effective)
+                decorated = True
+            else:
+                section.backgroundTexture = "flat"
 
 
 # --- motion -----------------------------------------------------------------
@@ -1040,12 +1051,10 @@ def _section(
         styles["backgroundSize"] = "cover"
         styles["backgroundPosition"] = "center"
         styles["backgroundRepeat"] = "no-repeat"
-    elif not inverted and slot == "surface":
-        # Decorative aurora/grain on the tinted (~30%) sections only — adds depth
-        # and rhythm without touching clean white sections, photo sections, or
-        # inverted CTAs. These are gradients / data-URIs, so the renderer's
-        # isPhotoSource gate keeps them out of the photo-layer pipeline.
-        apply_section_decoration(styles, ctx.theme)
+    # Decorative mesh/grain is applied centrally in modernize_sections (the
+    # single authority for the one-accent-per-page clean-UI policy), which runs
+    # over the assembled tree — so this builder no longer decorates surface
+    # bands itself (that produced texture on every surface section).
 
     inner = _container(
         children,
@@ -2711,6 +2720,37 @@ def _nav_items_from_pages(pages: list[GeneratedPage]) -> list[tuple[str, str]]:
     return items
 
 
+def _harvest_image_slots(plan: SitePlan) -> list[tuple[str | None, ImageIntent]]:
+    """Best-effort (query, intent) slots the render will request from Pexels.
+
+    Used to pre-warm the stock-photo cache concurrently before the serial
+    render (see ImageResolver.prewarm_stock). Covers the explicit query fields
+    on blocks and their nested items; the intents mirror the render's own
+    resolve() calls so the pre-warmed cache keys match. Missing a slot is
+    harmless — it just resolves live during render, as today.
+    """
+    slots: list[tuple[str | None, ImageIntent]] = []
+    for page in plan.pages:
+        for block in page.blocks:
+            block_q = getattr(block, "image_query", None)
+            if block_q:
+                slots.append((block_q, _IMAGE_INTENT.get(block.kind, "generic")))
+            bg_q = getattr(block, "background_query", None)
+            if bg_q:
+                slots.append((bg_q, "cta_bg"))
+            for items_attr in ("items", "members"):
+                for item in getattr(block, items_attr, None) or []:
+                    item_q = getattr(item, "image_query", None)
+                    if item_q:
+                        slots.append((item_q, "generic"))
+                    avatar_q = getattr(item, "photo_query", None) or getattr(
+                        item, "avatar_query", None
+                    )
+                    if avatar_q:
+                        slots.append((avatar_q, "avatar"))
+    return slots
+
+
 async def plan_to_site(
     plan: SitePlan,
     *,
@@ -2780,6 +2820,13 @@ async def plan_to_site(
         secondary_hex=theme.palette.secondary,
     )
 
+    # Concurrently warm the stock-photo cache for every query the (serial)
+    # render below will request, so image resolution stops paying a network
+    # round-trip per slot. Output-identical — selection/dedup/order are
+    # unchanged; this only pre-fetches into the shared per-query cache.
+    with stage("stock_prewarm"):
+        await resolver.prewarm_stock(_harvest_image_slots(plan))
+
     # Pre-compute parent/child relationships so listing blocks (services /
     # gallery) on a parent page can cross-link to detail sub-pages.
     children_by_parent: dict[str, list[ChildPageRef]] = {}
@@ -2795,6 +2842,7 @@ async def plan_to_site(
 
     # Build each page's body
     pages: list[GeneratedPage] = []
+    _render_start = perf_counter()
     for page_plan in plan.pages:
         # Each page resets section_index so rotation starts fresh per page.
         ctx = RenderContext(
@@ -2831,11 +2879,12 @@ async def plan_to_site(
         # failed/disabled call returns an empty recipe — every lookup below
         # then yields None and selection falls back to today's deterministic
         # mood-ordered choice, unchanged.
-        design_recipe: DesignRecipe = await generate_design_recipe(
-            mood=effective_brand.mood,
-            industry=plan.industry_category,
-            section_kinds=[b.kind for b in page_plan.blocks],
-        )
+        with stage("design_recipe"):
+            design_recipe: DesignRecipe = await generate_design_recipe(
+                mood=effective_brand.mood,
+                industry=plan.industry_category,
+                section_kinds=[b.kind for b in page_plan.blocks],
+            )
         # Sub-pages get a breadcrumb prepended above the hero — a non-participant.
         if page_plan.parent_slug is not None:
             elements.append(_build_breadcrumb(page_plan, ctx))
@@ -2912,6 +2961,7 @@ async def plan_to_site(
                 from_source=page_plan.from_source,
             )
         )
+    log_elapsed("page_render", _render_start)
 
     page_tree = _build_page_tree(pages)
     nav_items = _nav_items_from_pages(pages)

@@ -108,23 +108,34 @@ class DividerMeshTest(unittest.TestCase):
             styles={"backgroundColor": bg, "width": "100%"}, content=[],
         )
 
-    def test_revealed_section_keeps_mesh_like_any_other_plain_section(self):
+    def test_only_one_plain_section_is_decorated(self):
+        # Clean-UI policy: texture is an accent, not a blanket. Exactly one plain
+        # section per page carries it (the first eligible band); the rest stay
+        # flat — both visually and in their honest backgroundTexture tag.
         theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
         page_bg = theme.page.background
-        hero = self._section("Hero", page_bg)
-        revealed = self._section("Revealed", page_bg)
-        control = self._section("Control", page_bg)
+        s1 = self._section("S1", page_bg)
+        s2 = self._section("S2", page_bg)
+        s3 = self._section("S3", page_bg)
 
-        modernize_sections([hero, revealed, control], theme)
+        modernize_sections([s1, s2, s3], theme)
 
-        self.assertIn("backgroundImage", revealed.styles)
-        self.assertIn("backgroundImage", control.styles)
-        self.assertEqual(revealed.backgroundTexture, "mesh")
+        decorated = [s for s in (s1, s2, s3) if "backgroundImage" in s.styles]
+        self.assertEqual(len(decorated), 1)
+        self.assertIs(decorated[0], s1)  # first eligible band wins
+        self.assertEqual(s1.backgroundTexture, "mesh")
+        self.assertEqual(s2.backgroundTexture, "flat")
+        self.assertEqual(s3.backgroundTexture, "flat")
+        self.assertNotIn("backgroundImage", s2.styles)
+        self.assertNotIn("backgroundImage", s3.styles)
 
     def test_divider_inherits_revealed_sections_texture(self):
         theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
         page_bg = theme.page.background
+        # A photo hero already carries a fill, so the single texture accent lands
+        # on the next plain band — the one the hero's divider reveals.
         hero = self._section("Hero", page_bg)
+        hero.styles["backgroundImage"] = "url('https://example.com/p.jpg')"
         revealed = self._section("Revealed", page_bg)
 
         # Simulates the real build order: tag first, then assign dividers.

@@ -20,6 +20,7 @@ load-bearing.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
@@ -64,8 +65,23 @@ Do not explain. Do not return anything except the JSON object."""
 _THUMBNAIL_PX = 512
 
 # Process-lifetime cache: annotating the same URL twice is pure waste, and
-# regenerations commonly reuse the same scrape.
+# regenerations commonly reuse the same scrape. Bounded (FIFO) so a long-lived
+# server processing many distinct images can't grow it without limit.
 _ANNOTATION_CACHE: dict[str, VisionAnnotation] = {}
+_ANNOTATION_CACHE_MAX = 512
+
+
+def _cache_annotation(url: str, annotation: VisionAnnotation) -> None:
+    _ANNOTATION_CACHE[url] = annotation
+    while len(_ANNOTATION_CACHE) > _ANNOTATION_CACHE_MAX:
+        # dict preserves insertion order → first key is the oldest.
+        _ANNOTATION_CACHE.pop(next(iter(_ANNOTATION_CACHE)), None)
+
+
+# Max concurrent vision annotations. Bounds the parallel image downloads; the
+# Ollama vision calls themselves still serialize server-side (one model slot on
+# a single GPU by default), so this stays gentle on a 16GB M1.
+_VISION_CONCURRENCY = 3
 
 
 def vision_enabled() -> bool:
@@ -101,21 +117,45 @@ async def annotate_image_pool(
         if url and url not in by_url and url not in ordered_urls:
             ordered_urls.append(url)
 
-    annotations: dict[str, VisionAnnotation] = {}
-    client = llm
-    for url in ordered_urls:
-        if len(annotations) >= max(0, limit):
-            break
-        annotation = _ANNOTATION_CACHE.get(url)
-        if annotation is None:
-            if client is None:
-                from app.services.llm import get_llm  # lazy: heavy import chain
+    # Cap candidates up front (the first `limit` distinct URLs), then resolve
+    # them concurrently. Downloads overlap; the Ollama vision calls queue on the
+    # single model slot, so we stay within a 16GB M1's budget. Per-URL failures
+    # are swallowed, so we may end with fewer than `limit` annotations.
+    candidates = ordered_urls[: max(0, limit)]
+    if not candidates:
+        return {}
 
-                client = get_llm(model=settings.ollama_vision_model)
-            annotation = await _annotate_one(url, client)
-            if annotation is None:
-                continue
-            _ANNOTATION_CACHE[url] = annotation
+    client = llm
+    if client is None and any(u not in _ANNOTATION_CACHE for u in candidates):
+        from app.services.llm import get_llm  # lazy: heavy import chain
+
+        client = get_llm(model=settings.ollama_vision_model)
+
+    sem = asyncio.Semaphore(_VISION_CONCURRENCY)
+
+    async def _resolve(
+        url: str, http_client: httpx.AsyncClient
+    ) -> tuple[str, VisionAnnotation | None]:
+        cached = _ANNOTATION_CACHE.get(url)
+        if cached is not None:
+            return url, cached
+        async with sem:
+            annotation = await _annotate_one(url, client, http_client)  # type: ignore[arg-type]
+        if annotation is not None:
+            _cache_annotation(url, annotation)
+        return url, annotation
+
+    async with httpx.AsyncClient(
+        timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
+    ) as http_client:
+        resolved = await asyncio.gather(
+            *(_resolve(url, http_client) for url in candidates)
+        )
+
+    annotations: dict[str, VisionAnnotation] = {}
+    for url, annotation in resolved:
+        if annotation is None:
+            continue
         annotations[url] = annotation
         item = by_url.get(url)
         if item is not None:
@@ -127,9 +167,11 @@ async def annotate_image_pool(
     return annotations
 
 
-async def _annotate_one(url: str, llm: OllamaClient) -> VisionAnnotation | None:
+async def _annotate_one(
+    url: str, llm: OllamaClient, http_client: httpx.AsyncClient | None = None
+) -> VisionAnnotation | None:
     """Fetch + downscale + judge one image. None on any failure."""
-    image_b64 = await _fetch_image_b64(url)
+    image_b64 = await _fetch_image_b64(url, client=http_client)
     if image_b64 is None:
         return None
 
@@ -149,13 +191,18 @@ async def _annotate_one(url: str, llm: OllamaClient) -> VisionAnnotation | None:
         return None
 
 
-async def _fetch_image_b64(url: str) -> str | None:
+async def _fetch_image_b64(
+    url: str, client: httpx.AsyncClient | None = None
+) -> str | None:
     """Download (or decode a data: URL), downscale, return base64 JPEG.
 
     None for anything that can't become a bitmap (SVG, HTML error pages,
     oversized files, network failures) — the caller just skips the image.
+
+    `client`: a shared AsyncClient to reuse (connection pooling) when several
+    images are fetched at once; opens a per-call client when None.
     """
-    raw = await _fetch_image_bytes(url)
+    raw = await _fetch_image_bytes(url, client=client)
     if raw is None:
         return None
     try:
@@ -173,7 +220,9 @@ async def _fetch_image_b64(url: str) -> str | None:
     return base64.b64encode(out.getvalue()).decode("ascii")
 
 
-async def _fetch_image_bytes(url: str) -> bytes | None:
+async def _fetch_image_bytes(
+    url: str, client: httpx.AsyncClient | None = None
+) -> bytes | None:
     if url.startswith("data:"):
         try:
             _, _, payload = url.partition(",")
@@ -183,11 +232,15 @@ async def _fetch_image_bytes(url: str) -> bytes | None:
     if not url.startswith(("http://", "https://")):
         return None
     try:
-        async with httpx.AsyncClient(
-            timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
-        ) as client:
+        if client is not None:
             response = await client.get(url)
             response.raise_for_status()
+        else:
+            async with httpx.AsyncClient(
+                timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
+            ) as owned:
+                response = await owned.get(url)
+                response.raise_for_status()
     except httpx.HTTPError:
         logger.debug("Vision image fetch failed: %s", url[:120])
         return None

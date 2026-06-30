@@ -22,12 +22,16 @@ Pexels are not added to footer media credits.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from dataclasses import replace
 from typing import Literal
 from urllib.parse import quote
 
+import httpx
+
+from app.config import settings
 from app.models.content_blocks import ImageMetadata
 from app.services.image_match import (
     _tokens,
@@ -212,6 +216,63 @@ class ImageResolver:
             secondary_hex=self._secondary_hex,
             nonce=nonce,
         )
+
+    async def prewarm_stock(
+        self,
+        slots: list[tuple[str | None, ImageIntent]],
+        *,
+        concurrency: int = 6,
+    ) -> None:
+        """Concurrently warm the Pexels result cache for every query the render
+        will request, so the (serial, order-dependent) render path hits a hot
+        cache instead of waiting on a network round-trip per slot.
+
+        Output-identical: this only pre-fetches into the shared per-query cache
+        (services/pexels.py). Selection, dedup order and rotation are untouched
+        — they still run in the render loop exactly as before. A slot we miss
+        here simply resolves live during render, as today.
+
+        No-op unless Pexels is configured. Errors are swallowed: pre-warming is
+        best-effort and never blocks generation.
+        """
+        if not self._pexels.configured:
+            return
+
+        # Expand each slot into its full stock-query chain (the render's own
+        # fallback chain) and de-dupe by (query, orientation) so we issue each
+        # API call once. Mirrors _search_pexels' chain + orientation choice.
+        wanted: dict[tuple[str, str], None] = {}
+        for query, intent in slots:
+            if not query:
+                continue
+            orientation = _INTENT_TO_ORIENTATION[intent]
+            chain = _stock_query_chain(
+                query,
+                intent,
+                self._market_cue,
+                self._industry_category,
+                self._place_cue,
+            )
+            for candidate in chain:
+                wanted[(candidate, orientation)] = None
+        if not wanted:
+            return
+
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _warm(q: str, orientation: str, client: httpx.AsyncClient) -> None:
+            async with sem:
+                try:
+                    await self._pexels.search_many(
+                        q, orientation=orientation, client=client  # type: ignore[arg-type]
+                    )
+                except Exception:  # noqa: BLE001 — pre-warm is advisory only
+                    logger.debug("Pexels pre-warm failed for %r", q, exc_info=True)
+
+        async with httpx.AsyncClient(timeout=settings.pexels_timeout_seconds) as client:
+            await asyncio.gather(
+                *(_warm(q, orientation, client) for (q, orientation) in wanted)
+            )
 
     async def _search_pexels(
         self, query: str, orientation: str, intent: str

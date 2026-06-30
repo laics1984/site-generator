@@ -70,12 +70,15 @@ class PexelsClient:
         orientation: PhotoOrientation = "landscape",
         size: PhotoSize = "large",
         per_page: int = 5,  # kept for API compat; results come from search_many
+        client: httpx.AsyncClient | None = None,
     ) -> PhotoResult | None:
         """
         Returns the first matching photo for `query`, or None if Pexels is
         unconfigured / errors / returns no results.
         """
-        results = await self.search_many(query, orientation=orientation, size=size)
+        results = await self.search_many(
+            query, orientation=orientation, size=size, client=client
+        )
         return results[0] if results else None
 
     async def search_many(
@@ -84,12 +87,19 @@ class PexelsClient:
         *,
         orientation: PhotoOrientation = "landscape",
         size: PhotoSize = "large",
+        client: httpx.AsyncClient | None = None,
     ) -> list[PhotoResult]:
         """
         Returns up to _API_PER_PAGE matching photos for `query` (empty list if
         Pexels is unconfigured / errors / returns no results), so the caller
         can re-rank by alt-text relevance instead of trusting Pexels' first
         hit. One API call either way — candidates beyond the first are free.
+
+        `client`: an existing AsyncClient to reuse (connection pooling) when a
+        caller fires many searches at once — e.g. ImageResolver.prewarm_stock.
+        It MUST belong to the current event loop. When None we open and close a
+        per-call client, exactly as before. (See the cross-event-loop note by
+        the cache below — that's why we don't cache a client globally.)
         """
         if not self.configured:
             return []
@@ -108,12 +118,19 @@ class PexelsClient:
         headers = {"Authorization": self.api_key or ""}
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            if client is not None:
                 response = await client.get(
                     f"{self.base_url}/search", params=params, headers=headers
                 )
                 response.raise_for_status()
                 payload = response.json()
+            else:
+                async with httpx.AsyncClient(timeout=self.timeout) as owned:
+                    response = await owned.get(
+                        f"{self.base_url}/search", params=params, headers=headers
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
         except httpx.HTTPError as exc:
             logger.warning("Pexels search failed for %r: %s", query, exc)
             return []

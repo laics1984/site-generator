@@ -29,7 +29,7 @@ def _enable_vision(test):
 
 
 def _fake_fetch(test, b64="ZmFrZQ==", missing=()):
-    async def fetch(url):
+    async def fetch(url, client=None):
         return None if url in missing else b64
 
     patcher = mock.patch.object(image_vision, "_fetch_image_b64", fetch)
@@ -110,6 +110,18 @@ class AnnotateImagePoolTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(llm.calls), 1)
         self.assertEqual(again["https://x.example/a.jpg"].caption, "once")
+
+    async def test_annotation_cache_is_bounded(self):
+        with mock.patch.object(image_vision, "_ANNOTATION_CACHE_MAX", 3):
+            for i in range(10):
+                image_vision._cache_annotation(
+                    f"u{i}", VisionAnnotation(caption=f"c{i}", kind="photo")
+                )
+            self.assertEqual(len(image_vision._ANNOTATION_CACHE), 3)
+            # FIFO: the three most-recently inserted survive.
+            self.assertEqual(
+                list(image_vision._ANNOTATION_CACHE), ["u7", "u8", "u9"]
+            )
 
 
 class FetchImageTest(unittest.IsolatedAsyncioTestCase):

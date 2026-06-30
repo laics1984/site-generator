@@ -231,7 +231,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         ),
         type_scale_ratio=1.30,
         use_glass=True,
-        background_strategy="mesh",
+        background_strategy="flat",
         shadow_scale="elevated",
         display_font='"Schibsted Grotesk", system-ui, sans-serif',
         default_font_tags=("saas", "fintech", "tech", "startup", "software", "app"),
@@ -276,7 +276,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         ),
         type_scale_ratio=1.33,
         use_glass=False,
-        background_strategy="grain",
+        background_strategy="flat",
         shadow_scale="soft",
         display_font='"Cormorant Garamond", Georgia, serif',
         default_font_tags=(
@@ -336,7 +336,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         ),
         type_scale_ratio=1.28,
         use_glass=True,
-        background_strategy="mesh",
+        background_strategy="flat",
         shadow_scale="elevated",
         display_font='"Gabarito", system-ui, sans-serif',
         default_font_tags=(
@@ -489,7 +489,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         ),
         type_scale_ratio=1.45,
         use_glass=True,
-        background_strategy="mesh+grain",
+        background_strategy="mesh",
         shadow_scale="dramatic",
         display_font='"Syne", system-ui, sans-serif',
         default_font_tags=(
