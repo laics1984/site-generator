@@ -4,12 +4,9 @@ glass cards, and orphan-free card grids."""
 import asyncio
 import unittest
 
-from app.models.builder_schema import (
-    BuilderElement,
-    SectionDivider,
-    SectionDividerEdge,
-)
+from app.models.builder_schema import BuilderElement
 from app.services.schema_builder import (
+    apply_section_dividers,
     glass_card_styles,
     mesh_gradient,
     modernize_sections,
@@ -98,9 +95,11 @@ class GridFitTest(unittest.TestCase):
 
 
 class DividerMeshTest(unittest.TestCase):
-    """A section revealed by a shaped divider must stay flat — the divider wave is
-    a single flat fill, so a mesh overlay on the revealed section would not match
-    it at the seam."""
+    """A section revealed by a shaped divider keeps its mesh/grain decoration —
+    the divider's fill carries a matching `texture` tag instead of forcing the
+    section flat, so the seam still reads as a continuous handoff. Requires the
+    build order in build_site: modernize_sections (tags backgroundTexture) runs
+    before apply_section_dividers (reads that tag onto the divider edge)."""
 
     @staticmethod
     def _section(name, bg):
@@ -109,22 +108,43 @@ class DividerMeshTest(unittest.TestCase):
             styles={"backgroundColor": bg, "width": "100%"}, content=[],
         )
 
-    def test_divider_revealed_section_skips_mesh(self):
+    def test_revealed_section_keeps_mesh_like_any_other_plain_section(self):
         theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
         page_bg = theme.page.background
         hero = self._section("Hero", page_bg)
-        hero.divider = SectionDivider(
-            bottom=SectionDividerEdge(shape="wave", color=page_bg)
-        )
         revealed = self._section("Revealed", page_bg)
         control = self._section("Control", page_bg)
 
         modernize_sections([hero, revealed, control], theme)
 
-        # The section the divider reveals stays flat; an unrelated plain section
-        # still gets the atmospheric mesh.
-        self.assertNotIn("backgroundImage", revealed.styles)
+        self.assertIn("backgroundImage", revealed.styles)
         self.assertIn("backgroundImage", control.styles)
+        self.assertEqual(revealed.backgroundTexture, "mesh")
+
+    def test_divider_inherits_revealed_sections_texture(self):
+        theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
+        page_bg = theme.page.background
+        hero = self._section("Hero", page_bg)
+        revealed = self._section("Revealed", page_bg)
+
+        # Simulates the real build order: tag first, then assign dividers.
+        modernize_sections([hero, revealed], theme)
+        apply_section_dividers([hero, revealed], "modern")
+
+        edge = hero.divider.bottom
+        self.assertEqual(edge.texture, "mesh")
+        self.assertEqual(edge.color, revealed.styles["backgroundColor"])
+
+    def test_divider_texture_is_none_when_revealed_section_is_flat(self):
+        theme = build_theme("#2563eb").model_copy(update={"background_strategy": "flat"})
+        page_bg = theme.page.background
+        hero = self._section("Hero", page_bg)
+        revealed = self._section("Revealed", page_bg)
+
+        modernize_sections([hero, revealed], theme)
+        apply_section_dividers([hero, revealed], "modern")
+
+        self.assertIsNone(hero.divider.bottom.texture)
 
 
 if __name__ == "__main__":

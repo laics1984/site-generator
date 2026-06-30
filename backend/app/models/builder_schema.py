@@ -121,6 +121,12 @@ class BuilderElementMotion(BaseModel):
 
 SectionDividerShape = Literal["slant", "curve", "wave", "peak"]
 
+# Decorative section background: flat color, aurora mesh gradient, grain, or
+# both. Mirrors ThemeTokens.background_strategy (brand.py) — kept as its own
+# Literal here rather than importing it, matching this file's existing
+# pattern of defining its own copies of the builder's wire-format types.
+BackgroundStrategy = Literal["flat", "mesh", "grain", "mesh+grain"]
+
 
 class SectionDividerEdge(BaseModel):
     """Mirrors SectionDividerEdge in webtree/builder/src/lib/section-divider.ts.
@@ -138,6 +144,13 @@ class SectionDividerEdge(BaseModel):
     height: float | None = None
     color: str | None = None
     flipX: bool | None = None
+    # When the revealed section carries a grain/mesh decoration, tag it here
+    # so the renderer layers a matching texture on top of `color` instead of
+    # a flat cut. `color` stays the plain base fill either way — the picker/
+    # token swatches in the builder's divider panel only ever write `color`,
+    # so they can never clobber this tag. None/"flat" → flat fill (today's
+    # behaviour, byte-identical).
+    texture: BackgroundStrategy | None = None
 
 
 class SectionDivider(BaseModel):
@@ -172,6 +185,12 @@ class BuilderElement(BaseModel):
     responsiveStyles: ResponsiveStyles | None = None
     motion: BuilderElementMotion | None = None
     divider: SectionDivider | None = None
+    # Per-section override of the theme's decorative background strategy
+    # (BuilderStyles.backgroundTexture carries the theme default). None →
+    # follow the theme default; an explicit value (incl. "flat") wins. Only
+    # meaningful on section/container-like elements with a plain fill — the
+    # right panel hides the control otherwise.
+    backgroundTexture: BackgroundStrategy | None = None
 
 
 BuilderElement.model_rebuild()

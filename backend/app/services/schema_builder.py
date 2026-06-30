@@ -369,12 +369,13 @@ def grain_data_uri(opacity: float = 0.55) -> str:
     return f'url("data:image/svg+xml;base64,{encoded}")'
 
 
-def section_background_image(theme: ThemeTokens) -> str | None:
-    """Compose the decorative section background from the theme's strategy.
+def section_background_image(theme: ThemeTokens, strategy: str | None = None) -> str | None:
+    """Compose the decorative section background for `strategy` (falls back to
+    the theme's own strategy when omitted — a section's resolved override).
 
     Returns a `backgroundImage` value (mesh and/or grain) or None for flat.
     """
-    strategy = getattr(theme, "background_strategy", "flat")
+    strategy = strategy or getattr(theme, "background_strategy", "flat")
     layers: list[str] = []
     if "grain" in strategy:
         layers.append(grain_data_uri())
@@ -383,15 +384,21 @@ def section_background_image(theme: ThemeTokens) -> str | None:
     return ", ".join(layers) if layers else None
 
 
-def apply_section_decoration(styles: dict[str, Any], theme: ThemeTokens) -> bool:
+def apply_section_decoration(
+    styles: dict[str, Any], theme: ThemeTokens, strategy: str | None = None
+) -> bool:
     """Set the decorative background (mesh/grain) on a section's style dict and
     the companion tiling props. Returns True if a decoration was applied.
+
+    `strategy` lets a caller override the theme default per-section (the
+    builder's per-section background-texture control); omit it to use the
+    theme's own strategy.
 
     Section templates set ``backgroundRepeat: no-repeat`` + ``backgroundPosition:
     center`` for photo heroes — left as-is, the finite grain SVG would render as
     a single tile centered in the section. Force repeat/top-left so grain tiles
     across the whole band (gradient layers fill regardless)."""
-    deco = section_background_image(theme)
+    deco = section_background_image(theme, strategy)
     if not deco:
         return False
     styles["backgroundImage"] = deco
@@ -525,23 +532,6 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
     surface_hex = theme.palette.surface
     page_hex = theme.page.background
 
-    # Sections a shaped divider *reveals* must stay flat: the divider wave is a
-    # single flat fill set to the revealed section's base colour, so a mesh/grain
-    # overlay on that section would not match the wave at the seam. (A bottom
-    # divider on section i reveals i+1; a top divider reveals i-1.) The
-    # divider-owning section keeps its decoration — it shows through the wave's
-    # transparent side, which is simply itself. Requires dividers to be assigned
-    # before this pass runs (see the build order in build_site).
-    revealed: set[int] = set()
-    for i, sec in enumerate(sections):
-        div = getattr(sec, "divider", None)
-        if div is None:
-            continue
-        if getattr(div, "bottom", None) is not None and i + 1 < len(sections):
-            revealed.add(i + 1)
-        if getattr(div, "top", None) is not None and i - 1 >= 0:
-            revealed.add(i - 1)
-
     for idx, section in enumerate(sections):
         headings: list[tuple[BuilderElement, float]] = []
         _walk_modernize(
@@ -563,14 +553,22 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
         # decoration isn't confined to one in every three sections (the
         # rotation's surface slot). Dark/primary CTA bands carry their own
         # strong fill and are excluded by the backgroundColor check below.
-        if strategy != "flat" and idx not in revealed:
-            st = section.styles
-            has_fill = bool(st.get("backgroundImage") or st.get("background"))
-            is_plain = st.get("backgroundColor") in (
-                surface_hex, _SURFACE_BG, page_hex, _PAGE_BG,
-            )
-            if is_plain and not has_fill:
-                apply_section_decoration(st, theme)
+        # Tags the resolved strategy on `backgroundTexture` regardless of
+        # outcome (incl. "flat") so the builder's per-section override control
+        # has an explicit value to show, and so a divider revealing this
+        # section can copy it onto the divider's fill instead of falling back
+        # to a flat cut — see apply_section_dividers, which runs after this
+        # pass specifically so it can read this tag.
+        st = section.styles
+        has_fill = bool(st.get("backgroundImage") or st.get("background"))
+        is_plain = st.get("backgroundColor") in (
+            surface_hex, _SURFACE_BG, page_hex, _PAGE_BG,
+        )
+        if is_plain and not has_fill:
+            effective = getattr(section, "backgroundTexture", None) or strategy
+            section.backgroundTexture = effective
+            if effective != "flat":
+                apply_section_decoration(st, theme, effective)
 
 
 # --- motion -----------------------------------------------------------------
@@ -720,7 +718,11 @@ def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | Non
     one per page reads as a designed accent, one at every boundary reads as
     wallpaper. No-op for moods with no shape (luxury/technical) or single-
     section pages. Never overwrites a divider a section already carries.
-    Mutates in place."""
+
+    Must run after modernize_sections (see build_site) — it reads each
+    section's resolved `backgroundTexture` tag to carry a matching grain/mesh
+    layer onto the divider's fill, instead of the flat cut a plain `color`
+    alone would produce against a textured section. Mutates in place."""
     shape = _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
     if shape is None or len(sections) < 2:
         return
@@ -729,7 +731,9 @@ def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | Non
     if sections[0].name.startswith("Hero") and sections[0].divider is None:
         next_bg = _section_edge_color(sections[1])
         sections[0].divider = SectionDivider(
-            bottom=SectionDividerEdge(shape=shape, color=next_bg)
+            bottom=SectionDividerEdge(
+                shape=shape, color=next_bg, texture=_section_edge_texture(sections[1])
+            )
         )
         hero_boundary = 0
 
@@ -745,7 +749,9 @@ def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | Non
             break
         prev_bg = _section_edge_color(sections[i - 1])
         sections[i].divider = SectionDivider(
-            top=SectionDividerEdge(shape=shape, color=prev_bg)
+            top=SectionDividerEdge(
+                shape=shape, color=prev_bg, texture=_section_edge_texture(sections[i - 1])
+            )
         )
         break
 
@@ -758,6 +764,15 @@ def _section_edge_color(section: BuilderElement) -> str:
     styles = section.styles or {}
     bg = styles.get("backgroundColor")
     return bg if isinstance(bg, str) and bg else _DEFAULT_DIVIDER_COLOR
+
+
+def _section_edge_texture(section: BuilderElement) -> str | None:
+    """The texture (if any) the revealed section settled on via its
+    `backgroundTexture` tag, so the divider's fill can layer a matching
+    grain/mesh on top of `color` instead of a flat cut. None for sections
+    that stayed flat or never got a tag (e.g. photo backgrounds)."""
+    texture = getattr(section, "backgroundTexture", None)
+    return texture if texture and texture != "flat" else None
 
 
 # --- low-level factories --------------------------------------------------------
@@ -2858,15 +2873,16 @@ async def plan_to_site(
         # plain sections between page-bg and surface tint. Sections the luminance
         # pass already filled carry their own backgroundColor and are skipped.
         apply_section_rhythm(elements)
-        # Shaped section dividers are assigned before modernization so the mesh/grain
-        # pass can keep a divider-revealed section flat (its decorative overlay would
-        # not match the flat divider wave that reveals it). Divider colours read each
-        # section's backgroundColor, which modernization never changes — only adds an
-        # overlay — so the seam colours are identical either order.
-        apply_section_dividers(elements, effective_brand.mood)
         # 2025/26 modernization: fluid type, card depth/glass, atmospheric
         # surface backgrounds — applied per-mood over the assembled sections.
+        # Runs BEFORE apply_section_dividers, which reads each section's
+        # resolved `backgroundTexture` tag (set here) to carry a matching
+        # grain/mesh layer onto a divider that reveals it.
         modernize_sections(elements, theme)
+        # Shaped section dividers — color reads each section's backgroundColor
+        # (modernization never changes it, only adds an overlay) and texture
+        # reads the backgroundTexture tag modernize_sections just set.
+        apply_section_dividers(elements, effective_brand.mood)
         # Asymmetric headers + scroll/backdrop motion — applied last so they
         # read the final band/background each section landed on.
         apply_heading_alignment(elements, effective_brand.mood)

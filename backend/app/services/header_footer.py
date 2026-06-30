@@ -327,7 +327,10 @@ def build_header(
             "position": "sticky",
             "top": "0",
             "zIndex": "50",
-            "backdropFilter": "blur(8px)",
+            # No backdrop blur by default — it forced a frosted-glass look on
+            # every header and there was no way to opt out. The builder now
+            # exposes a "Frosted glass" toggle (HeaderSettings) for anyone who
+            # wants it; leave the header opaque here.
         },
         content=[bar],
     )

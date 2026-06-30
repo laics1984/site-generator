@@ -142,10 +142,14 @@ class ThemeTokens(BaseModel):
     # Whether to use inverted (dark) sections for CTAs.
     inverted_cta: bool = True
 
-    # --- 2025/26 trend tokens (internal; not part of BuilderStyles) -------------
-    # These drive schema_builder's modern style vocabulary. They are NOT emitted
+    # --- 2025/26 trend tokens (internal; mostly not part of BuilderStyles) ------
+    # These drive schema_builder's modern style vocabulary. Most are NOT emitted
     # in to_builder_styles() because the webtree builder doesn't need them — they
     # only shape the inline styles/classes we bake into the BuilderElement tree.
+    # background_strategy is the exception: it IS emitted (as `backgroundTexture`)
+    # because the builder's per-section override control needs the theme default
+    # to render its "Theme default" state and to recompute grain/mesh client-side
+    # when a section's own `BuilderElement.backgroundTexture` overrides it.
     type_scale_ratio: float = Field(
         default=1.25,
         ge=1.1,
@@ -217,6 +221,7 @@ class ThemeTokens(BaseModel):
                 "intensity": self.motion_intensity
                 or MOOD_MOTION_INTENSITY.get(self.mood, "balanced"),
             },
+            "backgroundTexture": self.background_strategy,
         }
         # Only emit the hero token when banded; absence → the template's
         # full-screen fallback, so "full" sites stay byte-identical.
