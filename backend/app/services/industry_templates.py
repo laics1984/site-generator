@@ -188,6 +188,36 @@ def _process_page() -> PageScaffold:
     )
 
 
+def _programs_page() -> PageScaffold:
+    return PageScaffold(
+        page_type="services",
+        slug="programs",
+        title="Programs",
+        sections=["hero", "services", "process", "faq", "cta"],
+        rationale="Programs by age (infant → kindergarten) plus the daily rhythm — parents want to picture their child's day before booking a tour.",
+    )
+
+
+def _teachers_page() -> PageScaffold:
+    return PageScaffold(
+        page_type="team",
+        slug="teachers",
+        title="Our Teachers",
+        sections=["hero", "team", "testimonials", "cta"],
+        rationale="Parents choose educators, not buildings. Warm portraits, qualifications, and teaching philosophy build the trust that drives enrolment.",
+    )
+
+
+def _daily_journey_page() -> PageScaffold:
+    return PageScaffold(
+        page_type="process",
+        slug="our-day",
+        title="A Day With Us",
+        sections=["hero", "process", "gallery", "cta"],
+        rationale="Walks parents through arrival → circle time → play → meals → rest → pickup, so they can visualize their child's experience.",
+    )
+
+
 def _thank_you_page() -> PageScaffold:
     return PageScaffold(
         page_type="thank-you",
@@ -264,6 +294,14 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         core_pages=_core_set(_core_home("nonprofit")),
         suggested_pages=[_services_page(), _team_page(), _testimonials_page()],
         optional_pages=[_blog_page(), _faq_page(), _gallery_page()],
+    ),
+    "childcare": IndustryTemplate(
+        industry="childcare",
+        label="Childcare / Kindergarten",
+        description="Kindergartens, preschools, daycares, and early learning centers where parent trust drives tour bookings.",
+        core_pages=_core_set(_core_home("childcare", extra_sections=["gallery"])),
+        suggested_pages=[_programs_page(), _teachers_page(), _gallery_page(), _faq_page()],
+        optional_pages=[_daily_journey_page(), _testimonials_page(), _blog_page()],
     ),
     "personal": IndustryTemplate(
         industry="personal",

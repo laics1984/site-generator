@@ -21,7 +21,30 @@ uvicorn app.main:app --reload --port 8001
 ```
 
 Server runs on `http://localhost:8001`. Health check: `GET /health`.
-Ollama reachability: `GET /health/ollama`.
+LLM backend status: `GET /health/llm`. Backend reachability: `GET /health/ollama`, `GET /health/mlx`.
+
+## LLM backends (MLX vs Ollama)
+
+Generation runs on one of two interchangeable backends, chosen explicitly by
+`LLM_BACKEND` in `.env` (no auto-detection):
+
+- **`ollama`** (default) — Ollama at `OLLAMA_BASE_URL`.
+- **`mlx`** — an MLX server on the Apple-Silicon host (set this in `.env` on a Mac
+  running mlx_lm.server).
+
+MLX can't run inside the Linux backend container, so it's an **OpenAI-compatible
+server on the Apple-Silicon host** that the app calls over HTTP (same pattern as
+Ollama). On the host:
+
+```bash
+pip install mlx-lm
+mlx_lm.server --model mlx-community/Qwen3-8B-4bit --port 8080
+# optional vision pass:
+pip install mlx-vlm
+mlx_vlm.server --model mlx-community/Qwen2.5-VL-7B-Instruct-4bit --port 8081
+```
+
+Then run the app (native or Docker). `GET /health/llm` reports the active backend.
 
 ## Configuration
 
@@ -29,8 +52,14 @@ Override defaults via env vars or a `.env` file:
 
 | Variable | Default | Notes |
 |---|---|---|
+| `LLM_BACKEND` | `ollama` | `mlx` \| `ollama` — set in `.env`; see above |
+| `MLX_BASE_URL` | `http://localhost:8080` | mlx_lm.server (OpenAI API). In Docker: `http://host.docker.internal:8080` |
+| `MLX_MODEL` | `mlx-community/Qwen3-8B-4bit` | HuggingFace repo id |
+| `MLX_MAX_TOKENS` | `8192` | Output budget (OpenAI servers cap low by default) |
+| `MLX_VISION_BASE_URL` | unset | mlx_vlm.server URL; unset ⇒ falls back to `MLX_BASE_URL` |
+| `MLX_VISION_MODEL` | unset | Opt-in MLX vision model; unset ⇒ vision pass skipped under MLX |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | |
-| `OLLAMA_MODEL` | `qwen2.5:7b-instruct` | Recommended for M1 16GB |
+| `OLLAMA_MODEL` | `qwen3.5:9b` | Single resident model; fits 16GB M1 with headroom |
 | `OLLAMA_MODEL_QUALITY` | `qwen2.5:14b-instruct` | Optional quality mode |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | |
 | `OLLAMA_VISION_MODEL` | unset | Opt-in: multimodal model (e.g. `qwen2.5vl:7b`, `moondream`) that captions/classifies scraped images for better slot matching + profile verification. Unset ⇒ pass skipped |
@@ -41,7 +70,9 @@ Override defaults via env vars or a `.env` file:
 ## Endpoints (Phase 1)
 
 - `GET /health` — service heartbeat
+- `GET /health/llm` — active LLM backend (mlx|ollama) + default model
 - `GET /health/ollama` — Ollama reachability + installed models
+- `GET /health/mlx` — MLX server reachability + loaded models
 - `POST /api/generate/from-source` — accepts `SourceContent`, returns `GeneratedSite`
 - `POST /api/generate/plan-only` — debug: returns raw `SitePlan`
 
@@ -60,7 +91,7 @@ extractor          (Playwright / pdfminer / python-docx) — Phase 2/3
 SourceContent      (normalized text + headings + images)
    │
    ▼
-planner.py + LLM   (Ollama qwen2.5 → SitePlan JSON)
+planner.py + LLM   (MLX or Ollama → SitePlan JSON)
    │
    ▼
 schema_builder.py  (deterministic: ContentBlock → BuilderElement tree)

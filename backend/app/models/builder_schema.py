@@ -293,3 +293,12 @@ class GeneratedSite(BaseModel):
     brand: Any | None = Field(default=None, description="BrandIdentity used during generation.")
     header_schema: BuilderElement | None = None
     footer_schema: BuilderElement | None = None
+    header_overlay: bool = Field(
+        default=False,
+        description=(
+            "Float the header transparent over full-bleed heroes and solidify "
+            "on scroll. Carried into the CMS header payload's behavior.overlay "
+            "by push_orchestrator; the public renderer gates the transparent "
+            "phase per page on the first section's headerOverlaySafe marker."
+        ),
+    )

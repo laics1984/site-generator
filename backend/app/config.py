@@ -1,8 +1,35 @@
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Which LLM backend serves chat_json calls. Set via LLM_BACKEND in .env:
+    # `mlx` on an Apple-Silicon host running mlx_lm.server, `ollama` otherwise
+    # (Windows, or a Mac running `ollama serve`). See services/llm.resolve_llm_backend.
+    llm_backend: Literal["mlx", "ollama"] = "ollama"
+
+    # MLX backend: an OpenAI-compatible server (mlx_lm.server) running natively on
+    # the Apple-Silicon host — Docker can't run MLX, so the container reaches it
+    # over host.docker.internal (see docker-compose.yml). MLX uses HuggingFace repo
+    # ids, not Ollama tags.
+    mlx_base_url: str = "http://localhost:8080"
+    mlx_model: str = "mlx-community/Qwen3-8B-4bit"
+    # Generous because this is a per-read (streaming) timeout: once tokens flow
+    # each one resets the clock, so it only bites on cold time-to-first-token —
+    # which on a memory-constrained Mac can run 1-3 min while the OS pages the
+    # model back into unified memory. Too low ⇒ ReadTimeout 502s mid-generation.
+    mlx_timeout_seconds: float = 600.0
+    # OpenAI servers default to a small max_tokens that would truncate a multi-
+    # section generation mid-JSON; set a generous output budget. (Ollama has no
+    # equivalent cap — num_predict defaults to unlimited.)
+    mlx_max_tokens: int = 8192
+    # Opt-in MLX vision server (mlx_vlm.server). Unset ⇒ the vision pass falls back
+    # to Ollama / is skipped, exactly as with ollama_vision_model.
+    mlx_vision_base_url: str | None = None
+    mlx_vision_model: str | None = None
 
     ollama_base_url: str = "http://localhost:11434"
     # Single resident model for both content and design-brain calls — picked to
@@ -18,6 +45,14 @@ class Settings(BaseSettings):
     # blows the read timeout. Keeping it warm avoids re-paying the load cost.
     ollama_keep_alive: str = "30m"
 
+    # Context window for the scaffolded content-generation calls (planner.py).
+    # 8192 is the safe default for a 7-9B model on 16GB unified memory. Raising
+    # to e.g. 12288 lets the batcher pack more pages per call (fewer prefill
+    # passes of the fixed prompt) at ~0.5-1GB extra KV cache — check the
+    # "Dynamic batching" log line to confirm the batch count actually drops
+    # before paying that memory.
+    scaffold_num_ctx: int = 8192
+
     # Temperature for the design-brain pass (services/design_brain.py), which
     # picks per-section template variety/drama. Deliberately higher than the
     # 0.3 content/fidelity calls — bolder, less repetitive choices are exactly
@@ -30,6 +65,18 @@ class Settings(BaseSettings):
     # it is always a safe no-op: generation falls back to the deterministic
     # mood-ordered template selection that ran before this pass existed.
     design_brain_enabled: bool = True
+
+    # Transparent header floating over full-bleed heroes, solidifying to the
+    # header's real chrome after `header_scroll_reveal_offset` px of scroll
+    # (2026 trend look). Fires when the HOMEPAGE hero directive is full-bleed;
+    # interior pages opt in per page via the `headerOverlaySafe` marker their
+    # hero section carries (webtree-public gates the transparent phase on it).
+    # Renderer support verified: PublicSiteShell honours `behavior.overlay` +
+    # `behavior.scrollRevealOffset`. This flag is the kill switch.
+    header_overlay_enabled: bool = True
+    # Pixels scrolled before the floating header gains its background. The
+    # renderer clamps to [0, 600] and defaults to 80 when the field is absent.
+    header_scroll_reveal_offset: int = 80
 
     # Vision pass over scraped images (services/image_vision.py). Opt-in: set
     # to a multimodal Ollama model (e.g. "qwen2.5vl:7b" or "moondream") to

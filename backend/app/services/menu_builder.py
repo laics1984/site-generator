@@ -233,19 +233,28 @@ def wrap_header(
     *,
     menus: list[dict[str, Any]],
     sticky: bool = True,
+    overlay: bool = False,
+    scroll_reveal_offset: int | None = None,
 ) -> dict[str, Any]:
     """
     Wrap a `__header` BuilderElement into a BuilderTemplateHeader payload.
 
     Slots reference canonical menu IDs only if those menus exist in `menus`.
+    `overlay` marks a transparent header floating over a full-bleed hero; the
+    renderer owns the scroll-solidify behaviour this flag implies.
+    `scroll_reveal_offset` is the scrolled-pixel threshold before the floating
+    header gains its background (renderer clamps 0-600, defaults 80 if absent).
     """
     menu_ids = {m["id"] for m in menus}
+    behavior: dict[str, Any] = {
+        "position": "sticky" if sticky else "static",
+        "overlay": overlay,
+    }
+    if scroll_reveal_offset is not None:
+        behavior["scrollRevealOffset"] = scroll_reveal_offset
     return {
         "elements": [header_element.model_dump(mode="json")],
-        "behavior": {
-            "position": "sticky" if sticky else "static",
-            "overlay": False,
-        },
+        "behavior": behavior,
         "preset": {"id": None},
         "slots": {
             "primaryMenuId": PRIMARY_MENU_ID if PRIMARY_MENU_ID in menu_ids else None,

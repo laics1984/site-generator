@@ -26,6 +26,7 @@ up to the failure point (useful for diagnostics + future resume support).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import re
@@ -44,6 +45,7 @@ from app.models.builder_schema import (
 )
 from app.services.cms_client import CmsApiError, CmsClient
 from app.services.menu_builder import build_menus, wrap_footer, wrap_header
+from app.services.timing import stage
 
 logger = logging.getLogger(__name__)
 
@@ -198,11 +200,30 @@ def _rewrite_hrefs(node: BuilderElement, href_map: dict[str, str]) -> None:
 # --- the orchestrator -----------------------------------------------------------
 
 
+# CMS calls that are mutually independent (media uploads, page creates, draft
+# saves, publishes) run under this bound so a big site doesn't stampede the CMS.
+_PUSH_CONCURRENCY = 5
+
+
 async def push_site(req: PushRequest) -> PushReport:
     """Run the full push and return a PushReport. Never raises."""
     report = PushReport()
     client = CmsClient.for_default()
+    try:
+        return await _run_push(client, req, report)
+    finally:
+        await client.aclose()
 
+
+def _raise_first_error(results: list) -> None:
+    """Re-raise the first exception in an asyncio.gather(return_exceptions=True)
+    result list, preserving the sequential loop's abort-on-first-error contract."""
+    for res in results:
+        if isinstance(res, BaseException):
+            raise res
+
+
+async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> PushReport:
     # 0. Normalize slugs to the CMS's flat kebab-case format. The generator
     #    emits hierarchical slugs (e.g. "services/web-design"); the CMS slug
     #    rule is ^[a-z0-9]+(?:-[a-z0-9]+)*$ — no slashes — so we flatten every
@@ -277,7 +298,8 @@ async def push_site(req: PushRequest) -> PushReport:
 
     # 3. Media upload — collect unique image srcs, upload, build a rewrite map
     try:
-        rewrites = await _upload_media(client, req)
+        with stage("push_media_upload"):
+            rewrites = await _upload_media(client, req)
         report.record(
             PushStep(
                 name="media",
@@ -295,11 +317,12 @@ async def push_site(req: PushRequest) -> PushReport:
     # ensures every src on the CMS side is a permanent URL.
     _apply_src_rewrites(req.site, rewrites)
 
-    # 4. Create pages — homepage first so isHomepage=true is set deterministically
+    # 4. Create pages — homepage first so isHomepage=true is set deterministically,
+    #    then the rest concurrently (each create is independent on the CMS side).
     pages_sorted = sorted(req.site.pages, key=lambda p: (not p.is_homepage, p.slug))
     created: list[tuple[GeneratedPage, str, int]] = []
     try:
-        for page in pages_sorted:
+        async def _create_one(page: GeneratedPage) -> tuple[GeneratedPage, str, int]:
             seo = {}
             if page.seo:
                 if page.seo.title:
@@ -320,7 +343,24 @@ async def push_site(req: PushRequest) -> PushReport:
             draft_version = int(created_meta.get("draftVersion") or 1)
             if not page_id:
                 raise CmsApiError(500, f"Create-page response missing id: {created_meta}")
-            created.append((page, str(page_id), draft_version))
+            return (page, str(page_id), draft_version)
+
+        with stage("push_create_pages"):
+            if pages_sorted:
+                created.append(await _create_one(pages_sorted[0]))
+            rest = pages_sorted[1:]
+            if rest:
+                sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+                async def _create_bounded(page: GeneratedPage):
+                    async with sem:
+                        return await _create_one(page)
+
+                results = await asyncio.gather(
+                    *(_create_bounded(p) for p in rest), return_exceptions=True
+                )
+                _raise_first_error(results)
+                created.extend(results)  # gather preserves pages_sorted order
         report.record(
             PushStep(
                 name="create_pages",
@@ -376,7 +416,16 @@ async def push_site(req: PushRequest) -> PushReport:
                 "GeneratedSite is missing header_schema or footer_schema — "
                 "rebuild the site with plan_to_site() before pushing.",
             )
-        header_payload = wrap_header(req.site.header_schema, menus=menus)
+        header_payload = wrap_header(
+            req.site.header_schema,
+            menus=menus,
+            overlay=req.site.header_overlay,
+            scroll_reveal_offset=(
+                settings.header_scroll_reveal_offset
+                if req.site.header_overlay
+                else None
+            ),
+        )
         footer_payload = wrap_footer(req.site.footer_schema, menus=menus)
         result = await client.save_page_layout(
             req.entity_token,
@@ -402,23 +451,36 @@ async def push_site(req: PushRequest) -> PushReport:
         report.error = str(exc)
         return report
 
-    # 7. Save drafts — bodySchema per page
+    # 7. Save drafts — bodySchema per page, concurrently (each save uses only
+    #    its own page's draftVersion; layout was already saved in step 6).
     saved_drafts: dict[str, int] = {}  # pageId → latest draft_version
     try:
-        for page, page_id, draft_version in created:
+        draft_sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+        async def _save_one(
+            page: GeneratedPage, page_id: str, draft_version: int
+        ) -> tuple[str, int]:
             body_schema = {
                 "elements": [
                     el.model_dump(mode="json") if isinstance(el, BuilderElement) else el
                     for el in page.body_schema.elements
                 ],
             }
-            result = await client.save_page_draft(
-                req.entity_token,
-                page_id,
-                base_draft_version=draft_version,
-                body_schema=body_schema,
+            async with draft_sem:
+                result = await client.save_page_draft(
+                    req.entity_token,
+                    page_id,
+                    base_draft_version=draft_version,
+                    body_schema=body_schema,
+                )
+            return page_id, int(result.get("draftVersion") or draft_version + 1)
+
+        with stage("push_save_drafts"):
+            draft_results = await asyncio.gather(
+                *(_save_one(*item) for item in created), return_exceptions=True
             )
-            saved_drafts[page_id] = int(result.get("draftVersion") or draft_version + 1)
+        _raise_first_error(draft_results)
+        saved_drafts = dict(draft_results)
         report.record(
             PushStep(
                 name="save_drafts",
@@ -458,17 +520,27 @@ async def push_site(req: PushRequest) -> PushReport:
             PushStep(name="builder_styles", ok=True, detail="Skipped (per request)")
         )
 
-    # 9. Publish (optional)
+    # 9. Publish (optional) — concurrent; every publish uses its own page's saved
+    #    draft version plus the shared (post-builder-styles) layout_version_id.
     if req.publish:
         try:
-            for _page, page_id, _draft_version in created:
-                latest_draft = saved_drafts.get(page_id, 1)
-                await client.publish_page(
-                    req.entity_token,
-                    page_id,
-                    expected_draft_version=latest_draft,
-                    expected_layout_version_id=layout_version_id,
+            publish_sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+            async def _publish_one(page_id: str) -> None:
+                async with publish_sem:
+                    await client.publish_page(
+                        req.entity_token,
+                        page_id,
+                        expected_draft_version=saved_drafts.get(page_id, 1),
+                        expected_layout_version_id=layout_version_id,
+                    )
+
+            with stage("push_publish"):
+                publish_results = await asyncio.gather(
+                    *(_publish_one(page_id) for _page, page_id, _dv in created),
+                    return_exceptions=True,
                 )
+            _raise_first_error(publish_results)
             report.record(
                 PushStep(
                     name="publish",
@@ -526,26 +598,47 @@ async def _upload_media(client: CmsClient, req: PushRequest) -> dict[str, str]:
         if isinstance(logo_url, str):
             sources.setdefault(logo_url, _placeholder_logo_element(logo_url))
 
-    for src in list(sources.keys()):
-        if not _needs_upload(src):
-            continue
-        try:
-            file_bytes, content_type, filename = await _resolve_to_bytes(src)
-        except _ResolveSkip as exc:
-            logger.info("Skipping unresolvable src %s: %s", src[:80], exc)
-            continue
-        if content_type not in {"image/png", "image/jpeg"}:
-            # CMS rejects everything except png/jpg. Convert PNG if possible
-            # (most data URLs we make are already PNG), else skip.
-            logger.info("Skipping non-supported mime %s for src %s", content_type, src[:80])
-            continue
-        cdn_url = await client.upload_media(
-            req.entity_token,
-            file_bytes=file_bytes,
-            filename=filename,
-            content_type=content_type,
+    uploadable = [src for src in sources if _needs_upload(src)]
+    if not uploadable:
+        return rewrites
+
+    # Resolve + upload concurrently: each image is independent, and the wait is
+    # dominated by network (download + POST). One shared download client keeps
+    # connections pooled across images from the same host.
+    sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as download_client:
+
+        async def _upload_one(src: str) -> tuple[str, str] | None:
+            async with sem:
+                try:
+                    file_bytes, content_type, filename = await _resolve_to_bytes(
+                        src, download_client
+                    )
+                except _ResolveSkip as exc:
+                    logger.info("Skipping unresolvable src %s: %s", src[:80], exc)
+                    return None
+                if content_type not in {"image/png", "image/jpeg"}:
+                    # CMS rejects everything except png/jpg. Convert PNG if possible
+                    # (most data URLs we make are already PNG), else skip.
+                    logger.info(
+                        "Skipping non-supported mime %s for src %s", content_type, src[:80]
+                    )
+                    return None
+                cdn_url = await client.upload_media(
+                    req.entity_token,
+                    file_bytes=file_bytes,
+                    filename=filename,
+                    content_type=content_type,
+                )
+                return src, cdn_url
+
+        results = await asyncio.gather(
+            *(_upload_one(src) for src in uploadable), return_exceptions=True
         )
-        rewrites[src] = cdn_url
+    _raise_first_error(results)
+    for res in results:
+        if res is not None:
+            rewrites[res[0]] = res[1]
     return rewrites
 
 
@@ -652,14 +745,19 @@ class _ResolveSkip(Exception):
     pass
 
 
-async def _resolve_to_bytes(src: str) -> tuple[bytes, str, str]:
+async def _resolve_to_bytes(
+    src: str, client: httpx.AsyncClient | None = None
+) -> tuple[bytes, str, str]:
     """Turn a src into (bytes, content_type, filename) ready for /api/file/add."""
     if src.startswith("data:"):
         return _decode_data_url(src)
-    # https URL: fetch
+    # https URL: fetch (with the caller's pooled client when provided)
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        if client is not None:
             resp = await client.get(src)
+        else:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as one_shot:
+                resp = await one_shot.get(src)
         if resp.status_code >= 400:
             raise _ResolveSkip(f"http {resp.status_code}")
     except httpx.HTTPError as exc:

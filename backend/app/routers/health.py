@@ -24,6 +24,31 @@ async def health_ollama() -> dict[str, object]:
             return {"status": "unreachable", "error": str(exc)}
 
 
+@router.get("/health/mlx")
+async def health_mlx() -> dict[str, object]:
+    """Reports the MLX server's loaded models (mlx_lm.server, OpenAI-compatible)."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            response = await client.get(f"{settings.mlx_base_url}/v1/models")
+            response.raise_for_status()
+            payload = response.json()
+            models = [m.get("id") for m in payload.get("data", [])]
+            return {"status": "ok", "models": models}
+        except httpx.HTTPError as exc:
+            return {"status": "unreachable", "error": str(exc)}
+
+
+@router.get("/health/llm")
+async def health_llm() -> dict[str, object]:
+    """The active LLM backend (mlx|ollama) and its default model — lets the
+    frontend show which engine is serving generation."""
+    from app.services.llm import resolve_llm_backend
+
+    backend = resolve_llm_backend()
+    model = settings.mlx_model if backend == "mlx" else settings.ollama_model
+    return {"backend": backend, "model": model, "configured": settings.llm_backend}
+
+
 @router.get("/health/pexels")
 async def health_pexels() -> dict[str, object]:
     """Reports whether the Pexels API key is set. Does not make a real API call."""

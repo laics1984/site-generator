@@ -326,3 +326,20 @@ class HeroHeightTokenTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PageWidthModeTest(unittest.TestCase):
+    def test_every_mood_ships_full_width_sections(self):
+        # 2026 default: sections bleed to the viewport edge; each section's
+        # inner container still caps content at page.max_width. The renderer
+        # reads builderStyles.page.widthMode.
+        from app.services.theme import MOOD_SPECS, build_theme
+
+        for mood in MOOD_SPECS:
+            theme = build_theme("#2563eb", mood)
+            styles = theme.to_builder_styles()
+            self.assertEqual(
+                styles["page"]["widthMode"], "full", f"mood {mood} is not full-width"
+            )
+            # Content stays constrained — max_width survives untouched.
+            self.assertEqual(styles["page"]["maxWidth"], theme.page.max_width)

@@ -41,17 +41,20 @@ async def test_connection(payload: TestConnectionRequest) -> dict[str, Any]:
     """
     client = CmsClient.for_default()
     try:
-        await client.login(payload.email, payload.password)
-    except CmsApiError as exc:
-        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        try:
+            await client.login(payload.email, payload.password)
+        except CmsApiError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
-    if not payload.entity_token.strip():
-        return {"ok": True, "existing_page_count": 0, "existing_pages": []}
+        if not payload.entity_token.strip():
+            return {"ok": True, "existing_page_count": 0, "existing_pages": []}
 
-    try:
-        pages = await client.list_pages(payload.entity_token)
-    except CmsApiError as exc:
-        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        try:
+            pages = await client.list_pages(payload.entity_token)
+        except CmsApiError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    finally:
+        await client.aclose()
 
     return {
         "ok": True,

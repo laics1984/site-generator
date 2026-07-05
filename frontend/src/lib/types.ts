@@ -169,6 +169,7 @@ export type IndustryCategory =
   | 'ecommerce'
   | 'consultancy'
   | 'nonprofit'
+  | 'childcare'
   | 'personal'
   | 'other'
 

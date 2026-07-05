@@ -283,10 +283,16 @@ _MAPPERS: dict[str, Callable[[Any], dict[str, Any]]] = {
 def _hero_preference(content: dict[str, Any], b: HeroBlock) -> list[str]:
     if content.get("image"):
         if b.layout == "background":
-            return ["hero-background-bold", "hero-modern-split", "hero-gradient", "hero-centered-minimal"]
-        return ["hero-modern-split", "hero-background-bold", "hero-gradient", "hero-centered-minimal"]
+            return [
+                "hero-background-bold", "hero-editorial", "hero-modern-split",
+                "hero-gradient", "hero-centered-minimal",
+            ]
+        return [
+            "hero-modern-split", "hero-editorial", "hero-background-bold",
+            "hero-gradient", "hero-centered-minimal",
+        ]
     # No photo: a brand gradient reads richer/on-trend; minimal is the quiet fallback.
-    return ["hero-gradient", "hero-centered-minimal"]
+    return ["hero-gradient", "hero-minimal", "hero-centered-minimal"]
 
 
 def _about_preference(content: dict[str, Any], b: AboutBlock) -> list[str]:
@@ -447,7 +453,9 @@ def is_feasible(template: dict[str, Any], content: dict[str, Any]) -> bool:
 _MOOD_LAYOUT_PREFERENCE: dict[BrandMood, list[str]] = {
     "modern": ["bento", "split", "grid", "gradient", "banner"],
     "luxury": ["centered", "editorial", "asymmetric", "narrative", "minimal", "split", "single"],
-    "friendly": ["split", "grid", "banner", "background"],
+    # "background" before "split": friendly brands lead photo-forward; split
+    # was the reflex that made every friendly-mood page open identically.
+    "friendly": ["grid", "banner", "background", "split"],
     "technical": ["grid", "minimal", "stacked", "centered", "split"],
     "editorial": ["editorial", "asymmetric", "split", "narrative", "single", "background"],
     "playful": ["bento", "background", "gradient", "banner", "grid"],
@@ -798,6 +806,28 @@ def _composite(
     return tuple(round(alpha * f + (1 - alpha) * b) for f, b in zip(fg, bg))  # type: ignore[return-value]
 
 
+def _has_opaque_gradient(styles: dict[str, Any]) -> bool:
+    """True when the node paints a fully opaque CSS gradient fill — its text ink
+    was designed against the gradient, which _parse_color cannot read.
+
+    Decorative overlays (mesh gradients fading to `transparent`, rgba stops
+    with alpha < 1) do NOT count: they let the node's real backgroundColor show
+    through, so contrast must still be judged against that colour."""
+    for key in ("backgroundImage", "background"):
+        v = styles.get(key)
+        if not isinstance(v, str) or "gradient(" not in v or "url(" in v:
+            continue
+        if "transparent" in v:
+            continue
+        if any(
+            m.group(4) is not None and float(m.group(4)) < 0.999
+            for m in _RGBA.finditer(v)
+        ):
+            continue
+        return True
+    return False
+
+
 def _has_real_photo(styles: dict[str, Any]) -> bool:
     """True if a background carries a genuine photo (a non-`data:` url). Decorative
     gradients and `url(data:…svg…)` grain are transparent overlays, not photos."""
@@ -838,18 +868,29 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
     def walk(node: BuilderElement, bg_rgb: tuple[int, int, int], photo: bool) -> None:
         nonlocal changed
         styles = node.styles if isinstance(node.styles, dict) else {}
-        # A genuine photo owns its subtree's text (its overlay handles contrast).
-        if _has_real_photo(styles):
+        # A genuine photo or an opaque gradient fill owns its subtree's text:
+        # the template designed that ink against its own backdrop (scrim/photo
+        # overlay or gradient tones we can't parse into a flat colour).
+        # Crucially this holds even when the SAME node also carries a
+        # backgroundColor — the photo/gradient paints over it, so that colour
+        # must not be treated as the effective surface (it used to flip the
+        # catalog's white hero headings to dark ink under dark gradients and
+        # photos). Semi-transparent decorative gradients don't count — see
+        # _has_opaque_gradient.
+        covered = _has_real_photo(styles) or _has_opaque_gradient(styles)
+        if covered:
             photo = True
         # A solid / semi-transparent own background updates the effective surface
-        # and (painting over whatever is beneath) clears the photo-owned flag.
+        # and (painting over whatever is beneath) clears the photo-owned flag —
+        # unless this very node is the one carrying the photo/gradient.
         own = _parse_color(styles.get("backgroundColor"), theme) or _parse_color(
             styles.get("background"), theme
         )
         if own is not None:
             (r, g, b), a = own
             bg_rgb = (r, g, b) if a >= 0.999 else _composite((r, g, b), a, bg_rgb)
-            photo = False
+            if not covered:
+                photo = False
 
         content = node.content
         if isinstance(content, BuilderElementContent):

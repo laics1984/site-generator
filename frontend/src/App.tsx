@@ -3,8 +3,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { BrandPanel } from '@/components/BrandPanel'
 import { CmsPushPanel } from '@/components/CmsPushPanel'
 import { CrawlProgress } from '@/components/CrawlProgress'
+import { LlmStatus } from '@/components/LlmStatus'
 import { ModeTabs } from '@/components/ModeTabs'
-import { OllamaStatus } from '@/components/OllamaStatus'
 import { PageList } from '@/components/PageList'
 import { PagePicker } from '@/components/PagePicker'
 import { PagePreview } from '@/components/PagePreview'
@@ -393,7 +393,7 @@ export default function App() {
               </div>
             </div>
           </div>
-          <OllamaStatus />
+          <LlmStatus />
         </div>
       </header>
 

@@ -334,3 +334,100 @@ class ScraperImageExtractionTest(unittest.TestCase):
             [p.photo_url for p in profiles],
             ["https://example.my/aisha.jpg", "https://example.my/marcus.jpg"],
         )
+
+
+class SourceUsageProvenanceTest(unittest.TestCase):
+    """An image's source usage (CSS background vs inline <img>) must survive
+    extraction — downstream it keeps backgrounds out of side-image slots."""
+
+    def test_plain_img_is_inline(self):
+        soup = BeautifulSoup(
+            '<html><body><img src="/team.jpg" alt="team" width="1200" height="800" />'
+            "</body></html>",
+            "lxml",
+        )
+        images = _extract_images(soup, "https://example.my")
+        self.assertEqual(images[0].source_usage, "inline")
+
+    def test_stamped_computed_background_is_css_background(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <section class="hero" data-webtree-bg-image="/computed-hero.jpg">
+                <h1>Malaysia clinic</h1>
+              </section>
+            </body></html>
+            """,
+            "lxml",
+        )
+        images = _extract_images(soup, "https://example.my")
+        bg = next(i for i in images if i.url.endswith("computed-hero.jpg"))
+        self.assertEqual(bg.source_usage, "css_background")
+
+    def test_inline_style_background_is_css_background(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <section class="hero" style="background-image: url('/style-hero.jpg')">
+                <h1>Welcome</h1>
+              </section>
+            </body></html>
+            """,
+            "lxml",
+        )
+        images = _extract_images(soup, "https://example.my")
+        bg = next(i for i in images if i.url.endswith("style-hero.jpg"))
+        self.assertEqual(bg.source_usage, "css_background")
+
+    def test_style_block_background_is_css_background(self):
+        soup = BeautifulSoup(
+            """
+            <html><head>
+              <style>.hero { background-image: url('/css-hero.jpg'); }</style>
+            </head><body><h1>Welcome</h1></body></html>
+            """,
+            "lxml",
+        )
+        images = _extract_images(soup, "https://example.my")
+        bg = next(i for i in images if i.url.endswith("css-hero.jpg"))
+        self.assertEqual(bg.source_usage, "css_background")
+
+    def test_hero_promotion_preserves_provenance(self):
+        # A stamped, above-fold CSS background wins the measured-hero promotion
+        # but must still be flagged as a background.
+        soup = BeautifulSoup(
+            f"""
+            <html><body>
+              <section data-webtree-bg-image="/bg-hero.jpg"
+                       data-webtree-bg-evidence='{{"x": 0, "y": 0, "w": 1280, "h": 640,
+                           "vw": 1280, "vh": 800, "text": 120}}'>
+                <h1>A headline rendered over the background image, long enough.</h1>
+              </section>
+            </body></html>
+            """,
+            "lxml",
+        )
+        images = _extract_images(soup, "https://example.my")
+        bg = next(i for i in images if i.url.endswith("bg-hero.jpg"))
+        self.assertEqual(bg.source_usage, "css_background")
+        self.assertEqual(bg.intent, "hero")  # promoted by evidence
+
+    def test_source_content_metadata_carries_source_usage(self):
+        parsed = scraper._parse_rendered_html(
+            """
+            <html><head><title>Clinic</title></head><body>
+              <section class="hero" data-webtree-bg-image="/computed-hero.jpg">
+                <h1>Malaysia clinic</h1>
+              </section>
+              <img src="/team.jpg" alt="our team" width="1200" height="800" />
+              <p>{}</p>
+            </body></html>
+            """.format("Real page copy. " * 20),
+            "https://example.my",
+        )
+        by_url = {m.url: m for m in parsed.source_content.image_metadata}
+        self.assertEqual(
+            by_url["https://example.my/computed-hero.jpg"].source_usage,
+            "css_background",
+        )
+        self.assertEqual(by_url["https://example.my/team.jpg"].source_usage, "inline")

@@ -20,6 +20,7 @@ no hardcoded brand colours. UI/UX methodology baked in:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass, field
 from time import perf_counter
@@ -65,12 +66,19 @@ from app.models.content_blocks import (
     TimelineBlock,
 )
 from app.services.design_brain import DesignRecipe, generate_site_design_recipe
+from app.services.hero_director import (
+    IMAGELESS_HERO_IDS,
+    HeroDirective,
+    plan_site_heroes,
+)
 from app.services.header_footer import build_footer, build_header
+from app.services.image_match import SlotUsage
 from app.services.media import ImageIntent, ImageResolver
 from app.services.timing import log_elapsed, stage
 from app.services.pexels import PhotoResult
 from app.config import settings
 from app.services.section_content import (
+    _FULLBLEED_HERO_IDS,
     _PAGE_BG,
     _SURFACE_BG,
     Band,
@@ -88,6 +96,13 @@ from app.services.template_filler import fill_template
 from app.services.image_styling import washed_photo_background
 from app.services.theme import (
     _adjust_lightness,
+    _contrast,
+    _ensure_contrast_against,
+    _hex_to_rgb,
+    _hls_to_rgb,
+    _relative_luminance,
+    _rgb_to_hex,
+    _rgb_to_hls,
     band_colors,
     build_theme,
     color_family_name,
@@ -1244,6 +1259,219 @@ def _image_from_photo(
 # --- section builders -----------------------------------------------------------
 
 
+# Effective backdrop for contrast math on photo heroes: the legibility scrim
+# rgba(15,23,42,0.55) composited over a mid-grey photo (#808080). Real photos
+# vary, but text also carries a shadow; this target keeps every ink very light
+# without demanding the impossible (even pure white only reaches ~4:1 against
+# the scrim over a fully white photo).
+_SCRIM_COMPOSITE_BG = "#424651"
+
+
+def _split_headline(headline: str, accent: str | None) -> tuple[str, str] | None:
+    """Split a hero headline into (lead, accent tail) when `accent` is a real,
+    proper trailing phrase of `headline` (case-insensitive, whitespace-tolerant).
+    Returns None — render the headline unchanged — for anything else, so a
+    hallucinated or mid-sentence accent is always a safe no-op."""
+    if not accent:
+        return None
+    head = " ".join((headline or "").split())
+    tail = " ".join(accent.split())
+    if not head or not tail:
+        return None
+    if not head.lower().endswith(tail.lower()):
+        return None
+    lead = head[: len(head) - len(tail)].rstrip()
+    if not lead:  # accent == whole headline → nothing to contrast against
+        return None
+    return lead, head[len(head) - len(tail):]
+
+
+def _accent_ink_for(surface: str, accent: str) -> str:
+    """Accent ink that stays recognisably the accent hue on any surface.
+
+    Light surfaces: darken the accent until AA. Dark surfaces (scrims, brand
+    gradients): a plain AA lift can bleach the accent to pure white, erasing
+    the highlight — re-emit it as a high-lightness pastel of the SAME hue
+    first, then nudge for AA."""
+    if _relative_luminance(surface) >= 0.5:
+        return _ensure_contrast_against(surface, accent, min_ratio=4.5)
+    h, _l, s = _rgb_to_hls(*_hex_to_rgb(accent))
+    pastel = _rgb_to_hex(*_hls_to_rgb(h, 0.82, min(1.0, max(s, 0.55))))
+    return _ensure_contrast_against(surface, pastel, min_ratio=4.5)
+
+
+def _hero_accent_styles(base: dict, ctx: RenderContext, *, on_photo: bool) -> dict:
+    """Styles for the highlighted headline line: brand accent colour lifted to
+    AA contrast against the actual surface; luxury/editorial moods get the 2026
+    italic display treatment (the display serif is already the heading font)."""
+    surface = _SCRIM_COMPOSITE_BG if on_photo else ctx.theme.palette.background
+    color = _accent_ink_for(surface, ctx.theme.palette.accent)
+    styles = {**base, "color": color}
+    if getattr(ctx.theme, "mood", None) in ("luxury", "editorial"):
+        styles["fontStyle"] = "italic"
+    return styles
+
+
+def _headline_lines(
+    block: HeroBlock,
+    ctx: RenderContext,
+    *,
+    lead_styles: dict,
+    mobile: dict | None,
+    on_photo: bool,
+    centered: bool = False,
+) -> BuilderElement:
+    """The hero headline: a single text element, or — when headline_accent
+    validates — a two-line stack whose trailing phrase carries the accent
+    colour. Lines stay separate block-level text elements so the builder can
+    edit each as plain text (no HTML inside innerText — the editor would show
+    literal tags)."""
+    split = _split_headline(block.headline, block.headline_accent)
+    if split is None:
+        return _text(block.headline, name="Headline", styles=lead_styles, mobile=mobile)
+    lead, accent = split
+    accent_styles = _hero_accent_styles(lead_styles, ctx, on_photo=on_photo)
+    container_styles: dict = {"flexDirection": "column", "gap": "0px", "width": "100%"}
+    if centered:
+        container_styles["alignItems"] = "center"
+    return _container(
+        [
+            _text(lead, name="Headline", styles=lead_styles, mobile=mobile),
+            _text(accent, name="Headline accent", styles=accent_styles, mobile=mobile),
+        ],
+        name="Headline group",
+        styles=container_styles,
+    )
+
+
+def _photo_hero_ink(ctx: RenderContext) -> str:
+    """Near-white headline ink for photo heroes, tinted by the brand instead of
+    hardcoded #ffffff: the palette surface lifted until it clears the scrim
+    backdrop by a wide margin (light-scheme surfaces usually already do)."""
+    return _ensure_contrast_against(
+        _SCRIM_COMPOSITE_BG, ctx.theme.palette.surface, min_ratio=8.0
+    )
+
+
+def _mix_hex(a: str, b: str, t: float = 0.5) -> str:
+    ra, ga, ba = _hex_to_rgb(a)
+    rb, gb, bb = _hex_to_rgb(b)
+    return _rgb_to_hex(
+        round(ra + (rb - ra) * t), round(ga + (gb - ga) * t), round(ba + (bb - ba) * t)
+    )
+
+
+def _hero_surface_for_template(template_id: str, ctx: RenderContext) -> str:
+    """The colour the hero's text actually sits on, per template family — the
+    contrast target for accent/ink corrections."""
+    if template_id in _FULLBLEED_HERO_IDS:
+        return _SCRIM_COMPOSITE_BG  # photo behind a dark scrim
+    if template_id == "hero-gradient":
+        # The catalog gradient runs secondary → primary; the centred heading
+        # sits around the midpoint. Targeting primary alone over-lightens the
+        # accent into near-white (losing the highlight).
+        return _mix_hex(ctx.theme.palette.secondary, ctx.theme.palette.primary)
+    return ctx.theme.palette.background  # split/editorial/minimal sit on page bg
+
+
+def _find_text_by_inner(
+    el: BuilderElement, needle: str
+) -> tuple[BuilderElement, list[BuilderElement], int] | None:
+    """Depth-first: the text element whose innerText equals `needle`, plus its
+    parent list and index so it can be restyled or replaced in place."""
+    content = el.content
+    if isinstance(content, list):
+        for i, child in enumerate(content):
+            cc = child.content
+            if (
+                child.type == "text"
+                and not isinstance(cc, list)
+                and getattr(cc, "innerText", None) == needle
+            ):
+                return child, content, i
+            found = _find_text_by_inner(child, needle)
+            if found is not None:
+                return found
+    return None
+
+
+def _apply_hero_typography(
+    element: BuilderElement,
+    block: HeroBlock,
+    ctx: RenderContext,
+    template_id: str,
+) -> None:
+    """Post-fill hero typography (catalogue path):
+
+    - `headline_accent`: split the headline text node into a two-line stack —
+      lead line keeps the template's styling, the trailing phrase becomes its
+      own line in the brand accent (contrast-corrected against the template's
+      real surface; italic display treatment for luxury/editorial moods).
+      Separate block-level text elements, NOT HTML in innerText — the builder
+      editor renders innerText literally.
+    - Full-bleed photo heroes: headline ink becomes a brand-tinted near-white
+      (was hardcoded white in the catalog) and the eyebrow carries the lifted
+      brand accent, both AA against the scrim-composited backdrop.
+    """
+    surface = _hero_surface_for_template(template_id, ctx)
+    on_photo = template_id in _FULLBLEED_HERO_IDS
+
+    if on_photo:
+        found = _find_text_by_inner(element, block.headline)
+        if found is not None:
+            node, _, _ = found
+            node.styles = {**(node.styles or {}), "color": _photo_hero_ink(ctx)}
+        if block.eyebrow:
+            found = _find_text_by_inner(element, block.eyebrow)
+            if found is not None:
+                node, _, _ = found
+                node.styles = {
+                    **(node.styles or {}),
+                    "color": _accent_ink_for(
+                        _SCRIM_COMPOSITE_BG, ctx.theme.palette.accent
+                    ),
+                }
+
+    split = _split_headline(block.headline, block.headline_accent)
+    if split is None:
+        return
+    found = _find_text_by_inner(element, block.headline)
+    if found is None:
+        return
+    node, parent, index = found
+    lead, accent = split
+
+    accent_color = _accent_ink_for(surface, ctx.theme.palette.accent)
+    accent_styles: dict[str, Any] = {**(node.styles or {}), "color": accent_color}
+    if getattr(ctx.theme, "mood", None) in ("luxury", "editorial"):
+        accent_styles["fontStyle"] = "italic"
+
+    lead_el = node.model_copy(deep=True)
+    lead_el.id = str(uuid4())
+    lead_el.content = BuilderElementContent(innerText=lead)
+
+    accent_el = node.model_copy(deep=True)
+    accent_el.id = str(uuid4())
+    accent_el.name = f"{node.name} accent"
+    accent_el.styles = accent_styles
+    accent_el.content = BuilderElementContent(innerText=accent)
+
+    group_styles: dict[str, Any] = {
+        "flexDirection": "column",
+        "gap": "0px",
+        "width": "100%",
+    }
+    if (node.styles or {}).get("textAlign") == "center":
+        group_styles["alignItems"] = "center"
+    parent[index] = BuilderElement(
+        id=str(uuid4()),
+        name=f"{node.name} group",
+        type="container",
+        styles=group_styles,
+        content=[lead_el, accent_el],
+    )
+
+
 async def _build_hero(block: HeroBlock, ctx: RenderContext) -> BuilderElement:
     photo = await ctx.resolver.resolve(
         block.image_query,
@@ -1263,11 +1491,12 @@ def _build_hero_split(
     if block.eyebrow:
         left.append(_text(block.eyebrow, name="Eyebrow", styles=s.eyebrow))
     left.append(
-        _text(
-            block.headline,
-            name="Headline",
-            styles=s.heading_xl,
+        _headline_lines(
+            block,
+            ctx,
+            lead_styles=s.heading_xl,
             mobile=s.heading_mobile,
+            on_photo=False,
         )
     )
     if block.subheadline:
@@ -1317,22 +1546,30 @@ def _build_hero_background(
                 name="Eyebrow",
                 styles={
                     **s.eyebrow,
-                    "color": "rgba(255,255,255,0.92)",
+                    # The eyebrow is the accent voice on photo heroes — the
+                    # brand accent as a hue-true pastel, AA against the scrim
+                    # backdrop (was a flat near-white).
+                    "color": _accent_ink_for(
+                        _SCRIM_COMPOSITE_BG, ctx.theme.palette.accent
+                    ),
                     "textAlign": "center",
                 },
             )
         )
     inner.append(
-        _text(
-            block.headline,
-            name="Headline",
-            styles={
+        _headline_lines(
+            block,
+            ctx,
+            lead_styles={
                 **s.heading_xl,
-                "color": "#ffffff",
+                # Brand-tinted near-white instead of hardcoded #ffffff.
+                "color": _photo_hero_ink(ctx),
                 "textAlign": "center",
                 "textShadow": "0 2px 16px rgba(0,0,0,0.35)",
             },
             mobile={"fontSize": "36px"},
+            on_photo=True,
+            centered=True,
         )
     )
     if block.subheadline:
@@ -1737,7 +1974,9 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
             name="Headline",
             styles={
                 **s.heading_lg,
-                "color": "#ffffff",
+                # Brand-tinted near-white over the CTA scrim (same ink as the
+                # photo hero) instead of hardcoded #ffffff.
+                "color": _photo_hero_ink(ctx),
                 "textAlign": "center",
                 "textShadow": "0 2px 16px rgba(0,0,0,0.35)",
             },
@@ -2730,10 +2969,12 @@ _GENUINE_PHOTO_SOURCES = frozenset({"scraped", "pexels"})
 
 def _abstract_theme_query(ctx: RenderContext) -> str:
     """A deterministic, theme-coloured abstract stock query (e.g. "abstract blue
-    gradient texture") for a hero's atmospheric background. The colour word is the
-    brand primary's nearest Tailwind family, so the background reads on-theme."""
+    gradient mesh texture") for a hero's atmospheric background. The colour word
+    is the brand primary's nearest Tailwind family, so the background reads
+    on-theme; "gradient mesh" steers Pexels toward soft aurora/mesh abstracts
+    rather than busy photographic textures."""
     family = color_family_name(ctx.theme.palette.primary)
-    return f"abstract {family} gradient texture"
+    return f"abstract {family} gradient mesh texture"
 
 
 # Moods whose audience (SaaS / fintech / tech for `modern`; engineering / B2B /
@@ -2743,12 +2984,88 @@ def _abstract_theme_query(ctx: RenderContext) -> str:
 SPLIT_INCLINED_MOODS = frozenset({"modern", "technical"})
 
 
+async def _apply_hero_directive(
+    block: HeroBlock, ctx: RenderContext, directive: HeroDirective
+) -> tuple[PhotoResult | None, PhotoResult | None]:
+    """Resolve hero imagery for a hero-director directive (see hero_director.py).
+
+    The directive fixes the template/layout per page; this resolves the imagery
+    that layout needs, honouring source provenance:
+
+      * imageless template -> no photo at all (don't burn a scraped image on a
+        slot that never renders it);
+      * full-bleed background -> resolve with slot_usage="background" so an
+        image the SOURCE used as a CSS background wins the slot; degrade to the
+        colour-matched abstract, then the gradient hero, when nothing genuine
+        resolves;
+      * split/editorial -> resolve the side image with slot_usage="inline"
+        (a source CSS background must never be cropped into an <img>), plus the
+        abstract wash when the directive asks for one. No genuine photo ->
+        degrade to the imageless path so the template falls back gracefully.
+    """
+    abstract_query = _abstract_theme_query(ctx)
+    primary_hex = ctx.theme.palette.primary
+    block.layout = directive.layout
+
+    if directive.template_id in IMAGELESS_HERO_IDS:
+        block.image_query = None
+        return None, None
+
+    if directive.layout == "background":
+        featured = await ctx.resolver.resolve(
+            block.image_query,
+            intent="hero",
+            alt_fallback=block.image_alt or block.headline,
+            prefer=ctx.page_images,
+            slot_usage="background",
+        )
+        if featured.source in _GENUINE_PHOTO_SOURCES:
+            if not (block.image_query or "").strip():
+                block.image_query = block.image_alt or block.headline or "brand photo"
+            return featured, None
+        abstract = await ctx.resolver.resolve_abstract_bg(
+            abstract_query, color_target_hex=primary_hex, intent="hero"
+        )
+        if abstract is not None:
+            block.image_query = abstract_query
+            return abstract, None
+        block.layout = "split"  # compact gradient hero, not an empty full-bleed
+        block.image_query = None
+        return None, None
+
+    featured = await ctx.resolver.resolve(
+        block.image_query,
+        intent="hero",
+        alt_fallback=block.image_alt or block.headline,
+        prefer=ctx.page_images,
+        slot_usage="inline",
+    )
+    if featured.source not in _GENUINE_PHOTO_SOURCES:
+        # No real side image -> let select_template fall back to an imageless
+        # variant instead of framing a placeholder gradient as a photo.
+        block.image_query = None
+        return None, None
+    if not (block.image_query or "").strip():
+        block.image_query = block.image_alt or block.headline or "brand photo"
+    washed_bg = (
+        await ctx.resolver.resolve_abstract_bg(
+            abstract_query, color_target_hex=primary_hex, intent="cta_bg"
+        )
+        if directive.wants_wash
+        else None
+    )
+    return featured, washed_bg
+
+
 async def _apply_hero_photo_policy(
-    block: HeroBlock, ctx: RenderContext
-) -> tuple[PhotoResult, PhotoResult | None]:
+    block: HeroBlock, ctx: RenderContext, directive: HeroDirective | None = None
+) -> tuple[PhotoResult | None, PhotoResult | None]:
     """Resolve the hero imagery and normalise the block's layout.
 
-    Photos lead. Decided deterministically from the resolver's *actual* results:
+    With a hero-director `directive` (the plan_to_site path), the per-page
+    art direction wins — see _apply_hero_directive. Without one (legacy/direct
+    callers), photos lead. Decided deterministically from the resolver's
+    *actual* results:
 
       * genuine featured photo + SaaS/professional mood (and the planner didn't
         force a full-bleed) -> SPLIT hero: the photo fills the column AND a
@@ -2767,6 +3084,8 @@ async def _apply_hero_photo_policy(
     the caller for the template's image slot (no second pick); the second, when
     set, is painted behind the split section by ``_apply_hero_washed_background``.
     """
+    if directive is not None:
+        return await _apply_hero_directive(block, ctx, directive)
     featured = await ctx.resolver.resolve(
         block.image_query,
         intent="hero",
@@ -2834,14 +3153,21 @@ async def block_to_element(
     is_homepage: bool = True,
     hero_scroll_target_kind: str | None = None,
     explicit_template_id: str | None = None,
+    hero_directive: HeroDirective | None = None,
 ) -> BuilderElement:
-    # Heroes get one consistent treatment site-wide (see _apply_hero_photo_policy).
-    # The photo is resolved up front so the gradient-vs-photo choice can key off
-    # the resolver's real source; the closure below reuses it (no second pick).
+    # Heroes are art-directed per page (see hero_director.plan_site_heroes);
+    # direct callers without a directive fall back to the legacy site-wide
+    # policy. The photo is resolved up front so the gradient-vs-photo choice can
+    # key off the resolver's real source; the closure below reuses it (no
+    # second pick).
     hero_photo: PhotoResult | None = None
     hero_washed_bg: PhotoResult | None = None
     if block.kind == "hero":
-        hero_photo, hero_washed_bg = await _apply_hero_photo_policy(block, ctx)
+        hero_photo, hero_washed_bg = await _apply_hero_photo_policy(
+            block, ctx, hero_directive
+        )
+        if hero_directive is not None:
+            explicit_template_id = hero_directive.template_id
 
     # Catalogue path: for section types that have shared builder templates, the
     # LLM-mapped content fills a chosen template (selection by feasibility +
@@ -2860,6 +3186,15 @@ async def block_to_element(
     if mapped is not None:
         template, content = mapped
         intent = _IMAGE_INTENT.get(block.kind, "generic")
+        # These kinds render their catalog image slots as in-flow <img>-style
+        # visuals — a photo the source used as a CSS background must not be
+        # cropped into them (CTA backgrounds resolve via intent="cta_bg" and
+        # never touch the scraped pool).
+        slot_usage: SlotUsage = (
+            "inline"
+            if block.kind in {"hero", "about", "features", "team", "gallery"}
+            else "any"
+        )
 
         async def resolve_image(query: str) -> tuple[str, str | None]:
             # Reuse the hero photo already resolved by the policy above; for every
@@ -2868,7 +3203,11 @@ async def block_to_element(
                 hero_photo
                 if hero_photo is not None
                 else await ctx.resolver.resolve(
-                    query, intent=intent, alt_fallback=query, prefer=ctx.page_images
+                    query,
+                    intent=intent,
+                    alt_fallback=query,
+                    prefer=ctx.page_images,
+                    slot_usage=slot_usage,
                 )
             )
             # Capture the FIRST resolved image's band as the section's featured
@@ -2894,6 +3233,16 @@ async def block_to_element(
         # Split hero: wash the whole section with the abstract theme background.
         if hero_washed_bg is not None:
             _apply_hero_washed_background(element, hero_washed_bg, ctx)
+        # Hero typography pass: accent headline line + photo-hero ink retint.
+        if block.kind == "hero":
+            _apply_hero_typography(element, block, ctx, template_id=template["id"])
+        # Full-bleed heroes carry a dark legibility overlay, so a transparent
+        # header with white ink is readable over them. Mark the section: the
+        # public renderer only runs the header's transparent phase on pages
+        # whose FIRST section carries this (BuilderElement allows extra fields;
+        # webtree-public reads it via getNodeField).
+        if block.kind == "hero" and template["id"] in _FULLBLEED_HERO_IDS:
+            element.headerOverlaySafe = True
         return element
 
     # Legacy path: section kinds without a shared template yet (pricing, team,
@@ -3022,13 +3371,6 @@ async def plan_to_site(
         secondary_hex=theme.palette.secondary,
     )
 
-    # Concurrently warm the stock-photo cache for every query the (serial)
-    # render below will request, so image resolution stops paying a network
-    # round-trip per slot. Output-identical — selection/dedup/order are
-    # unchanged; this only pre-fetches into the shared per-query cache.
-    with stage("stock_prewarm"):
-        await resolver.prewarm_stock(_harvest_image_slots(plan))
-
     # Pre-compute parent/child relationships so listing blocks (services /
     # gallery) on a parent page can cross-link to detail sub-pages.
     children_by_parent: dict[str, list[ChildPageRef]] = {}
@@ -3042,18 +3384,42 @@ async def plan_to_site(
             ChildPageRef(slug=pp.slug, title=pp.title, page_type=pp.page_type)
         )
 
-    # Design-brain pass: pick a template variant per section so sites of the
-    # same mood/industry stop converging on one identical layout. Batched into a
-    # ONE call for the whole site (instead of one per page) — the model picks
-    # with whole-site context and we pay a single round-trip. A failed/disabled
-    # call returns an empty recipe, so every per-page lookup below yields None
-    # and selection falls back to today's deterministic mood-ordered choice.
-    with stage("design_recipe"):
-        site_design_recipe = await generate_site_design_recipe(
-            mood=effective_brand.mood,
-            industry=plan.industry_category,
-            pages=[[b.kind for b in p.blocks] for p in plan.pages],
-        )
+    # Two independent warm-ups, run concurrently (they share no data):
+    # - Stock prewarm fills the per-query Pexels cache for every image slot the
+    #   (serial) render below will request, so image resolution stops paying a
+    #   network round-trip per slot. Output-identical — selection/dedup/order
+    #   are unchanged; this only pre-fetches into the shared per-query cache.
+    # - The design-brain pass picks a template variant per section so sites of
+    #   the same mood/industry stop converging on one identical layout. ONE
+    #   call for the whole site; a failed/disabled call returns an empty
+    #   recipe, so every per-page lookup below yields None and selection falls
+    #   back to the deterministic mood-ordered choice.
+    async def _prewarm() -> None:
+        with stage("stock_prewarm"):
+            await resolver.prewarm_stock(_harvest_image_slots(plan))
+
+    async def _design_recipe():
+        with stage("design_recipe"):
+            return await generate_site_design_recipe(
+                mood=effective_brand.mood,
+                industry=plan.industry_category,
+                pages=[[b.kind for b in p.blocks] for p in plan.pages],
+            )
+
+    _, site_design_recipe = await asyncio.gather(_prewarm(), _design_recipe())
+
+    # Heroes are art-directed deterministically, per page, OUTSIDE the design
+    # brain (which used to force one identical hero on every page): homepage
+    # leads with the mood's signature treatment — full-bleed when the source
+    # itself led with a CSS background image — and interiors rotate within a
+    # mood-approved set. See services/hero_director.py.
+    hero_directives = plan_site_heroes(
+        plan.pages,
+        mood=effective_brand.mood,
+        industry=plan.industry_category,
+        has_source_background=resolver.strongest_source_background() is not None,
+        seed=effective_brand.name or plan.site_name,
+    )
 
     # Build each page's body
     pages: list[GeneratedPage] = []
@@ -3105,6 +3471,11 @@ async def plan_to_site(
                 is_homepage=page_plan.is_homepage,
                 hero_scroll_target_kind=hero_target_kind,
                 explicit_template_id=design_recipe.template_for(block_index),
+                hero_directive=(
+                    hero_directives.get(page_plan.slug)
+                    if block.kind == "hero"
+                    else None
+                ),
             )
             elements.append(element)
             if hero_element is None and block.kind == "hero":
@@ -3180,12 +3551,31 @@ async def plan_to_site(
         footer_nav.extend(extra_footer_nav)
     primary_cta = ("Get in touch", "#contact")
 
+    # Header chrome follows the theme scheme (see _header_chrome): menu ink is
+    # one consistent white-or-dark choice, and the theme keeps non-photo hero
+    # surfaces in the same scheme band, so light ink always sits over dark
+    # first-hero surfaces and vice versa. Full-bleed photo heroes are dark and
+    # take the overlay path below, where the renderer forces white ink.
+    home_plan = next((p for p in plan.pages if p.is_homepage), None)
+    home_directive = hero_directives.get(home_plan.slug) if home_plan else None
+    # Transparent floating header, solidifying on scroll (default on; the
+    # setting is a kill switch). Keyed on the HOMEPAGE hero being full-bleed —
+    # interior pages are handled per page by the renderer, which only runs the
+    # transparent phase when the page's first section carries the
+    # `headerOverlaySafe` marker stamped in block_to_element (compact interior
+    # heroes don't, so those pages get the solid sticky header from scroll 0).
+    header_overlay = bool(
+        settings.header_overlay_enabled
+        and home_directive is not None
+        and home_directive.layout == "background"
+    )
     header = build_header(
         effective_brand,
         theme,
         nav_items=nav_items,
         primary_cta=primary_cta,
         page_tree=page_tree,
+        overlay=header_overlay,
     )
     footer = build_footer(
         effective_brand,
@@ -3223,6 +3613,7 @@ async def plan_to_site(
         brand=effective_brand,
         header_schema=header,
         footer_schema=footer,
+        header_overlay=header_overlay,
     )
 
     # Advisory UX/accessibility audit (alt text, contrast, font size, …). Logged

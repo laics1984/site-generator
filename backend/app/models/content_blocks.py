@@ -21,7 +21,7 @@ Robustness strategy:
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, get_args
+from typing import Annotated, Literal, get_args, get_origin
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
@@ -160,6 +160,14 @@ class HeroBlock(BaseModel):
     kind: Literal["hero"] = "hero"
     eyebrow: str | None = None
     headline: str
+    headline_accent: str | None = Field(
+        default=None,
+        description=(
+            "Optional 1-4 word phrase copied verbatim from the END of headline; "
+            "the layout renders it as a highlighted line in the brand accent "
+            "colour. Ignored (safe no-op) when it isn't the headline's tail."
+        ),
+    )
     subheadline: str | None = None
     primary_cta_label: str = "Get started"
     primary_cta_href: str = "#contact"
@@ -620,6 +628,35 @@ ContentBlock = Annotated[
 ]
 
 
+def _required_list_fields() -> dict[str, tuple[str, int]]:
+    """kind -> (list_field, min_length) for every block whose content list must be
+    non-empty, derived from the block models themselves.
+
+    Derived (not hand-maintained) on purpose: the previous static map silently
+    missed awards/clients/stats/timeline/linkbar when those block types were added,
+    which 502'd generation whenever the LLM emitted one with an empty list. Each
+    block has exactly one min_length list field, so a single entry per kind suffices.
+    """
+    union = get_args(ContentBlock)[0]  # unwrap Annotated[Union[...], Field(...)]
+    out: dict[str, tuple[str, int]] = {}
+    for member in get_args(union):
+        kind = member.model_fields["kind"].default
+        for fname, finfo in member.model_fields.items():
+            if get_origin(finfo.annotation) is list:
+                min_len = next(
+                    (getattr(m, "min_length", None) for m in finfo.metadata
+                     if getattr(m, "min_length", None)),
+                    None,
+                )
+                if min_len:
+                    out[kind] = (fname, min_len)
+                    break
+    return out
+
+
+_REQUIRED_LIST_FIELDS = _required_list_fields()
+
+
 class PagePlan(BaseModel):
     """The LLM's blueprint for a single page.
 
@@ -671,26 +708,23 @@ class PagePlan(BaseModel):
     @classmethod
     def drop_empty_content_blocks(cls, data: object) -> object:
         """The LLM is told to OMIT a section it can't ground with real content,
-        but it sometimes emits the block with an empty list instead (e.g.
-        ``{"kind":"testimonials","items":[]}``). That trips the block's
-        ``min_length=1`` and 502s the whole generation, so we drop such blocks
-        here — the intended "omit empty section" outcome — rather than reject the
-        plan. Blocks without a content list (hero/cta/about/contact) are untouched.
+        but it sometimes emits the block with an empty (or too-short) list instead
+        (e.g. ``{"kind":"awards","items":[]}``). That trips the block's
+        ``min_length`` and 502s the whole generation, so we drop such blocks here —
+        the intended "omit empty section" outcome — rather than reject the plan.
+        Blocks without a content list (hero/cta/about/contact) are untouched.
         """
         if not isinstance(data, dict) or not isinstance(data.get("blocks"), list):
             return data
-        # kind -> content list field(s) that must be non-empty to keep the block.
-        list_fields = {
-            "features": ("items",), "services": ("items",), "testimonials": ("items",),
-            "faq": ("items",), "gallery": ("items",), "team": ("members",),
-            "process": ("steps", "items"), "pricing": ("tiers",), "menu": ("categories",),
-        }
         kept = []
         for block in data["blocks"]:
             if isinstance(block, dict):
-                fields = list_fields.get(block.get("kind"))
-                if fields and not any(block.get(f) for f in fields):
-                    continue  # empty-content section — drop instead of failing
+                req = _REQUIRED_LIST_FIELDS.get(block.get("kind"))
+                if req is not None:
+                    field, min_len = req
+                    value = block.get(field)
+                    if not isinstance(value, list) or len(value) < min_len:
+                        continue  # empty/too-short content section — drop, not fail
             kept.append(block)
         return {**data, "blocks": kept}
 
@@ -713,6 +747,7 @@ IndustryCategoryLiteral = Literal[
     "ecommerce",
     "consultancy",
     "nonprofit",
+    "childcare",
     "personal",
     "other",
 ]
@@ -732,6 +767,9 @@ INDUSTRY_MOOD: dict[str, str] = {
     "ecommerce": "friendly",
     "consultancy": "technical",
     "nonprofit": "friendly",
+    # childcare reads friendly, not playful: the audience is parents, so the
+    # design must build trust and warmth first — joyful without being childish.
+    "childcare": "friendly",
     "personal": "editorial",
     "other": "modern",
 }
@@ -754,8 +792,8 @@ class SitePlan(BaseModel):
             "The brand's visual personality. Drives typography pairing, button radius, "
             "and section rhythm. Pick the closest match: "
             "modern=SaaS/fintech/tech; luxury=hospitality/jewellery/real-estate; "
-            "friendly=consumer/wellness/lifestyle; technical=engineering/B2B/dev-tools; "
-            "editorial=media/agencies/portfolios; playful=entertainment/food/kids."
+            "friendly=consumer/wellness/lifestyle/childcare; technical=engineering/B2B/dev-tools; "
+            "editorial=media/agencies/portfolios; playful=entertainment/food/gaming."
         ),
     )
     industry_category: IndustryCategoryLiteral = Field(
@@ -763,7 +801,8 @@ class SitePlan(BaseModel):
         description=(
             "The business industry. Drives the suggested page set. Pick the closest: "
             "restaurant, agency, saas, professional-services (legal/dental/medical), "
-            "ecommerce, consultancy, nonprofit, personal, or other."
+            "ecommerce, consultancy, nonprofit, childcare (kindergarten/preschool/"
+            "daycare/early learning), personal, or other."
         ),
     )
     primary_color_hint: str | None = Field(
@@ -889,6 +928,12 @@ class ImageMetadata(BaseModel):
     ] = "unknown"
     width: int | None = None
     height: int | None = None
+    # How the source site used the image: 'css_background' = CSS background-image,
+    # 'inline' = <img>/og:image. 'unknown' for doc-upload and legacy bare-URL
+    # wrapping. Backgrounds must stay backgrounds: the matcher keeps
+    # css_background images out of side/featured slots (slot_usage='inline') and
+    # pins them for full-bleed slots (slot_usage='background').
+    source_usage: Literal["inline", "css_background", "unknown"] = "unknown"
     # Vision-pass annotations (services/image_vision.py). All None until the
     # opt-in pass runs. vision_caption feeds the matcher's lexical scoring so
     # alt-less, hash-named images can still be ranked against slot queries.

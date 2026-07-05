@@ -52,6 +52,8 @@ class CmsClient:
     jwt: str | None = None
     # cookies for builder-session calls (set via launch-code bridge)
     _builder_cookies: dict[str, str] = field(default_factory=dict)
+    # long-lived connection pool shared by every JWT call + media upload
+    _http: httpx.AsyncClient | None = field(default=None, repr=False)
 
     # --- factory ---------------------------------------------------------------
 
@@ -110,8 +112,7 @@ class CmsClient:
             payload["entity_url"] = entity_url
         if builder_styles:
             payload["builder_styles"] = builder_styles
-        async with self._jwt_session() as client:
-            resp = await client.post(url, json=payload)
+        resp = await self._http_client().post(url, json=payload, headers=self._jwt_headers())
         body = _safe_json(resp)
         if resp.status_code >= 400:
             raise CmsApiError(
@@ -133,8 +134,7 @@ class CmsClient:
 
     async def list_pages(self, entity_token: str) -> list[dict[str, Any]]:
         url = f"{self.base_url}/api/entities/{entity_token}/pages"
-        async with self._jwt_session() as client:
-            resp = await client.get(url)
+        resp = await self._http_client().get(url, headers=self._jwt_headers())
         body = _safe_json(resp)
         if resp.status_code != 200:
             raise CmsApiError(resp.status_code, f"List pages failed: {resp.text[:200]}", response_body=body)
@@ -159,8 +159,7 @@ class CmsClient:
             payload["slug"] = slug
         if seo:
             payload["seo"] = seo
-        async with self._jwt_session() as client:
-            resp = await client.post(url, json=payload)
+        resp = await self._http_client().post(url, json=payload, headers=self._jwt_headers())
         body = _safe_json(resp)
         if resp.status_code >= 400:
             raise CmsApiError(
@@ -175,8 +174,9 @@ class CmsClient:
     ) -> dict[str, Any]:
         """GET /pages/{id}/builder — read concurrency tokens + current layout."""
         url = f"{self.base_url}/api/entities/{entity_token}/pages/{page_id}/builder"
-        async with self._jwt_session() as client:
-            resp = await client.get(url, params={"mode": mode})
+        resp = await self._http_client().get(
+            url, params={"mode": mode}, headers=self._jwt_headers()
+        )
         body = _safe_json(resp)
         if resp.status_code != 200:
             raise CmsApiError(resp.status_code, f"Get builder payload failed: {resp.text[:200]}", response_body=body)
@@ -195,8 +195,7 @@ class CmsClient:
             "baseDraftVersion": base_draft_version,
             "bodySchema": body_schema,
         }
-        async with self._jwt_session() as client:
-            resp = await client.put(url, json=payload)
+        resp = await self._http_client().put(url, json=payload, headers=self._jwt_headers())
         body = _safe_json(resp)
         if resp.status_code >= 400:
             raise CmsApiError(
@@ -223,8 +222,7 @@ class CmsClient:
             "footerSchema": footer_schema,
             "menus": menus,
         }
-        async with self._jwt_session() as client:
-            resp = await client.put(url, json=payload)
+        resp = await self._http_client().put(url, json=payload, headers=self._jwt_headers())
         body = _safe_json(resp)
         if resp.status_code >= 400:
             raise CmsApiError(
@@ -247,8 +245,7 @@ class CmsClient:
             "expectedDraftVersion": expected_draft_version,
             "expectedLayoutVersionId": expected_layout_version_id,
         }
-        async with self._jwt_session() as client:
-            resp = await client.post(url, json=payload)
+        resp = await self._http_client().post(url, json=payload, headers=self._jwt_headers())
         body = _safe_json(resp)
         if resp.status_code >= 400:
             raise CmsApiError(
@@ -272,11 +269,13 @@ class CmsClient:
         url = f"{self.base_url}/api/file/add"
         files = {"file": (filename, file_bytes, content_type)}
         data = {"entity": entity_token}
-        async with httpx.AsyncClient(
-            timeout=_MEDIA_UPLOAD_TIMEOUT,
+        resp = await self._http_client().post(
+            url,
+            data=data,
+            files=files,
             headers={"Authorization": f"Bearer {self.jwt}"} if self.jwt else {},
-        ) as client:
-            resp = await client.post(url, data=data, files=files)
+            timeout=_MEDIA_UPLOAD_TIMEOUT,
+        )
         body = _safe_json(resp)
         # MediaController returns {t: 'p', i: <url>} on success, {t: 'f', errors: ...} on fail.
         if resp.status_code >= 400 or body.get("t") != "p":
@@ -302,8 +301,9 @@ class CmsClient:
         """
         # 1. Issue launch code via JWT
         launch_url = f"{self.base_url}/api/builder/launch"
-        async with self._jwt_session() as client:
-            resp = await client.post(launch_url, json={"entity_api_token": entity_token})
+        resp = await self._http_client().post(
+            launch_url, json={"entity_api_token": entity_token}, headers=self._jwt_headers()
+        )
         body = _safe_json(resp)
         if resp.status_code >= 400:
             raise CmsApiError(
@@ -373,22 +373,27 @@ class CmsClient:
 
     # --- internals -------------------------------------------------------------
 
-    def _jwt_session(self) -> httpx.AsyncClient:
-        """httpx client with the JWT Authorization header pre-attached.
+    def _http_client(self) -> httpx.AsyncClient:
+        """Lazily-created long-lived client so back-to-back CMS calls reuse
+        connections (keep-alive) instead of opening a socket per request.
+        Safe for concurrent requests. Close via aclose() when the push ends."""
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+        return self._http
 
-        Caller must use ``async with`` so the connection pool closes.
-        """
+    async def aclose(self) -> None:
+        if self._http is not None and not self._http.is_closed:
+            await self._http.aclose()
+
+    def _jwt_headers(self) -> dict[str, str]:
         if not self.jwt:
             raise CmsApiError(
                 401, "CmsClient has no JWT — call login() first."
             )
-        return httpx.AsyncClient(
-            timeout=_DEFAULT_TIMEOUT,
-            headers={
-                "Authorization": f"Bearer {self.jwt}",
-                "Accept": "application/json",
-            },
-        )
+        return {
+            "Authorization": f"Bearer {self.jwt}",
+            "Accept": "application/json",
+        }
 
 
 def _safe_json(resp: httpx.Response) -> dict[str, Any]:

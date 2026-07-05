@@ -23,9 +23,14 @@ class FakeVisionLlm:
 
 
 def _enable_vision(test):
-    patcher = mock.patch.object(settings, "ollama_vision_model", "fake-vl")
-    patcher.start()
-    test.addCleanup(patcher.stop)
+    # Pin the Ollama backend so the active vision model is `ollama_vision_model`
+    # (under the MLX backend the vision model is `mlx_vision_model`, unset here).
+    for patcher in (
+        mock.patch.object(settings, "ollama_vision_model", "fake-vl"),
+        mock.patch.object(settings, "llm_backend", "ollama"),
+    ):
+        patcher.start()
+        test.addCleanup(patcher.stop)
 
 
 def _fake_fetch(test, b64="ZmFrZQ==", missing=()):
@@ -110,6 +115,39 @@ class AnnotateImagePoolTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(llm.calls), 1)
         self.assertEqual(again["https://x.example/a.jpg"].caption, "once")
+
+    async def test_prefetched_payloads_skip_the_download(self):
+        _enable_vision(self)
+        _fake_fetch(self, missing={"https://x.example/a.jpg"})  # download would fail
+        meta = [ImageMetadata(url="https://x.example/a.jpg")]
+        llm = FakeVisionLlm([VisionAnnotation(caption="from prefetch", kind="photo")])
+
+        result = await annotate_image_pool(
+            meta, llm=llm, prefetched={"https://x.example/a.jpg": "cHJlZmV0Y2hlZA=="}
+        )
+
+        # Annotation succeeded via the prefetched base64 despite the dead URL,
+        # and metadata enrichment still happened in place.
+        self.assertEqual(result["https://x.example/a.jpg"].caption, "from prefetch")
+        self.assertEqual(meta[0].vision_caption, "from prefetch")
+        self.assertEqual(llm.calls, [["cHJlZmV0Y2hlZA=="]])
+
+    async def test_prefetch_image_pool_downloads_uncached_candidates(self):
+        _enable_vision(self)
+        _fake_fetch(self, b64="ZG93bmxvYWRlZA==", missing={"https://x.example/broken.jpg"})
+        image_vision._cache_annotation(
+            "https://x.example/cached.jpg", VisionAnnotation(caption="hit", kind="photo")
+        )
+        meta = [
+            ImageMetadata(url="https://x.example/cached.jpg"),
+            ImageMetadata(url="https://x.example/fresh.jpg"),
+            ImageMetadata(url="https://x.example/broken.jpg"),
+        ]
+
+        prefetched = await image_vision.prefetch_image_pool(meta)
+
+        # Cached URL skipped, failed download dropped, fresh URL fetched.
+        self.assertEqual(prefetched, {"https://x.example/fresh.jpg": "ZG93bmxvYWRlZA=="})
 
     async def test_annotation_cache_is_bounded(self):
         with mock.patch.object(image_vision, "_ANNOTATION_CACHE_MAX", 3):

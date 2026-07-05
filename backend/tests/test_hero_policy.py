@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from app.models.builder_schema import BuilderElement
 from app.models.content_blocks import HeroBlock
+from app.services.hero_director import HeroDirective
 from app.services.image_styling import washed_photo_background
 from app.services.pexels import PhotoResult
 from app.services.schema_builder import (
@@ -50,8 +51,16 @@ class FakeResolver:
         self._abstract = abstract
         self.calls = []
 
-    async def resolve(self, query, *, intent="generic", alt_fallback=None, prefer=None):
-        self.calls.append({"query": query, "intent": intent, "method": "resolve"})
+    async def resolve(
+        self, query, *, intent="generic", alt_fallback=None, prefer=None,
+        slot_usage="any",
+    ):
+        self.calls.append(
+            {
+                "query": query, "intent": intent, "method": "resolve",
+                "slot_usage": slot_usage,
+            }
+        )
         if query and "abstract" in query:
             return self._abstract
         return self._featured
@@ -165,6 +174,82 @@ class HeroPhotoPolicyTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(block.layout, "split")
         self.assertEqual(block.image_query, "reach the team")
+
+
+class HeroDirectiveTest(unittest.IsolatedAsyncioTestCase):
+    """Directive path (hero_director → _apply_hero_directive): the per-page art
+    direction wins over the mood lean, and slot_usage carries source-background
+    provenance into the resolver."""
+
+    async def test_split_directive_resolves_wash_regardless_of_mood(self):
+        # friendly is NOT split-inclined — the directive alone must trigger the
+        # abstract wash for a split hero.
+        featured = _photo("scraped", "https://x/feat.jpg")
+        abstract = _photo("pexels", "https://x/abs.jpg")
+        ctx = _ctx(featured, abstract, mood="friendly")
+        block = HeroBlock(headline="Our programs", image_query="volunteers")
+        directive = HeroDirective("hero-modern-split", "split", wants_wash=True)
+
+        img_slot, washed = await _apply_hero_photo_policy(block, ctx, directive)
+
+        self.assertEqual(block.layout, "split")
+        self.assertIs(img_slot, featured)
+        self.assertIs(washed, abstract)
+        self.assertEqual(ctx.resolver.calls[0]["slot_usage"], "inline")
+        self.assertEqual(ctx.resolver.calls[1]["method"], "resolve_abstract_bg")
+        self.assertEqual(ctx.resolver.calls[1]["intent"], "cta_bg")
+
+    async def test_background_directive_resolves_with_background_slot_usage(self):
+        featured = _photo("scraped", "https://x/bg.jpg")
+        ctx = _ctx(featured, _photo("pexels"), mood="friendly")
+        block = HeroBlock(headline="Change lives", image_query="community")
+        directive = HeroDirective(
+            "hero-background-bold", "background", pin_source_background=True
+        )
+
+        img_slot, washed = await _apply_hero_photo_policy(block, ctx, directive)
+
+        self.assertEqual(block.layout, "background")
+        self.assertIs(img_slot, featured)
+        self.assertIsNone(washed)
+        self.assertEqual(ctx.resolver.calls[0]["slot_usage"], "background")
+
+    async def test_imageless_directive_skips_resolution_entirely(self):
+        ctx = _ctx(_photo("scraped"), _photo("pexels"), mood="friendly")
+        block = HeroBlock(headline="Get in touch", image_query="office")
+        directive = HeroDirective("hero-centered-minimal", "split")
+
+        img_slot, washed = await _apply_hero_photo_policy(block, ctx, directive)
+
+        self.assertIsNone(img_slot)
+        self.assertIsNone(washed)
+        self.assertIsNone(block.image_query)  # imageless template stays feasible
+        self.assertEqual(ctx.resolver.calls, [])  # no scraped photo burned
+
+    async def test_split_directive_without_genuine_photo_degrades_to_imageless(self):
+        ctx = _ctx(_photo("placeholder"), _photo("pexels"), mood="friendly")
+        block = HeroBlock(headline="Programs", image_query="volunteers")
+        directive = HeroDirective("hero-modern-split", "split", wants_wash=True)
+
+        img_slot, washed = await _apply_hero_photo_policy(block, ctx, directive)
+
+        self.assertIsNone(img_slot)
+        self.assertIsNone(washed)
+        self.assertIsNone(block.image_query)  # -> hero-gradient via preference
+
+    async def test_background_directive_without_genuine_photo_uses_abstract(self):
+        featured = _photo("placeholder")
+        abstract = _photo("pexels", "https://x/abs.jpg")
+        ctx = _ctx(featured, abstract, mood="friendly")
+        block = HeroBlock(headline="Home", image_query="impact")
+        directive = HeroDirective("hero-background-bold", "background")
+
+        img_slot, washed = await _apply_hero_photo_policy(block, ctx, directive)
+
+        self.assertEqual(block.layout, "background")
+        self.assertIs(img_slot, abstract)
+        self.assertEqual(block.image_query, _abstract_theme_query(ctx))
+        self.assertIsNone(washed)
 
 
 class WashedBackgroundTest(unittest.TestCase):

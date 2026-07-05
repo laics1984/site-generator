@@ -216,13 +216,18 @@ class MoodSpec:
 # Tuned per mood. Heading/body picks aim for distinctive but legible pairings.
 # Always include the google_fonts CSV so the generator UI / public site can
 # preload them via <link rel="stylesheet">.
+#
+# page_width_mode is "full" for every mood: sections span the viewport
+# (immersive full-bleed heroes, edge-to-edge dividers) while each section's
+# inner container still caps its content at page.max_width — so copy stays
+# contained, only surfaces bleed.
 MOOD_SPECS: dict[BrandMood, MoodSpec] = {
     "modern": MoodSpec(
         style="Glassmorphism",
         radius=12,
         secondary_lightness=0.16,
         surface_tint_strength=0.09,
-        page_width_mode="contained",
+        page_width_mode="full",
         heading_font='"Schibsted Grotesk", system-ui, sans-serif',
         body_font='"Hanken Grotesk", system-ui, sans-serif',
         google_fonts=(
@@ -267,7 +272,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         radius=4,
         secondary_lightness=0.12,
         surface_tint_strength=0.07,
-        page_width_mode="contained",
+        page_width_mode="full",
         heading_font='"Cormorant Garamond", Georgia, serif',
         body_font='"Jost", system-ui, sans-serif',
         google_fonts=(
@@ -327,7 +332,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         radius=20,
         secondary_lightness=0.20,
         surface_tint_strength=0.16,
-        page_width_mode="contained",
+        page_width_mode="full",
         heading_font='"Gabarito", system-ui, sans-serif',
         body_font='"Figtree", system-ui, sans-serif',
         google_fonts=(
@@ -382,7 +387,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         radius=6,
         secondary_lightness=0.14,
         surface_tint_strength=0.06,
-        page_width_mode="contained",
+        page_width_mode="full",
         heading_font='"Chivo", system-ui, sans-serif',
         body_font='"IBM Plex Sans", system-ui, sans-serif',
         google_fonts=(
@@ -435,7 +440,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         radius=8,
         secondary_lightness=0.14,
         surface_tint_strength=0.09,
-        page_width_mode="contained",
+        page_width_mode="full",
         heading_font='"Fraunces", Georgia, serif',
         body_font='"Hanken Grotesk", system-ui, sans-serif',
         google_fonts=(
@@ -480,7 +485,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         radius=24,
         secondary_lightness=0.18,
         surface_tint_strength=0.14,
-        page_width_mode="contained",
+        page_width_mode="full",
         heading_font='"Syne", system-ui, sans-serif',
         body_font='"Figtree", system-ui, sans-serif',
         google_fonts=(
@@ -726,6 +731,11 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
     CuratedPalette("Non-profit / Charity", ("nonprofit",), "#0891B2", "#EA580C", "#164E63", "#ECFEFF"),
     CuratedPalette("Community", ("nonprofit",), "#7C3AED", "#16A34A", "#4C1D95", "#FAF5FF"),
     CuratedPalette("Religious / Faith", ("nonprofit",), "#7C3AED", "#A16207", "#4C1D95", "#FAF5FF"),
+    # childcare — soft cheerful tones (sky, mint/sage, lavender) on warm cream
+    # tints, one brighter coral/amber accent; never dark or corporate.
+    CuratedPalette("Kindergarten Sky", ("childcare",), "#0284C7", "#F97316", "#0C4A6E", "#FFFBEB"),
+    CuratedPalette("Montessori Nature", ("childcare",), "#059669", "#D97706", "#064E3B", "#ECFDF5"),
+    CuratedPalette("Early Learning Pastel", ("childcare",), "#8B5CF6", "#EA580C", "#4C1D95", "#F5F3FF"),
     # personal
     CuratedPalette("Portfolio", ("personal",), "#18181B", "#2563EB", "#09090B", "#FAFAFA"),
     CuratedPalette("Freelancer", ("personal",), "#6366F1", "#16A34A", "#312E81", "#EEF2FF"),
@@ -807,6 +817,10 @@ _INDUSTRY_FONT_KEYWORDS: dict[str, tuple[str, ...]] = {
         "advisory", "finance",
     ),
     "nonprofit": ("nonprofit", "charity", "community", "cause", "social", "foundation"),
+    "childcare": (
+        "childcare", "kindergarten", "preschool", "daycare", "nursery",
+        "montessori", "children", "kids", "education", "learning", "family",
+    ),
     "personal": (
         "personal", "portfolio", "blog", "creator", "resume", "music",
         "entertainment",

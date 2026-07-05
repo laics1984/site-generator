@@ -8,6 +8,7 @@ from app.config import settings
 from app.services.design_brain import (
     SiteDesignRecipe,
     SiteSectionChoice,
+    _page_blurb,
     generate_site_design_recipe,
 )
 
@@ -39,8 +40,8 @@ class BatchedCallTest(unittest.TestCase):
                 calls.append(user_prompt)
                 return schema(
                     sections=[
-                        SiteSectionChoice(page_index=0, section_index=0, template_id="hero-bento"),
-                        SiteSectionChoice(page_index=1, section_index=0, template_id="hero-editorial"),
+                        SiteSectionChoice(page_index=0, section_index=1, template_id="cta-banner"),
+                        SiteSectionChoice(page_index=1, section_index=1, template_id="cta-minimal"),
                     ]
                 )
 
@@ -51,7 +52,7 @@ class BatchedCallTest(unittest.TestCase):
                 generate_site_design_recipe(
                     mood="modern",
                     industry="saas",
-                    pages=[["hero"], ["hero"]],
+                    pages=[["hero", "cta"], ["hero", "cta"]],
                     llm=FakeLLM(),
                 )
             )
@@ -61,8 +62,21 @@ class BatchedCallTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)  # ONE round-trip for the whole site
         self.assertIn("Page 0", calls[0])
         self.assertIn("Page 1", calls[0])
-        self.assertEqual(recipe.recipe_for(0).template_for(0), "hero-bento")
-        self.assertEqual(recipe.recipe_for(1).template_for(0), "hero-editorial")
+        # Heroes are pre-assigned by the hero director — never offered to the LLM.
+        self.assertNotIn("hero", calls[0])
+        self.assertEqual(recipe.recipe_for(0).template_for(1), "cta-banner")
+        self.assertEqual(recipe.recipe_for(1).template_for(1), "cta-minimal")
+
+
+class HeroExclusionTest(unittest.TestCase):
+    def test_page_blurb_omits_hero_sections(self):
+        # A page whose only multi-template section is the hero yields no blurb
+        # at all (harmless: empty recipe → deterministic fallback downstream).
+        self.assertIsNone(_page_blurb(0, ["hero"]))
+        blurb = _page_blurb(0, ["hero", "cta"])
+        assert blurb is not None
+        self.assertNotIn('"hero"', blurb)
+        self.assertIn('"cta"', blurb)
 
 
 class NoOpTest(unittest.TestCase):

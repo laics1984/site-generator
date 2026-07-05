@@ -27,7 +27,8 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.models.brand import BrandMood
-from app.services.llm import LlmError, OllamaClient, get_llm
+from app.services.industry_personality import personality_for
+from app.services.llm import LlmError, LlmClient, get_llm
 from app.services.template_filler import templates_for_type
 
 logger = logging.getLogger(__name__)
@@ -82,12 +83,16 @@ SYSTEM_PROMPT = """You are an art director choosing page layouts for a multi-pag
 Each page below lists its sections, and each section lists the EXACT template
 ids available for it. Pick ONE template id per section — the layout/composition
 that best suits the brand's mood and keeps the page feeling intentionally
-designed, not generic. Don't default to the safest-looking option every time:
+designed, not generic. The brief includes the industry's design personality —
+favor template variants that express it (e.g. bento grids for saas,
+asymmetric editorial for agencies, quiet minimal grids for professional
+services) while keeping one coherent language. Don't default to the safest-looking option every time:
 when a bolder or more editorial variant fits the mood and the section still has
 everything it needs, prefer it. Within a page, different sections should not all
 use the same structural idea (e.g. don't pick a "split" layout for every
-section). Across pages, keep a coherent design language (e.g. a consistent hero
-treatment) rather than re-deciding each page from scratch.
+section). Across pages, keep a coherent design language rather than re-deciding
+each page from scratch. Hero sections are pre-assigned by the generator's own
+per-page art direction and are not listed.
 
 Reply with ONE JSON object, no markdown, no commentary:
 {
@@ -119,9 +124,15 @@ def _section_options(kind: str) -> list[str] | None:
 
 def _page_blurb(page_index: int, section_kinds: list[str]) -> str | None:
     """One page's section/option listing, or None when no section on the page
-    has more than one template to choose between."""
+    has more than one template to choose between.
+
+    Heroes are excluded: their template is assigned per page by the hero
+    director (services/hero_director.py) — letting the LLM also pick one caused
+    every page to converge on the same split hero."""
     lines: list[str] = []
     for s_idx, kind in enumerate(section_kinds):
+        if kind == "hero":
+            continue
         opts = _section_options(kind)
         if opts is None:
             continue
@@ -136,7 +147,7 @@ async def generate_site_design_recipe(
     mood: BrandMood | None,
     industry: str | None,
     pages: list[list[str]],
-    llm: OllamaClient | None = None,
+    llm: LlmClient | None = None,
 ) -> SiteDesignRecipe:
     """Pick a template variant per section for the WHOLE site in one LLM call.
 
@@ -160,7 +171,9 @@ async def generate_site_design_recipe(
     client = llm or get_llm()
     user_prompt = (
         f"Brand mood: {mood or 'modern'}\n"
-        f"Industry: {industry or 'other'}\n\n" + "\n\n".join(blurbs)
+        f"Industry: {industry or 'other'}\n"
+        f"Industry design personality: {personality_for(industry).design}\n\n"
+        + "\n\n".join(blurbs)
     )
     try:
         return await client.chat_json(
@@ -183,7 +196,7 @@ async def generate_design_recipe(
     mood: BrandMood | None,
     industry: str | None,
     section_kinds: list[str],
-    llm: OllamaClient | None = None,
+    llm: LlmClient | None = None,
 ) -> DesignRecipe:
     """Single-page convenience wrapper over `generate_site_design_recipe`.
 

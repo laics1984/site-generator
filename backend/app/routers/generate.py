@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -43,7 +44,11 @@ from app.services.scaffold_enforcement import (
     looks_like_team_member_name,
     sanitize_blocks_against_source,
 )
-from app.services.image_vision import VisionAnnotation, annotate_image_pool
+from app.services.image_vision import (
+    VisionAnnotation,
+    annotate_image_pool,
+    prefetch_image_pool,
+)
 from app.services.locale import detect_market, image_query_cue, place_query_cue
 from app.services.schema_builder import plan_to_site
 from app.services.theme import build_theme, resolve_color_scheme
@@ -210,19 +215,25 @@ def _profile_match_score(member_name: str, profile: ProfileCandidate) -> float:
 
 
 async def _annotate_source_images(
-    source: SourceContent, metadata: list[ImageMetadata]
+    source: SourceContent,
+    metadata: list[ImageMetadata],
+    prefetched: dict[str, str] | None = None,
 ) -> dict[str, VisionAnnotation]:
     """Run the opt-in vision pass over the resolver pool + profile portraits.
 
     Returns {} instantly when no vision model is configured. Like locale
     detection, this is an enhancement — any failure must not break generation.
+    `prefetched` carries {url: base64} downloads already done in parallel with
+    content generation (see prefetch_image_pool).
     """
     try:
         profile_urls = [
             p.photo_url for p in _profile_pool_for(source) if p.photo_url
         ]
         with stage("vision_annotation"):
-            return await annotate_image_pool(metadata, extra_urls=profile_urls)
+            return await annotate_image_pool(
+                metadata, extra_urls=profile_urls, prefetched=prefetched
+            )
     except Exception:  # noqa: BLE001 — vision must not 500 a generation
         logger.exception("Vision annotation pass failed; continuing without it")
         return {}
@@ -551,6 +562,16 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     if linkbar_cluster is not None:
         strip_linkbar_lines(payload.source, linkbar_cluster)
 
+    # Start downloading the images the vision pass will judge while the content
+    # LLM owns the GPU — prefetch is pure network/CPU, so it comes off the
+    # critical path for free. The GPU-bound vision judging still runs after
+    # content generation (two models on one 16GB GPU would thrash swaps).
+    scraped_images, scraped_metadata = _image_pool_for(payload.source)
+    profile_urls = [p.photo_url for p in _profile_pool_for(payload.source) if p.photo_url]
+    prefetch_task = asyncio.create_task(
+        prefetch_image_pool(scraped_metadata, extra_urls=profile_urls)
+    )
+
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
     # This is the heaviest LLM pass (it writes all page copy); time it so the
     # breakdown shows whether content generation, not design/images, dominates.
@@ -560,6 +581,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
                 payload.source, detected, content_scaffolds
             )
     except LlmError as exc:
+        prefetch_task.cancel()
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
 
     # Same scaffold→source routing the planner used, recomputed here (cheap,
@@ -595,8 +617,14 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     ]
 
     # Generate themed site (body + header + footer + theme)
-    scraped_images, scraped_metadata = _image_pool_for(payload.source)
-    annotations = await _annotate_source_images(payload.source, scraped_metadata)
+    prefetched: dict[str, str] = {}
+    try:
+        prefetched = await prefetch_task
+    except Exception:  # noqa: BLE001 — prefetch is advisory, never load-bearing
+        logger.exception("Vision image prefetch failed; continuing without it")
+    annotations = await _annotate_source_images(
+        payload.source, scraped_metadata, prefetched=prefetched
+    )
     _enrich_plan_profile_photos(plan, payload.source, annotations)
     _ensure_scraped_team_blocks(
         plan,

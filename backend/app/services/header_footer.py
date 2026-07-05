@@ -21,7 +21,17 @@ from app.models.builder_schema import (
     PageNode,
     ResponsiveStyles,
 )
-from app.services.theme import _contrast, _ensure_contrast_against, _text_for_background
+from app.services.theme import (
+    _contrast,
+    _ensure_contrast_against,
+    _text_for_background,
+)
+
+# The builder's HeaderSettings "Divider" control is a boxShadow preset on the
+# __header root element. This is the exact "Subtle" preset value
+# (HEADER_SHADOW_PRESETS in builder src/lib/site-navigation.ts) — emitting the
+# same string makes the builder's Divider panel show "Subtle" as selected.
+HEADER_DIVIDER_SUBTLE = "0 1px 3px 0 rgba(15, 23, 42, 0.06)"
 
 
 def _uid() -> str:
@@ -118,13 +128,17 @@ def _image(
 
 
 def _logo_mark(
-    brand: BrandIdentity, theme: ThemeTokens, lockup: str | None = None
+    brand: BrandIdentity,
+    theme: ThemeTokens,
+    lockup: str | None = None,
+    ink: str | None = None,
 ) -> BuilderElement:
     """
     Returns a logo BuilderElement — either the uploaded image or a typographic
     monogram. Both are themed against the palette. When `lockup` is set, the
     image sits in a contrast chip so it stays legible on header chrome that is
-    too close to the logo's own brightness.
+    too close to the logo's own brightness. `ink` colours the typographic
+    wordmark so it matches the header's menu ink (falls back to secondary).
     """
     if brand.logo_url or brand.logo_data_url:
         # The logo IS the home link — standard convention, and it lets the
@@ -191,7 +205,7 @@ def _logo_mark(
                     "fontFamily": theme.typography.heading_font,
                     "fontWeight": 700,
                     "fontSize": "18px",
-                    "color": theme.palette.secondary,
+                    "color": ink or theme.palette.secondary,
                     "textDecoration": "none",
                 },
                 content=BuilderElementContent(
@@ -210,13 +224,20 @@ def _logo_mark(
 
 
 def _header_chrome(
-    brand: BrandIdentity, theme: ThemeTokens
-) -> tuple[str, str, str, str | None]:
+    brand: BrandIdentity,
+    theme: ThemeTokens,
+) -> tuple[str, str, str | None]:
     """
-    Choose a header background / foreground / divider that keeps the logo and nav
-    readable. The 4th value, `logo_lockup`, is a contrast chip for uploaded
-    logos only when the logo would blend into the actual header background:
-    dark header + dark logo => white chip; light header + light logo => dark chip.
+    Choose a header background / foreground that keeps the logo and nav
+    readable. The header follows the theme's own scheme — a light theme gets a
+    light header with near-black ink, a dark theme a dark header with white ink
+    — so the menu ink is consistent site-wide instead of flipping with the
+    homepage hero. Separation from a same-band hero comes from the subtle
+    divider shadow on the header root, not from a band flip.
+
+    The 3rd value, `logo_lockup`, is a contrast chip for uploaded logos only
+    when the logo would blend into the actual header background: dark header +
+    dark logo => white chip; light header + light logo => dark chip.
     """
     background = theme.palette.background
     foreground = _text_for_background(background)
@@ -230,7 +251,7 @@ def _header_chrome(
     elif brand.logo_is_light is True and not header_is_dark:
         lockup = theme.palette.secondary
 
-    return background, foreground, theme.palette.surface, lockup
+    return background, foreground, lockup
 
 
 # --- header ---------------------------------------------------------------------
@@ -242,19 +263,34 @@ def build_header(
     nav_items: list[tuple[str, str]],  # (label, href) — used as a fallback when page_tree is None
     primary_cta: tuple[str, str] | None = None,
     page_tree: list[PageNode] | None = None,
+    overlay: bool = False,
 ) -> BuilderElement:
     """
-    Sticky header: logo · nav · CTA, max-width contained.
-    Background defaults to the page background, but flips to a dark neutral
-    when the uploaded logo is predominantly light-colored.
+    Sticky header: logo · nav · CTA, max-width contained. Chrome follows the
+    theme scheme (see _header_chrome) so the menu ink is one consistent
+    white-or-near-black choice site-wide; the bottom edge carries the builder's
+    "Subtle" divider shadow preset instead of a hard border.
 
     Navigation is rendered as a shared ``menu`` element bound to the ``primary``
     slot — the builder resolves its items from the entity's ``menus[]`` (built in
     ``menu_builder.build_menus`` from the page tree) and handles the desktop
     inline layout plus the mobile hamburger collapse on its own. ``nav_items`` /
     ``page_tree`` are no longer consumed here; they drive the menu list upstream.
+
+    ``overlay`` marks a header that floats transparent over full-bleed heroes
+    and solidifies on scroll. The element ALWAYS carries its real solid chrome
+    — the renderer restores exactly these styles when it solidifies
+    (pickRootBackgroundStyles in webtree-public) and strips them during the
+    transparent phase, forcing white ink on the ``wt-header-ink`` elements
+    stamped below. Never emit a transparent backgroundColor here: it would
+    make the solidified header transparent too.
     """
-    header_bg, header_fg, header_divider, logo_lockup = _header_chrome(brand, theme)
+    header_bg, header_fg, logo_lockup = _header_chrome(brand, theme)
+    if overlay and brand.logo_is_light is False:
+        # A dark image logo floating over a dark full-bleed hero needs its
+        # contrast chip even if the solid header wouldn't (the renderer can
+        # recolor text ink, not bitmaps).
+        logo_lockup = logo_lockup or "#ffffff"
     nav_menu = _menu_element(
         slot="primary",
         variant="header-inline",
@@ -266,6 +302,13 @@ def build_header(
             "fontSize": "15px",
         },
     )
+    # Text-bearing header elements get the ink marker; while the overlay
+    # header is transparent the renderer forces their colour to white
+    # (.wt-page-header--overlay .wt-header-ink). The CTA button keeps its own
+    # solid background/text and is deliberately NOT marked.
+    nav_menu.classes = "wt-header-ink"
+    logo = _logo_mark(brand, theme, lockup=logo_lockup, ink=header_fg)
+    logo.classes = "wt-header-ink"
 
     cta_children: list[BuilderElement] = []
     if primary_cta:
@@ -295,7 +338,7 @@ def build_header(
 
     bar = _container(
         [
-            _logo_mark(brand, theme, lockup=logo_lockup),
+            logo,
             nav_menu,
             *cta_children,
         ],
@@ -323,7 +366,11 @@ def build_header(
         styles={
             "width": "100%",
             "backgroundColor": header_bg,
-            "borderBottom": f"1px solid {header_divider}",
+            # The builder's "Divider" setting reads this boxShadow — emit the
+            # exact "Subtle" preset so a hard border never separates the
+            # header from the page (a 1px solid line read as a black rule on
+            # dark palettes once the header background became visible).
+            "boxShadow": HEADER_DIVIDER_SUBTLE,
             "position": "sticky",
             "top": "0",
             "zIndex": "50",

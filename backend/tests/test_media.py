@@ -240,3 +240,65 @@ class PrewarmStockTest(unittest.IsolatedAsyncioTestCase):
         await resolver.prewarm_stock([("anything", "hero")])
 
         self.assertEqual(pexels.network_calls, [])
+
+
+class StrongestSourceBackgroundTest(unittest.TestCase):
+    def _resolver(self, metadata):
+        from app.models.content_blocks import ImageMetadata
+
+        class Unconfigured:
+            configured = False
+
+        return ImageResolver(
+            scraped_metadata=[ImageMetadata(**m) for m in metadata],
+            pexels=Unconfigured(),
+            use_llm_tiebreaker=False,
+        )
+
+    def test_returns_largest_qualifying_css_background(self):
+        resolver = self._resolver(
+            [
+                {"url": "https://x/small-bg.jpg", "source_usage": "css_background",
+                 "role": "background", "width": 1000, "height": 600},
+                {"url": "https://x/big-bg.jpg", "source_usage": "css_background",
+                 "role": "hero", "width": 2400, "height": 1400},
+                {"url": "https://x/inline.jpg", "source_usage": "inline",
+                 "role": "hero", "width": 3000, "height": 2000},
+            ]
+        )
+        best = resolver.strongest_source_background()
+        self.assertIsNotNone(best)
+        self.assertEqual(best.url, "https://x/big-bg.jpg")
+
+    def test_tiny_texture_is_rejected_by_min_dim(self):
+        resolver = self._resolver(
+            [
+                {"url": "https://x/tile.png", "source_usage": "css_background",
+                 "role": "background", "width": 200, "height": 200},
+            ]
+        )
+        self.assertIsNone(resolver.strongest_source_background())
+
+    def test_unknown_dims_accepted_only_with_hero_grade_signals(self):
+        resolver = self._resolver(
+            [
+                {"url": "https://x/unknown-generic.jpg",
+                 "source_usage": "css_background", "role": "unknown",
+                 "intent": "generic"},
+                {"url": "https://x/unknown-hero.jpg",
+                 "source_usage": "css_background", "role": "unknown",
+                 "intent": "hero"},
+            ]
+        )
+        best = resolver.strongest_source_background()
+        self.assertIsNotNone(best)
+        self.assertEqual(best.url, "https://x/unknown-hero.jpg")
+
+    def test_none_when_no_css_backgrounds(self):
+        resolver = self._resolver(
+            [
+                {"url": "https://x/inline.jpg", "source_usage": "inline",
+                 "role": "hero", "width": 2400, "height": 1400},
+            ]
+        )
+        self.assertIsNone(resolver.strongest_source_background())

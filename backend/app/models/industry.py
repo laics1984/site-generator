@@ -23,6 +23,7 @@ IndustryCategory = Literal[
     "ecommerce",
     "consultancy",
     "nonprofit",
+    "childcare",
     "personal",
     "other",
 ]

@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import time
+from functools import lru_cache
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -34,8 +35,10 @@ from app.models.content_blocks import (
     heal_industry_value,
     industry_default_mood,
 )
+from app.config import settings
 from app.models.industry import PageScaffold
-from app.services.llm import OllamaClient, get_llm
+from app.services.industry_personality import personality_prompt_lines
+from app.services.llm import LlmClient, get_llm
 from app.services.source_router import (
     excerpt_for_prompt,
     match_scaffolds_to_pages,
@@ -70,7 +73,7 @@ Hard rules:
   (these describe stock imagery, not facts).
 
 Pick `industry_category` from: restaurant, agency, saas, professional-services, ecommerce,
-consultancy, nonprofit, personal, other.
+consultancy, nonprofit, childcare, personal, other.
 Pick `brand_mood` from: modern, luxury, friendly, technical, editorial, playful.
 
 For a typical small business produce 4 pages: home, services, about, contact.
@@ -94,7 +97,7 @@ def _build_user_prompt(source: SourceContent, max_chars: int = 12000) -> str:
     )
 
 
-async def plan_site(source: SourceContent, llm: OllamaClient | None = None) -> SitePlan:
+async def plan_site(source: SourceContent, llm: LlmClient | None = None) -> SitePlan:
     """Legacy: LLM chooses pages and sections freely."""
     client = llm or get_llm()
     return await client.chat_json(
@@ -152,12 +155,12 @@ Reply with ONE JSON object matching this schema — no markdown, no commentary:
   "brand_mood": "modern"|"luxury"|"friendly"|"technical"|"editorial"|"playful",
        // modern    → SaaS, fintech, tech
        // luxury    → hospitality, jewellery, real estate, premium
-       // friendly  → consumer, wellness, lifestyle
+       // friendly  → consumer, wellness, lifestyle, childcare, education
        // technical → engineering, B2B, dev tools
        // editorial → media, agencies, portfolios
-       // playful   → entertainment, food, kids, gaming
+       // playful   → entertainment, food, gaming
   "industry_category": "restaurant"|"agency"|"saas"|"professional-services"
-                       |"ecommerce"|"consultancy"|"nonprofit"|"personal"|"other",
+                       |"ecommerce"|"consultancy"|"nonprofit"|"childcare"|"personal"|"other",
        // restaurant            → restaurants, cafés, bars, food
        // agency                → creative / marketing / design agencies, studios
        // saas                  → software products, apps, platforms
@@ -165,6 +168,7 @@ Reply with ONE JSON object matching this schema — no markdown, no commentary:
        // ecommerce             → online stores, product brands
        // consultancy           → strategy, management, niche advisory
        // nonprofit             → charities, NGOs, foundations
+       // childcare             → kindergartens, preschools, daycare, early learning
        // personal              → solo professionals, freelancers, portfolios
        // other                 → anything that doesn't fit cleanly above
   "primary_color_hint": string|null   // hex like "#2563eb" if you can infer brand colour, else null
@@ -182,7 +186,7 @@ _BRAND_DETECTION_MAX_CHARS = 4000
 
 
 async def detect_brand(
-    source: SourceContent, llm: OllamaClient | None = None
+    source: SourceContent, llm: LlmClient | None = None
 ) -> DetectedBrand:
     client = llm or get_llm()
     return await client.chat_json(
@@ -219,7 +223,7 @@ def _source_fingerprint(source: SourceContent) -> str:
 
 
 async def detect_brand_cached(
-    source: SourceContent, llm: OllamaClient | None = None
+    source: SourceContent, llm: LlmClient | None = None
 ) -> DetectedBrand:
     """detect_brand with a 5-minute per-source in-process cache."""
     key = _source_fingerprint(source)
@@ -317,8 +321,7 @@ def _scaffolds_to_prompt_payload(
     return payload
 
 
-def _scaffold_system_prompt() -> str:
-    return """You are a senior web editor and SEO copywriter. Your job is to
+_SCAFFOLD_PROMPT_HEAD = """You are a senior web editor and SEO copywriter. Your job is to
 REWRITE the business's own existing content into a cleaner, better-organised,
 search-optimised website — NOT to invent a new business.
 
@@ -343,15 +346,26 @@ brand summary — still grounded in real content only.
 
 DESIGN INTENT — you are writing for an award-site-calibre layout, not a
 generic template:
+- The input's `industry_personality` is your art direction: write every page's
+  copy in its voice, and let its design cues set the energy of eyebrows,
+  headlines and CTAs. A restaurant should not read like a SaaS dashboard.
 - Headlines read like a confident editorial pull-quote, not boilerplate.
   Specific > clever > generic, always.
+- `headline_accent` (hero): when the headline ends with 1-4 words that carry
+  its emotional or benefit weight (the craft, the place, the outcome), repeat
+  EXACTLY those trailing words in `headline_accent` — the layout renders them
+  in the brand accent colour as a highlighted line. Copy them verbatim from
+  the headline's tail; omit the field when nothing deserves emphasis.
 - Give every hero an `eyebrow` — it's the small label above the headline that
   gives the layout visual hierarchy (e.g. "Family-owned since 1998").
 - Homepage hero `layout`: default to "background" (full-bleed photo, the
   header floats transparent over it on the live site) for visual/brand-led
-  industries — restaurant, hospitality, agency, travel, fitness, ecommerce.
-  Use "split" for industries that read more credible as clean two-column
-  text+image — saas, professional-services, consultancy, technical/B2B.
+  industries — restaurant, hospitality, agency, travel, fitness, ecommerce —
+  and for nonprofit/charity/community organisations, whose homepage leads
+  with an emotional, immersive impact photo. Use "split" for industries that
+  read more credible as clean two-column text+image — saas,
+  professional-services, consultancy, technical/B2B — and for a nonprofit's
+  factual interior pages (programs, contact).
   This is a default lean, not a rule: follow what the source's own photography
   and tone actually support.
 
@@ -403,7 +417,7 @@ OUTPUT STRUCTURE — follow this skeleton EXACTLY. Every page MUST have a "block
   "tagline": "string or null",
   "brand_summary": "1-2 sentence string",
   "brand_mood": "modern|luxury|friendly|technical|editorial|playful",
-  "industry_category": "restaurant|agency|saas|professional-services|ecommerce|consultancy|nonprofit|personal|other",
+  "industry_category": "restaurant|agency|saas|professional-services|ecommerce|consultancy|nonprofit|childcare|personal|other",
   "primary_color_hint": "#hexcolor or null",
   "pages": [
     {
@@ -463,25 +477,34 @@ Hard rules:
 Block schemas (give the block's `kind` exactly).
 (Counts below are MAXIMUMS plus the floor needed to keep the section. Fill with
 real items only; if you can't reach the floor with real content, omit the block.)
-- hero: { kind:"hero", eyebrow?, headline, subheadline?, primary_cta_label, primary_cta_href,
-          secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, layout:"split"|"background" }
-- features: { kind:"features", heading, subheading?, items: [{title, description}] }  (1-6 real items)
-- services: { kind:"services", heading, subheading?, items: [{title, description, cta_label?, cta_href?}] }  (1-8 real items)
-- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews only — omit if none)
-- about: { kind:"about", heading, body, image_alt?, image_query }
-- faq: { kind:"faq", heading, items: [{question, answer}] }  (1-20 real Q&As — include ALL Q&As present in the source, omit block only if none)
-- cta: { kind:"cta", headline, subheadline?, cta_label, cta_href, background_query }
-- contact: { kind:"contact", heading, subheading?, email?, phone? }  (email/phone only if in source)
-- pricing: { kind:"pricing", heading, subheading?, tiers:[{name, price, description?, features:[string], cta_label, cta_href, highlighted:boolean}] }  (2-4 real tiers — omit if source has no pricing)
-- team: { kind:"team", heading, subheading?, members:[{name, role, bio?, photo_query}] }  (real people only — omit if none)
-- gallery: { kind:"gallery", heading, subheading?, items:[{title?, caption?, image_query}] }  (1-12 items)
-- menu: { kind:"menu", heading, subheading?, categories:[{name, items:[{name, description?, price?}]}] }  (real menu only — omit if none)
-- process: { kind:"process", heading, subheading?, steps:[{title, description}] }  (1-6 real steps — omit if none)
-- timeline: { kind:"timeline", heading, subheading?, items:[{year, title, description?}] }  (1-10 real milestones — omit if the source has no dated history)
-- awards: { kind:"awards", heading, subheading?, items:[{title, issuer?, year?}] }  (1-12 real awards/certifications — omit if none)
-- clients: { kind:"clients", heading, subheading?, items:[{name, logo_query?}] }  (2-20 real client/customer/partner names — omit if fewer than 2 are named)
-- stats: { kind:"stats", heading?, items:[{value, label}] }  (1-6 real numbers stated in the source — omit if the source states none)
+"""
 
+# One schema line per block kind. The system prompt only carries the lines for
+# the kinds a batch actually requests (plus the always-keep kinds), cutting
+# prompt prefill per call and lowering the truncated-JSON risk in small windows.
+_SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
+    "hero": """- hero: { kind:"hero", eyebrow?, headline, headline_accent?, subheadline?, primary_cta_label, primary_cta_href,
+          secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, layout:"split"|"background" }
+          (headline_accent: the headline's final 1-4 words verbatim, to render in the accent colour — optional)""",
+    "features": '- features: { kind:"features", heading, subheading?, items: [{title, description}] }  (1-6 real items)',
+    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, cta_label?, cta_href?}] }  (1-8 real items)',
+    "testimonials": '- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews only — omit if none)',
+    "about": '- about: { kind:"about", heading, body, image_alt?, image_query }',
+    "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (1-20 real Q&As — include ALL Q&As present in the source, omit block only if none)',
+    "cta": '- cta: { kind:"cta", headline, subheadline?, cta_label, cta_href, background_query }',
+    "contact": '- contact: { kind:"contact", heading, subheading?, email?, phone? }  (email/phone only if in source)',
+    "pricing": '- pricing: { kind:"pricing", heading, subheading?, tiers:[{name, price, description?, features:[string], cta_label, cta_href, highlighted:boolean}] }  (2-4 real tiers — omit if source has no pricing)',
+    "team": '- team: { kind:"team", heading, subheading?, members:[{name, role, bio?, photo_query}] }  (real people only — omit if none)',
+    "gallery": '- gallery: { kind:"gallery", heading, subheading?, items:[{title?, caption?, image_query}] }  (1-12 items)',
+    "menu": '- menu: { kind:"menu", heading, subheading?, categories:[{name, items:[{name, description?, price?}]}] }  (real menu only — omit if none)',
+    "process": '- process: { kind:"process", heading, subheading?, steps:[{title, description}] }  (1-6 real steps — omit if none)',
+    "timeline": '- timeline: { kind:"timeline", heading, subheading?, items:[{year, title, description?}] }  (1-10 real milestones — omit if the source has no dated history)',
+    "awards": '- awards: { kind:"awards", heading, subheading?, items:[{title, issuer?, year?}] }  (1-12 real awards/certifications — omit if none)',
+    "clients": '- clients: { kind:"clients", heading, subheading?, items:[{name, logo_query?}] }  (2-20 real client/customer/partner names — omit if fewer than 2 are named)',
+    "stats": '- stats: { kind:"stats", heading?, items:[{value, label}] }  (1-6 real numbers stated in the source — omit if the source states none)',
+}
+
+_SCAFFOLD_PROMPT_TAIL = """
 If a page's required_sections list contains a section kind the source can't
 support, OMIT that section — do not invent content to fill it. The requested
 structure is a maximum, not a quota: produce every section you can ground in
@@ -489,9 +512,50 @@ the source (in the given order) and silently drop the rest. The words are yours
 to improve; the facts are the source's to keep.
 """
 
+# Always kept in the tailored prompt: they're the always-keep exceptions in the
+# fidelity rules above and their schema lines are small.
+_SCAFFOLD_ALWAYS_KINDS = frozenset({"hero", "about", "cta", "contact"})
+
+
+@lru_cache(maxsize=64)
+def _scaffold_system_prompt(kinds: frozenset[str] | None = None) -> str:
+    """System prompt, optionally tailored to a batch's section kinds.
+
+    `kinds=None` includes every block schema (the legacy full prompt). Unknown
+    kind names are simply ignored — the model gets no schema for them either way.
+    """
+    if kinds is None:
+        wanted = list(_SCAFFOLD_BLOCK_SCHEMAS)
+    else:
+        keep = set(kinds) | _SCAFFOLD_ALWAYS_KINDS
+        wanted = [k for k in _SCAFFOLD_BLOCK_SCHEMAS if k in keep]
+    lines = "\n".join(_SCAFFOLD_BLOCK_SCHEMAS[k] for k in wanted)
+    return _SCAFFOLD_PROMPT_HEAD + lines + "\n" + _SCAFFOLD_PROMPT_TAIL
+
+
+def _batch_kinds(scaffolds: list[PageScaffold]) -> frozenset[str]:
+    return frozenset(kind for s in scaffolds for kind in s.sections)
+
+
+def _system_prompt_tokens(kinds: frozenset[str] | None) -> int:
+    """Measured token estimate for the tailored system prompt (chars/4).
+
+    Replaces the old fixed 700-token guess, which under-counted the real prompt
+    (~2 700 tokens for the full schema set) and let batches overflow num_ctx —
+    truncated JSON output then cost a whole repair-retry LLM call.
+    """
+    return len(_scaffold_system_prompt(kinds)) // _CHARS_PER_TOKEN
+
 
 _SCAFFOLD_RAW_TEXT_CHARS = 2000  # entry-page key phrases (brand context, not source of truth)
-_SCAFFOLD_NUM_CTX = 8192
+
+
+def _scaffold_num_ctx() -> int:
+    """Context window for scaffolded planning calls. Configurable so a machine
+    with headroom can trade ~0.5-1GB of KV cache for fewer, larger batches
+    (fewer prefill passes of the fixed prompt)."""
+    return settings.scaffold_num_ctx
+
 
 # --- Dynamic batch-size constants (empirical for Qwen 2.5 7B / 8 192 ctx) ---
 #
@@ -500,7 +564,8 @@ _SCAFFOLD_NUM_CTX = 8192
 #   output ≈ 52 % of num_ctx
 #
 # Fixed input overhead (present in every call):
-#   _TOK_SYSTEM_PROMPT  scaffold system prompt        ≈ 700 tokens
+#   system prompt       measured per batch via _system_prompt_tokens() — the
+#                       tailored prompt varies with the batch's section kinds
 #   _TOK_BRAND_SOURCE   brand dict + entry-page text  ≈ 600 tokens
 #
 # Per-page input overhead (added once per page in the batch):
@@ -516,7 +581,6 @@ _SCAFFOLD_NUM_CTX = 8192
 # Quality cap: even when tokens fit, packing > 10 sections into one call causes
 # the model to thin out each block. The section cap enforces focus.
 
-_TOK_SYSTEM_PROMPT = 700
 _TOK_BRAND_SOURCE = 600
 _TOK_PER_PAGE_STUB = 100
 _TOK_PER_SECTION_OUT = 230
@@ -531,7 +595,7 @@ _CHARS_PER_TOKEN = 4          # rough English chars→tokens ratio for estimates
 #   leaving ~5 300 tokens for that page's section output — comfortable headroom.
 # A page whose text exceeds this is split into chunks and generated across
 # multiple calls (see _generate_page_multipass), so no content is dropped.
-# num_ctx itself stays at _SCAFFOLD_NUM_CTX (8 192) by design — we chunk rather
+# num_ctx itself stays at settings.scaffold_num_ctx (8 192 default) — we chunk rather
 # than widen the window. Tunable: raising this means fewer chunks but bigger calls.
 MAX_CHARS_PER_CALL = 6000
 
@@ -553,11 +617,12 @@ def _build_batches(
     a new one begins.  A page that exceeds the budget on its own is always placed
     in a batch of size 1 so generation never blocks.
     """
-    input_budget = int(num_ctx * _INPUT_SHARE) - _TOK_SYSTEM_PROMPT - _TOK_BRAND_SOURCE
+    input_budget = int(num_ctx * _INPUT_SHARE) - _TOK_BRAND_SOURCE
     output_budget = num_ctx - int(num_ctx * _INPUT_SHARE)
 
     batches: list[list[PageScaffold]] = []
     current: list[PageScaffold] = []
+    cur_kinds: set[str] = set()
     cur_input = cur_output = cur_sections = 0
 
     for s in scaffolds:
@@ -575,8 +640,12 @@ def _build_batches(
         page_output = len(s.sections) * _TOK_PER_SECTION_OUT
         page_sections = len(s.sections)
 
+        # The system prompt is tailored to the batch's kind union, so adding a
+        # page can grow it — measure it for (current batch + this page).
+        sys_tokens = _system_prompt_tokens(frozenset(cur_kinds | set(s.sections)))
+
         would_overflow = (
-            cur_input + page_input > input_budget
+            sys_tokens + cur_input + page_input > input_budget
             or cur_output + page_output > output_budget
             or cur_sections + page_sections > _MAX_SECTIONS_PER_BATCH
             or len(current) >= _MAX_PAGES_PER_BATCH
@@ -585,12 +654,17 @@ def _build_batches(
         if would_overflow and current:
             logger.info(
                 "Batch sealed — pages=%d sections=%d est_input=%d est_output=%d",
-                len(current), cur_sections, cur_input, cur_output,
+                len(current),
+                cur_sections,
+                _system_prompt_tokens(frozenset(cur_kinds)) + cur_input,
+                cur_output,
             )
             batches.append(current)
             current, cur_input, cur_output, cur_sections = [], 0, 0, 0
+            cur_kinds = set()
 
         current.append(s)
+        cur_kinds |= set(s.sections)
         cur_input += page_input
         cur_output += page_output
         cur_sections += page_sections
@@ -598,7 +672,10 @@ def _build_batches(
     if current:
         logger.info(
             "Batch sealed — pages=%d sections=%d est_input=%d est_output=%d",
-            len(current), cur_sections, cur_input, cur_output,
+            len(current),
+            cur_sections,
+            _system_prompt_tokens(frozenset(cur_kinds)) + cur_input,
+            cur_output,
         )
         batches.append(current)
 
@@ -629,6 +706,13 @@ def _build_scaffolded_user_prompt(
                 "raw_text": source.raw_text[:_SCAFFOLD_RAW_TEXT_CHARS],
             },
             "brand": brand.model_dump() if brand else None,
+            # 2026 art-direction brief for this industry — the DESIGN INTENT
+            # section of the system prompt tells the model how to apply it.
+            # Injected here (not in the system prompt) so the lru-cached
+            # system prompt stays industry-independent.
+            "industry_personality": personality_prompt_lines(
+                brand.industry_category if brand else None
+            ),
             "pages_requested": _scaffolds_to_prompt_payload(
                 scaffolds, parent_context, source_map, text_overrides
             ),
@@ -873,7 +957,7 @@ async def _generate_page_multipass(
     scaffold: PageScaffold,
     parent_context: dict[str, dict],
     source_map: dict[str, SourceContent],
-    client: OllamaClient,
+    client: LlmClient,
 ) -> tuple[PagePlan | None, "ScaffoldedSitePlan | None"]:
     """Generate one oversized page across several chunked calls, then merge.
 
@@ -895,14 +979,14 @@ async def _generate_page_multipass(
     first_result: ScaffoldedSitePlan | None = None
     for idx, chunk in enumerate(chunks):
         result = await client.chat_json(
-            system_prompt=_scaffold_system_prompt(),
+            system_prompt=_scaffold_system_prompt(_batch_kinds([scaffold])),
             user_prompt=_build_scaffolded_user_prompt(
                 source, brand, [scaffold], parent_context, source_map,
                 {scaffold.slug: chunk},
             ),
             schema=ScaffoldedSitePlan,
             temperature=0.25,
-            num_ctx=_SCAFFOLD_NUM_CTX,
+            num_ctx=_scaffold_num_ctx(),
         )
         if first_result is None:
             first_result = result
@@ -927,7 +1011,7 @@ async def plan_site_with_scaffolds(
     source: SourceContent,
     brand: DetectedBrand | None,
     scaffolds: list[PageScaffold],
-    llm: OllamaClient | None = None,
+    llm: LlmClient | None = None,
 ) -> ScaffoldedSitePlan:
     """Scaffold-driven planning with parent-aware batching + per-page source routing.
 
@@ -971,7 +1055,7 @@ async def plan_site_with_scaffolds(
 
     def _flush_small_run() -> None:
         if small_run:
-            for batch in _build_batches(small_run, source_map, _SCAFFOLD_NUM_CTX):
+            for batch in _build_batches(small_run, source_map, _scaffold_num_ctx()):
                 worklist.append(("batch", batch))
             small_run.clear()
 
@@ -999,7 +1083,7 @@ async def plan_site_with_scaffolds(
         else:
             batch = payload  # type: ignore[assignment]
             result = await client.chat_json(
-                system_prompt=_scaffold_system_prompt(),
+                system_prompt=_scaffold_system_prompt(_batch_kinds(batch)),
                 user_prompt=_build_scaffolded_user_prompt(
                     source, brand, batch, parent_context, source_map
                 ),
@@ -1007,7 +1091,7 @@ async def plan_site_with_scaffolds(
                 # Low temperature keeps the rewrite close to the source — we want
                 # faithful editing, not creative drift away from the real content.
                 temperature=0.25,
-                num_ctx=_SCAFFOLD_NUM_CTX,
+                num_ctx=_scaffold_num_ctx(),
             )
             if first is None:
                 first = result

@@ -13,6 +13,14 @@ services:
     ports:
       - "8001:8001"
     environment:
+      # LLM backend selection (explicit, from .env). Defaults to `ollama`; set
+      # LLM_BACKEND=mlx (and run mlx_lm.server on the Mac host) to route generation
+      # through MLX over host.docker.internal. See services/llm.py.
+      LLM_BACKEND: "${LLM_BACKEND:-ollama}"
+      MLX_BASE_URL: "${MLX_BASE_URL:-http://host.docker.internal:8080}"
+      MLX_MODEL: "${MLX_MODEL:-mlx-community/Qwen3-8B-4bit}"
+      MLX_VISION_BASE_URL: "${MLX_VISION_BASE_URL:-}"
+      MLX_VISION_MODEL: "${MLX_VISION_MODEL:-}"
       # host.docker.internal resolves to the macOS host from inside the container.
       OLLAMA_BASE_URL: "http://host.docker.internal:11434"
       OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3.5:9b}"

@@ -26,6 +26,7 @@ import logging
 import re
 import time
 import urllib.robotparser
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 from urllib.parse import urljoin, urlparse
@@ -37,6 +38,7 @@ from playwright.async_api import async_playwright
 
 from app.models.brand import BrandIdentity
 from app.models.content_blocks import ImageMetadata, ProfileCandidate, SourceContent
+from app.services.timing import stage
 from app.services.fast_fetch import (
     FastFetchResult,
     FastFetchSkipped,
@@ -71,6 +73,11 @@ class ImageCandidate:
     # 'unknown' when the page came through the httpx fast path (no stamps).
     role: str = "unknown"
     evidence: ImageEvidence | None = None
+    # How the source site used this image: 'css_background' when it came from a
+    # CSS background-image (stamped attr, inline style or <style> block),
+    # 'inline' for <img>/og:image. Downstream, css_background images are kept
+    # out of side/featured slots and pinned to full-bleed background slots.
+    source_usage: str = "inline"
 
 
 @dataclass
@@ -621,11 +628,11 @@ def _bg_candidate_from_tag(
         return ImageCandidate(
             url=abs_url, alt="", width=evidence.width or None,
             height=evidence.height or None, intent=intent, role=role,
-            evidence=evidence,
+            evidence=evidence, source_usage="css_background",
         )
     return ImageCandidate(
         url=abs_url, alt="", width=None, height=None,
-        intent=_guess_bg_intent(tag, prior),
+        intent=_guess_bg_intent(tag, prior), source_usage="css_background",
     )
 
 
@@ -714,7 +721,10 @@ def _extract_bg_images(
                 else "generic"
             )
             candidates.append(
-                ImageCandidate(url=abs_url, alt="", width=None, height=None, intent=intent)
+                ImageCandidate(
+                    url=abs_url, alt="", width=None, height=None, intent=intent,
+                    source_usage="css_background",
+                )
             )
 
     return candidates
@@ -1397,6 +1407,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
                 role=c.role,  # type: ignore[arg-type]
                 width=c.width,
                 height=c.height,
+                source_usage=c.source_usage,  # type: ignore[arg-type]
             )
             for c in image_candidates
         ],
@@ -1461,6 +1472,14 @@ def _is_crawlable_link(url: str, entry_host: str) -> bool:
     return True
 
 
+# Crawl worker-pool sizing. Six workers keep the pipeline full while per-host
+# politeness (4 slots + min-delay, services/polite.py) bounds pressure on any
+# single host; the Playwright semaphore holds concurrent rendered tabs at the
+# level the old batch-of-3 crawl exercised.
+_CRAWL_WORKERS = 6
+_CRAWL_PLAYWRIGHT_CONCURRENCY = 3
+
+
 async def _crawl_extra_pages(
     context,
     entry_final_url: str,
@@ -1478,8 +1497,9 @@ async def _crawl_extra_pages(
     """BFS-crawl same-domain pages starting from ``seed_links`` (already extracted
     from the entry page). Returns (parsed pages, leftover frontier URLs).
 
-    Caps total at ``max_pages``, depth at ``max_depth``. Pages are fetched in
-    parallel batches of 3 to balance speed and politeness.
+    Caps total at ``max_pages``, depth at ``max_depth``. Pages are fetched by a
+    sliding-window pool of ``_CRAWL_WORKERS`` workers (per-host politeness still
+    gates the real request rate), so one slow page no longer stalls the rest.
 
     The leftover frontier is what the BFS had queued but didn't process when
     the cap was hit. The router surfaces this so the frontend can offer
@@ -1503,7 +1523,10 @@ async def _crawl_extra_pages(
     politeness = await get_politeness(entry_host)
 
     # depth 1 frontier seeded from the entry's links + any explicit extra seeds.
-    frontier: list[tuple[str, int]] = []
+    # Each entry carries a discovery index so results can be re-sorted into the
+    # deterministic (depth, discovery) order the old lockstep batches produced.
+    discovery_count = 0
+    frontier: deque[tuple[str, int, int]] = deque()
     for link in [*(extra_seed_urls or []), *seed_links]:
         norm = _normalize_crawl_url(link)
         if not norm or norm in seen:
@@ -1511,102 +1534,135 @@ async def _crawl_extra_pages(
         if not _is_crawlable_link(norm, entry_host):
             continue
         seen.add(norm)
-        frontier.append((norm, 1))
+        frontier.append((norm, 1, discovery_count))
+        discovery_count += 1
         if len(frontier) >= max_pages * 3:  # cap how many we even queue
             break
 
-    parsed_pages: list[_ParsedPage] = []
-    batch_size = 3
-    while frontier and len(parsed_pages) < max_pages:
-        # Honour caller-requested cancellation — checked between batches so a
-        # mid-batch tab fetch isn't violently torn down.
+    # Sliding-window worker pool instead of lockstep batches: with batches of 3,
+    # one slow Playwright fallback stalled two finished slots per round. Workers
+    # pull from the shared frontier as they free up. Per-host politeness (slots
+    # + min-delay) still bounds effective concurrency against a single host, and
+    # a dedicated semaphore keeps Playwright tab pressure at the old level.
+    collected: list[tuple[int, int, _ParsedPage]] = []  # (depth, discovery, page)
+    in_flight = 0
+    new_work = asyncio.Event()
+    pw_sem = asyncio.Semaphore(_CRAWL_PLAYWRIGHT_CONCURRENCY)
+    stop_logged = False
+
+    def _should_stop() -> bool:
+        nonlocal stop_logged
+        if len(collected) >= max_pages:
+            return True
         if is_cancelled and is_cancelled():
-            logger.info("crawl cancelled by caller at %d pages", len(parsed_pages))
-            break
+            if not stop_logged:
+                logger.info("crawl cancelled by caller at %d pages", len(collected))
+                stop_logged = True
+            return True
         # Politeness circuit: too many consecutive failures on this host →
         # give up gracefully rather than keep hammering.
         if politeness.circuit_open:
-            logger.warning(
-                "politeness circuit open for %s — stopping crawl at %d pages",
-                entry_host, len(parsed_pages),
-            )
-            break
-        batch = frontier[:batch_size]
-        frontier = frontier[batch_size:]
+            if not stop_logged:
+                logger.warning(
+                    "politeness circuit open for %s — stopping crawl at %d pages",
+                    entry_host, len(collected),
+                )
+                stop_logged = True
+            return True
+        return False
 
-        async def _fetch_one(item: tuple[str, int]) -> tuple[int, _ParsedPage | None]:
-            url, depth = item
-            if respect_robots and not await _robots_allows(url, USER_AGENT):
+    async def _fetch_one(item: tuple[str, int]) -> tuple[int, _ParsedPage | None]:
+        url, depth = item
+        if respect_robots and not await _robots_allows(url, USER_AGENT):
+            return depth, None
+
+        # Politeness slot gates concurrency + min-delay per host.
+        async with politeness.slot():
+            # 1. Try httpx-first fast path.
+            fast = await try_fast_fetch(url)
+            if isinstance(fast, FastFetchResult):
+                politeness.record_success()
+                try:
+                    parsed = _parse_rendered_html(
+                        fast.html, fast.final_url, require_text=False
+                    )
+                    logger.debug("crawl httpx-fast %s", fast.final_url)
+                    return depth, parsed
+                except Exception as exc:  # noqa: BLE001
+                    logger.info("crawl httpx-parse failed %s: %s", url, exc)
+                    # Fall through to Playwright
+
+            # If httpx hit a retriable HTTP status, record + back off but
+            # don't fall through to Playwright — same host, same problem.
+            if isinstance(fast, FastFetchSkipped) and fast.http_status in RETRIABLE_STATUS_CODES:
+                politeness.record_failure(retriable=True)
+                logger.info(
+                    "crawl rate-limited %s status=%s — backing off",
+                    url, fast.http_status,
+                )
                 return depth, None
 
-            # Politeness slot gates concurrency + min-delay per host.
-            async with politeness.slot():
-                # 1. Try httpx-first fast path.
-                fast = await try_fast_fetch(url)
-                if isinstance(fast, FastFetchResult):
-                    politeness.record_success()
-                    try:
-                        parsed = _parse_rendered_html(
-                            fast.html, fast.final_url, require_text=False
-                        )
-                        logger.debug("crawl httpx-fast %s", fast.final_url)
-                        return depth, parsed
-                    except Exception as exc:  # noqa: BLE001
-                        logger.info("crawl httpx-parse failed %s: %s", url, exc)
-                        # Fall through to Playwright
-
-                # If httpx hit a retriable HTTP status, record + back off but
-                # don't fall through to Playwright — same host, same problem.
-                if isinstance(fast, FastFetchSkipped) and fast.http_status in RETRIABLE_STATUS_CODES:
-                    politeness.record_failure(retriable=True)
-                    logger.info(
-                        "crawl rate-limited %s status=%s — backing off",
-                        url, fast.http_status,
-                    )
-                    return depth, None
-
-                # 2. Fall back to Playwright (JS shell, thin content, or non-retriable error).
-                if isinstance(fast, FastFetchSkipped):
-                    logger.debug(
-                        "crawl httpx skipped %s (reason=%s) — using Playwright",
-                        url, fast.reason,
-                    )
-                try:
+            # 2. Fall back to Playwright (JS shell, thin content, or non-retriable error).
+            if isinstance(fast, FastFetchSkipped):
+                logger.debug(
+                    "crawl httpx skipped %s (reason=%s) — using Playwright",
+                    url, fast.reason,
+                )
+            try:
+                async with pw_sem:
                     final_url, html = await _goto_and_render(
                         context, url, timeout_ms=timeout_ms
                     )
-                except ScrapeError as exc:
-                    politeness.record_failure(retriable=exc.status in RETRIABLE_STATUS_CODES)
-                    logger.info("crawl skipped %s: %s", url, exc)
-                    return depth, None
-                except Exception as exc:  # noqa: BLE001
-                    politeness.record_failure(retriable=False)
-                    logger.info("crawl failed %s: %s", url, exc)
-                    return depth, None
-                try:
-                    parsed = _parse_rendered_html(html, final_url, require_text=False)
-                except Exception as exc:  # noqa: BLE001
-                    politeness.record_failure(retriable=False)
-                    logger.info("crawl parse failed %s: %s", url, exc)
-                    return depth, None
-                politeness.record_success()
-                return depth, parsed
+            except ScrapeError as exc:
+                politeness.record_failure(retriable=exc.status in RETRIABLE_STATUS_CODES)
+                logger.info("crawl skipped %s: %s", url, exc)
+                return depth, None
+            except Exception as exc:  # noqa: BLE001
+                politeness.record_failure(retriable=False)
+                logger.info("crawl failed %s: %s", url, exc)
+                return depth, None
+            try:
+                parsed = _parse_rendered_html(html, final_url, require_text=False)
+            except Exception as exc:  # noqa: BLE001
+                politeness.record_failure(retriable=False)
+                logger.info("crawl parse failed %s: %s", url, exc)
+                return depth, None
+            politeness.record_success()
+            return depth, parsed
 
-        results = await asyncio.gather(
-            *(_fetch_one(item) for item in batch), return_exceptions=False
-        )
-        for depth, parsed in results:
-            if parsed is None:
+    async def _worker() -> None:
+        nonlocal in_flight, discovery_count
+        while True:
+            if _should_stop():
+                return
+            if not frontier:
+                if in_flight == 0:
+                    return  # no queued work and nobody can produce more
+                # Another worker's in-flight fetch may expand the frontier —
+                # wait for a completion signal (short timeout guards the
+                # clear/set race without busy-spinning).
+                new_work.clear()
+                try:
+                    await asyncio.wait_for(new_work.wait(), timeout=0.1)
+                except TimeoutError:
+                    pass
                 continue
-            parsed_pages.append(parsed)
+            url, depth, _discovered = frontier.popleft()
+            in_flight += 1
+            try:
+                depth, parsed = await _fetch_one((url, depth))
+            finally:
+                in_flight -= 1
+                new_work.set()
+            if parsed is None or len(collected) >= max_pages:
+                continue
+            collected.append((depth, _discovered, parsed))
             if on_progress is not None:
                 try:
-                    await on_progress(len(parsed_pages), parsed.final_url)
+                    await on_progress(len(collected), parsed.final_url)
                 except Exception as exc:  # noqa: BLE001
                     # Progress reporting must never abort the crawl.
                     logger.debug("on_progress raised: %s", exc)
-            if len(parsed_pages) >= max_pages:
-                break
             # Expand frontier with this page's same-host links — but only if we
             # haven't hit the depth cap.
             if depth >= max_depth:
@@ -1618,11 +1674,23 @@ async def _crawl_extra_pages(
                 if not _is_crawlable_link(norm, entry_host):
                     continue
                 seen.add(norm)
-                frontier.append((norm, depth + 1))
+                frontier.append((norm, depth + 1, discovery_count))
+                discovery_count += 1
+            new_work.set()
+
+    if frontier:
+        worker_count = min(_CRAWL_WORKERS, max(1, len(frontier)))
+        await asyncio.gather(*(_worker() for _ in range(min(worker_count, max_pages))))
+
+    # Restore the deterministic (depth, discovery) order the old lockstep
+    # batches produced — downstream ranking treats earlier pages as closer to
+    # the entry page.
+    collected.sort(key=lambda t: (t[0], t[1]))
+    parsed_pages = [p for _d, _i, p in collected]
 
     # Whatever the frontier still holds when we stop is "unvisited" — surface
     # it so callers can resume via /api/scrape/extend.
-    unvisited = [url for url, _depth in frontier]
+    unvisited = [url for url, _depth, _i in frontier]
     return parsed_pages, unvisited
 
 
@@ -1704,7 +1772,8 @@ async def scrape_url(
             unvisited_urls: list[str] = []
             if crawl:
                 logger.info("crawling up to %d extra pages from %s", crawl_max_pages, final_url)
-                discovered, unvisited_urls = await _crawl_extra_pages(
+                with stage("crawl_extra_pages"):
+                    discovered, unvisited_urls = await _crawl_extra_pages(
                     context,
                     entry_final_url=final_url,
                     seed_links=entry.source_content.links,

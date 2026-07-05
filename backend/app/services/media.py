@@ -34,6 +34,7 @@ import httpx
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
 from app.services.image_match import (
+    SlotUsage,
     _tokens,
     rank_candidates,
     rank_candidates_with_llm_tiebreaker,
@@ -168,6 +169,7 @@ class ImageResolver:
         intent: ImageIntent = "generic",
         alt_fallback: str | None = None,
         prefer: list[ImageMetadata] | None = None,
+        slot_usage: SlotUsage = "any",
     ) -> PhotoResult:
         """Returns a usable PhotoResult. Always succeeds — the gradient placeholder is the final fallback.
 
@@ -176,12 +178,18 @@ class ImageResolver:
         photo the source actually placed on THAT page, not the biggest one
         anywhere on the site. Falls through to the full pool when none of the
         page's own images fit the slot.
+
+        `slot_usage`: how the slot renders the image (see image_match.SlotUsage).
+        'inline' keeps source CSS backgrounds out of side/featured slots;
+        'background' pins them first for full-bleed slots.
         """
         orientation = _INTENT_TO_ORIENTATION[intent]
 
         # 1. Scraped pool — rank against the slot's image_query
         if intent in _SCRAPED_ELIGIBLE_INTENTS:
-            picked = await self._take_best_scraped(query, intent, prefer=prefer)
+            picked = await self._take_best_scraped(
+                query, intent, prefer=prefer, slot_usage=slot_usage
+            )
             if picked is not None:
                 self._used_urls.add(picked.url)
                 # Carry the band when the scraper supplied a colour hint; else
@@ -337,7 +345,12 @@ class ImageResolver:
         return None
 
     async def _take_best_scraped(
-        self, query: str | None, intent: str, *, prefer: list[ImageMetadata] | None = None
+        self,
+        query: str | None,
+        intent: str,
+        *,
+        prefer: list[ImageMetadata] | None = None,
+        slot_usage: SlotUsage = "any",
     ) -> ImageMetadata | None:
         """Rank unused scraped candidates against the slot. Returns None if the
         best match doesn't clear the threshold — caller falls through to Pexels.
@@ -358,7 +371,7 @@ class ImageResolver:
             prefer_urls = {c.url for c in prefer}
             local = [c for c in candidates if c.url in prefer_urls]
             if local:
-                result = await self._rank(query, intent, local)
+                result = await self._rank(query, intent, local, slot_usage=slot_usage)
                 if result.chosen is not None:
                     logger.debug(
                         "Page-local scraped image for '%s' (intent=%s): score=%.2f decision=%s",
@@ -367,7 +380,11 @@ class ImageResolver:
                     return result.chosen
                 # No lexical match — but these are the site's real page photos.
                 # Pick the largest unexcluded one rather than deferring to stock.
+                # This bypasses the ranker, so the slot-usage gate must be
+                # re-applied: a source CSS background never fills an inline slot.
                 eligible = [c for c in local if c.role not in {"decoration", "logo"}]
+                if slot_usage == "inline":
+                    eligible = [c for c in eligible if c.source_usage != "css_background"]
                 if eligible:
                     best = max(eligible, key=lambda c: (c.width or 0) * (c.height or 0))
                     logger.debug(
@@ -376,7 +393,7 @@ class ImageResolver:
                     )
                     return best
 
-        result = await self._rank(query, intent, candidates)
+        result = await self._rank(query, intent, candidates, slot_usage=slot_usage)
         if result.chosen is not None:
             logger.debug(
                 "Scraped image picked for '%s' (intent=%s): score=%.2f decision=%s",
@@ -390,11 +407,48 @@ class ImageResolver:
         )
         return None
 
-    async def _rank(self, query: str | None, intent: str, candidates: list[ImageMetadata]):
+    async def _rank(
+        self,
+        query: str | None,
+        intent: str,
+        candidates: list[ImageMetadata],
+        *,
+        slot_usage: SlotUsage = "any",
+    ):
         """Heuristic ranking, optionally with the bounded LLM tiebreaker."""
         if self._use_llm_tiebreaker:
-            return await rank_candidates_with_llm_tiebreaker(query, intent, candidates)
-        return rank_candidates(query, intent, candidates)
+            return await rank_candidates_with_llm_tiebreaker(
+                query, intent, candidates, slot_usage=slot_usage
+            )
+        return rank_candidates(query, intent, candidates, slot_usage=slot_usage)
+
+    def strongest_source_background(self, min_dim: int = 900) -> ImageMetadata | None:
+        """The best unused image the SOURCE site used as a CSS background, or
+        None. Drives the hero director: when the source led with a full-bleed
+        background, the generated homepage should too (and pin that image).
+
+        Guards against pinning a tiny tiled texture full-screen: known
+        dimensions must reach `min_dim` on the long edge; unknown dimensions
+        are accepted only when render evidence shows near-viewport coverage.
+        """
+        def _qualifies(c: ImageMetadata) -> bool:
+            if c.source_usage != "css_background" or c.url in self._used_urls:
+                return False
+            if not _looks_like_image(c.url):
+                return False
+            if c.role not in {"hero", "background", "unknown"} and c.intent != "hero":
+                return False
+            long_edge = max(c.width or 0, c.height or 0)
+            if long_edge:
+                return long_edge >= min_dim
+            # CSS bg URLs often carry no dimensions — trust hero-grade signals
+            # (measured hero/background role or promoted hero intent) instead.
+            return c.role in {"hero", "background"} or c.intent == "hero"
+
+        qualifying = [c for c in self._pool if _qualifies(c)]
+        if not qualifying:
+            return None
+        return max(qualifying, key=lambda c: (c.width or 0) * (c.height or 0))
 
 
 def _placeholder_photo(
@@ -543,6 +597,7 @@ _INDUSTRY_CONTEXT_QUERIES = {
     "ecommerce": "modern retail product display",
     "consultancy": "business strategy meeting office",
     "nonprofit": "community volunteers working together",
+    "childcare": "children playing learning kindergarten classroom",
     "personal": "creative professional workspace",
 }
 
@@ -562,6 +617,13 @@ def _contextual_non_person_query(query: str, industry_category: str = "") -> str
         return "modern clinic interior"
     if tokens & {"restaurant", "cafe", "coffee", "food", "dining", "menu"}:
         return "restaurant interior food service"
+    # Childcare before the generic school bucket: candid children-at-play beats
+    # an empty "learning space" — the design brief bans empty classrooms.
+    if tokens & {
+        "kindergarten", "preschool", "childcare", "daycare", "nursery",
+        "montessori", "toddler", "toddlers", "children", "kids",
+    }:
+        return "children playing learning kindergarten"
     if tokens & {"school", "classroom", "education", "training", "learning"}:
         return "modern classroom learning space"
     if tokens & {"factory", "manufacturing", "industrial", "warehouse"}:

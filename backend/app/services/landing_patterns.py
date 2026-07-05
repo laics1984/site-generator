@@ -48,6 +48,15 @@ _LANDING_PATTERNS: tuple[LandingPattern, ...] = (
                    ("hero", "services", "process", "testimonials", "cta")),
     LandingPattern("mission-led", ("nonprofit",),
                    ("hero", "about", "testimonials", "team", "cta")),
+    # Childcare homepage journey: emotional hero → why parents choose us
+    # (features) → learning philosophy (about) → programs by age (services) →
+    # a day at our school (process) → teachers (team) → parent testimonials →
+    # FAQ objections → book-a-tour CTA. Parents, not children, are the audience.
+    LandingPattern("parent-trust", ("childcare",),
+                   ("hero", "features", "about", "services", "process",
+                    "team", "testimonials", "faq", "cta")),
+    LandingPattern("day-in-the-life", ("childcare",),
+                   ("hero", "about", "services", "gallery", "testimonials", "cta")),
     LandingPattern("portfolio-grid", ("personal", "agency"),
                    ("hero", "gallery", "about", "cta")),
     LandingPattern("visual-gallery", ("ecommerce", "restaurant", "agency", "personal"),

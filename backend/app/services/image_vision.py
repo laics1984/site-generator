@@ -34,7 +34,7 @@ from app.config import settings
 from app.models.content_blocks import ImageMetadata
 
 if TYPE_CHECKING:
-    from app.services.llm import OllamaClient
+    from app.services.llm import LlmClient
 
 logger = logging.getLogger(__name__)
 
@@ -85,27 +85,19 @@ _VISION_CONCURRENCY = 3
 
 
 def vision_enabled() -> bool:
-    return bool(settings.ollama_vision_model)
+    from app.services.llm import active_vision_model  # lazy: heavy import chain
+
+    return bool(active_vision_model())
 
 
-async def annotate_image_pool(
+def _vision_candidates(
     metadata: list[ImageMetadata],
-    extra_urls: list[str] | None = None,
-    *,
-    llm: OllamaClient | None = None,
-    max_images: int | None = None,
-) -> dict[str, VisionAnnotation]:
-    """Annotate up to `max_images` images; returns {url: annotation}.
-
-    `metadata` entries that get annotated are also enriched in place
-    (vision_caption / vision_kind / vision_people / vision_portrait), so the
-    pool handed to the resolver carries the captions with no extra plumbing.
-    `extra_urls` (e.g. profile portraits not in the pool) are annotated too
-    and appear only in the returned map.
-    """
-    if not vision_enabled():
-        return {}
-
+    extra_urls: list[str] | None,
+    max_images: int | None,
+) -> tuple[list[str], dict[str, ImageMetadata]]:
+    """The first `limit` distinct URLs the vision pass will judge, plus a
+    url→metadata map for in-place enrichment. Shared by prefetch + annotate so
+    both phases agree on the candidate set."""
     limit = max_images if max_images is not None else settings.vision_max_images
     by_url: dict[str, ImageMetadata] = {}
     ordered_urls: list[str] = []
@@ -116,20 +108,74 @@ async def annotate_image_pool(
     for url in extra_urls or []:
         if url and url not in by_url and url not in ordered_urls:
             ordered_urls.append(url)
+    return ordered_urls[: max(0, limit)], by_url
+
+
+async def prefetch_image_pool(
+    metadata: list[ImageMetadata],
+    extra_urls: list[str] | None = None,
+    *,
+    max_images: int | None = None,
+) -> dict[str, str]:
+    """Download + downscale the images the vision pass will judge; returns
+    {url: base64_jpeg}. Pure network/CPU — safe to run concurrently with the
+    content-generation LLM call (which owns the GPU), so the downloads come
+    off the critical path. Pass the result to `annotate_image_pool` via
+    `prefetched=`. URLs already in the annotation cache are skipped."""
+    if not vision_enabled():
+        return {}
+    candidates, _ = _vision_candidates(metadata, extra_urls, max_images)
+    to_fetch = [u for u in candidates if u not in _ANNOTATION_CACHE]
+    if not to_fetch:
+        return {}
+
+    sem = asyncio.Semaphore(_VISION_CONCURRENCY)
+
+    async def _one(url: str, http_client: httpx.AsyncClient) -> tuple[str, str | None]:
+        async with sem:
+            return url, await _fetch_image_b64(url, client=http_client)
+
+    async with httpx.AsyncClient(
+        timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
+    ) as http_client:
+        fetched = await asyncio.gather(*(_one(url, http_client) for url in to_fetch))
+    return {url: b64 for url, b64 in fetched if b64 is not None}
+
+
+async def annotate_image_pool(
+    metadata: list[ImageMetadata],
+    extra_urls: list[str] | None = None,
+    *,
+    llm: LlmClient | None = None,
+    max_images: int | None = None,
+    prefetched: dict[str, str] | None = None,
+) -> dict[str, VisionAnnotation]:
+    """Annotate up to `max_images` images; returns {url: annotation}.
+
+    `metadata` entries that get annotated are also enriched in place
+    (vision_caption / vision_kind / vision_people / vision_portrait), so the
+    pool handed to the resolver carries the captions with no extra plumbing.
+    `extra_urls` (e.g. profile portraits not in the pool) are annotated too
+    and appear only in the returned map. `prefetched` supplies already
+    downloaded {url: base64} payloads (from `prefetch_image_pool`); anything
+    missing from it is downloaded here as before.
+    """
+    if not vision_enabled():
+        return {}
 
     # Cap candidates up front (the first `limit` distinct URLs), then resolve
     # them concurrently. Downloads overlap; the Ollama vision calls queue on the
     # single model slot, so we stay within a 16GB M1's budget. Per-URL failures
     # are swallowed, so we may end with fewer than `limit` annotations.
-    candidates = ordered_urls[: max(0, limit)]
+    candidates, by_url = _vision_candidates(metadata, extra_urls, max_images)
     if not candidates:
         return {}
 
     client = llm
     if client is None and any(u not in _ANNOTATION_CACHE for u in candidates):
-        from app.services.llm import get_llm  # lazy: heavy import chain
+        from app.services.llm import active_vision_model, get_llm  # lazy: heavy import chain
 
-        client = get_llm(model=settings.ollama_vision_model)
+        client = get_llm(model=active_vision_model())
 
     sem = asyncio.Semaphore(_VISION_CONCURRENCY)
 
@@ -140,7 +186,12 @@ async def annotate_image_pool(
         if cached is not None:
             return url, cached
         async with sem:
-            annotation = await _annotate_one(url, client, http_client)  # type: ignore[arg-type]
+            annotation = await _annotate_one(
+                url,
+                client,  # type: ignore[arg-type]
+                http_client,
+                image_b64=(prefetched or {}).get(url),
+            )
         if annotation is not None:
             _cache_annotation(url, annotation)
         return url, annotation
@@ -168,10 +219,16 @@ async def annotate_image_pool(
 
 
 async def _annotate_one(
-    url: str, llm: OllamaClient, http_client: httpx.AsyncClient | None = None
+    url: str,
+    llm: LlmClient,
+    http_client: httpx.AsyncClient | None = None,
+    *,
+    image_b64: str | None = None,
 ) -> VisionAnnotation | None:
-    """Fetch + downscale + judge one image. None on any failure."""
-    image_b64 = await _fetch_image_b64(url, client=http_client)
+    """Fetch + downscale + judge one image. None on any failure.
+    A prefetched `image_b64` skips the download entirely."""
+    if image_b64 is None:
+        image_b64 = await _fetch_image_b64(url, client=http_client)
     if image_b64 is None:
         return None
 

@@ -35,8 +35,15 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-export async function checkOllamaHealth(): Promise<{ status: string; models?: string[]; error?: string }> {
-  return jsonRequest('/health/ollama')
+export async function checkLlmHealth(): Promise<{ backend: string; model?: string; configured?: string }> {
+  return jsonRequest('/health/llm')
+}
+
+export async function checkBackendHealth(
+  backend: string,
+): Promise<{ status: string; models?: string[]; error?: string }> {
+  // The active backend (from LLM_BACKEND) decides which server we probe.
+  return jsonRequest(backend === 'mlx' ? '/health/mlx' : '/health/ollama')
 }
 
 export async function checkPexelsHealth(): Promise<{ status: string; provider?: string; hint?: string }> {

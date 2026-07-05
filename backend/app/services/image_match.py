@@ -37,7 +37,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
 from app.models.content_blocks import ImageMetadata
@@ -45,7 +45,7 @@ from app.models.content_blocks import ImageMetadata
 if TYPE_CHECKING:
     # Heavy import chain (llm -> config -> pydantic_settings/httpx). Kept lazy so
     # the pure, deterministic ranking logic can be imported + unit-tested alone.
-    from app.services.llm import OllamaClient
+    from app.services.llm import LlmClient
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +196,11 @@ _UNPINNABLE_VISION_KINDS = frozenset({"logo", "banner", "screenshot", "graphic",
 # the real audience) instead of a random stock face.
 PRIMARY_INTENTS = frozenset({"hero", "about"})
 
+# How the requesting slot renders its image. 'inline' slots (split-hero side
+# image, feature/gallery cards) exclude source CSS backgrounds; 'background'
+# slots pin them first; 'any' keeps legacy behaviour.
+SlotUsage = Literal["inline", "background", "any"]
+
 
 @dataclass
 class RankResult:
@@ -209,6 +214,8 @@ def rank_candidates(
     query: str | None,
     slot_intent: str,
     candidates: list[ImageMetadata],
+    *,
+    slot_usage: SlotUsage = "any",
 ) -> RankResult:
     """Pure-Python ranking — no LLM. Returns the best candidate or None.
 
@@ -217,10 +224,18 @@ def rank_candidates(
     to ~0.4, which would otherwise pick a coffee photo for a "dental clinic"
     slot just because it was the right intent and big enough.
 
+    slot_usage says how the slot renders the image: an 'inline' slot (split-hero
+    side image, feature card, gallery cell) must never receive an image the
+    source used as a CSS background — it was composed to sit behind text, and
+    cropped into an <img> it reads as a scrape failure. A 'background' slot
+    prefers the source's own background images over inline photos.
+
     Use rank_candidates_with_llm_tiebreaker() if you want the LLM judge to
     settle ambiguous cases.
     """
     candidates = [c for c in candidates if c.role not in _EXCLUDED_ROLES]
+    if slot_usage == "inline":
+        candidates = [c for c in candidates if c.source_usage != "css_background"]
     # Large featured slots (hero / about) must be real photographs. A banner,
     # UI screenshot, graphic (e.g. a QR code) or map blown up as the hero/about
     # image reads as a scrape failure, so exclude those vision kinds here — not
@@ -245,9 +260,17 @@ def rank_candidates(
             and (c.vision_kind is None or c.vision_kind not in _UNPINNABLE_VISION_KINDS)
         ]
         if intent_matches:
+            # Background slots: the source's own background image outranks any
+            # inline photo, whatever its size — it was art-directed to sit
+            # behind text, so it is the authentic full-bleed visual.
             pinned = sorted(
                 (score_candidate(query or "", slot_intent, c) for c in intent_matches),
-                key=lambda s: (s.size_bonus, s.lexical),
+                key=lambda s: (
+                    slot_usage == "background"
+                    and s.candidate.source_usage == "css_background",
+                    s.size_bonus,
+                    s.lexical,
+                ),
                 reverse=True,
             )
             return RankResult(
@@ -300,13 +323,14 @@ async def rank_candidates_with_llm_tiebreaker(
     slot_intent: str,
     candidates: list[ImageMetadata],
     *,
-    llm: OllamaClient | None = None,
+    llm: LlmClient | None = None,
+    slot_usage: SlotUsage = "any",
 ) -> RankResult:
     """Heuristic first; if ambiguous AND multiple candidates are tied near the
     top, ask the LLM to break the tie. Falls through to fallback if the LLM
     says none of them fit.
     """
-    initial = rank_candidates(query, slot_intent, candidates)
+    initial = rank_candidates(query, slot_intent, candidates, slot_usage=slot_usage)
     if initial.decision != "tiebreaker":
         return initial
 
@@ -360,7 +384,7 @@ async def _llm_pick_best(
     slot_intent: str,
     contenders: list[ImageScore],
     *,
-    llm: OllamaClient | None = None,
+    llm: LlmClient | None = None,
 ) -> int | None:
     """Ask the LLM to break a tie between near-tied heuristic candidates."""
     from pydantic import BaseModel

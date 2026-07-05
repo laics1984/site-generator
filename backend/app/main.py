@@ -42,3 +42,21 @@ app.include_router(cms.router)
 @app.on_event("startup")
 async def _on_startup() -> None:
     await init_db()
+    # Resolve + log the LLM backend once so it's visible at boot (and the
+    # resolution is cached before the first request).
+    from app.services.llm import resolve_llm_backend
+
+    backend = resolve_llm_backend()
+    model = settings.mlx_model if backend == "mlx" else settings.ollama_model
+    logging.getLogger("app").info(
+        "LLM backend: %s (model=%s, LLM_BACKEND=%s)", backend, model, settings.llm_backend
+    )
+
+
+@app.on_event("shutdown")
+async def _on_shutdown() -> None:
+    # The LLM layer shares one keep-alive httpx client across calls; close it
+    # so uvicorn reloads don't leak sockets.
+    from app.services.llm import aclose_shared_client
+
+    await aclose_shared_client()
