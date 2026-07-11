@@ -30,6 +30,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Literal
 
+from app.config import settings
 from app.models.content_blocks import BrandMood, PagePlan
 
 # Hero templates that render no image slot (see app/templates/section_catalog.json).
@@ -127,9 +128,11 @@ _MOOD_SPECS: dict[BrandMood, _MoodSpec] = {
 
 # Childcare art direction: the homepage leads with large authentic photography
 # (children learning/playing — emotional connection for parents), interiors stay
-# soft and compact — washed splits and gentle gradients over hard editorial cuts,
-# centered minimal for the transactional pages (contact/faq) parents hit when
-# they're ready to book a tour.
+# soft and compact and — critically — LIGHT-BACKGROUND WITH DARK TEXT to match
+# the bright Scandinavian brief. The gradient hero (hardcoded white text over a
+# secondary→primary gradient) is deliberately excluded: with childcare's pastel
+# primary the gradient's light end left white text illegible, so interiors use
+# washed splits, centered-minimal, and editorial — all dark ink on a light band.
 _CHILDCARE_SPEC = _MoodSpec(
     homepage=_BACKGROUND,
     by_page_type={
@@ -138,7 +141,7 @@ _CHILDCARE_SPEC = _MoodSpec(
         "contact": _CENTERED,
         "faq": _CENTERED,
     },
-    rotation=(_SPLIT_WASHED, _GRADIENT, _EDITORIAL),
+    rotation=(_SPLIT_WASHED, _CENTERED, _EDITORIAL),
 )
 
 _INDUSTRY_SPECS: dict[str, _MoodSpec] = {
@@ -175,6 +178,24 @@ def plan_site_heroes(
         spec = _MOOD_SPECS.get(mood) if mood else None  # type: ignore[arg-type]
     if spec is None:
         spec = _DEFAULT_SPEC
+
+    # Site-wide full-bleed policy: EVERY page opens with a background hero —
+    # a real/stock photo or the colour-matched abstract — so the transparent
+    # floating header engages on every page, not just the homepage. Imagery
+    # fallbacks (and the compact-hero degrade when nothing genuine resolves)
+    # are handled downstream by _apply_hero_directive; that degrade also keeps
+    # the header solid on such a page, so readability never regresses.
+    if settings.hero_fullbleed_all_pages:
+        return {
+            page.slug: (
+                HeroDirective(
+                    "hero-background-bold", "background", pin_source_background=True
+                )
+                if (page.is_homepage or page.page_type == "home") and has_source_background
+                else _BACKGROUND
+            )
+            for page in pages
+        }
 
     directives: dict[str, HeroDirective] = {}
     interior_seen: list[str] = []

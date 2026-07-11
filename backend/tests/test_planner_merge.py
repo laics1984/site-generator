@@ -80,3 +80,89 @@ class MergeTimelineBlocksTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepeatedSectionMergeTest(unittest.TestCase):
+    """Story pages request the same kind several times (one `about` per source
+    section). The chunk merge must keep those blocks side by side instead of
+    collapsing them to the first one."""
+
+    @staticmethod
+    def _page(blocks) -> PagePlan:
+        return PagePlan(
+            page_type="landing",
+            slug="school-life",
+            title="School Life",
+            description="",
+            is_homepage=False,
+            blocks=blocks,
+            seo_title="t",
+            seo_description="d",
+        )
+
+    def _scaffold(self, sections):
+        return PageScaffold(
+            page_type="landing", slug="school-life", title="School Life",
+            sections=sections,
+        )
+
+    def test_repeated_abouts_survive_across_section_chunks(self):
+        from app.models.content_blocks import AboutBlock, CtaBlock, HeroBlock
+
+        scaffold = self._scaffold(["hero", "about", "about", "about", "cta"])
+        chunk_one = self._page(
+            [
+                HeroBlock(headline="School Life"),
+                AboutBlock(heading="18 months to 3 years", body="…"),
+                AboutBlock(heading="4 years old", body="…"),
+            ]
+        )
+        chunk_two = self._page(
+            [
+                HeroBlock(headline="School Life"),
+                AboutBlock(heading="5 years old", body="…"),
+                CtaBlock(headline="Enroll now"),
+            ]
+        )
+
+        merged = _merge_page_plans([chunk_one, chunk_two], scaffold)
+
+        self.assertEqual(
+            [b.kind for b in merged.blocks],
+            ["hero", "about", "about", "about", "cta"],
+        )
+        self.assertEqual(
+            [b.heading for b in merged.blocks if b.kind == "about"],
+            ["18 months to 3 years", "4 years old", "5 years old"],
+        )
+
+    def test_duplicate_about_headings_across_chunks_are_deduped(self):
+        from app.models.content_blocks import AboutBlock, HeroBlock
+
+        scaffold = self._scaffold(["hero", "about", "about", "cta"])
+        chunk_one = self._page(
+            [HeroBlock(headline="H"), AboutBlock(heading="4 years old", body="v1")]
+        )
+        chunk_two = self._page(
+            [HeroBlock(headline="H"), AboutBlock(heading="4 Years Old", body="v2")]
+        )
+
+        merged = _merge_page_plans([chunk_one, chunk_two], scaffold)
+        abouts = [b for b in merged.blocks if b.kind == "about"]
+        self.assertEqual(len(abouts), 1)
+        self.assertEqual(abouts[0].body, "v1")  # first arrival wins
+
+    def test_repeated_abouts_are_capped_at_requested_count(self):
+        from app.models.content_blocks import AboutBlock, HeroBlock
+
+        scaffold = self._scaffold(["hero", "about", "about"])
+        chunk = self._page(
+            [
+                HeroBlock(headline="H"),
+                AboutBlock(heading="A", body=""),
+                AboutBlock(heading="B", body=""),
+                AboutBlock(heading="C", body=""),
+            ]
+        )
+        merged = _merge_page_plans([chunk, self._page([HeroBlock(headline="H")])], scaffold)
+        self.assertEqual(len([b for b in merged.blocks if b.kind == "about"]), 2)

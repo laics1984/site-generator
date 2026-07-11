@@ -153,8 +153,8 @@ def _blog_page() -> PageScaffold:
         page_type="blog",
         slug="blog",
         title="Blog",
-        sections=["hero", "features"],  # placeholder — real blog needs CMS articlesList
-        rationale="Content marketing. Placeholder structure; replace with the builder's articlesList block.",
+        sections=["hero"],  # schema_builder appends the builder's articlesList element
+        rationale="Content marketing. Renders the CMS article collection via articlesList.",
     )
 
 
@@ -299,7 +299,11 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         industry="childcare",
         label="Childcare / Kindergarten",
         description="Kindergartens, preschools, daycares, and early learning centers where parent trust drives tour bookings.",
-        core_pages=_core_set(_core_home("childcare", extra_sections=["gallery"])),
+        # No gallery extra on the homepage: it keeps the parent-trust pattern at
+        # 6 sections (a single homepage scaffold is generated in ONE LLM call and
+        # can't be chunked; ~10 sections overflows the token budget). Gallery has
+        # its own suggested page below.
+        core_pages=_core_set(_core_home("childcare")),
         suggested_pages=[_programs_page(), _teachers_page(), _gallery_page(), _faq_page()],
         optional_pages=[_daily_journey_page(), _testimonials_page(), _blog_page()],
     ),

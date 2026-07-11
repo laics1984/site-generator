@@ -235,6 +235,9 @@ def wrap_header(
     sticky: bool = True,
     overlay: bool = False,
     scroll_reveal_offset: int | None = None,
+    shrink_on_scroll: bool = False,
+    scroll_shrink_offset: int | None = None,
+    shrink_amount: int | None = None,
 ) -> dict[str, Any]:
     """
     Wrap a `__header` BuilderElement into a BuilderTemplateHeader payload.
@@ -244,6 +247,10 @@ def wrap_header(
     renderer owns the scroll-solidify behaviour this flag implies.
     `scroll_reveal_offset` is the scrolled-pixel threshold before the floating
     header gains its background (renderer clamps 0-600, defaults 80 if absent).
+    `shrink_on_scroll` compacts the header (logo + row padding) once scrolled
+    past `scroll_shrink_offset` px, to `shrink_amount` percent of its original
+    size (renderer clamps offset 0-600, amount 50-100). On overlay headers the
+    renderer shares the reveal offset, so both effects fire at one scroll moment.
     """
     menu_ids = {m["id"] for m in menus}
     behavior: dict[str, Any] = {
@@ -252,6 +259,12 @@ def wrap_header(
     }
     if scroll_reveal_offset is not None:
         behavior["scrollRevealOffset"] = scroll_reveal_offset
+    if shrink_on_scroll:
+        behavior["shrinkOnScroll"] = True
+        if scroll_shrink_offset is not None:
+            behavior["scrollShrinkOffset"] = scroll_shrink_offset
+        if shrink_amount is not None:
+            behavior["shrinkAmount"] = shrink_amount
     return {
         "elements": [header_element.model_dump(mode="json")],
         "behavior": behavior,

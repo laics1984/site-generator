@@ -101,11 +101,13 @@ class ImageScore:
 
 def _lexical_score(query: str, candidate: ImageMetadata) -> tuple[float, tuple[str, ...]]:
     """Jaccard-style overlap between query tokens and (alt + url path +
-    vision caption) tokens.
+    vision caption + source context heading/caption) tokens.
 
     The vision caption (when the opt-in pass ran) is what rescues authentic
     photos with hashed CDN filenames and empty alt text — without it they
-    have zero lexical evidence and always lose to stock.
+    have zero lexical evidence and always lose to stock. The context heading
+    (the heading the image sat under on the source page) plays the same role
+    on the render path: it's free section-topic evidence.
 
     Returns (score in [0, 0.6], matched tokens).
     """
@@ -116,6 +118,8 @@ def _lexical_score(query: str, candidate: ImageMetadata) -> tuple[float, tuple[s
         _tokens(candidate.alt)
         | _path_tokens(candidate.url)
         | _tokens(candidate.vision_caption or "")
+        | _tokens(candidate.context_heading)
+        | _tokens(candidate.caption)
     )
     if not c_tokens:
         return 0.0, ()
@@ -389,6 +393,7 @@ async def _llm_pick_best(
     """Ask the LLM to break a tie between near-tied heuristic candidates."""
     from pydantic import BaseModel
 
+    from app.config import settings  # lazy: heavy import only when judging
     from app.services.llm import get_llm  # lazy: heavy import only when judging
 
     class _JudgePick(BaseModel):
@@ -415,8 +420,8 @@ async def _llm_pick_best(
         system_prompt=_JUDGE_SYSTEM,
         user_prompt=json.dumps(payload, ensure_ascii=False),
         schema=_JudgePick,
-        temperature=0.0,
-        num_ctx=2048,
+        temperature=settings.judge_temperature,
+        num_ctx=settings.judge_num_ctx,
     )
     if result.pick is None:
         return None

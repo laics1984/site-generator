@@ -113,6 +113,7 @@ async def push(payload: PushRequestBody) -> dict[str, Any]:
         create_entity=payload.create_entity,
         new_entity_name=payload.new_entity_name,
         new_entity_url=payload.new_entity_url,
+        collections=payload.site.collections,
     )
     report = await push_site(req)
     return {

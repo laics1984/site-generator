@@ -178,3 +178,50 @@ class LinkbarInjectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BreadcrumbExclusionTest(unittest.TestCase):
+    """A source breadcrumb ("Home › Programs") must not be reborn as an
+    announcement strap — it renders as a redundant second menu under the hero."""
+
+    def test_cluster_starting_with_home_link_is_skipped(self):
+        from app.services.nav_extraction import find_linkbar_cluster
+
+        breadcrumb = LinkCluster(
+            links=[
+                NavLink(label="Home", href="/"),
+                NavLink(label="Programs", href="/programs"),
+            ],
+            href_key="crumb",
+            context_label="",
+        )
+        strap = LinkCluster(
+            links=[
+                NavLink(label="Dart Sass", href="/dart-sass"),
+                NavLink(label="LibSass", href="/libsass"),
+            ],
+            href_key="releases",
+            context_label="Current Releases",
+        )
+        source = _source([breadcrumb, strap])
+        cluster = find_linkbar_cluster(source)
+        self.assertIsNotNone(cluster)
+        self.assertEqual(cluster.links[0].label, "Dart Sass")
+
+    def test_home_labelled_context_is_skipped(self):
+        from app.services.nav_extraction import find_linkbar_cluster
+
+        source = _source(
+            [_cluster(("Programs", "/programs"), ("Gallery", "/gallery"), label="Home")]
+        )
+        self.assertIsNone(find_linkbar_cluster(source))
+
+    def test_release_strap_still_qualifies(self):
+        from app.services.nav_extraction import find_linkbar_cluster
+
+        source = _source(
+            [_cluster(("Dart Sass", "/dart-sass"), ("LibSass", "/libsass"))]
+        )
+        cluster = find_linkbar_cluster(source)
+        self.assertIsNotNone(cluster)
+        self.assertEqual(cluster.context_label, "Current Releases")

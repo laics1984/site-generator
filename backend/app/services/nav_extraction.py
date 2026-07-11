@@ -380,8 +380,26 @@ def find_linkbar_cluster(source: SourceContent) -> LinkCluster | None:
             continue
         if not cluster.context_label and len(cluster.links) > 4:
             continue
+        if _looks_like_breadcrumb(cluster):
+            continue
         return cluster
     return None
+
+
+def _looks_like_breadcrumb(cluster: LinkCluster) -> bool:
+    """A breadcrumb trail masquerading as a strap ("Home › Programs").
+
+    Announcement straps virtually never link back to the homepage; a cluster
+    that starts with a homepage link (or whose label/first link is literally
+    "Home") is the source page's breadcrumb — recreating it as a linkbar would
+    render a redundant second menu under the hero.
+    """
+    first = cluster.links[0] if cluster.links else None
+    if first is not None:
+        href_path = first.href.split("#", 1)[0].strip("/").lower()
+        if href_path == "" or (first.label or "").strip().lower() == "home":
+            return True
+    return (cluster.context_label or "").strip().rstrip(":").lower() == "home"
 
 
 def strip_linkbar_lines(source: SourceContent, cluster: LinkCluster) -> None:

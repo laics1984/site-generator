@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
-from app.models.content_blocks import SourceContent
+from app.models.content_blocks import ImageMetadata, SourceContent
 from app.models.industry import PageScaffold
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,7 @@ _PAGE_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "testimonials": ("testimonial", "review", "story", "praise"),
     "faq": ("faq", "question", "help"),
     "blog": ("blog", "news", "insight", "article", "press"),
+    "events": ("events", "calendar", "whats-on", "upcoming-events"),
     "process": ("process", "approach", "method", "how-we-work"),
     "landing": (),  # generic — only matches by direct path
 }
@@ -178,7 +179,9 @@ def _match_by_keywords(
     return None
 
 
-def split_raw_text(raw_text: str, max_chars: int) -> list[str]:
+def split_raw_text(
+    raw_text: str, max_chars: int, headings: list[str] | None = None
+) -> list[str]:
     """Split a page's text into chunks of at most ``max_chars`` characters.
 
     The extractor emits one block (paragraph / heading / list item) per line, so
@@ -187,10 +190,19 @@ def split_raw_text(raw_text: str, max_chars: int) -> list[str]:
     ``max_chars``, in which case it's hard-wrapped so a giant block can't stall
     the loop. Returns ``[raw_text]`` unchanged when the whole text already fits,
     so small pages stay a single pass.
+
+    ``headings`` (the page's extracted headings, in document order) makes the
+    split heading-aware: when the current chunk is at least half full and the
+    next block is a heading line, the chunk is sealed there, so a source
+    section (heading + its paragraphs + its photo context) stays whole inside
+    one chunk instead of being cut mid-section. Greedy packing is the fallback
+    for pages without headings.
     """
     text = raw_text or ""
     if len(text) <= max_chars:
         return [text]
+
+    heading_set = {h.strip().lower() for h in (headings or []) if h.strip()}
 
     chunks: list[str] = []
     current: list[str] = []
@@ -204,9 +216,16 @@ def split_raw_text(raw_text: str, max_chars: int) -> list[str]:
             for i in range(0, len(block), max_chars):
                 chunks.append(block[i : i + max_chars])
             continue
+        # Prefer sealing at a section boundary: a heading line starting a new
+        # source section closes the chunk once it's usefully full, so the
+        # section's heading and body travel to the LLM together.
+        is_heading = block.strip().lower() in heading_set
         # +1 for the newline that will rejoin this block to the previous one.
         added = len(block) + (1 if current else 0)
-        if current_len + added > max_chars:
+        if current and (
+            current_len + added > max_chars
+            or (is_heading and current_len >= max_chars // 2)
+        ):
             chunks.append("\n".join(current))
             current, current_len = [block], len(block)
         else:
@@ -216,6 +235,48 @@ def split_raw_text(raw_text: str, max_chars: int) -> list[str]:
     if current:
         chunks.append("\n".join(current))
     return chunks
+
+
+# Max real photos surfaced per page in the LLM prompt. Keeps the per-page
+# image payload bounded (~30 tokens each) while covering a photo-per-section
+# page comfortably.
+MAX_PROMPT_IMAGES = 12
+
+# Roles that never belong in a content slot — mirrors image_match's veto set.
+_UNPROMPTABLE_ROLES = frozenset({"logo", "decoration"})
+
+
+def promptable_images(source: SourceContent) -> list[ImageMetadata]:
+    """The page's content-grade photos, in a DETERMINISTIC order.
+
+    This same list is recomputed by the post-parse binding pass
+    (services/image_refs.py) to resolve the LLM's ``image_ref`` indexes back
+    to URLs, so the filter and ordering must stay pure functions of the
+    source's ``image_metadata``.
+    """
+    out: list[ImageMetadata] = []
+    for meta in source.image_metadata or []:
+        if meta.role in _UNPROMPTABLE_ROLES or meta.intent == "logo":
+            continue
+        if (meta.width and meta.width < 200) or (meta.height and meta.height < 120):
+            continue
+        out.append(meta)
+        if len(out) >= MAX_PROMPT_IMAGES:
+            break
+    return out
+
+
+def _image_prompt_entry(ref: int, meta: ImageMetadata) -> dict[str, object]:
+    entry: dict[str, object] = {"ref": ref}
+    if meta.alt:
+        entry["alt"] = meta.alt[:80]
+    elif meta.caption:
+        entry["alt"] = meta.caption[:80]
+    if meta.role != "unknown":
+        entry["role"] = meta.role
+    if meta.context_heading:
+        entry["near"] = meta.context_heading[:60]
+    return entry
 
 
 def excerpt_for_prompt(
@@ -237,10 +298,16 @@ def excerpt_for_prompt(
     """
     raw_text = source.raw_text or ""
     body = text_override if text_override is not None else raw_text[:max_chars]
-    return {
+    payload: dict[str, object] = {
         "url_path": source.url_path or "/",
         "title": source.title,
         "headings": (source.headings or [])[:max_headings],
         "raw_text": body,
         "raw_text_char_count": len(raw_text),
     }
+    images = promptable_images(source)
+    if images:
+        payload["images"] = [
+            _image_prompt_entry(i, meta) for i, meta in enumerate(images)
+        ]
+    return payload

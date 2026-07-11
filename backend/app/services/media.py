@@ -81,14 +81,32 @@ _INTENT_TO_ORIENTATION: dict[ImageIntent, Literal["landscape", "portrait", "squa
     "generic": "landscape",
 }
 
-# Intents where scraped imagery is plausible. Avatars / CTA backgrounds always
-# skip the scraped pool (portraits and atmospheric backgrounds from Pexels work
-# better than a brand brochure's random pages).
-_SCRAPED_ELIGIBLE_INTENTS: frozenset[str] = frozenset({"hero", "about", "generic", "feature"})
+# Intents where scraped imagery is plausible. Avatars always skip the scraped
+# pool (Pexels portraits beat a brand brochure's random pages). CTA backgrounds
+# ARE eligible: on photo-rich sources the section background should be the
+# business's own photo, not an anonymous stock atmosphere.
+_SCRAPED_ELIGIBLE_INTENTS: frozenset[str] = frozenset(
+    {"hero", "about", "generic", "feature", "cta_bg"}
+)
 
 # Intents likely to depict people, where a market/locale cue ("Southeast Asian …")
 # keeps stock imagery on-audience. Atmospheric CTA backgrounds / logos are skipped.
 _PEOPLE_INTENTS: frozenset[str] = frozenset({"hero", "about", "avatar", "feature", "generic"})
+
+
+def _below_hero_bg_min(meta: ImageMetadata | None, min_long_edge: int) -> bool:
+    """True when a scraped image's KNOWN dimensions are too small to fill a
+    full-bleed hero without softening.
+
+    Unknown dimensions pass (return False): CSS-background URLs frequently omit
+    size and the source clearly used them full-bleed, so we reject on measured
+    evidence, not missing data — only a long edge below the minimum is too small.
+    A ``min_long_edge`` of 0 disables the gate (non-hero slots).
+    """
+    if min_long_edge <= 0 or meta is None:
+        return False
+    long_edge = max(meta.width or 0, meta.height or 0)
+    return 0 < long_edge < min_long_edge
 
 
 class ImageResolver:
@@ -151,6 +169,12 @@ class ImageResolver:
         self._primary_hex = primary_hex or "#64748b"
         self._secondary_hex = secondary_hex or "#1e293b"
 
+    def mark_used(self, urls: set[str] | list[str]) -> None:
+        """Reserve scraped URLs already placed by the ref-binding pass
+        (services/image_refs.py), so slot resolution won't re-pick them and
+        render the same photo twice on a page."""
+        self._used_urls.update(urls)
+
     @property
     def attributions(self) -> list[str]:
         # de-dupe but preserve order
@@ -170,6 +194,7 @@ class ImageResolver:
         alt_fallback: str | None = None,
         prefer: list[ImageMetadata] | None = None,
         slot_usage: SlotUsage = "any",
+        pinned_url: str | None = None,
     ) -> PhotoResult:
         """Returns a usable PhotoResult. Always succeeds — the gradient placeholder is the final fallback.
 
@@ -182,13 +207,52 @@ class ImageResolver:
         `slot_usage`: how the slot renders the image (see image_match.SlotUsage).
         'inline' keeps source CSS backgrounds out of side/featured slots;
         'background' pins them first for full-bleed slots.
+
+        `pinned_url`: a scraped photo the LLM already bound to this slot via
+        image_ref (services/image_refs.py). It wins outright — no ranking, no
+        stock fallback — because the source page actually used this photo for
+        this section.
         """
+        # A full-bleed hero stretches its photo edge-to-edge (background-size:
+        # cover), so a small scraped source image softens when upscaled. For that
+        # slot only, require a hero-worthy long edge; too-small candidates are
+        # skipped so Pexels supplies a crisp full-size photo instead (§ below).
+        min_long_edge = (
+            settings.hero_min_background_dim
+            if intent == "hero" and slot_usage == "background"
+            else 0
+        )
+
+        if pinned_url:
+            meta = next((c for c in self._pool if c.url == pinned_url), None)
+            # Honour the bound photo unless it's a too-small hero background —
+            # then fall through so the resolver reaches Pexels for a crisp shot.
+            if not _below_hero_bg_min(meta, min_long_edge):
+                self._used_urls.add(pinned_url)
+                lum, band = _band_fields(meta.dominant_color if meta else None)
+                return PhotoResult(
+                    url=pinned_url,
+                    alt=(meta.alt if meta and meta.alt else None)
+                    or alt_fallback
+                    or (query or "Source image"),
+                    photographer=None,
+                    photographer_url=None,
+                    source="scraped",
+                    luminance=lum,
+                    band=band,
+                )
+            logger.debug(
+                "Pinned hero background %s below %dpx long edge; deferring to stock",
+                pinned_url, min_long_edge,
+            )
+
         orientation = _INTENT_TO_ORIENTATION[intent]
 
         # 1. Scraped pool — rank against the slot's image_query
         if intent in _SCRAPED_ELIGIBLE_INTENTS:
             picked = await self._take_best_scraped(
-                query, intent, prefer=prefer, slot_usage=slot_usage
+                query, intent, prefer=prefer, slot_usage=slot_usage,
+                min_long_edge=min_long_edge,
             )
             if picked is not None:
                 self._used_urls.add(picked.url)
@@ -351,16 +415,22 @@ class ImageResolver:
         *,
         prefer: list[ImageMetadata] | None = None,
         slot_usage: SlotUsage = "any",
+        min_long_edge: int = 0,
     ) -> ImageMetadata | None:
         """Rank unused scraped candidates against the slot. Returns None if the
         best match doesn't clear the threshold — caller falls through to Pexels.
 
         When `prefer` is given, the page's own images are ranked first; only if
         none of them fit the slot do we consider the rest of the site-wide pool.
+
+        `min_long_edge` (>0 for the full-bleed hero background) drops candidates
+        whose known dimensions are too small to fill it without softening, so the
+        size fallback and ranker never pick a photo the hero would have to upscale.
         """
         candidates = [
             c for c in self._pool
             if c.url not in self._used_urls and _looks_like_image(c.url)
+            and not _below_hero_bg_min(c, min_long_edge)
         ]
         if not candidates:
             return None

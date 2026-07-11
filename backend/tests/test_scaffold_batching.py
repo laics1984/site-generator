@@ -8,6 +8,7 @@ tailored to the batch's section kinds.
 
 from __future__ import annotations
 
+from app.config import settings
 from app.models.industry import PageScaffold
 from app.services import planner
 
@@ -72,4 +73,4 @@ def test_batches_fit_the_input_budget():
             planner._TOK_PER_PAGE_STUB for _ in batch
         )
         assert est_input <= input_budget
-        assert sum(len(s.sections) for s in batch) <= planner._MAX_SECTIONS_PER_BATCH
+        assert sum(len(s.sections) for s in batch) <= settings.max_sections_per_batch

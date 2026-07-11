@@ -84,6 +84,9 @@ from app.services.section_content import (
     Band,
     SectionVisualInput,
     _has_real_photo,
+    apply_about_zigzag,
+    apply_childcare_heading_colors,
+    apply_childcare_pastel_rhythm,
     apply_luminance_rhythm,
     apply_section_rhythm,
     assign_visual_policies,
@@ -152,6 +155,7 @@ class RenderContext:
     theme: ThemeTokens
     resolver: ImageResolver
     styles: StyleTokens
+    industry: str | None = None  # site industry — steers per-industry render passes (e.g. childcare hero colours)
     section_index: int = 0  # incremented as we lay sections down — drives rotation
     current_page_slug: str | None = None  # slug of the page being rendered
     current_parent_slug: str | None = None  # set when rendering a sub-page (for breadcrumbs)
@@ -545,7 +549,9 @@ def _walk_modernize(
             )
 
 
-def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+def modernize_sections(
+    sections: list[BuilderElement], theme: ThemeTokens, industry: str | None = None
+) -> None:
     """Apply per-mood 2025/26 treatments to an assembled page's section list,
     in place. Idempotent: skips already-fluid type and sections that already
     carry a background image."""
@@ -567,7 +573,9 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
     # neighbour one are excluded from the accent here (apply_section_dividers also
     # flattens them as a safety net) — the accent then lands on a non-neighbour
     # band instead of being textured now and stripped later.
-    divider_neighbours = _shaped_divider_neighbours(sections, getattr(theme, "mood", None))
+    divider_neighbours = _shaped_divider_neighbours(
+        sections, getattr(theme, "mood", None), industry
+    )
     decorated = False
     for idx, section in enumerate(sections):
         st = section.styles
@@ -748,20 +756,34 @@ _DIVIDER_SHAPE_BY_MOOD: dict[str, str | None] = {
     "playful": "peak",
 }
 
+# Industry overrides mood: a childcare site must keep soft flowing seams
+# whatever mood the LLM picked (peak/slant read sharp; the brief wants curves).
+_DIVIDER_SHAPE_BY_INDUSTRY: dict[str, str | None] = {"childcare": "wave"}
+
 _DEFAULT_DIVIDER_COLOR = "var(--builder-page-background, #ffffff)"
 
 
+def _divider_shape(mood: BrandMood | None, industry: str | None) -> str | None:
+    """The shaped-edge to use for this site: the industry's signature shape when
+    it has one, else the mood's (None → no divider)."""
+    norm = (industry or "").strip().lower()
+    if norm in _DIVIDER_SHAPE_BY_INDUSTRY:
+        return _DIVIDER_SHAPE_BY_INDUSTRY[norm]
+    return _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
+
+
 def _shaped_divider_plan(
-    sections: list[BuilderElement], mood: BrandMood | None
+    sections: list[BuilderElement], mood: BrandMood | None, industry: str | None = None
 ) -> list[tuple[int, str, int]]:
     """The shaped-divider boundaries a page will get: ``(carrier_index, side,
-    revealed_index)`` where side is "bottom"/"top". Empty when the mood has no
-    shape or there are fewer than two sections.
+    revealed_index)`` where side is "bottom"/"top". Empty when the resolved
+    shape (industry override, else mood) is None or there are fewer than two
+    sections.
 
     Single source of truth for both apply_section_dividers and the modernize
     pass's "keep divider neighbours flat" rule, so the two never disagree about
     which sections border a shaped seam."""
-    shape = _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
+    shape = _divider_shape(mood, industry)
     if shape is None or len(sections) < 2:
         return []
 
@@ -786,18 +808,22 @@ def _shaped_divider_plan(
 
 
 def _shaped_divider_neighbours(
-    sections: list[BuilderElement], mood: BrandMood | None
+    sections: list[BuilderElement], mood: BrandMood | None, industry: str | None = None
 ) -> set[int]:
     """Indices of every section that will border a shaped divider (the section
     carrying the edge plus the one it reveals)."""
     out: set[int] = set()
-    for carrier, _side, revealed in _shaped_divider_plan(sections, mood):
+    for carrier, _side, revealed in _shaped_divider_plan(sections, mood, industry):
         out.add(carrier)
         out.add(revealed)
     return out
 
 
-def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | None) -> None:
+def apply_section_dividers(
+    sections: list[BuilderElement],
+    mood: BrandMood | None,
+    industry: str | None = None,
+) -> None:
     """Add a shaped edge at the hero→content and content→CTA handoffs — the two
     highest-impact, lowest-noise places for one (see SECTION_DIVIDER system,
     section-divider.ts). Deliberately NOT applied at every section boundary:
@@ -810,8 +836,8 @@ def apply_section_dividers(sections: list[BuilderElement], mood: BrandMood | Non
     neighbour's plain background colour — no texture is carried onto the seam.
     Runs after modernize_sections (which already steers the texture accent away
     from these neighbours; this is the enforcing safety net). Mutates in place."""
-    shape = _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
-    for carrier, side, revealed in _shaped_divider_plan(sections, mood):
+    shape = _divider_shape(mood, industry)
+    for carrier, side, revealed in _shaped_divider_plan(sections, mood, industry):
         # Shaped edges sit only against solid colour on both sides.
         _flatten_section_texture(sections[carrier])
         _flatten_section_texture(sections[revealed])
@@ -1053,6 +1079,67 @@ def _humanize_slug(slug_part: str) -> str:
     )
 
 
+def _cms_list_element(source: str) -> BuilderElement:
+    """The builder's dynamic articlesList / eventsList element.
+
+    Content and styles mirror the builder's own defaults exactly
+    (builder/src/lib/cms-content-types.ts createDefaultCmsListContent and
+    builder/src/lib/cms-list-element.ts) so the element edits identically to
+    one dragged in by hand. The list renders the CMS collection at view time —
+    entries come from the content-migration push, not from this schema.
+    """
+    is_events = source == "events"
+    side_pad = "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))"
+    return BuilderElement(
+        id=_uid(),
+        name="Events List" if is_events else "Articles List",
+        type="eventsList" if is_events else "articlesList",
+        styles={
+            "width": "100%",
+            "paddingTop": "72px",
+            "paddingRight": side_pad,
+            "paddingBottom": "72px",
+            "paddingLeft": side_pad,
+        },
+        responsiveStyles=ResponsiveStyles(
+            mobile={
+                "paddingTop": "52px",
+                "paddingRight": "20px",
+                "paddingBottom": "60px",
+                "paddingLeft": "20px",
+            },
+            tablet={
+                "paddingTop": "64px",
+                "paddingRight": "32px",
+                "paddingBottom": "64px",
+                "paddingLeft": "32px",
+            },
+        ),
+        content=BuilderElementContent(
+            source=source,
+            heading="Upcoming Events" if is_events else "Latest Articles",
+            headingMode="static",
+            archiveTitlePrefix="",
+            archiveTitleSuffix="",
+            showHeading=True,
+            description="",
+            showDescription=False,
+            layout="grid",
+            itemCount=6,
+            filter={"mode": "all", "taxonomyType": None, "taxonomySlug": None},
+            pagination={"enabled": True, "style": "numbered", "showSummary": True},
+            categorySlug=None,
+            selectionMode="auto",
+            manualIds=[],
+            showImage=True,
+            showExcerpt=True,
+            showMeta=True,
+            showAuthor=False,
+            showCategory=False,
+        ),
+    )
+
+
 def _build_breadcrumb(page_plan: PagePlan, ctx: RenderContext) -> BuilderElement:
     """Build a "Home › Parent › Current" trail at the top of sub-pages.
 
@@ -1147,6 +1234,17 @@ def _build_breadcrumb(page_plan: PagePlan, ctx: RenderContext) -> BuilderElement
         content=crumbs,
         responsiveStyles=ResponsiveStyles(mobile={"padding": "12px 16px 0"}),
     )
+
+
+def _first_content_section(page: GeneratedPage) -> BuilderElement | None:
+    """The page's first real section, skipping a sub-page's leading breadcrumb —
+    the section the header floats over. Mirrors webtree-public's
+    findFirstNonBreadcrumbNode so overlay gating agrees across renderers."""
+    for el in page.body_schema.elements:
+        if getattr(el, "name", None) == "Breadcrumb":
+            continue
+        return el
+    return None
 
 
 def _section(
@@ -1266,6 +1364,23 @@ def _image_from_photo(
 # the scrim over a fully white photo).
 _SCRIM_COMPOSITE_BG = "#424651"
 
+# Childcare hero title inks: bright, cheerful, but all LIGHT enough to read on
+# the neutral scrim with the hero's text-shadow — so the title is multi-coloured
+# (butter/coral/sky/mint/lavender) instead of just white + the one theme hue.
+# Order is (lead line, accent phrase, eyebrow); the rest cycle for extra lines.
+_CHILDCARE_HERO_INKS: tuple[str, ...] = (
+    "#FDE68A",  # butter — lead line
+    "#FCA5A5",  # coral — accent phrase
+    "#BAE6FD",  # sky — eyebrow
+    "#A7F3D0",  # mint
+    "#DDD6FE",  # lavender
+)
+
+# A neutral (not theme-tinted) scrim for childcare photo heroes: the brief wants
+# the real photo colours, not a brand-colour wash. Light enough to keep the
+# photo vivid, dark enough that the light-but-vivid title inks stay legible.
+_CHILDCARE_HERO_SCRIM = "linear-gradient(rgba(15,23,42,0.28), rgba(15,23,42,0.48))"
+
 
 def _split_headline(headline: str, accent: str | None) -> tuple[str, str] | None:
     """Split a hero headline into (lead, accent tail) when `accent` is a real,
@@ -1284,6 +1399,19 @@ def _split_headline(headline: str, accent: str | None) -> tuple[str, str] | None
     if not lead:  # accent == whole headline → nothing to contrast against
         return None
     return lead, head[len(head) - len(tail):]
+
+
+def _midpoint_word_split(headline: str) -> tuple[str, str] | None:
+    """Split `headline` into two halves at the space nearest the middle — used to
+    two-tone a childcare title when no explicit accent phrase was given. None when
+    there's no interior space to break on (a single word stays one colour)."""
+    head = " ".join((headline or "").split())
+    spaces = [i for i, ch in enumerate(head) if ch == " "]
+    if not spaces:
+        return None
+    mid = len(head) / 2
+    at = min(spaces, key=lambda s: abs(s - mid))
+    return head[:at], head[at + 1:]
 
 
 def _accent_ink_for(surface: str, accent: str) -> str:
@@ -1412,27 +1540,37 @@ def _apply_hero_typography(
     - Full-bleed photo heroes: headline ink becomes a brand-tinted near-white
       (was hardcoded white in the catalog) and the eyebrow carries the lifted
       brand accent, both AA against the scrim-composited backdrop.
+    - Childcare photo heroes: the title is multi-coloured instead — butter lead,
+      coral accent, sky eyebrow (all light, legible on the neutral scrim), and a
+      plain headline is split at its midpoint so it still carries two colours.
     """
     surface = _hero_surface_for_template(template_id, ctx)
     on_photo = template_id in _FULLBLEED_HERO_IDS
+    childcare = on_photo and ctx.industry == "childcare"
+
+    lead_ink = _CHILDCARE_HERO_INKS[0] if childcare else _photo_hero_ink(ctx)
+    eyebrow_ink = (
+        _CHILDCARE_HERO_INKS[2]
+        if childcare
+        else _accent_ink_for(_SCRIM_COMPOSITE_BG, ctx.theme.palette.accent)
+    )
 
     if on_photo:
         found = _find_text_by_inner(element, block.headline)
         if found is not None:
             node, _, _ = found
-            node.styles = {**(node.styles or {}), "color": _photo_hero_ink(ctx)}
+            node.styles = {**(node.styles or {}), "color": lead_ink}
         if block.eyebrow:
             found = _find_text_by_inner(element, block.eyebrow)
             if found is not None:
                 node, _, _ = found
-                node.styles = {
-                    **(node.styles or {}),
-                    "color": _accent_ink_for(
-                        _SCRIM_COMPOSITE_BG, ctx.theme.palette.accent
-                    ),
-                }
+                node.styles = {**(node.styles or {}), "color": eyebrow_ink}
 
     split = _split_headline(block.headline, block.headline_accent)
+    if split is None and childcare:
+        # No explicit accent phrase → split the title so it still reads in two
+        # cheerful colours rather than one flat butter line.
+        split = _midpoint_word_split(block.headline)
     if split is None:
         return
     found = _find_text_by_inner(element, block.headline)
@@ -1441,7 +1579,11 @@ def _apply_hero_typography(
     node, parent, index = found
     lead, accent = split
 
-    accent_color = _accent_ink_for(surface, ctx.theme.palette.accent)
+    accent_color = (
+        _CHILDCARE_HERO_INKS[1]
+        if childcare
+        else _accent_ink_for(surface, ctx.theme.palette.accent)
+    )
     accent_styles: dict[str, Any] = {**(node.styles or {}), "color": accent_color}
     if getattr(ctx.theme, "mood", None) in ("luxury", "editorial"):
         accent_styles["fontStyle"] = "italic"
@@ -3018,6 +3160,7 @@ async def _apply_hero_directive(
             alt_fallback=block.image_alt or block.headline,
             prefer=ctx.page_images,
             slot_usage="background",
+            pinned_url=block.image_url,
         )
         if featured.source in _GENUINE_PHOTO_SOURCES:
             if not (block.image_query or "").strip():
@@ -3039,6 +3182,7 @@ async def _apply_hero_directive(
         alt_fallback=block.image_alt or block.headline,
         prefer=ctx.page_images,
         slot_usage="inline",
+        pinned_url=block.image_url,
     )
     if featured.source not in _GENUINE_PHOTO_SOURCES:
         # No real side image -> let select_template fall back to an imageless
@@ -3091,6 +3235,7 @@ async def _apply_hero_photo_policy(
         intent="hero",
         alt_fallback=block.image_alt or block.headline,
         prefer=ctx.page_images,
+        pinned_url=block.image_url,
     )
     abstract_query = _abstract_theme_query(ctx)
     primary_hex = ctx.theme.palette.primary
@@ -3192,8 +3337,16 @@ async def block_to_element(
         # never touch the scraped pool).
         slot_usage: SlotUsage = (
             "inline"
-            if block.kind in {"hero", "about", "features", "team", "gallery"}
+            if block.kind in {"hero", "about", "features", "services", "team", "gallery"}
             else "any"
+        )
+
+        # A block-level scraped photo the LLM bound via image_ref. Safe to pin
+        # for the block's single featured/background slot (about, cta) — kinds
+        # whose templates carry per-item image slots (gallery, team) bind their
+        # items in the content mapper instead, so this stays None for those.
+        block_pinned = (
+            getattr(block, "image_url", None) if block.kind in {"about", "cta"} else None
         )
 
         async def resolve_image(query: str) -> tuple[str, str | None]:
@@ -3208,6 +3361,7 @@ async def block_to_element(
                     alt_fallback=query,
                     prefer=ctx.page_images,
                     slot_usage=slot_usage,
+                    pinned_url=block_pinned,
                 )
             )
             # Capture the FIRST resolved image's band as the section's featured
@@ -3233,6 +3387,20 @@ async def block_to_element(
         # Split hero: wash the whole section with the abstract theme background.
         if hero_washed_bg is not None:
             _apply_hero_washed_background(element, hero_washed_bg, ctx)
+        # Childcare: drop the brand-colour tint over the hero photo — the brief
+        # wants the real image colours, not a theme wash. Swap the fill's
+        # brand-tinted overlay for a neutral, lighter scrim (still enough to keep
+        # the light multi-colour title legible).
+        if (
+            block.kind == "hero"
+            and ctx.industry == "childcare"
+            and template["id"] in _FULLBLEED_HERO_IDS
+            and hero_photo is not None
+        ):
+            element.styles = {
+                **(element.styles or {}),
+                "backgroundImage": f"{_CHILDCARE_HERO_SCRIM}, url('{hero_photo.url}')",
+            }
         # Hero typography pass: accent headline line + photo-hero ink retint.
         if block.kind == "hero":
             _apply_hero_typography(element, block, ctx, template_id=template["id"])
@@ -3315,6 +3483,7 @@ async def plan_to_site(
     market_cue: str | None = None,
     place_cue: str | None = None,
     social_links: list[tuple[str, str]] | None = None,
+    reserved_image_urls: set[str] | None = None,
 ) -> GeneratedSite:
     """
     Build a complete, themed site from a SitePlan.
@@ -3356,7 +3525,10 @@ async def plan_to_site(
             # instead of the generic-blue fallback.
             palette_mode="auto",
             color_scheme=resolve_color_scheme(
-                None, effective_brand.color_scheme, effective_brand.logo_is_light
+                None,
+                effective_brand.color_scheme,
+                effective_brand.logo_is_light,
+                industry=plan.industry_category,
             ),
         )
 
@@ -3370,6 +3542,11 @@ async def plan_to_site(
         primary_hex=theme.palette.primary,
         secondary_hex=theme.palette.secondary,
     )
+    # Photos already bound to specific sections by the image_ref pass must not
+    # be re-picked by free ranking for other slots (pinned resolution itself
+    # bypasses the used-set, so the owning slot still renders them).
+    if reserved_image_urls:
+        resolver.mark_used(reserved_image_urls)
 
     # Pre-compute parent/child relationships so listing blocks (services /
     # gallery) on a parent page can cross-link to detail sub-pages.
@@ -3430,6 +3607,7 @@ async def plan_to_site(
             theme=theme,
             resolver=resolver,
             styles=styles,
+            industry=plan.industry_category,
             current_page_slug=page_plan.slug,
             current_parent_slug=page_plan.parent_slug,
             children_by_parent=children_by_parent,
@@ -3494,6 +3672,9 @@ async def plan_to_site(
             anchor = hero_scroll_anchor(hero_target_kind)
             if _has_link_to(hero_element, f"#{anchor}"):
                 target_element.anchorId = anchor
+        # Story pages: alternate the image side of consecutive about splits so
+        # the photos zigzag down the page instead of stacking on one side.
+        apply_about_zigzag(elements)
         apply_luminance_rhythm(elements, visual_inputs, theme.palette)
         # Legacy color-blocking rhythm: alternates the remaining (non-policy)
         # plain sections between page-bg and surface tint. Sections the luminance
@@ -3503,16 +3684,29 @@ async def plan_to_site(
         # surface backgrounds — applied per-mood over the assembled sections.
         # Runs BEFORE apply_section_dividers and already steers the texture
         # accent away from sections that will border a shaped divider.
-        modernize_sections(elements, theme)
+        modernize_sections(elements, theme, plan.industry_category)
         # One gradient/texture per page: keep the first pure gradient/mesh/grain/
         # abstract-texture section, flatten the rest to solid on-brand bands. Runs
         # after modernize_sections (the lone mesh/grain accent is now present) and
         # before dividers so a shaped seam reads against the final solid colour.
         cap_gradient_textures(elements, theme)
+        # Childcare: recolour flat sections through the cheerful pastel set
+        # (cream/sky/mint/peach/lavender/butter) so the page reads multi-coloured
+        # rather than one hue plus a dark band. Runs after the rhythm/modernize
+        # passes (overrides their flat colours) and before dividers (so seam
+        # fills read the final pastels). Photo/gradient sections are untouched.
+        if (
+            plan.industry_category == "childcare"
+            and getattr(theme, "color_scheme", "light") != "dark"
+        ):
+            apply_childcare_pastel_rhythm(elements, theme.palette.text)
+            # Each pastel section's title gets its own vivid colour (runs after
+            # the pastel pass so its dark-ink recolour doesn't overwrite them).
+            apply_childcare_heading_colors(elements)
         # Shaped section dividers — fill colour reads each neighbour's solid
         # backgroundColor; both neighbours are flattened so a shaped seam always
         # sits against solid colour (never a mesh/grain band).
-        apply_section_dividers(elements, effective_brand.mood)
+        apply_section_dividers(elements, effective_brand.mood, plan.industry_category)
         # Asymmetric headers + scroll/backdrop motion — applied last so they
         # read the final band/background each section landed on.
         apply_heading_alignment(elements, effective_brand.mood)
@@ -3523,6 +3717,13 @@ async def plan_to_site(
                 hero_element and (hero_element.styles or {}).get("backgroundImage")
             ),
         )
+        # Blog / events pages render their content dynamically: the builder's
+        # articlesList / eventsList element lists the CMS collection. Appended
+        # after every styling pass so the rhythm/motion passes never restyle it.
+        if page_plan.page_type == "blog":
+            elements.append(_cms_list_element("articles"))
+        elif page_plan.page_type == "events":
+            elements.append(_cms_list_element("events"))
         pages.append(
             GeneratedPage(
                 slug=page_plan.slug,
@@ -3551,23 +3752,22 @@ async def plan_to_site(
         footer_nav.extend(extra_footer_nav)
     primary_cta = ("Get in touch", "#contact")
 
-    # Header chrome follows the theme scheme (see _header_chrome): menu ink is
-    # one consistent white-or-dark choice, and the theme keeps non-photo hero
-    # surfaces in the same scheme band, so light ink always sits over dark
-    # first-hero surfaces and vice versa. Full-bleed photo heroes are dark and
-    # take the overlay path below, where the renderer forces white ink.
-    home_plan = next((p for p in plan.pages if p.is_homepage), None)
-    home_directive = hero_directives.get(home_plan.slug) if home_plan else None
-    # Transparent floating header, solidifying on scroll (default on; the
-    # setting is a kill switch). Keyed on the HOMEPAGE hero being full-bleed —
-    # interior pages are handled per page by the renderer, which only runs the
-    # transparent phase when the page's first section carries the
-    # `headerOverlaySafe` marker stamped in block_to_element (compact interior
-    # heroes don't, so those pages get the solid sticky header from scroll 0).
+    # Transparent floating header (white nav ink), solidifying on scroll —
+    # default on; the setting is a kill switch. It engages ONLY over a genuinely
+    # dark, full-bleed hero: block_to_element stamps `headerOverlaySafe` on such
+    # heroes (their baked-in dark scrim keeps white ink readable). Keying the
+    # site-wide flag off the homepage's ACTUAL rendered first section — not the
+    # pre-render hero directive — means a hero that fell back to a light layout
+    # (e.g. no photo resolved) keeps the SOLID header with its dark theme ink
+    # instead of unreadable white-on-light. Rule: white nav ⇒ dark hero; dark
+    # nav ⇒ light hero. Interior pages are gated per-page by each renderer via
+    # the same marker (webtree-public lib/headerOverlay; builder Editor.tsx).
+    home_page = next((p for p in pages if p.is_homepage), None)
+    home_first_section = _first_content_section(home_page) if home_page else None
     header_overlay = bool(
         settings.header_overlay_enabled
-        and home_directive is not None
-        and home_directive.layout == "background"
+        and home_first_section is not None
+        and getattr(home_first_section, "headerOverlaySafe", False) is True
     )
     header = build_header(
         effective_brand,
@@ -3576,6 +3776,7 @@ async def plan_to_site(
         primary_cta=primary_cta,
         page_tree=page_tree,
         overlay=header_overlay,
+        industry=plan.industry_category,
     )
     footer = build_footer(
         effective_brand,

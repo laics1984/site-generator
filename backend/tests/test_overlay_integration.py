@@ -3,9 +3,11 @@
 A nonprofit (friendly-mood) site with a full-bleed homepage hero must come out
 with: GeneratedSite.header_overlay=True, a header that keeps its SOLID chrome
 (the renderer strips it during the transparent phase and restores it on
-scroll), the `headerOverlaySafe` marker on the homepage hero only, and
-full-width builder styles. Runs with Pexels unconfigured, design brain off —
-no network, no LLM.
+scroll), the `headerOverlaySafe` marker on every page whose hero genuinely
+rendered a full-bleed photo (site-wide full-bleed policy), and full-width
+builder styles. A page whose hero couldn't resolve a genuine photo degrades to
+a compact hero WITHOUT the marker, so its header stays solid and readable.
+Runs with Pexels unconfigured, design brain off — no network, no LLM.
 """
 
 import unittest
@@ -168,23 +170,53 @@ class OverlayDefaultIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(header_styles.get("boxShadow"), HEADER_DIVIDER_SUBTLE)
         self.assertNotIn("borderBottom", header_styles)
 
-        # Marker: homepage full-bleed hero only.
+        # Marker: every page whose hero rendered a genuine full-bleed photo.
+        # The scraped pool has two photos → home + one interior get full-bleed
+        # heroes with the marker; the remaining page (no photo, Pexels off)
+        # degrades to a compact hero without it, keeping its header solid.
         home = next(p for p in site.pages if p.is_homepage)
         home_hero = _first_section(home)
         self.assertTrue(getattr(home_hero, "headerOverlaySafe", None))
         # It survives the JSON dump that feeds the CMS payload.
         self.assertTrue(home_hero.model_dump(mode="json").get("headerOverlaySafe"))
-        for page in site.pages:
-            if page.is_homepage:
-                continue
-            first = _first_section(page)
-            self.assertIsNone(
-                getattr(first, "headerOverlaySafe", None),
-                f"interior /{page.slug} must not be overlay-safe",
-            )
+        interior_safe = [
+            page.slug
+            for page in site.pages
+            if not page.is_homepage
+            and getattr(_first_section(page), "headerOverlaySafe", None)
+        ]
+        self.assertTrue(
+            interior_safe,
+            "at least one interior page with a resolved photo must be overlay-safe",
+        )
 
         # Full-width frame with contained content.
         self.assertEqual(site.builder_styles["page"]["widthMode"], "full")
+
+    async def test_overlay_off_when_homepage_hero_cannot_go_dark(self):
+        # No scraped metadata + Pexels unconfigured in tests → the homepage hero
+        # can't resolve a photo and falls back to a light layout. The header must
+        # then stay SOLID (overlay off) so the nav keeps its dark theme ink
+        # instead of unreadable white-on-light. Rule: white nav ⇒ dark hero.
+        original = settings.design_brain_enabled
+        settings.design_brain_enabled = False
+        try:
+            site = await plan_to_site(
+                _plan(),
+                brand=BrandIdentity(
+                    name="Hope Foundation", mood="friendly",
+                    extracted_palette=["#0e7490"],
+                ),
+                # deliberately no scraped_metadata
+            )
+        finally:
+            settings.design_brain_enabled = original
+
+        home = next(p for p in site.pages if p.is_homepage)
+        home_hero = _first_section(home)
+        # Hero isn't a dark full-bleed → not overlay-safe → header stays solid.
+        self.assertIsNone(getattr(home_hero, "headerOverlaySafe", None))
+        self.assertFalse(site.header_overlay)
 
     async def test_kill_switch_disables_overlay(self):
         original = settings.header_overlay_enabled

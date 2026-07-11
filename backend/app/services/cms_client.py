@@ -19,7 +19,9 @@ This module is pure HTTP + light validation. The push orchestrator
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -149,8 +151,13 @@ class CmsClient:
         slug: str | None = None,
         is_homepage: bool = False,
         seo: dict[str, Any] | None = None,
+        template_for: str | None = None,
     ) -> dict[str, Any]:
-        """POST /api/entities/{token}/pages → returns the created page metadata."""
+        """POST /api/entities/{token}/pages → returns the created page metadata.
+
+        ``template_for`` ∈ {article, event, articleListing} marks the page as
+        the detail/listing template the CMS routes that content type through.
+        """
         url = f"{self.base_url}/api/entities/{entity_token}/pages"
         payload: dict[str, Any] = {"title": title, "isHomepage": is_homepage}
         if description is not None:
@@ -159,6 +166,8 @@ class CmsClient:
             payload["slug"] = slug
         if seo:
             payload["seo"] = seo
+        if template_for:
+            payload["templateFor"] = template_for
         resp = await self._http_client().post(url, json=payload, headers=self._jwt_headers())
         body = _safe_json(resp)
         if resp.status_code >= 400:
@@ -290,6 +299,147 @@ class CmsClient:
             raise CmsApiError(500, f"Media upload response missing URL: {body}", response_body=body)
         return cdn_url
 
+    # --- articles / events (content-migration push) ------------------------------
+    #
+    # Legacy admin endpoints (routes/api_admin.php): multipart form posts under
+    # JWT auth. Success/failure is signalled in the body (`success` bool) with
+    # HTTP 200 either way, so every call checks the body, not the status code.
+
+    async def create_category(self, entity_token: str, *, title: str) -> str:
+        """POST /api/category/addCategory → the category's slug.
+
+        Idempotent: "already existed" responses return the derived slug (the
+        CMS derives it as Str::slug(title)) instead of raising.
+        """
+        url = f"{self.base_url}/api/category/addCategory"
+        resp = await self._http_client().post(
+            url,
+            data={"title": title, "entity": entity_token},
+            headers={"Authorization": f"Bearer {self.jwt}"} if self.jwt else {},
+        )
+        body = _safe_json(resp)
+        if body.get("success"):
+            slug = (body.get("category") or {}).get("slug")
+            if isinstance(slug, str) and slug:
+                return slug
+            return _laravel_slug(title)
+        message = body.get("message")
+        if isinstance(message, dict) and any(
+            "already existed" in str(v) for v in message.values()
+        ):
+            return _laravel_slug(title)
+        raise CmsApiError(
+            resp.status_code or 500,
+            f"Create category failed: {message or resp.text[:300]}",
+            response_body=body,
+        )
+
+    async def create_article(
+        self,
+        entity_token: str,
+        *,
+        title: str,
+        slug: str,
+        excerpt: str,
+        body_html: str,
+        category_slugs: list[str],
+        published_at_ms: int | None = None,
+        image: tuple[str, bytes, str] | None = None,
+        publish: bool = True,
+    ) -> str:
+        """POST /api/articles/create → the created article id.
+
+        ``image`` is (filename, bytes, content_type); required when publishing
+        (the CMS rejects a published post without a previewImage upload).
+        """
+        url = f"{self.base_url}/api/articles/create"
+        data: dict[str, Any] = {
+            "title": title,
+            "slug": slug,
+            "excerpt": excerpt,
+            "body": body_html,
+            # The controller json-decodes string values for both fields, and
+            # calls count() on `tag` unconditionally — always send an array.
+            "category": json.dumps(category_slugs),
+            "tag": "[]",
+            "entity": entity_token,
+            "post_type": "published" if publish else "draft",
+        }
+        if published_at_ms is not None:
+            data["published_at"] = str(published_at_ms)
+        files = {"previewImage": image} if image else None
+        resp = await self._http_client().post(
+            url,
+            data=data,
+            files=files,
+            headers={"Authorization": f"Bearer {self.jwt}"} if self.jwt else {},
+            timeout=_MEDIA_UPLOAD_TIMEOUT,
+        )
+        body = _safe_json(resp)
+        if resp.status_code >= 400 or not body.get("success"):
+            raise CmsApiError(
+                resp.status_code or 500,
+                f"Create article '{slug}' failed: {body.get('message') or resp.text[:300]}",
+                response_body=body,
+            )
+        return str(body.get("aid"))
+
+    async def create_event(
+        self,
+        entity_token: str,
+        *,
+        title: str,
+        slug: str,
+        excerpt: str,
+        body_html: str,
+        location: str | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        published_at_ms: int | None = None,
+        image: tuple[str, bytes, str] | None = None,
+        publish: bool = True,
+    ) -> str:
+        """POST /api/events/create → the created event id.
+
+        Publishing requires location + start + end + previewImage; the caller
+        downgrades to draft when any of those can't be resolved. Event preview
+        images are capped at 1500×1500 by the CMS (posts allow 5500).
+        """
+        url = f"{self.base_url}/api/events/create"
+        data: dict[str, Any] = {
+            "event_name": title,
+            "slug": slug,
+            "excerpt": excerpt,
+            "body": body_html,
+            "entity": entity_token,
+            "event_type": "published" if publish else "draft",
+        }
+        if location:
+            data["location"] = location
+        # start/end/published_at arrive as ms epochs; the controller converts.
+        if start_ms is not None:
+            data["start"] = str(start_ms)
+        if end_ms is not None:
+            data["end"] = str(end_ms)
+        if published_at_ms is not None:
+            data["published_at"] = str(published_at_ms)
+        files = {"previewImage": image} if image else None
+        resp = await self._http_client().post(
+            url,
+            data=data,
+            files=files,
+            headers={"Authorization": f"Bearer {self.jwt}"} if self.jwt else {},
+            timeout=_MEDIA_UPLOAD_TIMEOUT,
+        )
+        body = _safe_json(resp)
+        if resp.status_code >= 400 or not body.get("success"):
+            raise CmsApiError(
+                resp.status_code or 500,
+                f"Create event '{slug}' failed: {body.get('message') or resp.text[:300]}",
+                response_body=body,
+            )
+        return str(body.get("eid"))
+
     # --- builder-styles via launch-code bridge ---------------------------------
 
     async def mint_builder_session(self, entity_token: str) -> None:
@@ -394,6 +544,11 @@ class CmsClient:
             "Authorization": f"Bearer {self.jwt}",
             "Accept": "application/json",
         }
+
+
+def _laravel_slug(value: str) -> str:
+    """Mirror Laravel's Str::slug for the ASCII titles we send."""
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
 def _safe_json(resp: httpx.Response) -> dict[str, Any]:

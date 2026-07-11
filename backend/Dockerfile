@@ -1,7 +1,13 @@
-# Playwright Python image ships Chromium + Firefox + WebKit + all OS libs preinstalled.
-# Pinned to match `playwright==1.47.0` in requirements.txt.
-# Image is ~1.5 GB but skips all the "install browser deps" pain on first run.
-FROM mcr.microsoft.com/playwright/python:v1.47.0-jammy
+# Python 3.11 to MATCH the local dev/test venv (backend/.venv). Keeping the
+# runtime interpreter identical to the one the tests run on avoids the whole
+# class of "passes locally, breaks in Docker" version skew — e.g. Python 3.10's
+# asyncio.TimeoutError being a distinct class from the builtin TimeoutError
+# (merged only in 3.11+).
+#
+# Microsoft's Playwright images only ship 3.10 (jammy) or 3.12 (noble), never
+# 3.11, so we base on the official python:3.11 image and install just Chromium
+# — the only browser the scraper launches (pw.chromium.launch).
+FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -10,13 +16,20 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# curl is already in the playwright image; only install if missing on slim variants.
-RUN command -v curl >/dev/null 2>&1 || ( \
-        apt-get update && apt-get install -y --no-install-recommends curl && \
-        rm -rf /var/lib/apt/lists/* )
+# curl backs the docker-compose healthcheck (GET /health); slim has no curl.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
+
+# Install ONLY Chromium plus its OS shared-library dependencies. The browser
+# build is pinned by the playwright==1.47.0 package installed above, so it stays
+# in lockstep with the client just like the old MS base image did. `--with-deps`
+# runs apt-get for the browser's native libs; clean the lists afterwards.
+RUN playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY app ./app
 

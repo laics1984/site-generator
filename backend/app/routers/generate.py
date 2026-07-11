@@ -5,6 +5,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.models.brand import BrandIdentity, BrandMood, HeroBackgroundHeight
 from app.models.builder_schema import (
     BodySchema,
@@ -15,6 +16,7 @@ from app.models.builder_schema import (
 from app.models.content_blocks import (
     ImageMetadata,
     IndustryCategoryLiteral,
+    industry_locked_mood,
     LinkBarBlock,
     LinkBarLink,
     LinkCluster,
@@ -38,6 +40,7 @@ from app.services.planner import (
     plan_site_with_scaffolds,
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
+from app.services.image_refs import bind_image_refs
 from app.services.source_router import match_scaffolds_to_pages
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
@@ -50,6 +53,7 @@ from app.services.image_vision import (
     prefetch_image_pool,
 )
 from app.services.locale import detect_market, image_query_cue, place_query_cue
+from app.services.content_collections import extract_collections
 from app.services.schema_builder import plan_to_site
 from app.services.theme import build_theme, resolve_color_scheme
 from app.services.timing import stage
@@ -393,6 +397,22 @@ def _drop_hollow_team_pages(plan: SitePlan) -> None:
     plan.pages = [page for page in plan.pages if page.slug in keep_slugs]
 
 
+async def _safe_extract_collections(source: SourceContent):
+    """Blog/event entry extraction (content migration) — advisory, never
+    load-bearing: any failure just means the site ships without migrated
+    entries. Returns None when disabled or nothing was found."""
+    if not settings.content_migration_enabled:
+        return None
+    try:
+        cols = await extract_collections(
+            source, max_entries=settings.content_migration_max_entries
+        )
+        return cols if (cols.articles or cols.events) else None
+    except Exception:  # noqa: BLE001
+        logger.exception("Content-collections extraction failed; continuing without it")
+        return None
+
+
 @router.post("/from-source", response_model=GeneratedSite)
 async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     """
@@ -424,7 +444,14 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     )
 
     brand = payload.brand
-    mood = payload.mood_override or (brand.mood if brand else None) or plan.brand_mood
+    # Explicit choices win; an industry with a locked mood (e.g. childcare →
+    # friendly) then beats the LLM-detected mood, which is advisory only.
+    mood = (
+        payload.mood_override
+        or (brand.mood if brand else None)
+        or industry_locked_mood(plan.industry_category)
+        or plan.brand_mood
+    )
     if brand:
         brand = brand.model_copy(update={"mood": mood})
 
@@ -444,6 +471,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
             payload.color_scheme_override,
             brand.color_scheme if brand else None,
             brand.logo_is_light if brand else None,
+            industry=plan.industry_category,
         ),
     )
     theme.hero_background_height = payload.hero_height
@@ -454,7 +482,8 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     _ensure_scraped_team_blocks(plan, payload.source, annotations)
 
     market_cue, place_cue = _market_cues_for(payload.source)
-    return await plan_to_site(
+    collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
+    site = await plan_to_site(
         plan,
         brand=brand,
         theme=theme,
@@ -466,6 +495,8 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
     )
+    site.collections = await collections_task
+    return site
 
 
 # --- scaffolded generate (new — driven by the page picker) ---------------------
@@ -521,14 +552,25 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
 
     # Determine mood / industry / colour seed with override precedence:
     #   1. user upload / explicit selection
-    #   2. detected
-    #   3. defaults
+    #   2. industry-locked mood (a design brief that pins the visual language)
+    #   3. detected
+    #   4. defaults
+    # `payload.industry` defaults to "other" — the frontend's catch-all when the
+    # user never touched the override dropdown — so treat "other" as *unset* and
+    # defer to the (more specific) detected industry. Otherwise a detected
+    # childcare/etc. never reaches the theme and its light-only brief is lost
+    # (the Glorykids kindergarten rendering dark). A specific selection still wins.
+    industry = (
+        payload.industry
+        if payload.industry and payload.industry != "other"
+        else detected.industry_category
+    )
     mood = (
         payload.mood_override
         or (payload.brand.mood if payload.brand else None)
+        or industry_locked_mood(industry)
         or detected.brand_mood
     )
-    industry = payload.industry or detected.industry_category
 
     brand = payload.brand or BrandIdentity(
         name=detected.site_name,
@@ -550,7 +592,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         industry=industry,
         palette_mode="auto",
         color_scheme=resolve_color_scheme(
-            payload.color_scheme_override, brand.color_scheme, brand.logo_is_light
+            payload.color_scheme_override,
+            brand.color_scheme,
+            brand.logo_is_light,
+            industry=industry,
         ),
     )
     theme.hero_background_height = payload.hero_height
@@ -636,7 +681,12 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     )
     _drop_hollow_team_pages(plan)
 
+    # Resolve LLM-bound image refs (block.image_ref → block.image_url) against
+    # the same per-page photo lists the planner prompt showed the model.
+    bound_image_urls = bind_image_refs(plan.pages, source_map)
+
     market_cue, place_cue = _market_cues_for(payload.source)
+    collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
     site = await plan_to_site(
         plan,
         brand=brand,
@@ -649,7 +699,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         market_cue=market_cue,
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
+        reserved_image_urls=bound_image_urls,
     )
+    site.collections = await collections_task
 
     # Bolt on legal pages from boilerplate
     contact_email = (
@@ -748,6 +800,7 @@ def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:
     sites. Links are kept only when they resolve inside the generated site
     (a generated page's slug, or a homepage anchor); a strap reduced to fewer
     than two working links is dropped rather than rendered half-broken.
+
     """
     home = next((p for p in pages if p.is_homepage), None)
     if home is None:

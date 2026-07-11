@@ -52,6 +52,10 @@ _TYPE_HINTS: list[tuple[PageType, tuple[str, ...]]] = [
         ),
     ),
     ("blog", ("blog", "news", "insights", "articles", "press", "media-centre", "newsroom")),
+    # Bare "event" is deliberately absent — substring matching would catch
+    # e.g. "prevention". Singular /event listings still match via "events" in
+    # the page title or the calendar/whats-on tokens.
+    ("events", ("events", "calendar", "whats-on", "upcoming-events", "event-list")),
     ("faq", ("faq", "faqs", "help", "support-faq", "questions")),
     ("work", ("work", "portfolio", "case-studies", "projects", "clients", "case-study")),
     ("menu", ("menu", "food-menu", "drinks-menu")),
@@ -109,7 +113,10 @@ _TOP_SECTIONS: dict[PageType, list[SectionType]] = {
     "pricing":      ["hero", "pricing", "features", "faq", "cta"],
     "team":         ["hero", "team", "cta"],
     "work":         ["hero", "gallery", "testimonials", "cta"],
-    "blog":         ["hero", "features"],
+    # blog/events carry only a hero here — schema_builder appends the CMS
+    # articlesList / eventsList element below it (dynamic, not LLM content).
+    "blog":         ["hero"],
+    "events":       ["hero"],
     "faq":          ["hero", "faq", "cta"],
     "menu":         ["hero", "menu", "gallery", "cta"],
     "gallery":      ["hero", "gallery", "cta"],
@@ -130,11 +137,127 @@ _WORK_SUBPAGE_SECTIONS: list[SectionType] = ["hero", "about", "gallery", "testim
 _TEAM_SUBPAGE_SECTIONS: list[SectionType] = ["hero", "about", "testimonials", "cta"]
 
 
+# Page types whose fixed rhythm always wins — conversion pages (home), pages
+# with a dedicated structure (menu, gallery, team, …) and legal boilerplate.
+# Everything else may switch to the story rhythm when the source evidences it.
+_STORY_INELIGIBLE_TYPES: frozenset[PageType] = frozenset(
+    {"home", "contact", "faq", "menu", "pricing", "team", "gallery",
+     "testimonials", "privacy", "terms", "thank-you", "blog", "events"}
+)
+
+# Minimum distinct heading+photo sections before a page counts as a story page.
+_STORY_MIN_SECTIONS = 3
+
+
+def _story_section_count(page: SourceContent | None) -> int:
+    """How many title+paragraph+photo sections the source page evidences.
+
+    A "story page" (e.g. a kindergarten's School Life page) narrates section by
+    section, each with its own heading and photo. Signal: content-grade images
+    whose context_heading matches one of the page's headings, counted over
+    distinct headings. Zero on the fast path when no context was captured —
+    detection degrades to the fixed rhythm, never breaks it.
+    """
+    if page is None:
+        return 0
+    headings = {h.strip().lower() for h in (page.headings or []) if h.strip()}
+    if not headings:
+        return 0
+    matched: set[str] = set()
+    for meta in page.image_metadata or []:
+        if meta.role in ("logo", "decoration") or meta.intent == "logo":
+            continue
+        ch = (meta.context_heading or "").strip().lower()
+        if ch and ch in headings:
+            matched.add(ch)
+    return len(matched)
+
+
+def _story_sections(story_count: int) -> list[SectionType]:
+    """hero + one image+text (about) section per source section + closing cta.
+
+    Each about renders as an image+text split whose photo the planner binds to
+    the source section's real image (image_ref) — the fidelity-preserving
+    alternative to flattening every source section into text-only card grids.
+    """
+    n = min(story_count, _MAX_PAGE_SECTIONS - 2)
+    return ["hero", *(["about"] * n), "cta"]
+
+
+def _content_photo_count(page: SourceContent | None) -> int:
+    """Content-grade photos on the page (logos/decorations excluded)."""
+    if page is None:
+        return 0
+    return sum(
+        1
+        for meta in page.image_metadata or []
+        if meta.role not in ("logo", "decoration") and meta.intent != "logo"
+    )
+
+
+# Page types where photo-backed about splits are never woven in: pages whose
+# structure is the content (contact form, FAQ list, menu, pricing table,
+# gallery/team grids already photo-led) and legal boilerplate.
+_PHOTO_SECTION_INELIGIBLE_TYPES: frozenset[PageType] = frozenset(
+    {"contact", "faq", "menu", "pricing", "gallery", "team",
+     "privacy", "terms", "thank-you", "blog", "events"}
+)
+
+# Cap on image+text about splits woven into a fixed rhythm (full story pages
+# derive their count from the source instead).
+_MAX_PHOTO_SECTIONS = 2
+
+
+def _weave_photo_sections(
+    sections: list[SectionType], page_type: PageType, page: SourceContent | None
+) -> list[SectionType]:
+    """Weave image+text `about` splits into a page's fixed rhythm.
+
+    Landing-page practice: a content page communicates better when text blocks
+    are broken up by at least one image+text moment, so every eligible page
+    gets ONE about split as a baseline — its photo comes from the source when
+    one was matched, else the LLM's stock image_query (Pexels). Image-rich
+    pages (heading-matched photos, or 4+ loose content photos) get up to
+    _MAX_PHOTO_SECTIONS splits bound to their real photos via image_ref. Full
+    story pages replace their rhythm outright instead (see _story_sections).
+    Cards stay for genuinely list-like content — they just stop monopolising
+    the page.
+    """
+    if page_type in _PHOTO_SECTION_INELIGIBLE_TYPES:
+        return sections
+    matched = _story_section_count(page)
+    if matched <= 0 and _content_photo_count(page) >= 4:
+        # Image-rich page whose photos didn't match headings (slideshow, loose
+        # gallery) — the LLM binds the best-fitting photo via image_ref or
+        # falls back to its image_query.
+        matched = 1
+    # Baseline: at least one image+text section per content page, stock-backed
+    # when the source is text-only.
+    want = max(min(matched, _MAX_PHOTO_SECTIONS), 1)
+    add = min(
+        max(0, want - sections.count("about")),
+        max(0, _MAX_PAGE_SECTIONS - len(sections)),
+    )
+    if add <= 0:
+        return sections
+    extras: list[SectionType] = ["about"] * add
+    if "cta" in sections:
+        idx = sections.index("cta")
+        return [*sections[:idx], *extras, *sections[idx:]]
+    return [*sections, *extras]
+
+
 def _sections_for(
     page_type: PageType,
     parent_type: PageType | None,
     page: SourceContent | None = None,
 ) -> list[SectionType]:
+    # Story pages override the fixed rhythms: the source itself dictates the
+    # section list (a photo-and-heading section sequence), not the page type.
+    if page_type not in _STORY_INELIGIBLE_TYPES:
+        story_count = _story_section_count(page)
+        if story_count >= _STORY_MIN_SECTIONS:
+            return _augment_sections(_story_sections(story_count), page_type, page)
     if parent_type is None:
         base = list(_TOP_SECTIONS.get(page_type, _TOP_SECTIONS["services"]))
     elif parent_type == "work":
@@ -143,6 +266,9 @@ def _sections_for(
         base = list(_TEAM_SUBPAGE_SECTIONS)
     else:
         base = list(_SUBPAGE_SECTIONS)
+    # Below the story threshold, an image-rich page still gets its matched
+    # photos as image+text splits woven into the fixed rhythm.
+    base = _weave_photo_sections(base, page_type, page)
     return _augment_sections(base, page_type, page)
 
 
@@ -188,6 +314,13 @@ _SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
 
 _MAX_EXTRA_SECTIONS = 2  # quality cap — don't let a page balloon past its rhythm
 
+# Hard ceiling on a single page's section count. A rich page is fine — the
+# generator splits any page above the per-call cap into several light section
+# groups (see planner._generate_page_section_chunks), so page richness is
+# decoupled from per-call weight. This ceiling just stops truly runaway pages;
+# evidenced extras are trimmed to fit, and core sections always survive.
+_MAX_PAGE_SECTIONS = 9
+
 
 def _detect_content_signals(page: SourceContent) -> list[SectionType]:
     """Detected kinds, in `_SIGNAL_PATTERNS` order — deterministic when the cap bites."""
@@ -207,6 +340,11 @@ def _augment_sections(
         if page_type in _SIGNAL_ELIGIBLE_TYPES.get(kind, frozenset())
         and kind not in sections
     ][:_MAX_EXTRA_SECTIONS]
+    # Keep the page within the single-call ceiling — trim extras to the room left
+    # (core sections always win). Prevents an evidence-rich page (e.g. a homepage
+    # that already runs long) from ballooning into an over-large, failure-prone
+    # single LLM call.
+    extras = extras[: max(0, _MAX_PAGE_SECTIONS - len(sections))]
     if not extras:
         return sections
     if "cta" in sections:
@@ -273,7 +411,8 @@ def _title_from_page(
 # Page types whose pages typically *list* a family of sub-pages. Used to pick
 # the parent when a repeated in-body menu strip links a set of sibling pages.
 _LISTING_TYPES: set[PageType] = {
-    "services", "work", "team", "blog", "menu", "gallery", "pricing", "faq", "process",
+    "services", "work", "team", "blog", "events", "menu", "gallery", "pricing",
+    "faq", "process",
 }
 
 
@@ -573,6 +712,12 @@ def infer_page_scaffolds(
                 (s for s in scaffolds if s.slug == parent_slug), None
             )
             parent_type = parent_scaffold.page_type if parent_scaffold else None
+            if parent_type in ("blog", "events"):
+                # Post / event detail pages aren't scaffolded as static pages —
+                # they're migrated into CMS article/event entries and rendered
+                # through the builder's detail templates (content_collections).
+                seen_slugs.add(slug)
+                continue
             sub_type = _infer_page_type(slug, title)
             # Sub-pages typically aren't another listing of the parent — coerce
             # services/x → landing detail unless title looks like a real category.
@@ -655,7 +800,9 @@ def infer_page_scaffolds(
         child.parent_slug = parent_slug
         if child.page_type == parent.page_type:
             child.page_type = "landing"
-        child.sections = _sections_for(child.page_type, parent_type=parent.page_type)
+        child.sections = _sections_for(
+            child.page_type, parent_type=parent.page_type, page=by_slug.get(child_slug)
+        )
         child.rationale = (
             child.rationale or f"Grouped under /{parent_slug} by the source navigation."
         )
@@ -738,6 +885,9 @@ def _home_scaffold(
         if industry is not None
         else ["hero", "features", "testimonials", "cta"]
     )
+    # An image-rich homepage gets image+text about splits woven in, same as
+    # interior pages — the landing pattern stays, cards stop monopolising it.
+    sections = _weave_photo_sections(sections, "home", home_source)
     sections = _augment_sections(sections, "home", home_source)
     return PageScaffold(
         page_type="home",

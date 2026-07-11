@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.content_blocks import ContentCollections
+
 
 EditorBtns = Literal[
     "menu",
@@ -275,6 +277,15 @@ class GeneratedSite(BaseModel):
             "(label, url) social profile links scraped from the source. "
             "menu_builder turns these into the entity's menu-social; the "
             "footer's social-inline menu element binds that slot."
+        ),
+    )
+    collections: ContentCollections | None = Field(
+        default=None,
+        description=(
+            "Blog posts / events extracted verbatim from the source site "
+            "(content migration). Carried through the generate → push "
+            "round-trip; the push orchestrator creates them as real CMS "
+            "article/event entries after the pages land."
         ),
     )
     # Theme + chrome. These let the webtree builder display the site as designed.

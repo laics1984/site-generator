@@ -259,6 +259,34 @@ class ResolveColorSchemeTest(unittest.TestCase):
     def test_invalid_override_is_ignored(self):
         self.assertEqual(resolve_color_scheme("teal", None, True), "dark")
 
+    def test_industry_lean_drives_default_without_a_logo(self):
+        # A neutral industry leaves the default light; a leaning one moves it.
+        self.assertEqual(resolve_color_scheme(None, None, None, industry="restaurant"), "light")
+        self.assertEqual(resolve_color_scheme(None, None, None, industry="saas"), "dark")
+        self.assertEqual(resolve_color_scheme(None, None, None, industry="agency"), "dark")
+        self.assertEqual(resolve_color_scheme(None, None, None, industry="nonprofit"), "light")
+
+    def test_industry_lean_outweighs_the_logo(self):
+        # Industry beats the logo 2:1 when they disagree.
+        # Light logo would default dark, but a light-leaning industry wins.
+        self.assertEqual(
+            resolve_color_scheme(None, None, True, industry="professional-services"),
+            "light",
+        )
+        # Dark logo would default light, but a dark-leaning industry wins.
+        self.assertEqual(resolve_color_scheme(None, None, False, industry="saas"), "dark")
+
+    def test_neutral_industry_defers_to_logo(self):
+        # An industry with no lean falls back to the logo smart-default.
+        self.assertEqual(resolve_color_scheme(None, None, True, industry="restaurant"), "dark")
+        self.assertEqual(resolve_color_scheme(None, None, False, industry="restaurant"), "light")
+
+    def test_explicit_choice_beats_industry_lean(self):
+        # Precedence is unchanged: override / brand pref still win over industry.
+        self.assertEqual(resolve_color_scheme("dark", None, None, industry="childcare"), "dark")
+        self.assertEqual(resolve_color_scheme(None, "dark", None, industry="nonprofit"), "dark")
+        self.assertEqual(resolve_color_scheme(None, "light", None, industry="saas"), "light")
+
 
 class DarkSchemeTest(unittest.TestCase):
     def test_light_is_default_and_unchanged(self):

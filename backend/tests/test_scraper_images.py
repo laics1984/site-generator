@@ -431,3 +431,59 @@ class SourceUsageProvenanceTest(unittest.TestCase):
             "css_background",
         )
         self.assertEqual(by_url["https://example.my/team.jpg"].source_usage, "inline")
+
+
+class ImageContextExtractionTest(unittest.TestCase):
+    """Each image candidate carries the nearest preceding heading (and
+    figcaption when present) so the planner prompt can tie photos back to the
+    source sections they illustrated."""
+
+    def test_img_gets_nearest_preceding_heading(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <h2>Science Centre</h2>
+              <p>Hands-on experiments.</p>
+              <img src="/science.jpg" width="800" height="600" alt="">
+              <h2>ICT Centre</h2>
+              <img src="/ict.jpg" width="800" height="600" alt="">
+            </body></html>
+            """,
+            "lxml",
+        )
+        candidates = _extract_images(soup, "https://example.my/school-life")
+        by_url = {c.url.rsplit("/", 1)[-1]: c for c in candidates}
+        self.assertEqual(by_url["science.jpg"].context_heading, "Science Centre")
+        self.assertEqual(by_url["ict.jpg"].context_heading, "ICT Centre")
+
+    def test_figure_caption_is_captured(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <h2>Sports Day</h2>
+              <figure>
+                <img src="/sports.jpg" width="800" height="600" alt="">
+                <figcaption>Annual sports day 2025</figcaption>
+              </figure>
+            </body></html>
+            """,
+            "lxml",
+        )
+        candidates = _extract_images(soup, "https://example.my/school-life")
+        sports = next(c for c in candidates if c.url.endswith("sports.jpg"))
+        self.assertEqual(sports.caption, "Annual sports day 2025")
+        self.assertEqual(sports.context_heading, "Sports Day")
+
+    def test_image_before_any_heading_has_empty_context(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <img src="/lead.jpg" width="800" height="600" alt="">
+              <h2>Later Heading</h2>
+            </body></html>
+            """,
+            "lxml",
+        )
+        candidates = _extract_images(soup, "https://example.my/")
+        lead = next(c for c in candidates if c.url.endswith("lead.jpg"))
+        self.assertEqual(lead.context_heading, "")

@@ -32,7 +32,7 @@ get_env() {
 }
 
 BACKEND="$(get_env LLM_BACKEND ollama)"
-MLX_MODEL="$(get_env MLX_MODEL mlx-community/Qwen3-8B-4bit)"
+MLX_MODEL="$(get_env MLX_MODEL mlx-community/Qwen3-4B-4bit)"
 MLX_PORT="8080"   # matches MLX_BASE_URL in docker-compose (host.docker.internal:8080)
 
 mlx_up() { curl -sf -m 2 "http://localhost:$MLX_PORT/v1/models" >/dev/null 2>&1; }

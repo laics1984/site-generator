@@ -53,12 +53,12 @@ class FakeResolver:
 
     async def resolve(
         self, query, *, intent="generic", alt_fallback=None, prefer=None,
-        slot_usage="any",
+        slot_usage="any", pinned_url=None,
     ):
         self.calls.append(
             {
                 "query": query, "intent": intent, "method": "resolve",
-                "slot_usage": slot_usage,
+                "slot_usage": slot_usage, "pinned_url": pinned_url,
             }
         )
         if query and "abstract" in query:

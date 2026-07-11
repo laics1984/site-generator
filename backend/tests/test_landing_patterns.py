@@ -8,6 +8,7 @@ from app.models.industry import IndustryCategory
 from app.services.industry_templates import get_template
 from app.services.landing_patterns import (
     _LANDING_PATTERNS,
+    _MAX_HOMEPAGE_SECTIONS,
     homepage_sections,
 )
 
@@ -32,6 +33,25 @@ class LandingPatternIntegrityTest(unittest.TestCase):
             self.assertEqual(secs[-1], "cta")
             self.assertEqual(len(secs), len(set(secs)))
             self.assertTrue(set(secs).issubset(VALID), ind)
+
+    def test_no_industry_homepage_exceeds_single_call_budget(self):
+        # A homepage is generated in ONE LLM call; too many sections overflow the
+        # token budget (empty MLX stream → 502). Every industry, with and without
+        # a seed, must stay within the ceiling.
+        for ind in INDUSTRIES:
+            for seed in (None, "Seed A", "Seed B"):
+                secs = homepage_sections(ind, seed=seed)
+                self.assertLessEqual(len(secs), _MAX_HOMEPAGE_SECTIONS, ind)
+
+    def test_normalize_cap_trims_oversized_patterns_keeping_hero_and_cta(self):
+        # An over-long section list is trimmed from the body; hero stays first,
+        # cta stays last, so the conversion frame survives the cap.
+        oversized = ["hero", "features", "about", "services", "process",
+                     "team", "testimonials", "faq", "gallery", "stats", "cta"]
+        secs = homepage_sections("childcare", extra_sections=oversized)
+        self.assertEqual(secs[0], "hero")
+        self.assertEqual(secs[-1], "cta")
+        self.assertLessEqual(len(secs), _MAX_HOMEPAGE_SECTIONS)
 
 
 class LandingSelectionTest(unittest.TestCase):

@@ -21,9 +21,18 @@ Robustness strategy:
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal, get_args, get_origin
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 
 SectionType = Literal[
@@ -62,6 +71,7 @@ PageType = Literal[
     "process",
     "faq",
     "blog",
+    "events",
     "privacy",
     "terms",
     "thank-you",
@@ -75,6 +85,22 @@ def _default_if_blank(value: object, default: str) -> object:
     if isinstance(value, str) and not value.strip():
         return default
     return value
+
+
+def _heal_image_ref(value: object) -> int | None:
+    """Coerce an LLM-emitted image_ref onto a non-negative int, else None.
+
+    The ref indexes source_router.promptable_images for the page; a junk value
+    (string, float, negative, invented object) must never fail the plan — it
+    just falls back to the block's image_query stock search.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
 
 
 def _coerce_literal(value: object, allowed: frozenset[str], default: str) -> str:
@@ -181,6 +207,20 @@ class HeroBlock(BaseModel):
             "depict. E.g. 'artisan coffee beans roasting', 'modern dental clinic'."
         ),
     )
+    image_ref: int | None = Field(
+        default=None,
+        description=(
+            "Index into the page's real scraped photos (page_source.images in "
+            "the prompt). Resolved to image_url by services/image_refs.py."
+        ),
+    )
+    image_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped photo URL. Filled by code from image_ref after "
+            "planning; leave null in LLM output."
+        ),
+    )
     layout: Literal["split", "background"] = Field(
         default="split",
         description=(
@@ -201,6 +241,11 @@ class HeroBlock(BaseModel):
     def heal_cta_href(cls, v: object) -> object:
         return _default_if_blank(v, "#contact")
 
+    @field_validator("image_ref", mode="before")
+    @classmethod
+    def heal_image_ref(cls, v: object) -> object:
+        return _heal_image_ref(v)
+
     @field_validator("layout", mode="before")
     @classmethod
     def heal_layout(cls, v: object) -> object:
@@ -220,6 +265,27 @@ class HeroBlock(BaseModel):
 class FeatureItem(BaseModel):
     title: str
     description: str
+    image_query: str | None = Field(
+        default=None,
+        description="Short stock-search phrase for the card photo (2-6 words).",
+    )
+    image_ref: int | None = Field(
+        default=None,
+        description="Index into the page's real scraped photos (page_source.images).",
+    )
+    image_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped photo URL. Filled by code from image_ref after "
+            "planning; leave null in LLM output."
+        ),
+    )
+    image_alt: str | None = None
+
+    @field_validator("image_ref", mode="before")
+    @classmethod
+    def heal_image_ref(cls, v: object) -> object:
+        return _heal_image_ref(v)
 
 
 class FeaturesBlock(BaseModel):
@@ -240,6 +306,27 @@ class ServiceItem(BaseModel):
     description: str
     cta_label: str | None = None
     cta_href: str | None = None
+    image_query: str | None = Field(
+        default=None,
+        description="Short stock-search phrase for the card photo (2-6 words).",
+    )
+    image_ref: int | None = Field(
+        default=None,
+        description="Index into the page's real scraped photos (page_source.images).",
+    )
+    image_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped photo URL. Filled by code from image_ref after "
+            "planning; leave null in LLM output."
+        ),
+    )
+    image_alt: str | None = None
+
+    @field_validator("image_ref", mode="before")
+    @classmethod
+    def heal_image_ref(cls, v: object) -> object:
+        return _heal_image_ref(v)
 
 
 class ServicesBlock(BaseModel):
@@ -290,12 +377,28 @@ class AboutBlock(BaseModel):
         default=None,
         description="Short search phrase for the supporting image (2-6 words).",
     )
+    image_ref: int | None = Field(
+        default=None,
+        description="Index into the page's real scraped photos (page_source.images).",
+    )
+    image_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped photo URL. Filled by code from image_ref after "
+            "planning; leave null in LLM output."
+        ),
+    )
     visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("heading", mode="before")
     @classmethod
     def heal_heading(cls, v: object) -> object:
         return _default_if_blank(v, "About us")
+
+    @field_validator("image_ref", mode="before")
+    @classmethod
+    def heal_image_ref(cls, v: object) -> object:
+        return _heal_image_ref(v)
 
     @field_validator("body", mode="before")
     @classmethod
@@ -338,12 +441,28 @@ class CtaBlock(BaseModel):
             "Choose something atmospheric and on-brand."
         ),
     )
+    image_ref: int | None = Field(
+        default=None,
+        description="Index into the page's real scraped photos (page_source.images).",
+    )
+    image_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped background photo URL. Filled by code from "
+            "image_ref after planning; leave null in LLM output."
+        ),
+    )
     visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("cta_label", mode="before")
     @classmethod
     def heal_cta_label(cls, v: object) -> object:
         return _default_if_blank(v, "Get started")
+
+    @field_validator("image_ref", mode="before")
+    @classmethod
+    def heal_image_ref(cls, v: object) -> object:
+        return _heal_image_ref(v)
 
     @field_validator("cta_href", mode="before")
     @classmethod
@@ -440,6 +559,22 @@ class GalleryItem(BaseModel):
     image_query: str = Field(
         description="Pexels-search phrase for the photo, e.g. 'plated tasting menu close-up'."
     )
+    image_ref: int | None = Field(
+        default=None,
+        description="Index into the page's real scraped photos (page_source.images).",
+    )
+    image_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped photo URL. Filled by code from image_ref after "
+            "planning; leave null in LLM output."
+        ),
+    )
+
+    @field_validator("image_ref", mode="before")
+    @classmethod
+    def heal_image_ref(cls, v: object) -> object:
+        return _heal_image_ref(v)
 
 
 class GalleryBlock(BaseModel):
@@ -656,6 +791,28 @@ def _required_list_fields() -> dict[str, tuple[str, int]]:
 
 _REQUIRED_LIST_FIELDS = _required_list_fields()
 
+# Validates one block dict on its own so a single malformed block can be dropped
+# without failing the whole page (see PagePlan.salvage_page_content).
+_CONTENT_BLOCK_ADAPTER = TypeAdapter(ContentBlock)
+
+
+def _block_is_valid(block: object) -> bool:
+    """True when ``block`` parses as a ContentBlock on its own (healers applied).
+
+    An already-constructed block model (blocks assembled in code, e.g. the
+    multipass merge, or built directly in tests) is valid by construction — only
+    raw dicts from the LLM's JSON get re-validated so a malformed one is dropped.
+    """
+    if isinstance(block, BaseModel):
+        return True
+    if not isinstance(block, dict) or "kind" not in block:
+        return False
+    try:
+        _CONTENT_BLOCK_ADAPTER.validate_python(block)
+        return True
+    except ValidationError:
+        return False
+
 
 class PagePlan(BaseModel):
     """The LLM's blueprint for a single page.
@@ -706,27 +863,58 @@ class PagePlan(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def drop_empty_content_blocks(cls, data: object) -> object:
-        """The LLM is told to OMIT a section it can't ground with real content,
-        but it sometimes emits the block with an empty (or too-short) list instead
-        (e.g. ``{"kind":"awards","items":[]}``). That trips the block's
-        ``min_length`` and 502s the whole generation, so we drop such blocks here —
-        the intended "omit empty section" outcome — rather than reject the plan.
-        Blocks without a content list (hero/cta/about/contact) are untouched.
+    def salvage_page_content(cls, data: object) -> object:
+        """Keep as much of a drifting LLM's page as possible, so a technicality
+        never blanks out a page's real content.
+
+        The old behaviour dropped a whole page on ANY validation error, and the
+        page was then re-synthesised as an empty structural shell — which meant a
+        page whose only fault was one malformed block (or a missing SEO string)
+        lost ALL its source-grounded sections and rendered as just a hero + CTA.
+        Instead we salvage, in order:
+
+        1. **Misplaced blocks** — when ``blocks`` is missing, adopt the section
+           list the model put under ``sections``/``content`` (a common drift);
+           a list of plain section-name strings is NOT mistaken for blocks.
+        2. **Per-block salvage** — keep every block that parses on its own and
+           drop only the ones that don't (a single truncated/empty-list block no
+           longer fails the page). This also subsumes the old empty-list drop.
+        3. **Missing SEO** — default ``seo_title``/``seo_description`` from the
+           page's real title/description (before-validators can't fire on absent
+           keys, so an omitted SEO field would otherwise fail the whole page).
+
+        A page with NO salvageable blocks still validates (empty ``blocks``); the
+        scaffold-alignment pass then pads its structural sections. Truly broken
+        top-level shapes (``pages`` not a list, unparseable JSON) are still left
+        to the caller's retry path.
         """
-        if not isinstance(data, dict) or not isinstance(data.get("blocks"), list):
+        if not isinstance(data, dict):
             return data
-        kept = []
-        for block in data["blocks"]:
-            if isinstance(block, dict):
-                req = _REQUIRED_LIST_FIELDS.get(block.get("kind"))
-                if req is not None:
-                    field, min_len = req
-                    value = block.get(field)
-                    if not isinstance(value, list) or len(value) < min_len:
-                        continue  # empty/too-short content section — drop, not fail
-            kept.append(block)
-        return {**data, "blocks": kept}
+        data = dict(data)
+
+        blocks = data.get("blocks")
+        if not isinstance(blocks, list):
+            for alias in ("sections", "content", "page_blocks"):
+                candidate = data.get(alias)
+                if isinstance(candidate, list) and any(
+                    isinstance(b, dict) and "kind" in b for b in candidate
+                ):
+                    blocks = candidate
+                    break
+            else:
+                blocks = []
+
+        data["blocks"] = [b for b in blocks if _block_is_valid(b)]
+
+        title = data.get("title") or data.get("slug") or ""
+        if not (isinstance(data.get("seo_title"), str) and data["seo_title"].strip()):
+            data["seo_title"] = str(title)
+        if not (
+            isinstance(data.get("seo_description"), str)
+            and data["seo_description"].strip()
+        ):
+            data["seo_description"] = str(data.get("description") or title)
+        return data
 
 
 BrandMood = Literal[
@@ -778,6 +966,20 @@ INDUSTRY_MOOD: dict[str, str] = {
 def industry_default_mood(industry: object) -> str:
     """The default brand mood for an industry (→ 'modern' when unknown)."""
     return INDUSTRY_MOOD.get(str(industry or "").strip().lower(), "modern")
+
+
+# Industries whose design brief pins the visual language: the detected mood is
+# advisory only. Explicit user choices still win — callers insert this between
+# the explicit overrides and the LLM-detected fallback. Childcare is friendly
+# by brief ("joyful without being childish"): a detected `playful` would swap
+# in loud type/dramatic shadows aimed at entertainment brands, not parents.
+INDUSTRY_LOCKED_MOOD: dict[str, str] = {"childcare": "friendly"}
+
+
+def industry_locked_mood(industry: object) -> str | None:
+    """The mood an industry's design brief locks in, or None when the industry
+    leaves mood to detection."""
+    return INDUSTRY_LOCKED_MOOD.get(str(industry or "").strip().lower())
 
 
 class SitePlan(BaseModel):
@@ -934,6 +1136,13 @@ class ImageMetadata(BaseModel):
     # css_background images out of side/featured slots (slot_usage='inline') and
     # pins them for full-bleed slots (slot_usage='background').
     source_usage: Literal["inline", "css_background", "unknown"] = "unknown"
+    # Nearest preceding heading on the source page — ties the image to the
+    # section it illustrated. Surfaced in the planner prompt so the LLM can
+    # bind real photos to sections (image_ref), and used as a secondary
+    # lexical signal by the matcher.
+    context_heading: str = ""
+    # <figcaption> text when the image sat inside a <figure>.
+    caption: str = ""
     # Vision-pass annotations (services/image_vision.py). All None until the
     # opt-in pass runs. vision_caption feeds the matcher's lexical scoring so
     # alt-less, hash-named images can still be ranked against slot queries.
@@ -998,3 +1207,46 @@ class LinkCluster(BaseModel):
 
 NavLink.model_rebuild()
 SourceContent.model_rebuild()
+
+
+# --- source blog/event entries (content migration) -------------------------------
+#
+# Extracted verbatim from the source site's post/event detail pages by
+# services/content_collections.py — no LLM involvement. Carried on
+# GeneratedSite so the frontend's generate → push round-trip preserves them;
+# the push orchestrator turns each into a real CMS article/event entry.
+
+
+class ArticleEntry(BaseModel):
+    title: str
+    slug: str
+    excerpt: str
+    body_html: str
+    published_at: datetime | None = None
+    image_url: str | None = None
+    source_url: str
+
+
+class EventEntry(BaseModel):
+    title: str
+    slug: str
+    excerpt: str
+    body_html: str
+    start: datetime | None = None
+    end: datetime | None = None
+    location: str | None = None
+    image_url: str | None = None
+    source_url: str
+
+
+class ContentCollections(BaseModel):
+    articles: list[ArticleEntry] = Field(default_factory=list)
+    events: list[EventEntry] = Field(default_factory=list)
+
+    @property
+    def has_articles(self) -> bool:
+        return bool(self.articles)
+
+    @property
+    def has_events(self) -> bool:
+        return bool(self.events)

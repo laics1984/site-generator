@@ -78,6 +78,12 @@ class ImageCandidate:
     # 'inline' for <img>/og:image. Downstream, css_background images are kept
     # out of side/featured slots and pinned to full-bleed background slots.
     source_usage: str = "inline"
+    # Nearest preceding heading text — ties the image back to the source
+    # section it illustrated. Feeds the planner prompt (image_ref binding)
+    # and the matcher's lexical scoring.
+    context_heading: str = ""
+    # <figcaption> text when the image sits inside a <figure>.
+    caption: str = ""
 
 
 @dataclass
@@ -576,6 +582,29 @@ def _image_src_from_tag(img: Tag) -> str | None:
     return src or srcset_candidate
 
 
+_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
+
+def _image_context(tag: Tag) -> tuple[str, str]:
+    """(context_heading, caption) for an image-bearing tag.
+
+    context_heading = nearest heading before the tag in document order;
+    caption = <figcaption> text when the tag sits inside a <figure>.
+    """
+    heading = ""
+    found = tag.find_previous(_HEADING_TAGS)
+    if isinstance(found, Tag):
+        heading = found.get_text(" ", strip=True)[:120]
+
+    caption = ""
+    figure = tag.find_parent("figure")
+    if isinstance(figure, Tag):
+        figcaption = figure.find("figcaption")
+        if isinstance(figcaption, Tag):
+            caption = figcaption.get_text(" ", strip=True)[:160]
+    return heading, caption
+
+
 def _tag_classes(tag: Tag) -> str:
     return " ".join(
         tag.get("class") if isinstance(tag.get("class"), list) else []
@@ -619,6 +648,7 @@ def _bg_candidate_from_tag(
     hero intent is left to _promote_hero_by_evidence. Without evidence: legacy
     class/tag-name intent guess.
     """
+    context_heading, caption = _image_context(tag)
     evidence = parse_evidence(tag.get("data-webtree-bg-evidence"))
     if evidence is not None:
         role = classify_role(evidence, is_background=True)
@@ -629,10 +659,12 @@ def _bg_candidate_from_tag(
             url=abs_url, alt="", width=evidence.width or None,
             height=evidence.height or None, intent=intent, role=role,
             evidence=evidence, source_usage="css_background",
+            context_heading=context_heading, caption=caption,
         )
     return ImageCandidate(
         url=abs_url, alt="", width=None, height=None,
         intent=_guess_bg_intent(tag, prior), source_usage="css_background",
+        context_heading=context_heading, caption=caption,
     )
 
 
@@ -786,10 +818,12 @@ def _extract_images(
         else:
             role = "unknown"
             intent = _guess_intent(img, candidates)
+        context_heading, caption = _image_context(img)
         candidates.append(
             ImageCandidate(
                 url=abs_url, alt=alt, width=width, height=height,
                 intent=intent, role=role, evidence=evidence,
+                context_heading=context_heading, caption=caption,
             )
         )
         seen.add(abs_url)
@@ -1408,6 +1442,8 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
                 width=c.width,
                 height=c.height,
                 source_usage=c.source_usage,  # type: ignore[arg-type]
+                context_heading=c.context_heading,
+                caption=c.caption,
             )
             for c in image_candidates
         ],
@@ -1644,7 +1680,11 @@ async def _crawl_extra_pages(
                 new_work.clear()
                 try:
                     await asyncio.wait_for(new_work.wait(), timeout=0.1)
-                except TimeoutError:
+                except asyncio.TimeoutError:
+                    # asyncio.wait_for raises asyncio.TimeoutError, which is a
+                    # DISTINCT class from the builtin TimeoutError on Python 3.10
+                    # (the runtime here) — only aliased to it in 3.11+. Catch the
+                    # asyncio one so this is portable across both.
                     pass
                 continue
             url, depth, _discovered = frontier.popleft()

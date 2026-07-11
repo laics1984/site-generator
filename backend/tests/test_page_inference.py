@@ -1,7 +1,7 @@
 import unittest
 
-from app.models.content_blocks import SourceContent
-from app.services.page_inference import infer_page_scaffolds
+from app.models.content_blocks import ImageMetadata, SourceContent
+from app.services.page_inference import _MAX_PAGE_SECTIONS, infer_page_scaffolds
 
 
 class PageInferenceTest(unittest.TestCase):
@@ -124,6 +124,25 @@ class PageInferenceTest(unittest.TestCase):
 
         self.assertIn("clients", home.sections)
 
+    def test_evidenced_extras_never_balloon_a_page_past_the_ceiling(self):
+        # A signal-rich homepage on an already-long pattern (childcare) must not
+        # grow into an over-large single-call page — evidenced extras are trimmed
+        # to the per-page ceiling, but the core hero/cta frame always survives.
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text=(
+                "Established in 2004. An award-winning, accredited 5-star centre "
+                "with over 20 years of experience nurturing young minds."
+            ),
+        )
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        home = next(s for s in scaffolds if s.is_homepage)
+
+        self.assertLessEqual(len(home.sections), _MAX_PAGE_SECTIONS)
+        self.assertEqual(home.sections[0], "hero")
+        self.assertEqual(home.sections[-1], "cta")
+
     def test_homepage_with_no_signals_skips_new_sections(self):
         source = SourceContent(
             source_kind="url",
@@ -170,3 +189,257 @@ class PageInferenceTest(unittest.TestCase):
         self.assertIsNone(next((s for s in scaffolds if s.slug == "team"), None))
         about = next(s for s in scaffolds if s.slug == "about")
         self.assertIn("team", about.sections)
+
+
+class StoryPageRhythmTest(unittest.TestCase):
+    """A source page that narrates section-by-section (heading + paragraph +
+    photo, repeated) gets a story rhythm — one image+text `about` per source
+    section — instead of the fixed text-only card rhythm."""
+
+    @staticmethod
+    def _story_page(slug: str = "school-life", sections: int = 4) -> SourceContent:
+        headings = [f"Programme {i}" for i in range(sections)]
+        return SourceContent(
+            source_kind="url",
+            source_ref=f"https://example.my/{slug}",
+            title="School Life",
+            raw_text="\n".join(
+                f"{h}\nLearning domains for this age group." for h in headings
+            ),
+            url_path=f"/{slug}",
+            headings=headings,
+            image_metadata=[
+                ImageMetadata(
+                    url=f"https://example.my/photo-{i}.jpg",
+                    alt=f"Children in {h}",
+                    role="content",
+                    context_heading=h,
+                )
+                for i, h in enumerate(headings)
+            ],
+        )
+
+    def _scaffold_for(self, page: SourceContent):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[page],
+        )
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        return next(s for s in scaffolds if s.slug == "school-life")
+
+    def test_story_page_gets_one_about_per_source_section(self):
+        scaffold = self._scaffold_for(self._story_page(sections=4))
+        self.assertEqual(scaffold.sections[0], "hero")
+        self.assertEqual(scaffold.sections.count("about"), 4)
+        self.assertIn("cta", scaffold.sections)
+        self.assertNotIn("features", scaffold.sections)
+
+    def test_story_rhythm_respects_the_page_section_ceiling(self):
+        scaffold = self._scaffold_for(self._story_page(sections=12))
+        self.assertLessEqual(len(scaffold.sections), _MAX_PAGE_SECTIONS)
+        self.assertEqual(scaffold.sections.count("about"), _MAX_PAGE_SECTIONS - 2)
+
+    def test_two_matched_photos_weave_abouts_but_keep_the_card_rhythm(self):
+        # Below the story threshold the page keeps its fixed rhythm, but its
+        # matched photos are woven in as image+text about splits.
+        scaffold = self._scaffold_for(self._story_page(sections=2))
+        self.assertEqual(scaffold.sections.count("about"), 2)
+        self.assertEqual(scaffold.sections[0], "hero")
+        # The base rhythm's card sections survive — this is weaving, not a
+        # story override.
+        self.assertTrue(
+            {"features", "process"} & set(scaffold.sections),
+            scaffold.sections,
+        )
+
+    def test_contact_page_never_becomes_a_story_page(self):
+        page = self._story_page(slug="contact")
+        page.title = "Contact"
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[page],
+        )
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        contact = next(s for s in scaffolds if s.slug == "contact")
+        self.assertLessEqual(contact.sections.count("about"), 1)
+
+
+class PhotoSectionWeavingTest(unittest.TestCase):
+    """Image-rich pages below the story threshold weave image+text about
+    splits into their fixed rhythm — photo support everywhere, not only on
+    detected story pages."""
+
+    @staticmethod
+    def _page(slug: str, image_metadata=None, headings=None) -> SourceContent:
+        return SourceContent(
+            source_kind="url",
+            source_ref=f"https://example.my/{slug}",
+            title=slug.replace("-", " ").title(),
+            raw_text="Section text.\nMore text.",
+            url_path=f"/{slug}",
+            headings=headings or [],
+            image_metadata=image_metadata or [],
+        )
+
+    @staticmethod
+    def _source(pages) -> SourceContent:
+        return SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=pages,
+        )
+
+    def test_homepage_weaves_an_about_when_source_home_is_image_rich(self):
+        photos = [
+            ImageMetadata(url=f"https://x/p{i}.jpg", role="content")
+            for i in range(5)
+        ]
+        source = self._source([])
+        source.image_metadata = photos
+        source.headings = []
+
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        home = next(s for s in scaffolds if s.is_homepage)
+        self.assertGreaterEqual(home.sections.count("about"), 1)
+
+    def test_text_only_page_gets_one_stock_backed_about(self):
+        # Baseline landing-page practice: even a text-only source page carries
+        # one image+text section — its photo resolves from stock (image_query).
+        source = self._source([self._page("services")])
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        services = next(s for s in scaffolds if s.slug == "services")
+        self.assertEqual(services.sections.count("about"), 1)
+        # The card rhythm survives — this is one woven moment, not an override.
+        self.assertIn("services", services.sections)
+
+    def test_four_loose_photos_without_heading_matches_weave_one_about(self):
+        photos = [
+            ImageMetadata(url=f"https://x/p{i}.jpg", role="content")
+            for i in range(4)
+        ]
+        source = self._source([self._page("our-work", image_metadata=photos)])
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        work = next(s for s in scaffolds if s.slug == "our-work")
+        self.assertEqual(work.sections.count("about"), 1)
+
+    def test_contact_page_is_never_woven(self):
+        photos = [
+            ImageMetadata(url=f"https://x/p{i}.jpg", role="content")
+            for i in range(6)
+        ]
+        source = self._source([self._page("contact", image_metadata=photos)])
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        contact = next(s for s in scaffolds if s.slug == "contact")
+        self.assertEqual(contact.sections.count("about"), 0)
+
+    def test_woven_abouts_sit_before_the_closing_cta(self):
+        headings = ["Programme A", "Programme B"]
+        photos = [
+            ImageMetadata(
+                url=f"https://x/p{i}.jpg", role="content", context_heading=h
+            )
+            for i, h in enumerate(headings)
+        ]
+        source = self._source(
+            [self._page("programmes", image_metadata=photos, headings=headings)]
+        )
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        page = next(s for s in scaffolds if s.slug == "programmes")
+        if "cta" in page.sections:
+            last_about = max(
+                i for i, s in enumerate(page.sections) if s == "about"
+            )
+            self.assertLess(last_about, page.sections.index("cta"))
+
+    def test_events_page_is_inferred_with_hero_only_scaffold(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/events",
+                    title="Upcoming Events",
+                    raw_text="Annual dinner. Charity run.",
+                    url_path="/events",
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        events = next(s for s in scaffolds if s.slug == "events")
+
+        self.assertEqual(events.page_type, "events")
+        self.assertEqual(events.sections, ["hero"])
+
+    def test_blog_and_event_detail_subpages_are_not_scaffolded(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/blog",
+                    title="Blog",
+                    raw_text="Latest posts.",
+                    url_path="/blog",
+                ),
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/blog/my-first-post",
+                    title="My First Post",
+                    raw_text="Post body text.",
+                    url_path="/blog/my-first-post",
+                ),
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/events",
+                    title="Events",
+                    raw_text="What's on.",
+                    url_path="/events",
+                ),
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/events/annual-dinner",
+                    title="Annual Dinner",
+                    raw_text="Join us for dinner.",
+                    url_path="/events/annual-dinner",
+                ),
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        slugs = {s.slug for s in scaffolds}
+
+        self.assertIn("blog", slugs)
+        self.assertIn("events", slugs)
+        self.assertNotIn("blog/my-first-post", slugs)
+        self.assertNotIn("events/annual-dinner", slugs)
+
+    def test_prevention_page_is_not_misread_as_events(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/prevention",
+                    title="Fire Prevention",
+                    raw_text="Prevention services.",
+                    url_path="/prevention",
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        prevention = next(s for s in scaffolds if s.slug == "prevention")
+
+        self.assertNotEqual(prevention.page_type, "events")

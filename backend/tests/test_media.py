@@ -302,3 +302,105 @@ class StrongestSourceBackgroundTest(unittest.TestCase):
             ]
         )
         self.assertIsNone(resolver.strongest_source_background())
+
+
+class HeroBackgroundMinSizeTest(unittest.IsolatedAsyncioTestCase):
+    """A too-small scraped image must not fill a full-bleed hero (it upscales to
+    a blur); the resolver defers to a crisp Pexels photo instead."""
+
+    def _resolver(self, metadata, pexels):
+        from app.models.content_blocks import ImageMetadata
+
+        return ImageResolver(
+            scraped_metadata=[ImageMetadata(**m) for m in metadata],
+            pexels=pexels,
+            use_llm_tiebreaker=False,
+        )
+
+    async def test_small_scraped_hero_background_defers_to_stock(self):
+        pexels = FakePexels(
+            {"cafe interior": [_photo("https://pexels.example/cafe.jpg", "cafe interior")]}
+        )
+        resolver = self._resolver(
+            [{"url": "https://x/tiny-hero.jpg", "source_usage": "css_background",
+              "role": "hero", "intent": "hero", "width": 600, "height": 400}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "cafe interior", intent="hero", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "pexels")
+        self.assertEqual(photo.url, "https://pexels.example/cafe.jpg")
+
+    async def test_large_scraped_hero_background_is_used(self):
+        pexels = FakePexels(
+            {"cafe interior": [_photo("https://pexels.example/cafe.jpg", "cafe interior")]}
+        )
+        resolver = self._resolver(
+            [{"url": "https://x/big-hero.jpg", "source_usage": "css_background",
+              "role": "hero", "intent": "hero", "width": 2000, "height": 1200}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "cafe interior", intent="hero", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "scraped")
+        self.assertEqual(photo.url, "https://x/big-hero.jpg")
+
+    async def test_unknown_dimension_hero_background_still_used(self):
+        # CSS-background URLs frequently omit dimensions — we reject on measured
+        # evidence, not missing data, so an unsized source background is kept.
+        pexels = FakePexels(
+            {"cafe interior": [_photo("https://pexels.example/cafe.jpg", "cafe interior")]}
+        )
+        resolver = self._resolver(
+            [{"url": "https://x/unsized-hero.jpg", "source_usage": "css_background",
+              "role": "hero", "intent": "hero"}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "cafe interior", intent="hero", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "scraped")
+        self.assertEqual(photo.url, "https://x/unsized-hero.jpg")
+
+    async def test_pinned_small_hero_background_defers_to_stock(self):
+        pexels = FakePexels(
+            {"cafe interior": [_photo("https://pexels.example/cafe.jpg", "cafe interior")]}
+        )
+        resolver = self._resolver(
+            [{"url": "https://x/tiny-pinned.jpg", "intent": "hero",
+              "width": 500, "height": 300}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "cafe interior", intent="hero", slot_usage="background",
+            pinned_url="https://x/tiny-pinned.jpg",
+        )
+
+        self.assertEqual(photo.source, "pexels")
+
+    async def test_small_image_not_gated_for_inline_hero_slot(self):
+        # The gate is full-bleed-background only: a bounded inline column doesn't
+        # upscale the same way, so a modest source photo is fine there.
+        pexels = FakePexels({})
+        resolver = self._resolver(
+            [{"url": "https://x/side.jpg", "source_usage": "inline",
+              "role": "content", "intent": "hero", "width": 700, "height": 500,
+              "alt": "cafe interior"}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "cafe interior", intent="hero", slot_usage="inline"
+        )
+
+        self.assertEqual(photo.source, "scraped")
+        self.assertEqual(photo.url, "https://x/side.jpg")

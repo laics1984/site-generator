@@ -33,6 +33,15 @@ from app.services.theme import (
 # same string makes the builder's Divider panel show "Subtle" as selected.
 HEADER_DIVIDER_SUBTLE = "0 1px 3px 0 rgba(15, 23, 42, 0.06)"
 
+# Default header logo height; some industries lead with a larger, more
+# prominent mark (childcare: warm, friendly, front-and-centre for parents).
+_DEFAULT_LOGO_HEIGHT = "52px"
+_LOGO_HEIGHT_BY_INDUSTRY: dict[str, str] = {"childcare": "68px"}
+
+# Industries whose logo must never get the contrast "chip" (a boxed background
+# behind the mark) — it reads as an unwanted border against their light chrome.
+_NO_LOGO_LOCKUP_INDUSTRIES = frozenset({"childcare"})
+
 
 def _uid() -> str:
     return str(uuid4())
@@ -132,6 +141,7 @@ def _logo_mark(
     theme: ThemeTokens,
     lockup: str | None = None,
     ink: str | None = None,
+    logo_height: str = "52px",
 ) -> BuilderElement:
     """
     Returns a logo BuilderElement — either the uploaded image or a typographic
@@ -146,7 +156,11 @@ def _logo_mark(
         img = _image(
             brand.logo_url or brand.logo_data_url or "",
             alt=brand.name,
-            styles={"height": "36px", "width": "auto", "display": "block"},
+            # Big by default — the header starts prominent and shrinks to ~80%
+            # on scroll (shrinkOnScroll). Height-scaled with width auto so the
+            # renderer keeps the logo's aspect (see webtree-public ImageBlock
+            # brand-logo branch).
+            styles={"height": logo_height, "width": "auto", "display": "block"},
             href="/",
             aria_label=f"{brand.name} — home",
         )
@@ -180,15 +194,17 @@ def _logo_mark(
                         styles={
                             "color": theme.buttons.text,
                             "fontWeight": 700,
-                            "fontSize": "18px",
+                            "fontSize": "24px",
                             "lineHeight": 1,
                         },
                     )
                 ],
                 name="Mark",
+                # Matches the image-logo height (52px) so the text and image
+                # brand marks read at the same scale.
                 styles={
-                    "width": "36px",
-                    "height": "36px",
+                    "width": "48px",
+                    "height": "48px",
                     "borderRadius": "9999px",
                     "backgroundColor": theme.palette.primary,
                     "alignItems": "center",
@@ -226,6 +242,7 @@ def _logo_mark(
 def _header_chrome(
     brand: BrandIdentity,
     theme: ThemeTokens,
+    industry: str | None = None,
 ) -> tuple[str, str, str | None]:
     """
     Choose a header background / foreground that keeps the logo and nav
@@ -246,6 +263,11 @@ def _header_chrome(
 
     header_is_dark = foreground == "#ffffff"
     lockup = None
+    # Childcare brief: a clean logo, no chip. The pastel light header + a bright
+    # (logo_is_light) mark would otherwise get a dark contrast box that reads as
+    # an unwanted border — suppress it and let the logo sit free on the header.
+    if (industry or "").strip().lower() in _NO_LOGO_LOCKUP_INDUSTRIES:
+        return background, foreground, None
     if brand.logo_is_light is False and header_is_dark:
         lockup = "#ffffff"
     elif brand.logo_is_light is True and not header_is_dark:
@@ -264,6 +286,7 @@ def build_header(
     primary_cta: tuple[str, str] | None = None,
     page_tree: list[PageNode] | None = None,
     overlay: bool = False,
+    industry: str | None = None,
 ) -> BuilderElement:
     """
     Sticky header: logo · nav · CTA, max-width contained. Chrome follows the
@@ -285,8 +308,13 @@ def build_header(
     stamped below. Never emit a transparent backgroundColor here: it would
     make the solidified header transparent too.
     """
-    header_bg, header_fg, logo_lockup = _header_chrome(brand, theme)
-    if overlay and brand.logo_is_light is False:
+    norm_industry = (industry or "").strip().lower()
+    header_bg, header_fg, logo_lockup = _header_chrome(brand, theme, industry)
+    if (
+        overlay
+        and brand.logo_is_light is False
+        and norm_industry not in _NO_LOGO_LOCKUP_INDUSTRIES
+    ):
         # A dark image logo floating over a dark full-bleed hero needs its
         # contrast chip even if the solid header wouldn't (the renderer can
         # recolor text ink, not bitmaps).
@@ -307,7 +335,13 @@ def build_header(
     # (.wt-page-header--overlay .wt-header-ink). The CTA button keeps its own
     # solid background/text and is deliberately NOT marked.
     nav_menu.classes = "wt-header-ink"
-    logo = _logo_mark(brand, theme, lockup=logo_lockup, ink=header_fg)
+    logo = _logo_mark(
+        brand,
+        theme,
+        lockup=logo_lockup,
+        ink=header_fg,
+        logo_height=_LOGO_HEIGHT_BY_INDUSTRY.get(norm_industry, _DEFAULT_LOGO_HEIGHT),
+    )
     logo.classes = "wt-header-ink"
 
     cta_children: list[BuilderElement] = []
@@ -353,8 +387,10 @@ def build_header(
             "marginRight": "auto",
             "paddingLeft": "24px",
             "paddingRight": "24px",
-            "paddingTop": "16px",
-            "paddingBottom": "16px",
+            # Generous by default; the shrink-on-scroll pass reduces this row's
+            # vertical padding (getShrunkHeaderRootAndRows) to compact the bar.
+            "paddingTop": "24px",
+            "paddingBottom": "24px",
             "gap": "24px",
         },
     )

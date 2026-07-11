@@ -1,19 +1,30 @@
 """Per-page hero art direction (services/hero_director.py).
 
-The director must give a nonprofit site an immersive full-bleed homepage,
-varied-but-coherent interior heroes drawn from the approved set, deterministic
-output for the same inputs, and a pinned source background when the source
-site led with a CSS background image.
+Default policy (hero_fullbleed_all_pages=True): EVERY page opens with a
+full-bleed background hero (photo → stock → abstract) so the transparent
+floating header engages site-wide. The legacy per-mood interior rotation is
+kept behind the flag and still tested with it off.
 """
 
 import unittest
+from unittest import mock
 
+from app.config import settings
 from app.models.content_blocks import PagePlan
 from app.services.hero_director import (
     IMAGELESS_HERO_IDS,
     HeroDirective,
     plan_site_heroes,
 )
+
+
+class _LegacyRotationCase(unittest.TestCase):
+    """Base for tests of the legacy per-mood rotation (full-bleed policy off)."""
+
+    def setUp(self):
+        patcher = mock.patch.object(settings, "hero_fullbleed_all_pages", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
 _APPROVED_NONPROFIT_IDS = {
     "hero-background-bold",
@@ -47,7 +58,7 @@ def _nonprofit_site():
     ]
 
 
-class NonprofitDirectionTest(unittest.TestCase):
+class NonprofitDirectionTest(_LegacyRotationCase):
     def _plan(self, *, has_source_background=False, seed="Hope Foundation"):
         return plan_site_heroes(
             _nonprofit_site(),
@@ -94,7 +105,7 @@ class NonprofitDirectionTest(unittest.TestCase):
                 self.assertFalse(d.pin_source_background)
 
 
-class MoodFallbackTest(unittest.TestCase):
+class MoodFallbackTest(_LegacyRotationCase):
     def test_unknown_industry_falls_back_to_mood_spec(self):
         directives = plan_site_heroes(
             _nonprofit_site(),
@@ -134,7 +145,38 @@ class MoodFallbackTest(unittest.TestCase):
                     self.assertNotEqual(d.template_id, "hero-background-bold")
 
 
-class DirectiveShapeTest(unittest.TestCase):
+class FullBleedEverywhereTest(unittest.TestCase):
+    """Default policy: every page's hero is a full-bleed background so the
+    transparent floating header engages on every page."""
+
+    def _plan(self, *, has_source_background=False):
+        return plan_site_heroes(
+            _nonprofit_site(),
+            mood="friendly",
+            industry="childcare",
+            has_source_background=has_source_background,
+            seed="GloryKids",
+        )
+
+    def test_every_page_is_directed_full_bleed_background(self):
+        directives = self._plan()
+        self.assertEqual(set(directives), {p.slug for p in _nonprofit_site()})
+        for d in directives.values():
+            self.assertEqual(d.template_id, "hero-background-bold")
+            self.assertEqual(d.layout, "background")
+
+    def test_source_background_still_pins_only_the_homepage(self):
+        directives = self._plan(has_source_background=True)
+        self.assertTrue(directives["home"].pin_source_background)
+        for slug, d in directives.items():
+            if slug != "home":
+                self.assertFalse(d.pin_source_background)
+
+    def test_deterministic_for_same_inputs(self):
+        self.assertEqual(self._plan(), self._plan())
+
+
+class DirectiveShapeTest(_LegacyRotationCase):
     def test_imageless_ids_never_pin_or_wash(self):
         directives = plan_site_heroes(
             _nonprofit_site(), mood="friendly", industry="nonprofit",

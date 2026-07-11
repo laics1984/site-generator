@@ -65,6 +65,24 @@ def _image(query: str | None, alt: str | None) -> dict[str, str] | None:
     return {"query": query, "alt": alt or ""}
 
 
+def _featured_image(
+    query: str | None, bound_url: str | None, alt: str | None
+) -> dict[str, str] | None:
+    """Image slot value for a block that may carry a ref-bound scraped photo.
+
+    Keeps the value query-shaped even when a photo is bound — the actual pin
+    happens in schema_builder's resolver call (pinned_url), which also records
+    band/used-URL bookkeeping. The bound URL only matters here for feasibility:
+    a block with a real photo but no image_query must still select an
+    image-bearing template.
+    """
+    if query:
+        return {"query": query, "alt": alt or ""}
+    if bound_url:
+        return {"query": alt or "source photo", "alt": alt or ""}
+    return None
+
+
 # --- content mappers (block -> {slot: value}) -----------------------------------
 
 
@@ -75,7 +93,7 @@ def _hero_content(b: HeroBlock) -> dict[str, Any]:
         "body": b.subheadline,
         "primary_cta": {"innerText": b.primary_cta_label, "href": b.primary_cta_href},
         "secondary_cta": _link(b.secondary_cta_label, b.secondary_cta_href),
-        "image": _image(b.image_query, b.image_alt or b.headline),
+        "image": _featured_image(b.image_query, b.image_url, b.image_alt or b.headline),
     }
 
 
@@ -84,8 +102,21 @@ def _about_content(b: AboutBlock) -> dict[str, Any]:
         "eyebrow": "About",
         "heading": b.heading,
         "subheading": b.body or None,
-        "image": _image(b.image_query, b.image_alt or b.heading),
+        "image": _featured_image(b.image_query, b.image_url, b.image_alt or b.heading),
     }
+
+
+def _item_image(item: Any, alt_fallback: str) -> dict[str, str] | None:
+    """Per-card image value: a ref-bound scraped photo fills the slot directly
+    (the {src} path in template_filler, same as team-grid member photos);
+    unbound items resolve their stock image_query. An item the LLM left
+    query-less falls back to its title as the stock search — every card must
+    carry an image so the photo-topped grid stays feasible (the resolver's
+    industry-context fallback rescues weak title queries)."""
+    url = getattr(item, "image_url", None)
+    if url:
+        return {"src": url, "alt": getattr(item, "image_alt", None) or alt_fallback}
+    return _image(getattr(item, "image_query", None) or alt_fallback, alt_fallback)
 
 
 def _features_content(b: FeaturesBlock) -> dict[str, Any]:
@@ -93,7 +124,14 @@ def _features_content(b: FeaturesBlock) -> dict[str, Any]:
         "eyebrow": "Features",
         "heading": b.heading,
         "subheading": b.subheading,
-        "items": [{"title": i.title, "description": i.description} for i in b.items],
+        "items": [
+            {
+                "title": i.title,
+                "description": i.description,
+                "image": _item_image(i, i.title),
+            }
+            for i in b.items
+        ],
     }
 
 
@@ -103,7 +141,12 @@ def _services_content(b: ServicesBlock) -> dict[str, Any]:
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
-            {"title": i.title, "description": i.description, "ideal": None}
+            {
+                "title": i.title,
+                "description": i.description,
+                "ideal": None,
+                "image": _item_image(i, i.title),
+            }
             for i in b.items
         ],
     }
@@ -138,8 +181,9 @@ def _cta_content(b: CtaBlock) -> dict[str, Any]:
         "primary_cta": {"innerText": b.cta_label, "href": b.cta_href},
         "secondary_cta": None,
         # A background photo (dark overlay applied by the template) when the LLM
-        # supplied an atmospheric query — else selection falls back to a gradient.
-        "image": _image(b.background_query, b.headline),
+        # supplied an atmospheric query or bound a real photo — else selection
+        # falls back to a gradient.
+        "image": _featured_image(b.background_query, b.image_url, b.headline),
     }
 
 
@@ -205,7 +249,16 @@ def _gallery_content(b: GalleryBlock) -> dict[str, Any]:
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
-            {"image": _image(i.image_query, i.title or i.caption or "")}
+            {
+                # A ref-bound scraped photo fills the slot directly (the {src}
+                # path in template_filler, same as team-grid member photos);
+                # unbound items resolve their query as before.
+                "image": (
+                    {"src": i.image_url, "alt": i.title or i.caption or ""}
+                    if i.image_url
+                    else _image(i.image_query, i.title or i.caption or "")
+                )
+            }
             for i in b.items
         ],
     }
@@ -311,12 +364,25 @@ def _cta_preference(content: dict[str, Any], b: CtaBlock) -> list[str]:
     return ["cta-banner", "cta-minimal"]
 
 
+def _most_items_have_images(content: dict[str, Any]) -> bool:
+    """True when the section's cards can lead with photos: 2+ items and every
+    item carries an image value (bound scraped photo or stock query)."""
+    items = content.get("items") or []
+    return len(items) >= 2 and all(i.get("image") for i in items)
+
+
 def _features_preference(content: dict[str, Any], b: FeaturesBlock) -> list[str]:
+    # Photo-topped cards whenever every card has an image to lead with —
+    # landing-page practice: show it, don't just say it.
+    if _most_items_have_images(content):
+        return ["features-image-cards", "features-card-grid", "features-two-col"]
     # Match column count to item count: 3+ -> 3-col grid, 1-2 -> 2-col.
     return ["features-card-grid"] if len(b.items) >= 3 else ["features-two-col", "features-card-grid"]
 
 
 def _services_preference(content: dict[str, Any], b: ServicesBlock) -> list[str]:
+    if _most_items_have_images(content):
+        return ["services-image-cards", "services-offer-grid", "services-two-col"]
     return ["services-offer-grid"] if len(b.items) >= 3 else ["services-two-col", "services-offer-grid"]
 
 
@@ -610,9 +676,17 @@ def _default_visual_mode_for(block: ContentBlock) -> str | None:
             else "supporting_image"
         )
     if kind == "about":
-        return "supporting_image" if getattr(block, "image_query", None) else "plain"
+        return (
+            "supporting_image"
+            if getattr(block, "image_query", None) or getattr(block, "image_url", None)
+            else "plain"
+        )
     if kind == "cta":
-        return "photo_background" if getattr(block, "background_query", None) else "plain"
+        return (
+            "photo_background"
+            if getattr(block, "background_query", None) or getattr(block, "image_url", None)
+            else "plain"
+        )
     if kind in ("features", "services"):
         return "plain"
     return None
@@ -645,7 +719,8 @@ def _infer_visual_mode(block: ContentBlock) -> str:
         return "supporting_image"
     if getattr(block, "background_query", None):  # CTA atmospheric background
         return "photo_background"
-    if getattr(block, "image_query", None):  # about/hero supporting image
+    # about/hero supporting image — an LLM query or a ref-bound scraped photo
+    if getattr(block, "image_query", None) or getattr(block, "image_url", None):
         return "supporting_image"
     return "plain"
 
@@ -691,15 +766,16 @@ def _is_own_surface(styles: dict[str, Any]) -> bool:
 def _recolor_text_for_dark(
     node: BuilderElement, color: str, *, inside_surface: bool = False
 ) -> None:
-    """Recolour a dark-band section's text to `color`, skipping any subtree under
-    its own surface (cards / solid buttons keep their designed colours)."""
+    """Recolour a dark-band section's text (and inline links) to `color`,
+    skipping any subtree under its own surface (cards / solid buttons keep
+    their designed colours)."""
     content = node.content
     if not isinstance(content, list):
         return
     for child in content:
         cs = child.styles or {}
         child_surface = inside_surface or _is_own_surface(cs)
-        if child.type == "text" and not child_surface:
+        if child.type in ("text", "link") and not child_surface:
             child.styles = {**cs, "color": color}
         _recolor_text_for_dark(child, color, inside_surface=child_surface)
 
@@ -927,6 +1003,146 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
     return changed
 
 
+# The design brief's cheerful pastel set (cream, sky, mint, peach, lavender,
+# butter). All are very light (Tailwind 50/100-class tints), so the theme's dark
+# ink keeps a wide WCAG margin on every one — a childcare page can rotate through
+# them band-to-band and stay legible. Ordered so adjacent bands contrast in hue.
+_CHILDCARE_PASTELS: tuple[str, ...] = (
+    "#FFF7ED",  # cream
+    "#E0F2FE",  # sky blue
+    "#DCFCE7",  # mint green
+    "#FFEDD5",  # peach
+    "#EDE9FE",  # lavender
+    "#FEF9C3",  # butter yellow
+)
+
+
+# Vivid, cheerful section-title inks for childcare — one per section so the
+# page's headings read multi-coloured instead of one dark theme hue. All are
+# Tailwind-700-class: saturated but dark enough to clear WCAG AA (≥4.5:1) on
+# every pastel band above, so they stay legible whichever pastel they land on.
+_CHILDCARE_HEADING_INKS: tuple[str, ...] = (
+    "#BE123C",  # rose
+    "#6D28D9",  # violet
+    "#1D4ED8",  # blue
+    "#0F766E",  # teal
+    "#BE185D",  # pink
+    "#047857",  # emerald
+)
+
+
+def _first_named_text(el: BuilderElement, name: str) -> BuilderElement | None:
+    """The first descendant text node named `name` (depth-first), or None."""
+    if el.type == "text" and (el.name or "") == name:
+        return el
+    content = el.content
+    if isinstance(content, list):
+        for child in content:
+            found = _first_named_text(child, name)
+            if found is not None:
+                return found
+    return None
+
+
+def apply_childcare_heading_colors(sections: list[BuilderElement]) -> None:
+    """Give each pastel section's TITLE its own vivid colour (rose/violet/blue/
+    teal/pink/emerald), so the page's headings are multi-coloured rather than one
+    dark theme hue — the cheerful direction, extended past the hero.
+
+    Only the section-level title (the node named "Heading") is recoloured; card
+    titles and body copy stay dark for readability. Heroes (their own treatment)
+    and photo/gradient sections are skipped. Run AFTER apply_childcare_pastel_
+    rhythm so its dark-ink recolour doesn't overwrite these. Mutates in place."""
+    i = 0
+    for section in sections:
+        if (section.name or "").startswith("Hero"):
+            continue
+        styles = section.styles or {}
+        if styles.get("backgroundImage") or styles.get("background"):
+            continue
+        heading = _first_named_text(section, "Heading")
+        if heading is None:
+            continue
+        heading.styles = {
+            **(heading.styles or {}),
+            "color": _CHILDCARE_HEADING_INKS[i % len(_CHILDCARE_HEADING_INKS)],
+        }
+        i += 1
+
+
+def apply_childcare_pastel_rhythm(sections: list[BuilderElement], ink: str) -> None:
+    """Recolour a childcare page's flat-background sections through the rotating
+    pastel set, so the page reads cheerful and multi-coloured instead of one hue
+    plus a dark band (the brief's "bright, layered" direction).
+
+    Only sections whose background is a FLAT colour are recoloured; anything
+    painting a real photo, gradient, or texture (the photo hero, the photo CTA,
+    an interior washed-split hero) is left untouched so those moments survive.
+    Every recoloured band gets the theme's dark `ink` — all pastels are light, so
+    this also flips any previously-light text (e.g. a former dark band) back to
+    legible dark and drops the dark-band hairline. Mutates in place.
+
+    Run AFTER the luminance/legacy rhythm (it overrides their flat colours) and
+    BEFORE apply_section_dividers (so seam fills read the final pastel colours)."""
+    i = 0
+    for section in sections:
+        styles = dict(section.styles or {})
+        # A real photo/gradient/texture fill → leave it as the designed moment.
+        if styles.get("backgroundImage") or styles.get("background"):
+            continue
+        # The announcement strap is a designed brand-primary bar with matching
+        # ink — repainting it pastel while its ink stays light made it vanish.
+        if (section.name or "") == "Linkbar":
+            continue
+        styles["backgroundColor"] = _CHILDCARE_PASTELS[i % len(_CHILDCARE_PASTELS)]
+        styles.pop("borderTop", None)  # a former dark-band hairline reads wrong on pastel
+        section.styles = styles
+        i += 1
+        # Pastels are light → force dark ink (undoes any dark-band recolour).
+        _recolor_text_for_dark(section, ink)
+
+
+def _split_columns_row(section: BuilderElement) -> BuilderElement | None:
+    """The two-column row of an about split section, or None.
+
+    Both split variants (about-image-split / about-editorial-split) render as a
+    section container with a direct 2Col child holding [copy, image]; the
+    no-image about-story has no 2Col, so it never matches.
+    """
+    content = section.content
+    if not isinstance(content, list):
+        return None
+    for child in content:
+        if (
+            child.type == "2Col"
+            and isinstance(child.content, list)
+            and len(child.content) == 2
+        ):
+            return child
+    return None
+
+
+def apply_about_zigzag(sections: list[BuilderElement]) -> None:
+    """Alternate the image side of a page's about split sections.
+
+    Story pages render one image+text split per source section; the template
+    always puts the copy column first, so without this every row reads
+    text-left/image-right. Reversing the 2Col children on every second split
+    zigzags the photos left/right — structural, so it needs no new template
+    or CSS support in the builder. Mutates in place.
+    """
+    i = 0
+    for section in sections:
+        if not (section.name or "").startswith("About"):
+            continue
+        row = _split_columns_row(section)
+        if row is None:
+            continue
+        if i % 2 == 1:
+            row.content = list(reversed(row.content))  # type: ignore[arg-type]
+        i += 1
+
+
 def apply_section_rhythm(sections: list[BuilderElement]) -> None:
     """Alternate plain sections between the page background and a surface tint for
     visual rhythm (color-blocking). Sections that already carry their own fill — a
@@ -971,6 +1187,12 @@ def block_to_section(
     if mapper is None:
         return None
     content = mapper(block)
+    # Photo-topped card grids are a hard site policy, not a stylistic choice:
+    # when every card carries an image, the image variant wins even over the
+    # design-brain's explicit pick (which draws from ALL variants and would
+    # otherwise happily re-select the text-only grid).
+    if kind in ("features", "services") and _most_items_have_images(content):
+        explicit_id = f"{kind}-image-cards"
     pref_fn = _PREFERENCE.get(kind)
     content_pref = pref_fn(content, block) if pref_fn else []
     # Content leads the layout choice so available imagery is actually used.

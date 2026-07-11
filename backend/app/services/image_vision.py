@@ -239,8 +239,8 @@ async def _annotate_one(
             system_prompt=_JUDGE_SYSTEM,
             user_prompt="Describe this image.",
             schema=VisionAnnotation,
-            temperature=0.0,
-            num_ctx=2048,
+            temperature=settings.judge_temperature,
+            num_ctx=settings.judge_num_ctx,
             images=[image_b64],
         )
     except LlmError as exc:

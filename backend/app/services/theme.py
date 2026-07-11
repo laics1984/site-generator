@@ -533,6 +533,22 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
                 ),
                 tags=("sports", "fitness", "gym", "athletic"),
             ),
+            # Appended last so the seeded index order of the pairings above is
+            # unchanged. Without a child-tagged pairing here, a kindergarten
+            # explicitly set to playful fell to seeded variety and could land
+            # on the vintage Abril Fatface serif — off the childcare brief.
+            FontPairing(
+                heading_font='"Baloo 2", system-ui, sans-serif',
+                body_font='"Nunito", system-ui, sans-serif',
+                google_fonts=(
+                    "Baloo 2:wght@500;600;700;800",
+                    "Nunito:wght@300;400;500;600;700",
+                ),
+                tags=(
+                    "children", "kids", "kindergarten", "education",
+                    "family", "playful",
+                ),
+            ),
         ),
     ),
 }
@@ -828,6 +844,21 @@ _INDUSTRY_FONT_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Industries whose design brief needs a background treatment different from
+# their mood's default. (Childcare previously used "mesh" here; it now gets an
+# explicit multi-pastel section rhythm instead — see
+# section_content.apply_childcare_pastel_rhythm — so a single-hue mesh wouldn't
+# read as the cheerful cream/sky/mint/peach mix the brief wants.)
+_INDUSTRY_BACKGROUND_STRATEGY: dict[str, str] = {}
+
+# Industries whose brief wants a fixed cheerful palette regardless of the logo's
+# own hue: use the curated pastel set (see _CURATED_PALETTES) and IGNORE the
+# brand seed, so a single-hue logo (e.g. an orange kindergarten mark) can't drag
+# the site to a muted monochrome Tailwind snap. The pastel palette is picked
+# deterministically from the industry's curated entries by font_seed.
+_INDUSTRY_CURATED_PALETTE = frozenset({"childcare"})
+
+
 def _industry_keywords(industry: str | None) -> tuple[str, ...]:
     """Keywords to match against pairing tags for a given industry signal.
 
@@ -857,24 +888,65 @@ def _seeded_index(font_seed: str | None, n: int) -> int:
     return int(hashlib.sha256(font_seed.encode("utf-8")).hexdigest(), 16) % n
 
 
+# Per-industry light/dark lean, the strongest smart-default signal (see
+# resolve_color_scheme). Each entry is the scheme an industry's design brief
+# gravitates toward when nobody chose explicitly:
+#   light — trust/warmth/approachability briefs (kids, causes, corporate-clean).
+#           Childcare bans dark outright (parents are the audience, palette is
+#           pastel); the weight below keeps it light even against a light logo.
+#   dark  — bold/premium/immersive briefs where dark canvases read as on-trend
+#           (modern tech marketing, creative agencies).
+# Industries left out (restaurant, ecommerce, consultancy, personal, …) have no
+# strong lean and defer to the logo. Keys are IndustryCategory values.
+_INDUSTRY_SCHEME_LEAN: dict[str, str] = {
+    "childcare": "light",
+    "nonprofit": "light",
+    "professional-services": "light",
+    "saas": "dark",
+    "agency": "dark",
+}
+
+# Relative pull of each smart-default signal toward dark (+) or light (-). The
+# industry lean outweighs the logo 2:1, so a defined industry lean always wins
+# when the two disagree, while a neutral industry still lets the logo decide.
+_INDUSTRY_SCHEME_WEIGHT = 2.0
+_LOGO_SCHEME_WEIGHT = 1.0
+
+
 def resolve_color_scheme(
     override: str | None = None,
     brand_color_scheme: str | None = None,
     logo_is_light: bool | None = None,
+    industry: str | None = None,
 ) -> str:
     """Resolve light vs dark with SOP precedence (most explicit wins):
 
       1. `override` — an explicit per-generation choice (UI toggle / payload).
       2. `brand_color_scheme` — a stored brand preference.
-      3. smart default — a predominantly *light* logo is usually drawn for a dark
-         canvas, so default such brands to dark. The logo only sets the default;
-         any explicit choice above overrides it (never a silent force).
-      4. light.
+      3. smart default — a weighted vote between two signals, each pulling toward
+         dark (+) or light (-):
+           - industry lean (`_INDUSTRY_SCHEME_LEAN`), weighted highest, since the
+             industry's design brief is the stronger cue for the audience's
+             expectations than any one asset.
+           - the logo: a predominantly *light* logo is usually drawn for a dark
+             canvas (pulls dark); a *dark* logo for a light one (pulls light).
+         Because industry outweighs the logo 2:1, a defined lean wins outright
+         when the two disagree (e.g. a light logo can't flip childcare dark),
+         while a neutral industry leaves the call to the logo. Neither silently
+         overrides an explicit choice above.
+      4. light — when nothing leans either way.
     """
     for choice in (override, brand_color_scheme):
         if choice in ("light", "dark"):
             return choice  # type: ignore[return-value]
-    return "dark" if logo_is_light else "light"
+
+    industry_lean = _INDUSTRY_SCHEME_LEAN.get((industry or "").strip().lower())
+    industry_vote = {"dark": 1.0, "light": -1.0}.get(industry_lean or "", 0.0)
+    # A known light/dark logo votes; an unknown one (None) abstains.
+    logo_vote = 0.0 if logo_is_light is None else (1.0 if logo_is_light else -1.0)
+
+    score = _INDUSTRY_SCHEME_WEIGHT * industry_vote + _LOGO_SCHEME_WEIGHT * logo_vote
+    return "dark" if score > 0 else "light"
 
 
 def _pick_pairing(
@@ -946,10 +1018,15 @@ def build_theme(
     # at all (or greyscale) → "auto" prefers a curated industry palette over the
     # generic-blue fallback.
     brand_hue = has_seed and _has_brand_hue(seed)
+    norm_industry = (industry or "").strip().lower()
     if color_scheme == "dark":
         # Dark scheme owns palette construction (the curated/Tailwind paths are
         # light-only); brand hue still drives the primary/accent.
         palette = _dark_palette(seed)
+    elif norm_industry in _INDUSTRY_CURATED_PALETTE:
+        # Fixed cheerful pastel palette, logo hue ignored (seed=None) so the
+        # brand colour can't override the brief's multi-pastel direction.
+        palette = _curated_palette(None, industry, font_seed)
     elif palette_mode == "curated" or (palette_mode == "auto" and not brand_hue):
         palette = _curated_palette(seed if has_seed else None, industry, font_seed)
     elif palette_mode in ("tailwind", "auto"):
@@ -995,7 +1072,9 @@ def build_theme(
         inverted_cta=True,
         type_scale_ratio=spec.type_scale_ratio,
         use_glass=spec.use_glass,
-        background_strategy=spec.background_strategy,  # type: ignore[arg-type]
+        background_strategy=_INDUSTRY_BACKGROUND_STRATEGY.get(  # type: ignore[arg-type]
+            (industry or "").strip().lower(), spec.background_strategy
+        ),
         shadow_scale=spec.shadow_scale,  # type: ignore[arg-type]
         display_font=pairing.display_font or pairing.heading_font,
         color_scheme=color_scheme,  # type: ignore[arg-type]

@@ -181,10 +181,7 @@ async def generate_site_design_recipe(
             user_prompt=user_prompt,
             schema=SiteDesignRecipe,
             temperature=settings.design_temperature,
-            # The whole-site prompt repeats each kind's option list per page, so
-            # give it more room than the 4096 default to avoid truncation.
-            num_ctx=8192,
-            think=False,
+            num_ctx=settings.design_num_ctx,
         )
     except LlmError as exc:
         logger.warning("Design-brain pass failed, falling back to deterministic selection: %s", exc)

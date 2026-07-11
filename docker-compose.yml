@@ -12,24 +12,19 @@ services:
     container_name: webtree-sitegen-backend
     ports:
       - "8001:8001"
+    # Every setting in backend/app/config.py flows straight from the root .env
+    # (pydantic's own env_file=".env" is CWD-relative, so it doesn't fire inside
+    # the container). New knobs need no compose edit — see .env.example for the
+    # full catalogue.
+    env_file:
+      - path: .env
+        required: false
     environment:
-      # LLM backend selection (explicit, from .env). Defaults to `ollama`; set
-      # LLM_BACKEND=mlx (and run mlx_lm.server on the Mac host) to route generation
-      # through MLX over host.docker.internal. See services/llm.py.
-      LLM_BACKEND: "${LLM_BACKEND:-ollama}"
-      MLX_BASE_URL: "${MLX_BASE_URL:-http://host.docker.internal:8080}"
-      MLX_MODEL: "${MLX_MODEL:-mlx-community/Qwen3-8B-4bit}"
-      MLX_VISION_BASE_URL: "${MLX_VISION_BASE_URL:-}"
-      MLX_VISION_MODEL: "${MLX_VISION_MODEL:-}"
-      # host.docker.internal resolves to the macOS host from inside the container.
+      # Only the container-networking rewrites live here (environment beats
+      # env_file): in-container, "localhost" URLs from a host-context .env must
+      # point at host.docker.internal instead.
       OLLAMA_BASE_URL: "http://host.docker.internal:11434"
-      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3.5:9b}"
-      OLLAMA_TIMEOUT_SECONDS: "${OLLAMA_TIMEOUT_SECONDS:-180}"
-      # Opt-in vision pass over scraped images (e.g. "qwen2.5vl:7b").
-      # Empty ⇒ skipped entirely.
-      OLLAMA_VISION_MODEL: "${OLLAMA_VISION_MODEL:-}"
-      # Pexels free API key for real photos. Falls back to Picsum if empty.
-      PEXELS_API_KEY: "${PEXELS_API_KEY:-}"
+      MLX_BASE_URL: "${MLX_BASE_URL:-http://host.docker.internal:8080}"
       CMS_API_BASE_URL: "${CMS_API_BASE_URL:-http://host.docker.internal:8000}"
     extra_hosts:
       # Required on Linux; harmless on macOS where it's already provided.

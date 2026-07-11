@@ -18,6 +18,8 @@ Steps (in order):
   7. Save drafts — for every created page, PUT /draft with its bodySchema
   8. Builder styles — mint launch-code session + PUT /builder/styles
   9. (Optional) Publish — POST /publish for each page
+ 10. Content types — article/event/articleListing template pages (templateFor)
+     + migrated article/event entries from the source site (non-fatal)
 
 Each step's outcome is appended to PushReport so the UI can show a per-step
 status table. Failures abort the push but the report carries everything done
@@ -31,6 +33,7 @@ import base64
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -43,6 +46,7 @@ from app.models.builder_schema import (
     GeneratedPage,
     GeneratedSite,
 )
+from app.models.content_blocks import ContentCollections
 from app.services.cms_client import CmsApiError, CmsClient
 from app.services.menu_builder import build_menus, wrap_footer, wrap_header
 from app.services.timing import stage
@@ -102,6 +106,9 @@ class PushRequest:
     create_entity: bool = False
     new_entity_name: str | None = None
     new_entity_url: str | None = None
+    # Blog posts / events extracted from the source site (content_collections);
+    # pushed as real CMS article/event entries after the pages land.
+    collections: ContentCollections | None = None
 
 
 # --- slug normalization ---------------------------------------------------------
@@ -425,6 +432,11 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                 if req.site.header_overlay
                 else None
             ),
+            # Shrink applies to every header (independent of overlay); the
+            # renderer shares the reveal offset when overlay is on, so reuse it.
+            shrink_on_scroll=settings.header_shrink_enabled,
+            scroll_shrink_offset=settings.header_scroll_reveal_offset,
+            shrink_amount=settings.header_shrink_amount,
         )
         footer_payload = wrap_footer(req.site.footer_schema, menus=menus)
         result = await client.save_page_layout(
@@ -554,6 +566,11 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
             return report
     else:
         report.record(PushStep(name="publish", ok=True, detail="Skipped — pushed as drafts"))
+
+    # 10. CMS content types — template pages (article/event detail rendering)
+    #     and the migrated article/event entries. Both are non-fatal: the site
+    #     is already pushed, so a failure here degrades to "add content later".
+    await _push_content_types(client, req, report)
 
     # Record page IDs for the UI's "Open in builder" links
     for page, page_id, _ in created:
@@ -839,3 +856,308 @@ def _rewrite_srcs(node: BuilderElement, rewrites: dict[str, str]) -> None:
     if isinstance(content, list):
         for child in content:
             _rewrite_srcs(child, rewrites)
+
+
+# --- CMS content types: template pages + migrated article/event entries ----------
+
+
+# Mirrors the builder's TEMPLATE_DEFAULTS (builder/src/lib/page-management.ts) so
+# templates created here are indistinguishable from ones the builder auto-creates.
+_TEMPLATE_PAGE_DEFAULTS: dict[str, tuple[str, str, str]] = {
+    "article": (
+        "Article Template",
+        "Default layout used to render every published article.",
+        "article-template",
+    ),
+    "event": (
+        "Event Template",
+        "Default layout used to render every published event.",
+        "event-template",
+    ),
+    "articleListing": (
+        "Article Listing Template",
+        "Default layout used to render article index, category, and tag listing pages.",
+        "article-listing-template",
+    ),
+}
+
+_DEFAULT_ARTICLE_CATEGORY = "News"
+
+# Events with a start but no end get this duration so publishing (which
+# requires both) still works.
+_DEFAULT_EVENT_DURATION = timedelta(hours=2)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+# CMS previewImage dimension caps (PostController allows 5500, EventController 1500).
+_ARTICLE_IMAGE_MAX_DIM = 5400
+_EVENT_IMAGE_MAX_DIM = 1400
+
+
+def _iter_elements(nodes: list[BuilderElement]):
+    stack = list(nodes)
+    while stack:
+        el = stack.pop()
+        yield el
+        if isinstance(el.content, list):
+            stack.extend(el.content)
+
+
+def _site_list_sources(site: GeneratedSite) -> set[str]:
+    """Which dynamic list elements the generated pages carry ({'articles','events'})."""
+    found: set[str] = set()
+    for page in site.pages:
+        for el in _iter_elements(page.body_schema.elements):
+            if el.type == "articlesList":
+                found.add("articles")
+            elif el.type == "eventsList":
+                found.add("events")
+    return found
+
+
+def _prepare_preview_image(
+    file_bytes: bytes, filename: str, *, max_dim: int
+) -> tuple[str, bytes, str] | None:
+    """Coerce raw image bytes into a previewImage the CMS accepts.
+
+    jpg/png within the dimension cap pass through; everything else (webp, avif,
+    oversized) is converted/downscaled to JPEG. None ⇒ bytes aren't an image.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(file_bytes)) as img:
+            fmt = (img.format or "").upper()
+            needs_resize = max(img.size) > max_dim
+            needs_convert = fmt not in ("JPEG", "PNG")
+            base = filename.rsplit(".", 1)[0] or "preview"
+            if not needs_resize and not needs_convert:
+                ext = "jpg" if fmt == "JPEG" else "png"
+                mime = "image/jpeg" if fmt == "JPEG" else "image/png"
+                return (f"{base}.{ext}", file_bytes, mime)
+            converted = img.convert("RGB")
+            if needs_resize:
+                converted.thumbnail((max_dim, max_dim))
+            out = BytesIO()
+            converted.save(out, format="JPEG", quality=85)
+            return (f"{base}.jpg", out.getvalue(), "image/jpeg")
+    except Exception:  # noqa: BLE001 — corrupt/unsupported bytes ⇒ try the next candidate
+        return None
+
+
+async def _entry_preview_image(
+    image_url: str | None,
+    fallback_srcs: list[str],
+    download_client: httpx.AsyncClient,
+    *,
+    max_dim: int,
+) -> tuple[str, bytes, str] | None:
+    """(filename, bytes, mime) for an entry's cover — entry image first, then
+    site imagery, None when nothing resolvable (caller downgrades to draft)."""
+    for candidate in [image_url, *fallback_srcs]:
+        if not candidate:
+            continue
+        try:
+            file_bytes, _content_type, filename = await _resolve_to_bytes(
+                candidate, download_client
+            )
+        except _ResolveSkip:
+            continue
+        prepared = _prepare_preview_image(file_bytes, filename, max_dim=max_dim)
+        if prepared:
+            return prepared
+    return None
+
+
+def _is_slug_conflict(exc: CmsApiError) -> bool:
+    body = exc.response_body if isinstance(exc.response_body, dict) else {}
+    message = body.get("message")
+    return isinstance(message, dict) and "slug" in message
+
+
+def _fallback_image_srcs(site: GeneratedSite, limit: int = 3) -> list[str]:
+    sources: dict[str, BuilderElement] = {}
+    for page in site.pages:
+        for el in page.body_schema.elements:
+            _collect_image_srcs(el, sources)
+    return [
+        src
+        for src in sources
+        if src.startswith(("http://", "https://", "data:image/"))
+    ][:limit]
+
+
+async def _push_content_types(
+    client: CmsClient, req: PushRequest, report: PushReport
+) -> None:
+    """Create article/event template pages + migrated entries. Never raises;
+    every failure is recorded as a non-fatal step (the site itself is pushed)."""
+    sources = _site_list_sources(req.site)
+    cols = req.collections or ContentCollections()
+    need_articles = "articles" in sources or cols.has_articles
+    need_events = "events" in sources or cols.has_events
+    if not need_articles and not need_events:
+        return
+
+    # Template pages: same contract as the builder's ensureTemplatePages — a
+    # page whose templateFor marks it as the detail/listing layout for that
+    # content type. Created blank; the builder renders its default layout.
+    wanted: list[str] = []
+    if need_articles:
+        wanted += ["article", "articleListing"]
+    if need_events:
+        wanted += ["event"]
+    try:
+        existing_pages = await client.list_pages(req.entity_token)
+        have = {p.get("templateFor") for p in existing_pages if p.get("templateFor")}
+        created_templates = 0
+        for kind in wanted:
+            if kind in have:
+                continue
+            title, description, slug = _TEMPLATE_PAGE_DEFAULTS[kind]
+            await client.create_page(
+                req.entity_token,
+                title=title,
+                description=description,
+                slug=slug,
+                template_for=kind,
+            )
+            created_templates += 1
+        report.record(
+            PushStep(
+                name="template_pages",
+                ok=True,
+                detail=f"{created_templates} template page(s) created",
+                data={"templates": wanted},
+            )
+        )
+    except CmsApiError as exc:
+        report.record(
+            PushStep(
+                name="template_pages",
+                ok=False,
+                error=str(exc),
+                detail="Template pages failed — the builder auto-creates them on first open.",
+            )
+        )
+
+    if not cols.has_articles and not cols.has_events:
+        return
+
+    # Published articles must reference an existing category.
+    category_slug: str | None = None
+    if cols.has_articles:
+        try:
+            category_slug = await client.create_category(
+                req.entity_token, title=_DEFAULT_ARTICLE_CATEGORY
+            )
+        except CmsApiError as exc:
+            report.record(
+                PushStep(
+                    name="content_entries",
+                    ok=False,
+                    error=f"Category creation failed — articles skipped: {exc}",
+                )
+            )
+            if not cols.has_events:
+                return
+
+    now_ms = int(_utcnow().timestamp() * 1000)
+    published = 0
+    drafted = 0
+    failures: list[str] = []
+    fallback_srcs = _fallback_image_srcs(req.site)
+
+    async def _create_with_slug_retry(create, base_slug: str) -> None:
+        slug = base_slug
+        for attempt in range(4):
+            try:
+                await create(slug)
+                return
+            except CmsApiError as exc:
+                if _is_slug_conflict(exc) and attempt < 3:
+                    slug = f"{base_slug}-{attempt + 2}"
+                    continue
+                raise
+
+    with stage("push_content_entries"):
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as dl:
+            for article in cols.articles if category_slug else []:
+                image = await _entry_preview_image(
+                    article.image_url, fallback_srcs, dl, max_dim=_ARTICLE_IMAGE_MAX_DIM
+                )
+                publish = image is not None  # published posts require a previewImage
+                published_ms = (
+                    int(article.published_at.timestamp() * 1000)
+                    if article.published_at
+                    else now_ms
+                )
+
+                async def _create_article(slug: str, _a=article, _img=image, _pub=publish, _ms=published_ms) -> None:
+                    await client.create_article(
+                        req.entity_token,
+                        title=_a.title,
+                        slug=slug,
+                        excerpt=_a.excerpt,
+                        body_html=_a.body_html,
+                        category_slugs=[category_slug],
+                        published_at_ms=_ms,
+                        image=_img,
+                        publish=_pub,
+                    )
+
+                try:
+                    await _create_with_slug_retry(_create_article, article.slug)
+                    published += 1 if publish else 0
+                    drafted += 0 if publish else 1
+                except CmsApiError as exc:
+                    failures.append(f"article {article.slug}: {exc}")
+
+            for event in cols.events:
+                image = await _entry_preview_image(
+                    event.image_url, fallback_srcs, dl, max_dim=_EVENT_IMAGE_MAX_DIM
+                )
+                start = event.start
+                end = event.end or (start + _DEFAULT_EVENT_DURATION if start else None)
+                location = event.location or "To be announced"
+                # Publishing requires location + start + end + previewImage.
+                publish = bool(image and start)
+
+                async def _create_event(slug: str, _e=event, _img=image, _pub=publish, _s=start, _en=end, _loc=location) -> None:
+                    await client.create_event(
+                        req.entity_token,
+                        title=_e.title,
+                        slug=slug,
+                        excerpt=_e.excerpt,
+                        body_html=_e.body_html,
+                        location=_loc,
+                        start_ms=int(_s.timestamp() * 1000) if _s else None,
+                        end_ms=int(_en.timestamp() * 1000) if _en else None,
+                        published_at_ms=now_ms,
+                        image=_img,
+                        publish=_pub,
+                    )
+
+                try:
+                    await _create_with_slug_retry(_create_event, event.slug)
+                    published += 1 if publish else 0
+                    drafted += 0 if publish else 1
+                except CmsApiError as exc:
+                    failures.append(f"event {event.slug}: {exc}")
+
+    detail = f"{published} published, {drafted} draft(s)"
+    if failures:
+        detail += f", {len(failures)} failed"
+    report.record(
+        PushStep(
+            name="content_entries",
+            ok=published + drafted > 0 or not failures,
+            detail=detail,
+            data={"failures": failures} if failures else {},
+            error="; ".join(failures) if failures and published + drafted == 0 else None,
+        )
+    )

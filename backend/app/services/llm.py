@@ -39,6 +39,16 @@ class LlmError(Exception):
     pass
 
 
+class EmptyLlmResponse(LlmError):
+    """The backend streamed zero content tokens. Distinct from LlmError so the
+    caller can retry it: an empty stream is often transient (a cold model load,
+    or a hybrid-thinking model that spent a turn's budget on reasoning tokens
+    without emitting JSON `content`), so one retry usually recovers instead of
+    failing the whole generation with a 502."""
+
+    pass
+
+
 class LlmClient(Protocol):
     """The surface every backend exposes (Ollama, MLX). Call sites depend only on
     this, so `get_llm()` can return either backend transparently."""
@@ -48,10 +58,10 @@ class LlmClient(Protocol):
         system_prompt: str,
         user_prompt: str,
         schema: type[T],
-        temperature: float = 0.4,
-        num_ctx: int = 4096,
+        temperature: float | None = None,
+        num_ctx: int | None = None,
         images: list[str] | None = None,
-        think: bool = False,
+        think: bool | None = None,
     ) -> T: ...
 
     async def list_models(self) -> list[str]: ...
@@ -65,13 +75,34 @@ _REPAIR_INSTRUCTION = (
 )
 
 
+async def _post_nonempty(post: PostChat, payload: dict[str, Any], attempts: int = 2) -> str:
+    """POST, retrying up to `attempts` times when the backend streams an empty
+    response. An empty stream is usually transient (cold model load, or a turn
+    spent on reasoning tokens with no JSON `content`), so one extra try normally
+    recovers instead of failing the whole generation. Re-raises the last
+    EmptyLlmResponse when every attempt comes back empty."""
+    last: EmptyLlmResponse | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await post(payload)
+        except EmptyLlmResponse as exc:
+            last = exc
+            if attempt < attempts:
+                logger.warning(
+                    "LLM streamed empty content (attempt %d/%d), retrying: %s",
+                    attempt, attempts, exc,
+                )
+    raise last  # type: ignore[misc]
+
+
 async def _validated(post: PostChat, payload: dict[str, Any], schema: type[T]) -> T:
     """POST `payload`, validate the reply against `schema`, and on a validation
-    error retry ONCE with the errors fed back to the model. Transport-agnostic:
+    error retry ONCE with the errors fed back to the model. An empty stream is
+    retried separately (see _post_nonempty) before validation. Transport-agnostic:
     both Ollama and OpenAI/MLX payloads carry a `messages` list, so the repair
     turn is appended the same way for either backend. Raises LlmError if the
     second attempt still fails."""
-    response_text = await post(payload)
+    response_text = await _post_nonempty(post, payload)
     try:
         return schema.model_validate_json(response_text)
     except ValidationError as exc:
@@ -101,7 +132,7 @@ async def _validated(post: PostChat, payload: dict[str, Any], schema: type[T]) -
             ),
         },
     ]
-    response_text = await post(repair_payload)
+    response_text = await _post_nonempty(post, repair_payload)
     try:
         return schema.model_validate_json(response_text)
     except ValidationError as second_err:
@@ -176,25 +207,29 @@ class OllamaClient:
         system_prompt: str,
         user_prompt: str,
         schema: type[T],
-        temperature: float = 0.4,
-        num_ctx: int = 4096,
+        temperature: float | None = None,
+        num_ctx: int | None = None,
         images: list[str] | None = None,
-        think: bool = False,
+        think: bool | None = None,
     ) -> T:
         """
         Send a chat request expecting JSON back, then validate against `schema`.
 
-        num_ctx must be set explicitly — Ollama's default of 2048 is too small
-        for most generation tasks. Callers can override for larger payloads.
+        `temperature`/`num_ctx`/`think` default to the model-variant settings
+        (llm_default_temperature / llm_default_num_ctx / llm_think) when a call
+        site passes None — resolved per call, so env config (not code) decides.
 
         `images`: base64-encoded image payloads attached to the user message
         (Ollama's multimodal chat format). Requires a vision-capable model.
 
         `think`: hybrid-thinking models (Qwen3/3.5) can emit a `<think>...</think>`
         preamble before the JSON body, which breaks `format='json'` parsing.
-        Defaults to False so every caller gets clean JSON; non-thinking models
-        (e.g. Qwen 2.5) ignore the unknown field harmlessly.
+        Off by default (settings.llm_think) so every caller gets clean JSON;
+        non-thinking models (e.g. Qwen 2.5) ignore the unknown field harmlessly.
         """
+        temperature = settings.llm_default_temperature if temperature is None else temperature
+        num_ctx = settings.llm_default_num_ctx if num_ctx is None else num_ctx
+        think = settings.llm_think if think is None else think
         user_message: dict[str, Any] = {"role": "user", "content": user_prompt}
         if images:
             user_message["images"] = images
@@ -264,7 +299,7 @@ class OllamaClient:
 
         content = "".join(chunks)
         if not content.strip():
-            raise LlmError("Ollama returned empty content (stream produced no tokens)")
+            raise EmptyLlmResponse("Ollama returned empty content (stream produced no tokens)")
         return content
 
     async def list_models(self) -> list[str]:
@@ -303,14 +338,17 @@ class MlxClient:
         system_prompt: str,
         user_prompt: str,
         schema: type[T],
-        temperature: float = 0.4,
-        num_ctx: int = 4096,
+        temperature: float | None = None,
+        num_ctx: int | None = None,
         images: list[str] | None = None,
-        think: bool = False,
+        think: bool | None = None,
     ) -> T:
-        """OpenAI Chat Completions in JSON mode. `num_ctx`/`keep_alive`/`think`
-        are accepted for signature parity with OllamaClient; thinking output is
+        """OpenAI Chat Completions in JSON mode. Defaults resolve from the same
+        model-variant settings as OllamaClient. `num_ctx` is accepted for
+        signature parity (the server sizes its own context); thinking output is
         handled defensively by stripping a `<think>` preamble before validation."""
+        temperature = settings.llm_default_temperature if temperature is None else temperature
+        think = settings.llm_think if think is None else think
         if images:
             base_url, model = self.vision_base_url, (self.vision_model or self.model)
             content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
@@ -335,11 +373,11 @@ class MlxClient:
             "temperature": temperature,
             "max_tokens": settings.mlx_max_tokens,
             "response_format": {"type": "json_object"},
-            # Disable hybrid-thinking by default (Qwen3): the server otherwise
-            # streams a long `reasoning` preamble in a separate channel that burns
-            # the whole token budget before any JSON `content` is produced. Off for
-            # JSON calls (think=False) mirrors OllamaClient. Harmlessly ignored by
-            # model templates that don't define `enable_thinking`.
+            # Hybrid-thinking off by default (settings.llm_think): the server
+            # otherwise streams a long `reasoning` preamble in a separate channel
+            # that burns the whole token budget before any JSON `content` is
+            # produced. Mirrors OllamaClient. Harmlessly ignored by model
+            # templates that don't define `enable_thinking`.
             "chat_template_kwargs": {"enable_thinking": think},
             # Stream so the read timeout is per-chunk, not whole-generation (same
             # rationale as OllamaClient — see its chat_json note).
@@ -391,7 +429,7 @@ class MlxClient:
 
         content = _strip_think("".join(chunks))
         if not content.strip():
-            raise LlmError("MLX returned empty content (stream produced no tokens)")
+            raise EmptyLlmResponse("MLX returned empty content (stream produced no tokens)")
         return content
 
     async def list_models(self) -> list[str]:

@@ -19,9 +19,16 @@ import json
 import logging
 import re
 import time
+from collections import Counter
 from functools import lru_cache
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.models.content_blocks import (
     BrandMood,
@@ -42,6 +49,7 @@ from app.services.llm import LlmClient, get_llm
 from app.services.source_router import (
     excerpt_for_prompt,
     match_scaffolds_to_pages,
+    promptable_images,
     split_raw_text,
 )
 
@@ -80,7 +88,9 @@ For a typical small business produce 4 pages: home, services, about, contact.
 """
 
 
-def _build_user_prompt(source: SourceContent, max_chars: int = 12000) -> str:
+def _build_user_prompt(source: SourceContent, max_chars: int | None = None) -> str:
+    if max_chars is None:
+        max_chars = settings.legacy_prompt_max_chars
     truncated_text = source.raw_text[:max_chars]
     return json.dumps(
         {
@@ -104,8 +114,7 @@ async def plan_site(source: SourceContent, llm: LlmClient | None = None) -> Site
         system_prompt=LEGACY_SYSTEM_PROMPT,
         user_prompt=_build_user_prompt(source),
         schema=SitePlan,
-        # Faithful rewrite — keep it close to the source, not creative.
-        temperature=0.3,
+        temperature=settings.plan_temperature,
     )
 
 
@@ -176,24 +185,20 @@ Reply with ONE JSON object matching this schema — no markdown, no commentary:
 """
 
 
-# Brand detection only needs enough source to name the business and pick an
-# industry/mood — not the full 12k content-generation budget. This is the FIRST
-# Ollama call in the flow, so it also eats any cold model-load; a leaner prompt
-# keeps time-to-first-token (prefill) inside the read timeout. 4k chars also fits
-# comfortably inside num_ctx=4096, so nothing we prefill gets silently truncated.
-# Large PDFs were the trigger for the ReadTimeout 502 here.
-_BRAND_DETECTION_MAX_CHARS = 4000
-
-
 async def detect_brand(
     source: SourceContent, llm: LlmClient | None = None
 ) -> DetectedBrand:
+    # Prompt char cap and temperature are model-variant knobs (see config.py);
+    # the lean cap keeps this FIRST call's prefill inside the read timeout —
+    # large PDFs were the trigger for the ReadTimeout 502 here.
     client = llm or get_llm()
     return await client.chat_json(
         system_prompt=DETECT_BRAND_PROMPT,
-        user_prompt=_build_user_prompt(source, max_chars=_BRAND_DETECTION_MAX_CHARS),
+        user_prompt=_build_user_prompt(
+            source, max_chars=settings.brand_detection_max_chars
+        ),
         schema=DetectedBrand,
-        temperature=0.3,
+        temperature=settings.plan_temperature,
     )
 
 
@@ -260,6 +265,38 @@ class ScaffoldedSitePlan(BaseModel):
     primary_color_hint: str | None = None
     pages: list[PagePlan]
 
+    @model_validator(mode="before")
+    @classmethod
+    def drop_invalid_pages(cls, data: object) -> object:
+        """Last-resort net: drop a page that can't validate EVEN AFTER salvage,
+        instead of failing the whole site.
+
+        PagePlan.salvage_page_content already recovers most drift (misplaced
+        blocks, one bad block among good ones, missing SEO), so a page keeps its
+        real content and rarely reaches this drop. Only a page broken past
+        salvage — e.g. missing its required ``slug`` — lands here; dropping it
+        lets the rest of the plan parse, and ``generate._align_pages_to_scaffolds``
+        re-materialises it from its scaffold so it still appears in the site. A
+        whole-plan failure (unparseable JSON, ``pages`` not a list) is left to
+        the caller's retry path untouched.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("pages"), list):
+            return data
+        kept: list[object] = []
+        for page in data["pages"]:
+            try:
+                PagePlan.model_validate(page)
+            except ValidationError as exc:
+                slug = page.get("slug") if isinstance(page, dict) else None
+                logger.warning(
+                    "Dropping malformed page %r (%d validation error(s)); it will be "
+                    "re-synthesised from its scaffold.",
+                    slug, exc.error_count(),
+                )
+                continue
+            kept.append(page)
+        return {**data, "pages": kept}
+
     @field_validator("brand_mood", mode="before")
     @classmethod
     def heal_mood(cls, v: object) -> object:
@@ -314,7 +351,7 @@ def _scaffolds_to_prompt_payload(
             override = text_overrides.get(s.slug) if text_overrides else None
             entry["page_source"] = excerpt_for_prompt(
                 source_map[s.slug],
-                max_chars=MAX_CHARS_PER_CALL,
+                max_chars=settings.multipass_max_chars_per_call,
                 text_override=override,
             )
         payload.append(entry)
@@ -343,6 +380,17 @@ You will receive:
 
 If a page has no `page_source`, fall back to the top-level `source` and the
 brand summary — still grounded in real content only.
+
+REAL PHOTOS — `page_source.images` (when present) lists the page's ACTUAL
+photos: each has a `ref` number plus `alt`, `role`, and `near` (the source
+heading the photo sat under). These are the business's authentic images —
+strongly prefer them over stock:
+- When a section you're writing corresponds to one of these photos (matching
+  `near` heading or `alt` topic), set that block's `image_ref` to the photo's
+  `ref` number.
+- Only use `ref` numbers that appear in the list — NEVER invent one.
+- Use each ref at most once across the page.
+- Still fill `image_query` with a 2-6 word stock phrase as fallback.
 
 DESIGN INTENT — you are writing for an award-site-calibre layout, not a
 generic template:
@@ -442,6 +490,10 @@ For each page in `pages_requested`:
 - Emit the sections from `required_sections` you can ground in the source, in
   that SAME ORDER, and ONLY those kinds. Drop any section the source can't
   support (see OMITTING SECTIONS). Do not add kinds that weren't requested.
+- A kind may appear SEVERAL TIMES in `required_sections` (e.g. "about" once per
+  source section on a story-style page). Emit one SEPARATE block per occurrence,
+  each covering a DIFFERENT part of the source (its own heading, its own body,
+  its own image_ref) — never merge them into one block or repeat the same text.
 - Each block must match the schema for its kind (see below).
 - If `parent_slug` is set, this is a SUB-PAGE under another page. When
   `parent_context` is present, mirror the parent's tone and value prop — do
@@ -484,18 +536,18 @@ real items only; if you can't reach the floor with real content, omit the block.
 # prompt prefill per call and lowering the truncated-JSON risk in small windows.
 _SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
     "hero": """- hero: { kind:"hero", eyebrow?, headline, headline_accent?, subheadline?, primary_cta_label, primary_cta_href,
-          secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, layout:"split"|"background" }
+          secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, image_ref?, layout:"split"|"background" }
           (headline_accent: the headline's final 1-4 words verbatim, to render in the accent colour — optional)""",
-    "features": '- features: { kind:"features", heading, subheading?, items: [{title, description}] }  (1-6 real items)',
-    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, cta_label?, cta_href?}] }  (1-8 real items)',
+    "features": '- features: { kind:"features", heading, subheading?, items: [{title, description, image_query, image_ref?}] }  (1-6 real items; give EVERY item an image_query so its card carries a photo)',
+    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; give EVERY item an image_query so its card carries a photo)',
     "testimonials": '- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews only — omit if none)',
-    "about": '- about: { kind:"about", heading, body, image_alt?, image_query }',
+    "about": '- about: { kind:"about", heading, body, image_alt?, image_query, image_ref? }',
     "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (1-20 real Q&As — include ALL Q&As present in the source, omit block only if none)',
-    "cta": '- cta: { kind:"cta", headline, subheadline?, cta_label, cta_href, background_query }',
+    "cta": '- cta: { kind:"cta", headline, subheadline?, cta_label, cta_href, background_query, image_ref? }',
     "contact": '- contact: { kind:"contact", heading, subheading?, email?, phone? }  (email/phone only if in source)',
     "pricing": '- pricing: { kind:"pricing", heading, subheading?, tiers:[{name, price, description?, features:[string], cta_label, cta_href, highlighted:boolean}] }  (2-4 real tiers — omit if source has no pricing)',
     "team": '- team: { kind:"team", heading, subheading?, members:[{name, role, bio?, photo_query}] }  (real people only — omit if none)',
-    "gallery": '- gallery: { kind:"gallery", heading, subheading?, items:[{title?, caption?, image_query}] }  (1-12 items)',
+    "gallery": '- gallery: { kind:"gallery", heading, subheading?, items:[{title?, caption?, image_query, image_ref?}] }  (1-12 items)',
     "menu": '- menu: { kind:"menu", heading, subheading?, categories:[{name, items:[{name, description?, price?}]}] }  (real menu only — omit if none)',
     "process": '- process: { kind:"process", heading, subheading?, steps:[{title, description}] }  (1-6 real steps — omit if none)',
     "timeline": '- timeline: { kind:"timeline", heading, subheading?, items:[{year, title, description?}] }  (1-10 real milestones — omit if the source has no dated history)',
@@ -571,8 +623,9 @@ def _scaffold_num_ctx() -> int:
 # Per-page input overhead (added once per page in the batch):
 #   _TOK_PER_PAGE_STUB    slug + title + sections list ≈ 100 tokens
 #   page source           estimated from the page's ACTUAL text length, capped at
-#                         MAX_CHARS_PER_CALL, at _CHARS_PER_TOKEN chars/token
-#                         (small pages cost less; large pages are chunked, not batched)
+#                         settings.multipass_max_chars_per_call, at _CHARS_PER_TOKEN
+#                         chars/token (small pages cost less; large pages are
+#                         chunked, not batched)
 #
 # Per-section output (multiplied by section count for the page):
 #   _TOK_PER_SECTION_OUT  ≈ 230 tokens (hero ~120, features ~280, process ~250,
@@ -584,20 +637,18 @@ def _scaffold_num_ctx() -> int:
 _TOK_BRAND_SOURCE = 600
 _TOK_PER_PAGE_STUB = 100
 _TOK_PER_SECTION_OUT = 230
+# One page_source.images entry ({ref, alt, role, near}) costs ~30 tokens.
+_TOK_PER_IMAGE = 30
 _INPUT_SHARE = 0.48          # fraction of num_ctx reserved for input tokens
-_MAX_SECTIONS_PER_BATCH = 10  # quality cap — model focus degrades beyond this
-_MAX_PAGES_PER_BATCH = 4      # absolute page cap regardless of token math
 _CHARS_PER_TOKEN = 4          # rough English chars→tokens ratio for estimates
 
-# Per-call content budget (chars of a single page's text fed to one LLM call).
-# Sized to fit one page inside an 8 192-token call alongside the prompt + output:
-#   input ≈ system 700 + brand 600 + stub 100 + 6000/4 (=1500) ≈ 2 900 tokens,
-#   leaving ~5 300 tokens for that page's section output — comfortable headroom.
-# A page whose text exceeds this is split into chunks and generated across
-# multiple calls (see _generate_page_multipass), so no content is dropped.
-# num_ctx itself stays at settings.scaffold_num_ctx (8 192 default) — we chunk rather
-# than widen the window. Tunable: raising this means fewer chunks but bigger calls.
-MAX_CHARS_PER_CALL = 6000
+# The batch/chunk caps themselves are model-variant knobs and live in settings:
+#   settings.max_sections_per_batch      section-density cap per batch
+#   settings.max_pages_per_batch         absolute page cap regardless of token math
+#   settings.multipass_max_chars_per_call  per-call content budget (chars of one
+#       page's text per LLM call). A page whose text exceeds it is split into
+#       chunks and generated across multiple calls (_generate_page_multipass),
+#       so no content is dropped — we chunk rather than widen num_ctx.
 
 
 def _build_batches(
@@ -610,8 +661,8 @@ def _build_batches(
     Pages are packed into a batch until any of four limits would be exceeded:
       1. Input token budget  (system + brand + per-page stubs + page_source)
       2. Output token budget (section count × per-section estimate)
-      3. Section density cap (_MAX_SECTIONS_PER_BATCH) — keeps model focused
-      4. Absolute page cap   (_MAX_PAGES_PER_BATCH)
+      3. Section density cap (settings.max_sections_per_batch) — keeps model focused
+      4. Absolute page cap   (settings.max_pages_per_batch)
 
     When the next page would overflow any limit the current batch is sealed and
     a new one begins.  A page that exceeds the budget on its own is always placed
@@ -630,13 +681,21 @@ def _build_batches(
         # Estimate this page's source tokens from its ACTUAL text length (capped at
         # the per-call budget — larger pages are chunked elsewhere, never batched).
         # This lets tiny pages pack several-per-batch instead of all costing a flat
-        # estimate. Only small pages (<= MAX_CHARS_PER_CALL) reach this function.
+        # estimate. Only small pages (<= the per-call budget) reach this function.
         src_chars = (
-            min(len(source_map[s.slug].raw_text or ""), MAX_CHARS_PER_CALL)
+            min(
+                len(source_map[s.slug].raw_text or ""),
+                settings.multipass_max_chars_per_call,
+            )
             if has_source
             else 0
         )
-        page_input = _TOK_PER_PAGE_STUB + src_chars // _CHARS_PER_TOKEN
+        image_count = len(promptable_images(source_map[s.slug])) if has_source else 0
+        page_input = (
+            _TOK_PER_PAGE_STUB
+            + src_chars // _CHARS_PER_TOKEN
+            + image_count * _TOK_PER_IMAGE
+        )
         page_output = len(s.sections) * _TOK_PER_SECTION_OUT
         page_sections = len(s.sections)
 
@@ -647,8 +706,8 @@ def _build_batches(
         would_overflow = (
             sys_tokens + cur_input + page_input > input_budget
             or cur_output + page_output > output_budget
-            or cur_sections + page_sections > _MAX_SECTIONS_PER_BATCH
-            or len(current) >= _MAX_PAGES_PER_BATCH
+            or cur_sections + page_sections > settings.max_sections_per_batch
+            or len(current) >= settings.max_pages_per_batch
         )
 
         if would_overflow and current:
@@ -740,7 +799,8 @@ def _hero_summary(page: PagePlan) -> dict | None:
 
 # --- multi-pass chunked generation ------------------------------------------------
 #
-# When a page's scraped text exceeds MAX_CHARS_PER_CALL it can't fit in one 8 192-tok
+# When a page's scraped text exceeds the per-call content budget
+# (settings.multipass_max_chars_per_call) it can't fit in one scaffold-sized
 # call, so we generate it across several calls (one per content chunk) and merge the
 # resulting blocks. List-bearing sections (faq, services, features, …) union their
 # items across chunks so the final, capped section is drawn from the WHOLE page
@@ -903,16 +963,47 @@ def _merge_blocks_of_kind(blocks: list[ContentBlock]) -> ContentBlock:
     return base
 
 
+def _keep_repeated_blocks(blocks: list[ContentBlock], want: int) -> list[ContentBlock]:
+    """Distinct blocks of one repeated kind, in arrival order, capped at the
+    scaffold's requested count.
+
+    Story pages request the same kind several times (e.g. one `about` per
+    source section); across chunk calls each group contributes its own blocks,
+    so they must be kept side by side rather than collapsed to the first.
+    Duplicates (a text-chunked page re-emitting the same section) are dropped
+    by normalised heading/headline.
+    """
+    kept: list[ContentBlock] = []
+    seen: set[str] = set()
+    for blk in blocks:
+        key = _norm_key(
+            getattr(blk, "heading", None) or getattr(blk, "headline", None)
+        )
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(blk)
+        if len(kept) >= want:
+            break
+    return kept
+
+
 def _merge_page_plans(plans: list[PagePlan], scaffold: PageScaffold) -> PagePlan:
     """Merge the per-chunk PagePlans for one page into a single PagePlan.
 
     Page-level fields come from the first plan (chunk 0). Blocks are grouped by
-    kind, each group merged, then ordered to follow ``scaffold.sections`` (with any
-    unexpected extra kinds appended in first-seen order).
+    kind; a kind the scaffold requests ONCE is merged into a single block
+    (items unioned, singletons first-wins), while a kind requested MULTIPLE
+    times (story pages: repeated `about` sections) keeps its distinct blocks in
+    arrival order. Blocks are then laid out to follow ``scaffold.sections``
+    occurrence by occurrence (with any unexpected extra kinds appended in
+    first-seen order).
     """
     if len(plans) == 1:
         return plans[0]
 
+    requested = Counter(scaffold.sections)
     base = plans[0]
     groups: dict[str, list[ContentBlock]] = {}
     first_seen: list[str] = []
@@ -926,18 +1017,23 @@ def _merge_page_plans(plans: list[PagePlan], scaffold: PageScaffold) -> PagePlan
                 first_seen.append(kind)
             groups[kind].append(blk)
 
-    merged_by_kind = {k: _merge_blocks_of_kind(v) for k, v in groups.items()}
+    merged_by_kind: dict[str, list[ContentBlock]] = {}
+    for kind, blks in groups.items():
+        want = requested.get(kind, 1)
+        if want > 1:
+            merged_by_kind[kind] = _keep_repeated_blocks(blks, want)
+        else:
+            merged_by_kind[kind] = [_merge_blocks_of_kind(blks)]
 
     ordered: list[ContentBlock] = []
-    used: set[str] = set()
+    queues = {k: list(v) for k, v in merged_by_kind.items()}
     for section in scaffold.sections:
-        if section in merged_by_kind and section not in used:
-            ordered.append(merged_by_kind[section])
-            used.add(section)
+        queue = queues.get(section)
+        if queue:
+            ordered.append(queue.pop(0))
     for kind in first_seen:  # any kinds the LLM emitted beyond required_sections
-        if kind not in used:
-            ordered.append(merged_by_kind[kind])
-            used.add(kind)
+        ordered.extend(queues.get(kind) or [])
+        queues[kind] = []
 
     base.blocks = ordered
     return base
@@ -946,9 +1042,94 @@ def _merge_page_plans(plans: list[PagePlan], scaffold: PageScaffold) -> PagePlan
 def _needs_chunking(
     scaffold: PageScaffold, source_map: dict[str, SourceContent]
 ) -> bool:
-    """True when this page's text is too large for one MAX_CHARS_PER_CALL call."""
+    """True when this page's text exceeds the per-call content budget."""
     src = source_map.get(scaffold.slug)
-    return bool(src and len(src.raw_text or "") > MAX_CHARS_PER_CALL)
+    return bool(
+        src and len(src.raw_text or "") > settings.multipass_max_chars_per_call
+    )
+
+
+def _needs_section_chunking(scaffold: PageScaffold) -> bool:
+    """True when a page has more sections than one light call should generate.
+    Such a page is produced across several section groups (each a small call)
+    rather than as one heavy call — see _generate_page_section_chunks."""
+    return len(scaffold.sections) > settings.max_sections_per_batch
+
+
+def _split_page_sections(sections: list[str], max_per_call: int) -> list[list[str]]:
+    """Split one page's sections into ordered groups small enough for a light
+    call, each ANCHORED by the hero so every group is a valid, on-topic page.
+
+    The hero is repeated across groups on purpose — the merge keeps only the
+    first (see _merge_blocks_of_kind: hero is a singleton, first chunk wins),
+    but repeating it gives every group the page's thesis so its body sections
+    stay coherent with the rest of the page. Body sections are partitioned in
+    order. Returns ``[sections]`` unchanged when the page already fits."""
+    if len(sections) <= max_per_call:
+        return [list(sections)]
+    anchor = "hero" if "hero" in sections else sections[0]
+    body = [s for s in sections if s != anchor]
+    room = max(1, max_per_call - 1)  # keep a slot for the anchor in each group
+    return [[anchor, *body[i:i + room]] for i in range(0, len(body), room)]
+
+
+async def _generate_page_section_chunks(
+    source: SourceContent,
+    brand: "DetectedBrand | None",
+    scaffold: PageScaffold,
+    parent_context: dict[str, dict],
+    source_map: dict[str, SourceContent],
+    client: LlmClient,
+) -> tuple[PagePlan | None, "ScaffoldedSitePlan | None"]:
+    """Generate a many-section page across several LIGHT calls — one per section
+    group — then merge into a single page.
+
+    Each group is a hero-anchored sub-scaffold generated against the SAME page
+    source and the SAME parent_context, so:
+      * per-call weight stays small (≤ settings.max_sections_per_batch sections) — the
+        thing that was overloading a local MLX server;
+      * context is preserved WITHIN the page (every group shares the hero thesis
+        and the page's own scraped text) and ACROSS the site (parent_context is
+        unchanged, and the merged page still yields one hero for children to
+        echo).
+    Merge order + de-duplication (one hero, one cta, list items unioned) is
+    handled by _merge_page_plans against the full scaffold."""
+    groups = _split_page_sections(scaffold.sections, settings.max_sections_per_batch)
+    logger.info(
+        "section-multipass page '%s': %d sections → %d groups %s",
+        scaffold.slug, len(scaffold.sections), len(groups), [len(g) for g in groups],
+    )
+
+    chunk_plans: list[PagePlan] = []
+    first_result: ScaffoldedSitePlan | None = None
+    for idx, group in enumerate(groups):
+        sub = scaffold.model_copy(update={"sections": group})
+        result = await client.chat_json(
+            system_prompt=_scaffold_system_prompt(_batch_kinds([sub])),
+            user_prompt=_build_scaffolded_user_prompt(
+                source, brand, [sub], parent_context, source_map,
+            ),
+            schema=ScaffoldedSitePlan,
+            temperature=settings.scaffold_temperature,
+            num_ctx=_scaffold_num_ctx(),
+        )
+        if first_result is None:
+            first_result = result
+        page = next(
+            (p for p in result.pages if p.slug == scaffold.slug),
+            result.pages[0] if result.pages else None,
+        )
+        if page is not None:
+            chunk_plans.append(page)
+        else:
+            logger.warning(
+                "section-multipass group %d/%d for '%s' returned no page",
+                idx + 1, len(groups), scaffold.slug,
+            )
+
+    if not chunk_plans:
+        return None, first_result
+    return _merge_page_plans(chunk_plans, scaffold), first_result
 
 
 async def _generate_page_multipass(
@@ -969,7 +1150,11 @@ async def _generate_page_multipass(
     the first work item overall).
     """
     page_source = source_map[scaffold.slug]
-    chunks = split_raw_text(page_source.raw_text or "", MAX_CHARS_PER_CALL)
+    chunks = split_raw_text(
+        page_source.raw_text or "",
+        settings.multipass_max_chars_per_call,
+        headings=page_source.headings,
+    )
     logger.info(
         "multipass page '%s': %d chars → %d chunks",
         scaffold.slug, len(page_source.raw_text or ""), len(chunks),
@@ -985,7 +1170,7 @@ async def _generate_page_multipass(
                 {scaffold.slug: chunk},
             ),
             schema=ScaffoldedSitePlan,
-            temperature=0.25,
+            temperature=settings.scaffold_temperature,
             num_ctx=_scaffold_num_ctx(),
         )
         if first_result is None:
@@ -1063,6 +1248,11 @@ async def plan_site_with_scaffolds(
         if _needs_chunking(s, source_map):
             _flush_small_run()
             worklist.append(("multipass", s))
+        elif _needs_section_chunking(s):
+            # Too many sections for one light call → generate it in section
+            # groups (each a small call) instead of one heavy atomic call.
+            _flush_small_run()
+            worklist.append(("section_multipass", s))
         else:
             small_run.append(s)
     _flush_small_run()
@@ -1080,6 +1270,14 @@ async def plan_site_with_scaffolds(
             if first is None and result is not None:
                 first = result
             produced = [page] if page is not None else []
+        elif item_kind == "section_multipass":
+            scaffold = payload  # type: ignore[assignment]
+            page, result = await _generate_page_section_chunks(
+                source, brand, scaffold, parent_context, source_map, client
+            )
+            if first is None and result is not None:
+                first = result
+            produced = [page] if page is not None else []
         else:
             batch = payload  # type: ignore[assignment]
             result = await client.chat_json(
@@ -1088,9 +1286,7 @@ async def plan_site_with_scaffolds(
                     source, brand, batch, parent_context, source_map
                 ),
                 schema=ScaffoldedSitePlan,
-                # Low temperature keeps the rewrite close to the source — we want
-                # faithful editing, not creative drift away from the real content.
-                temperature=0.25,
+                temperature=settings.scaffold_temperature,
                 num_ctx=_scaffold_num_ctx(),
             )
             if first is None:

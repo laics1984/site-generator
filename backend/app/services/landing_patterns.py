@@ -22,6 +22,14 @@ from app.models.content_blocks import SectionType
 _VALID_SECTIONS = frozenset(get_args(SectionType))
 _DEFAULT_SECTIONS: tuple[str, ...] = ("hero", "features", "testimonials", "cta")
 
+# A homepage is ONE scaffold and is generated in ONE LLM call — page-multipass
+# only chunks by source-text length, never by section count. Past ~10 sections
+# the single call's output overflows the model's token budget and the backend
+# returns an empty stream (a 502 for the whole generation). This ceiling keeps
+# any pattern (plus its merged extras) within a size one call can produce; it
+# sits above every real pattern (≤6) so it only ever catches a pathological one.
+_MAX_HOMEPAGE_SECTIONS = 8
+
 
 @dataclass(frozen=True)
 class LandingPattern:
@@ -50,11 +58,13 @@ _LANDING_PATTERNS: tuple[LandingPattern, ...] = (
                    ("hero", "about", "testimonials", "team", "cta")),
     # Childcare homepage journey: emotional hero → why parents choose us
     # (features) → learning philosophy (about) → programs by age (services) →
-    # a day at our school (process) → teachers (team) → parent testimonials →
-    # FAQ objections → book-a-tour CTA. Parents, not children, are the audience.
+    # parent testimonials → book-a-tour CTA. Parents, not children, are the
+    # audience. Kept to 6 sections: the deeper story (a-day/process, teachers,
+    # FAQ, gallery) lives on its own pages — a single homepage scaffold can't be
+    # split across LLM calls, and packing ~10 sections into one generation call
+    # exhausts the model's token budget (empty response → 502).
     LandingPattern("parent-trust", ("childcare",),
-                   ("hero", "features", "about", "services", "process",
-                    "team", "testimonials", "faq", "cta")),
+                   ("hero", "features", "about", "services", "testimonials", "cta")),
     LandingPattern("day-in-the-life", ("childcare",),
                    ("hero", "about", "services", "gallery", "testimonials", "cta")),
     LandingPattern("portfolio-grid", ("personal", "agency"),
@@ -81,12 +91,17 @@ def _seeded_index(seed: str | None, n: int) -> int:
 
 def _normalize(sections: list[str]) -> list[str]:
     """Keep only known section types and force hero first / cta last — the landing
-    catalogue's near-universal conversion structure."""
+    catalogue's near-universal conversion structure.
+
+    Also caps the total at ``_MAX_HOMEPAGE_SECTIONS`` (trimming from the end of
+    the body, so hero and the closing cta always survive) — a hard guard against
+    a pattern producing a homepage too large to generate in one LLM call."""
     seen: list[str] = []
     for s in sections:
         if s in _VALID_SECTIONS and s not in seen:
             seen.append(s)
     body = [s for s in seen if s not in ("hero", "cta")]
+    body = body[: _MAX_HOMEPAGE_SECTIONS - 2]  # leave room for hero + cta
     return ["hero", *body, "cta"]
 
 

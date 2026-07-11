@@ -433,7 +433,9 @@ def align_page_to_scaffold(
     aligned_blocks: list[ContentBlock] = []
     structural_filled: list[str] = []
     omitted: list[str] = []
+    occurrence: dict[str, int] = {}
     for kind in required_kinds:
+        occurrence[kind] = occurrence.get(kind, 0) + 1
         bucket = by_kind.get(kind, [])
         if bucket:
             block = bucket.pop(0)
@@ -474,7 +476,11 @@ def align_page_to_scaffold(
                     continue
                 block = sanitized
             aligned_blocks.append(block)
-        elif kind in _STRUCTURAL_FALLBACK_KINDS:
+        elif kind in _STRUCTURAL_FALLBACK_KINDS and occurrence[kind] == 1:
+            # Only the FIRST occurrence of a structural kind gets a placeholder
+            # default. Story pages request `about` several times (one per source
+            # section) — a shortfall there means the LLM couldn't ground that
+            # many sections, so the extras are omitted, not padded with blanks.
             aligned_blocks.append(_default_block(kind, page=page, brand_name=brand_name))
             structural_filled.append(kind)
         else:
