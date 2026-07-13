@@ -394,12 +394,12 @@ async def _llm_pick_best(
     from pydantic import BaseModel
 
     from app.config import settings  # lazy: heavy import only when judging
-    from app.services.llm import get_llm  # lazy: heavy import only when judging
+    from app.services.llm import get_reasoning_llm  # lazy: heavy import only when judging
 
     class _JudgePick(BaseModel):
         pick: int | None
 
-    client = llm or get_llm()
+    client = llm or get_reasoning_llm()
     payload = {
         "slot_intent": slot_intent,
         "slot_query": query,

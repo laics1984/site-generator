@@ -94,6 +94,7 @@ from app.services.section_content import (
     enforce_text_contrast,
     hero_scroll_anchor,
     section_visual_input_for,
+    style_whatsapp_links,
 )
 from app.services.template_filler import fill_template
 from app.services.image_styling import washed_photo_background
@@ -3798,6 +3799,12 @@ async def plan_to_site(
     for _chrome in (header, footer):
         if isinstance(_chrome, BuilderElement):
             enforce_text_contrast([_chrome], theme)
+
+    # WhatsApp chat links render as the first-class green pill (body sections
+    # only — header/footer chrome keeps its own compact link treatments). After
+    # the contrast pass, which must not retint the white-on-green ink.
+    for _page in pages:
+        style_whatsapp_links(_page.body_schema.elements)
 
     site = GeneratedSite(
         site_name=plan.site_name,

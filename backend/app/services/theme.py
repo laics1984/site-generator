@@ -132,6 +132,22 @@ def band_colors(palette: ColorPalette, band: Literal["light", "dark"]) -> tuple[
 # --- palette construction -------------------------------------------------------
 
 
+def _slug(text: str) -> str:
+    """Stable kebab-case identifier from a display name ("E-commerce Luxury" →
+    "e-commerce-luxury"). Used so the design-language LLM can reference curated
+    palettes/pairings by id instead of fuzzy names."""
+    out = "".join(ch if ch.isalnum() else "-" for ch in text.strip().lower())
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-")
+
+
+def _first_family(css_font: str) -> str:
+    """The leading family name of a CSS font-family stack ("'Space Grotesk',
+    ui-sans-serif, …" → "Space Grotesk")."""
+    return css_font.split(",", 1)[0].strip().strip("'\"")
+
+
 @dataclass(frozen=True)
 class FontPairing:
     """One heading/body type pairing plus the Google Fonts specs to load it.
@@ -154,6 +170,12 @@ class FontPairing:
     # _pick_pairing. Empty tags simply never win an industry match.
     tags: tuple[str, ...] = ()
 
+    @property
+    def slug(self) -> str:
+        """Stable id derived from the two lead family names (e.g.
+        "space-grotesk-inter") — the handle the design-language LLM picks by."""
+        return _slug(f"{_first_family(self.heading_font)} {_first_family(self.body_font)}")
+
 
 @dataclass(frozen=True)
 class CuratedPalette:
@@ -172,6 +194,12 @@ class CuratedPalette:
     accent: str
     dark: str  # darkest token → body text + dark-band background
     tint: str  # light page tint → light section surface
+
+    @property
+    def slug(self) -> str:
+        """Stable id derived from the name (e.g. "ai-platform") — the handle
+        the design-language LLM picks by."""
+        return _slug(self.name)
 
 
 @dataclass(frozen=True)
@@ -784,6 +812,48 @@ def _has_brand_hue(seed_hex: str) -> bool:
     return _rgb_to_hls(*_hex_to_rgb(seed_hex))[2] >= 0.12
 
 
+def _curated_candidates(industry: str | None) -> list[CuratedPalette]:
+    """The curated palettes an industry may draw from: its tagged subset when it
+    has one, else the whole set. Shared by the deterministic picker and the
+    design-language slug lookup so an LLM pick can never widen the pool."""
+    norm = (industry or "").strip().lower()
+    return [c for c in _CURATED_PALETTES if norm in c.categories] or list(
+        _CURATED_PALETTES
+    )
+
+
+def curated_palette_by_slug(slug: str | None, industry: str | None) -> CuratedPalette | None:
+    """Resolve a design-language palette pick, validated against the industry's
+    candidate set (same set `_curated_palette` chooses from — preserves the
+    forced-industry palettes, e.g. childcare pastels). Unknown/None slug → None,
+    so callers fall back to the deterministic pick."""
+    if not slug:
+        return None
+    norm_slug = slug.strip().lower()
+    for c in _curated_candidates(industry):
+        if c.slug == norm_slug:
+            return c
+    return None
+
+
+def curated_palette_options(industry: str | None) -> list[dict[str, object]]:
+    """The palette options offered to the design-language LLM — one dict per
+    candidate with the slug it must answer with plus the swatch hexes/tags it
+    judges by. Mirrors `curated_palette_by_slug`'s candidate set exactly."""
+    return [
+        {
+            "slug": c.slug,
+            "name": c.name,
+            "categories": list(c.categories),
+            "primary": c.primary,
+            "accent": c.accent,
+            "dark": c.dark,
+            "tint": c.tint,
+        }
+        for c in _curated_candidates(industry)
+    ]
+
+
 def _curated_palette(
     seed_hex: str | None, industry: str | None, font_seed: str | None
 ) -> ColorPalette:
@@ -791,10 +861,7 @@ def _curated_palette(
     seed (so the logo colour still steers the choice); the seed breaks ties. With
     no usable brand hue (no/greyscale logo), falls back to a font-seed-deterministic
     pick. Unknown/empty industries consider the whole set."""
-    norm = (industry or "").strip().lower()
-    candidates = [c for c in _CURATED_PALETTES if norm in c.categories] or list(
-        _CURATED_PALETTES
-    )
+    candidates = _curated_candidates(industry)
     if seed_hex and _has_brand_hue(seed_hex):
         seed_h = _rgb_to_hls(*_hex_to_rgb(seed_hex))[0] * 360.0
 
@@ -978,6 +1045,33 @@ def _pick_pairing(
     return pool[_seeded_index(font_seed, len(pool))]
 
 
+def pairing_by_slug(spec: MoodSpec, slug: str | None) -> FontPairing | None:
+    """Resolve a design-language font pick against the mood's own pool.
+    Unknown/None slug → None, so callers fall back to `_pick_pairing`."""
+    if not slug:
+        return None
+    norm_slug = slug.strip().lower()
+    for p in spec.font_pool:
+        if p.slug == norm_slug:
+            return p
+    return None
+
+
+def font_pairing_options(mood: BrandMood) -> list[dict[str, object]]:
+    """The font-pairing options offered to the design-language LLM for a mood —
+    one dict per pool entry with the slug it must answer with plus the lead
+    family names/tags it judges by."""
+    return [
+        {
+            "slug": p.slug,
+            "heading_font": _first_family(p.heading_font),
+            "body_font": _first_family(p.body_font),
+            "tags": list(p.tags),
+        }
+        for p in MOOD_SPECS[mood].font_pool
+    ]
+
+
 def build_theme(
     seed_hex: str | None,
     mood: BrandMood = "modern",
@@ -985,6 +1079,8 @@ def build_theme(
     font_seed: str | None = None,
     industry: str | None = None,
     color_scheme: str = "light",
+    palette_choice: str | None = None,
+    font_choice: str | None = None,
 ) -> ThemeTokens:
     """
     Top-level factory. `seed_hex` is the primary color (usually from the logo).
@@ -1009,6 +1105,13 @@ def build_theme(
     then (2) `font_seed` (a stable per-site id, typically the brand name) for
     variety/tie-breaks. With neither, the mood's default pairing is used —
     preserving the original single-pairing behaviour.
+
+    `palette_choice`/`font_choice` are design-language picks (curated palette /
+    font-pairing slugs, typically from the LLM pass in design_brain.py). A valid
+    palette slug takes the curated palette directly (light scheme only — dark
+    stays algorithmic); a valid font slug takes that pairing from the mood's
+    pool. Invalid or None choices change nothing: the deterministic selection
+    above runs exactly as before.
     """
     raw = (seed_hex or "").strip().lower()
     has_seed = raw.startswith("#") and len(raw) == 7
@@ -1019,10 +1122,20 @@ def build_theme(
     # generic-blue fallback.
     brand_hue = has_seed and _has_brand_hue(seed)
     norm_industry = (industry or "").strip().lower()
+    # A valid design-language pick wins on the light scheme; it is validated
+    # against the industry's own candidate set, so forced-industry palettes
+    # (childcare pastels) can't be escaped and a hallucinated slug is a no-op.
+    chosen_curated = (
+        curated_palette_by_slug(palette_choice, industry)
+        if color_scheme != "dark"
+        else None
+    )
     if color_scheme == "dark":
         # Dark scheme owns palette construction (the curated/Tailwind paths are
         # light-only); brand hue still drives the primary/accent.
         palette = _dark_palette(seed)
+    elif chosen_curated is not None:
+        palette = _palette_from_curated(chosen_curated)
     elif norm_industry in _INDUSTRY_CURATED_PALETTE:
         # Fixed cheerful pastel palette, logo hue ignored (seed=None) so the
         # brand colour can't override the brief's multi-pastel direction.
@@ -1034,7 +1147,7 @@ def build_theme(
     else:
         palette = _build_palette(seed, mood)
     spec = MOOD_SPECS[mood]
-    pairing = _pick_pairing(spec, font_seed, industry)
+    pairing = pairing_by_slug(spec, font_choice) or _pick_pairing(spec, font_seed, industry)
 
     # Button background needs ≥4.5:1 against white text.
     button_bg = palette.primary

@@ -197,10 +197,19 @@ class OllamaClient:
         base_url: str | None = None,
         model: str | None = None,
         timeout: float | None = None,
+        api_key: str | None = None,
+        think_default: bool | None = None,
+        num_ctx_default: int | None = None,
     ) -> None:
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
         self.model = model or settings.ollama_model
         self.timeout = timeout or settings.ollama_timeout_seconds
+        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        # Client-level defaults for calls that pass None. None here ⇒ fall back
+        # to the global settings at call time (preserves env-driven behavior for
+        # the default client); the reasoning role sets its own defaults.
+        self._think_default = think_default
+        self._num_ctx_default = num_ctx_default
 
     async def chat_json(
         self,
@@ -228,8 +237,18 @@ class OllamaClient:
         non-thinking models (e.g. Qwen 2.5) ignore the unknown field harmlessly.
         """
         temperature = settings.llm_default_temperature if temperature is None else temperature
-        num_ctx = settings.llm_default_num_ctx if num_ctx is None else num_ctx
-        think = settings.llm_think if think is None else think
+        if num_ctx is None:
+            num_ctx = (
+                self._num_ctx_default
+                if self._num_ctx_default is not None
+                else settings.llm_default_num_ctx
+            )
+        if think is None:
+            think = (
+                self._think_default
+                if self._think_default is not None
+                else settings.llm_think
+            )
         user_message: dict[str, Any] = {"role": "user", "content": user_prompt}
         if images:
             user_message["images"] = images
@@ -275,7 +294,11 @@ class OllamaClient:
         chunks: list[str] = []
         try:
             async with client.stream(
-                "POST", f"{self.base_url}/api/chat", json=payload, timeout=self.timeout
+                "POST",
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=self.timeout,
+                headers=self._headers,
             ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
@@ -304,7 +327,7 @@ class OllamaClient:
 
     async def list_models(self) -> list[str]:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{self.base_url}/api/tags")
+            response = await client.get(f"{self.base_url}/api/tags", headers=self._headers)
             response.raise_for_status()
             data = response.json()
             return [m.get("name", "") for m in data.get("models", [])]
@@ -322,10 +345,19 @@ class MlxClient:
         timeout: float | None = None,
         vision_base_url: str | None = None,
         vision_model: str | None = None,
+        api_key: str | None = None,
+        max_tokens: int | None = None,
+        think_default: bool | None = None,
     ) -> None:
         self.base_url = (base_url or settings.mlx_base_url).rstrip("/")
         self.model = model or settings.mlx_model
         self.timeout = timeout or settings.mlx_timeout_seconds
+        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        # Client-level defaults for calls that pass None. None here ⇒ fall back
+        # to the global settings at call time (preserves env-driven behavior for
+        # the default client); the reasoning role sets its own defaults.
+        self._max_tokens = max_tokens
+        self._think_default = think_default
         # A vision request routes to the vision server when one is configured,
         # else falls back to the text server (a multimodal model may serve both).
         self.vision_base_url = (
@@ -348,7 +380,12 @@ class MlxClient:
         signature parity (the server sizes its own context); thinking output is
         handled defensively by stripping a `<think>` preamble before validation."""
         temperature = settings.llm_default_temperature if temperature is None else temperature
-        think = settings.llm_think if think is None else think
+        if think is None:
+            think = (
+                self._think_default
+                if self._think_default is not None
+                else settings.llm_think
+            )
         if images:
             base_url, model = self.vision_base_url, (self.vision_model or self.model)
             content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
@@ -371,7 +408,7 @@ class MlxClient:
                 user_message,
             ],
             "temperature": temperature,
-            "max_tokens": settings.mlx_max_tokens,
+            "max_tokens": self._max_tokens or settings.mlx_max_tokens,
             "response_format": {"type": "json_object"},
             # Hybrid-thinking off by default (settings.llm_think): the server
             # otherwise streams a long `reasoning` preamble in a separate channel
@@ -403,7 +440,7 @@ class MlxClient:
         chunks: list[str] = []
         try:
             async with client.stream(
-                "POST", url, json=payload, timeout=self.timeout
+                "POST", url, json=payload, timeout=self.timeout, headers=self._headers
             ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
@@ -434,7 +471,7 @@ class MlxClient:
 
     async def list_models(self) -> list[str]:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{self.base_url}/v1/models")
+            response = await client.get(f"{self.base_url}/v1/models", headers=self._headers)
             response.raise_for_status()
             data = response.json()
             return [m.get("id", "") for m in data.get("data", [])]
@@ -453,6 +490,33 @@ def get_llm(model: str | None = None) -> LlmClient:
     if resolve_llm_backend() == "mlx":
         return MlxClient(model=model)
     return OllamaClient(model=model)
+
+
+def get_reasoning_llm() -> LlmClient:
+    """Client for the reasoning/design role: brand detection, the design-brain
+    passes, and the image tie-break judge — typically a bigger remote model
+    (GLM on the AI server) with thinking enabled. Falls back to the default
+    client when REASONING_MODEL is unset, so calling this is always safe."""
+    if not settings.reasoning_model:
+        return get_llm()
+    backend = (settings.reasoning_backend or settings.llm_backend).lower()
+    if backend == "mlx":  # any OpenAI-compatible server (vLLM, sglang, mlx_lm.server)
+        return MlxClient(
+            base_url=settings.reasoning_base_url,
+            model=settings.reasoning_model,
+            timeout=settings.reasoning_timeout_seconds,
+            api_key=settings.reasoning_api_key,
+            max_tokens=settings.reasoning_max_tokens,
+            think_default=settings.reasoning_think,
+        )
+    return OllamaClient(
+        base_url=settings.reasoning_base_url,
+        model=settings.reasoning_model,
+        timeout=settings.reasoning_timeout_seconds,
+        api_key=settings.reasoning_api_key,
+        num_ctx_default=settings.reasoning_num_ctx,
+        think_default=settings.reasoning_think,
+    )
 
 
 def active_vision_model() -> str | None:

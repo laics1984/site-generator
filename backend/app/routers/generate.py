@@ -31,6 +31,7 @@ from app.models.content_blocks import (
 )
 from app.models.industry import PageScaffold
 from app.services.industry_templates import get_template
+from app.services.design_brain import generate_design_language
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
 from app.services.planner import (
@@ -459,6 +460,15 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         (brand.extracted_palette[0] if brand and brand.extracted_palette else None)
         or plan.primary_color_hint
     )
+    # Design-language pass: the reasoning model picks a curated palette + font
+    # pairing before theme construction. Empty/invalid picks change nothing —
+    # build_theme falls back to its deterministic selection.
+    language = await generate_design_language(
+        brand_name=brand.name if brand else plan.site_name,
+        mood=mood,
+        industry=plan.industry_category,
+        seed_hex=seed_hex,
+    )
     theme = build_theme(
         seed_hex,
         mood=mood,
@@ -473,6 +483,8 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
             brand.logo_is_light if brand else None,
             industry=plan.industry_category,
         ),
+        palette_choice=language.palette,
+        font_choice=language.font_pairing,
     )
     theme.hero_background_height = payload.hero_height
 
@@ -585,6 +597,16 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         (brand.extracted_palette[0] if brand.extracted_palette else None)
         or detected.primary_color_hint
     )
+    # Design-language pass: the reasoning model picks a curated palette + font
+    # pairing before theme construction. Empty/invalid picks change nothing —
+    # build_theme falls back to its deterministic selection.
+    with stage("design_language"):
+        language = await generate_design_language(
+            brand_name=brand.name,
+            mood=mood,
+            industry=industry,
+            seed_hex=seed_hex,
+        )
     theme = build_theme(
         seed_hex,
         mood=mood,
@@ -597,6 +619,8 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             brand.logo_is_light,
             industry=industry,
         ),
+        palette_choice=language.palette,
+        font_choice=language.font_pairing,
     )
     theme.hero_background_height = payload.hero_height
 

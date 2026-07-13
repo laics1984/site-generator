@@ -51,6 +51,14 @@ async def _on_startup() -> None:
     logging.getLogger("app").info(
         "LLM backend: %s (model=%s, LLM_BACKEND=%s)", backend, model, settings.llm_backend
     )
+    if settings.reasoning_model:
+        logging.getLogger("app").info(
+            "LLM reasoning role: %s (model=%s, base_url=%s, think=%s)",
+            (settings.reasoning_backend or backend).lower(),
+            settings.reasoning_model,
+            settings.reasoning_base_url or "(backend default)",
+            settings.reasoning_think,
+        )
 
 
 @app.on_event("shutdown")

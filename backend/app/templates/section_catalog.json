@@ -12901,6 +12901,2386 @@
           }
         ]
       }
+    },
+    {
+      "id": "stats-counter-band",
+      "sectionType": "stats",
+      "layoutVariant": "band",
+      "styleVariant": "bold",
+      "label": "Stats Counter Band",
+      "description": "A band of oversized real numbers (years in business, clients served, satisfaction rates) that turns claims into evidence. Works for every industry; keep to 3-4 stats the source actually states.",
+      "tags": [
+        "Stats",
+        "Trust",
+        "Social proof"
+      ],
+      "thumbnail": "stats-band",
+      "slots": [
+        {
+          "id": "heading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "value",
+              "kind": "text"
+            },
+            {
+              "id": "label",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "heading": "The numbers parents ask about.",
+        "items": [
+          {
+            "value": "20+",
+            "label": "Years of experience"
+          },
+          {
+            "value": "500+",
+            "label": "Families served"
+          },
+          {
+            "value": "1:8",
+            "label": "Teacher-child ratio"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Stats - Counter Band",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "64px",
+          "paddingBottom": "64px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)",
+          "background": "linear-gradient(180deg, color-mix(in srgb, var(--builder-color-primary, #2563eb) 7%, #ffffff), var(--builder-page-background, #ffffff))",
+          "alignItems": "center"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Stats Heading",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "10px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {},
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "30px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Stats Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "3Col",
+            "$repeat": "items",
+            "$gridFit": true,
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "24px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {
+                "gap": "20px"
+              }
+            },
+            "content": [
+              {
+                "name": "Stat Cell",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "minHeight": "0px",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "gap": "8px",
+                  "padding": "28px 20px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "rgba(255,255,255,0.72)",
+                  "border": "1px solid rgba(148,163,184,0.14)"
+                },
+                "responsiveStyles": {
+                  "mobile": {},
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Stat Value",
+                    "type": "text",
+                    "$slot": "value",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary, #2563eb)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "46px",
+                      "fontWeight": 800,
+                      "lineHeight": "1.05",
+                      "letterSpacing": "-0.02em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "34px"
+                      },
+                      "tablet": {
+                        "fontSize": "40px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Stat Label",
+                    "type": "text",
+                    "$slot": "label",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.68)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "14px",
+                      "fontWeight": 600,
+                      "letterSpacing": "0.06em",
+                      "textTransform": "uppercase"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "12px"
+                      },
+                      "tablet": {
+                        "fontSize": "13px"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "clients-logo-strip",
+      "sectionType": "clients",
+      "layoutVariant": "strip",
+      "styleVariant": "wordmark",
+      "label": "Partner Wordmark Strip",
+      "description": "A quiet strip of partner/client wordmarks rendered as muted text logos. Instant borrowed credibility under a hero or above the footer; suits any industry with named partners, accreditations, or clients.",
+      "tags": [
+        "Clients",
+        "Partners",
+        "Trust"
+      ],
+      "thumbnail": "clients-strip",
+      "slots": [
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "name",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "heading": "Trusted by",
+        "items": [
+          {
+            "name": "Orange Tree SG"
+          },
+          {
+            "name": "Skylace"
+          },
+          {
+            "name": "Morris Allen"
+          },
+          {
+            "name": "KidzEnrol"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Clients - Logo Strip",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "56px",
+          "paddingBottom": "56px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "28px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)",
+          "alignItems": "center"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Strip Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "8px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {},
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Strip Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "14px",
+                  "fontWeight": 600,
+                  "letterSpacing": "0.1em",
+                  "textTransform": "uppercase"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Wordmark Row",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.05
+            },
+            "type": "container",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexWrap": "wrap",
+              "justifyContent": "center",
+              "alignItems": "center",
+              "columnGap": "48px",
+              "rowGap": "20px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "columnGap": "28px",
+                "rowGap": "14px"
+              },
+              "tablet": {
+                "columnGap": "36px"
+              }
+            },
+            "content": [
+              {
+                "name": "Client Name",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "auto",
+                  "display": "inline-flex",
+                  "alignItems": "center"
+                },
+                "responsiveStyles": {
+                  "mobile": {},
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Wordmark",
+                    "type": "text",
+                    "$slot": "name",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.45)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "auto",
+                      "fontSize": "20px",
+                      "fontWeight": 700,
+                      "letterSpacing": "0.01em",
+                      "whiteSpace": "nowrap"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "16px"
+                      },
+                      "tablet": {
+                        "fontSize": "18px"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "services-programs-age",
+      "sectionType": "services",
+      "layoutVariant": "grid",
+      "styleVariant": "program-card",
+      "label": "Program Cards (Age Badge)",
+      "description": "Photo-topped program cards with a who-it's-for badge (e.g. 'Ages 2-4'). Built for kindergartens, enrichment centres, and studios where parents scan programs by age group; the badge slot also reads as 'For startups' etc. for other audiences.",
+      "tags": [
+        "Services",
+        "Programs",
+        "Education",
+        "Childcare"
+      ],
+      "thumbnail": "services-programs",
+      "moods": [
+        "friendly",
+        "playful"
+      ],
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "ideal",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "description",
+              "kind": "text"
+            },
+            {
+              "id": "image",
+              "kind": "image"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Our programmes",
+        "heading": "The right start for every age.",
+        "subheading": "Purposeful play and structured learning, matched to each stage of your child's development.",
+        "items": [
+          {
+            "ideal": "Ages 2-3",
+            "title": "Playgroup",
+            "description": "Gentle first steps into routines, sharing, and sensory discovery.",
+            "image": {
+              "query": "toddlers playing classroom",
+              "alt": "Playgroup"
+            }
+          },
+          {
+            "ideal": "Ages 4-5",
+            "title": "Kindergarten 1",
+            "description": "Early literacy and numeracy through hands-on, themed projects.",
+            "image": {
+              "query": "preschool children learning",
+              "alt": "Kindergarten 1"
+            }
+          },
+          {
+            "ideal": "Ages 5-6",
+            "title": "Kindergarten 2",
+            "description": "School-readiness: confident reading, writing, and presenting.",
+            "image": {
+              "query": "children reading books class",
+              "alt": "Kindergarten 2"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Services - Program Cards",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)",
+          "alignItems": "center"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Program Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "3Col",
+            "$repeat": "items",
+            "$gridFit": true,
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "28px",
+              "minHeight": "180px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "20px",
+                "minHeight": "0px"
+              },
+              "tablet": {
+                "gap": "24px",
+                "minHeight": "0px"
+              }
+            },
+            "content": [
+              {
+                "name": "Program Cell",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {},
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Program Card",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "borderRadius": "28px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(255,255,255,0.96)",
+                      "border": "1px solid color-mix(in srgb, var(--builder-color-primary, #2563eb) 18%, #ffffff)",
+                      "boxShadow": "0 2px 6px rgba(15,23,42,0.04), 0 10px 28px rgba(15,23,42,0.06)",
+                      "height": "100%"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {},
+                      "tablet": {}
+                    },
+                    "content": [
+                      {
+                        "name": "Program Photo",
+                        "type": "image",
+                        "$slot": "image",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "height": "190px",
+                          "display": "block",
+                          "flexShrink": "0"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "height": "150px"
+                          },
+                          "tablet": {
+                            "height": "170px"
+                          }
+                        },
+                        "content": {
+                          "caption": ""
+                        }
+                      },
+                      {
+                        "name": "Program Copy",
+                        "type": "container",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "display": "flex",
+                          "flexDirection": "column",
+                          "gap": "10px",
+                          "padding": "22px 26px 26px"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "paddingTop": "16px",
+                            "paddingRight": "18px",
+                            "paddingBottom": "18px",
+                            "paddingLeft": "18px"
+                          },
+                          "tablet": {
+                            "paddingTop": "18px",
+                            "paddingRight": "22px",
+                            "paddingBottom": "22px",
+                            "paddingLeft": "22px"
+                          }
+                        },
+                        "content": [
+                          {
+                            "name": "Age Badge",
+                            "type": "text",
+                            "$slot": "ideal",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "center",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-primary, #2563eb)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "width": "auto",
+                              "display": "inline-flex",
+                              "alignItems": "center",
+                              "alignSelf": "flex-start",
+                              "backgroundColor": "color-mix(in srgb, var(--builder-color-primary, #2563eb) 12%, #ffffff)",
+                              "fontSize": "13px",
+                              "fontWeight": 700,
+                              "borderRadius": "999px",
+                              "paddingTop": "6px",
+                              "paddingBottom": "6px",
+                              "paddingLeft": "14px",
+                              "paddingRight": "14px"
+                            },
+                            "responsiveStyles": {
+                              "mobile": {
+                                "fontSize": "12px"
+                              },
+                              "tablet": {}
+                            }
+                          },
+                          {
+                            "name": "Program Title",
+                            "type": "text",
+                            "$slot": "title",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "left",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-secondary, #0f172a)",
+                              "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                              "width": "100%",
+                              "fontSize": "21px",
+                              "fontWeight": 800
+                            },
+                            "responsiveStyles": {
+                              "mobile": {
+                                "fontSize": "18px"
+                              },
+                              "tablet": {
+                                "fontSize": "19px"
+                              }
+                            }
+                          },
+                          {
+                            "name": "Program Body",
+                            "type": "text",
+                            "$slot": "description",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "left",
+                              "opacity": "100%",
+                              "color": "rgba(15,23,42,0.72)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "width": "100%",
+                              "fontSize": "15px",
+                              "lineHeight": "1.7"
+                            },
+                            "responsiveStyles": {
+                              "mobile": {
+                                "fontSize": "14px"
+                              },
+                              "tablet": {}
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "process-enrollment-steps",
+      "sectionType": "process",
+      "layoutVariant": "steps",
+      "styleVariant": "playful-numbered",
+      "label": "Playful Enrollment Steps",
+      "description": "A warm, coin-numbered journey (enquire → tour → enrol → first day) that de-risks signing up. Made for kindergartens, classes, and clubs; the dashed cards keep it friendly rather than corporate.",
+      "tags": [
+        "Process",
+        "Enrollment",
+        "Education",
+        "Childcare"
+      ],
+      "thumbnail": "process-enroll",
+      "moods": [
+        "friendly",
+        "playful"
+      ],
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "number",
+              "kind": "text"
+            },
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "description",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Joining us",
+        "heading": "Four easy steps to your child's first day.",
+        "subheading": "From first hello to first day of school — here's how enrolment works.",
+        "items": [
+          {
+            "number": "1",
+            "title": "Say hello",
+            "description": "WhatsApp or call us with your child's age and preferred intake."
+          },
+          {
+            "number": "2",
+            "title": "Book a tour",
+            "description": "Visit the campus, meet our teachers, and see a class in action."
+          },
+          {
+            "number": "3",
+            "title": "Enrol",
+            "description": "Reserve your child's place with a simple registration form."
+          },
+          {
+            "number": "4",
+            "title": "First day!",
+            "description": "We ease every new child in gently — most settle within a week."
+          }
+        ]
+      },
+      "tree": {
+        "name": "Process - Enrollment Steps",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)",
+          "alignItems": "center"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Steps Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "3Col",
+            "$repeat": "items",
+            "$gridFit": true,
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "24px",
+              "minHeight": "180px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "18px",
+                "minHeight": "0px"
+              },
+              "tablet": {
+                "gap": "20px",
+                "minHeight": "0px"
+              }
+            },
+            "content": [
+              {
+                "name": "Step Cell",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "minHeight": "0px",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "gap": "14px",
+                  "padding": "30px 24px",
+                  "borderRadius": "24px",
+                  "backgroundColor": "color-mix(in srgb, var(--builder-color-primary, #2563eb) 6%, #ffffff)",
+                  "border": "2px dashed color-mix(in srgb, var(--builder-color-primary, #2563eb) 28%, #ffffff)"
+                },
+                "responsiveStyles": {
+                  "mobile": {},
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Step Coin",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "56px",
+                      "height": "56px",
+                      "display": "inline-flex",
+                      "alignItems": "center",
+                      "justifyContent": "center",
+                      "borderRadius": "999px",
+                      "backgroundColor": "var(--builder-color-primary, #2563eb)",
+                      "flexShrink": "0"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "44px",
+                        "height": "44px"
+                      },
+                      "tablet": {
+                        "width": "48px",
+                        "height": "48px"
+                      }
+                    },
+                    "content": [
+                      {
+                        "name": "Step Number",
+                        "type": "text",
+                        "$slot": "number",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "center",
+                          "opacity": "100%",
+                          "color": "#ffffff",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                          "width": "100%",
+                          "fontSize": "20px",
+                          "fontWeight": 800
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "fontSize": "16px"
+                          },
+                          "tablet": {
+                            "fontSize": "18px"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Step Title",
+                    "type": "text",
+                    "$slot": "title",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "19px",
+                      "fontWeight": 700
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "17px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Step Body",
+                    "type": "text",
+                    "$slot": "description",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.72)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.7"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "hero-playful-split",
+      "sectionType": "hero",
+      "layoutVariant": "split",
+      "styleVariant": "playful",
+      "label": "Playful Split Hero",
+      "description": "A warm split hero: rotated sticker eyebrow, big rounded headline, CTA pair, and a blob-masked photo over a soft brand-tinted wash. Light band with dark ink — made for kindergartens, family brands, and anything joyful.",
+      "tags": [
+        "Hero",
+        "Playful",
+        "Education",
+        "Childcare"
+      ],
+      "thumbnail": "hero-playful",
+      "moods": [
+        "friendly",
+        "playful"
+      ],
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "headline",
+          "kind": "text"
+        },
+        {
+          "id": "body",
+          "kind": "text"
+        },
+        {
+          "id": "primary_cta",
+          "kind": "link"
+        },
+        {
+          "id": "secondary_cta",
+          "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "image",
+          "kind": "image"
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Now enrolling for 2026",
+        "headline": "Explore, play, and grow with us.",
+        "body": "A nurturing kindergarten where structured learning meets purposeful play — and every child is known by name.",
+        "primary_cta": {
+          "innerText": "Book a school tour",
+          "href": "/contact"
+        },
+        "secondary_cta": {
+          "innerText": "See our programmes",
+          "href": "/programmes"
+        },
+        "image": {
+          "src": "",
+          "alt": "Children learning through play"
+        }
+      },
+      "tree": {
+        "name": "Hero - Playful Split",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "64px",
+          "paddingBottom": "80px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)",
+          "background": "linear-gradient(180deg, color-mix(in srgb, var(--builder-color-primary, #2563eb) 8%, #ffffff), var(--builder-page-background, #ffffff))"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Hero Grid",
+            "type": "2Col",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "56px",
+              "alignItems": "center"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "28px"
+              },
+              "tablet": {
+                "gap": "36px"
+              }
+            },
+            "content": [
+              {
+                "name": "Hero Copy",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "motion": {
+                  "preset": "rise"
+                },
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "justifyContent": "center",
+                  "gap": "20px",
+                  "minWidth": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "16px"
+                  },
+                  "tablet": {
+                    "gap": "18px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Sticker Eyebrow",
+                    "type": "text",
+                    "$slot": "eyebrow",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "auto",
+                      "display": "inline-flex",
+                      "alignItems": "center",
+                      "alignSelf": "flex-start",
+                      "backgroundColor": "color-mix(in srgb, var(--builder-color-primary, #2563eb) 12%, #ffffff)",
+                      "border": "1px solid color-mix(in srgb, var(--builder-color-primary, #2563eb) 30%, #ffffff)",
+                      "fontSize": "14px",
+                      "fontWeight": 800,
+                      "borderRadius": "999px",
+                      "paddingTop": "8px",
+                      "paddingBottom": "8px",
+                      "paddingLeft": "16px",
+                      "paddingRight": "16px",
+                      "transform": "rotate(-2deg)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "12px"
+                      },
+                      "tablet": {
+                        "fontSize": "13px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Headline",
+                    "type": "text",
+                    "$slot": "headline",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "54px",
+                      "fontWeight": 800,
+                      "lineHeight": "1.05",
+                      "letterSpacing": "-0.03em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "32px"
+                      },
+                      "tablet": {
+                        "fontSize": "40px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Body",
+                    "type": "text",
+                    "$slot": "body",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.68)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "18px",
+                      "lineHeight": "1.7",
+                      "maxWidth": "540px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "15px"
+                      },
+                      "tablet": {
+                        "fontSize": "16px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "CTA Row",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "display": "flex",
+                      "flexWrap": "wrap",
+                      "gap": "14px",
+                      "alignItems": "center"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "gap": "10px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": [
+                      {
+                        "name": "Primary CTA",
+                        "type": "link",
+                        "$slot": "primary_cta",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-button-text, #ffffff)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "backgroundColor": "var(--builder-button-background, #2563eb)",
+                          "paddingTop": "12px",
+                          "paddingRight": "28px",
+                          "paddingBottom": "12px",
+                          "paddingLeft": "28px",
+                          "borderRadius": "var(--builder-button-radius, 14px)",
+                          "textDecoration": "none",
+                          "display": "inline-flex",
+                          "alignItems": "center",
+                          "justifyContent": "center",
+                          "fontWeight": 600
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "paddingTop": "8px",
+                            "paddingRight": "10px",
+                            "paddingBottom": "8px",
+                            "paddingLeft": "10px",
+                            "fontSize": "13px",
+                            "width": "100%"
+                          },
+                          "tablet": {
+                            "paddingTop": "10px",
+                            "paddingRight": "22px",
+                            "paddingBottom": "10px",
+                            "paddingLeft": "22px",
+                            "fontSize": "14px"
+                          }
+                        }
+                      },
+                      {
+                        "name": "Secondary CTA",
+                        "type": "link",
+                        "$slot": "secondary_cta",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-secondary, #0f172a)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "backgroundColor": "transparent",
+                          "paddingTop": "12px",
+                          "paddingRight": "28px",
+                          "paddingBottom": "12px",
+                          "paddingLeft": "28px",
+                          "borderRadius": "var(--builder-button-radius, 14px)",
+                          "textDecoration": "none",
+                          "display": "inline-flex",
+                          "alignItems": "center",
+                          "justifyContent": "center",
+                          "fontWeight": 600,
+                          "border": "1px solid rgba(15,23,42,0.14)"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "paddingTop": "8px",
+                            "paddingRight": "10px",
+                            "paddingBottom": "8px",
+                            "paddingLeft": "10px",
+                            "fontSize": "13px",
+                            "width": "100%"
+                          },
+                          "tablet": {
+                            "paddingTop": "10px",
+                            "paddingRight": "22px",
+                            "paddingBottom": "10px",
+                            "paddingLeft": "22px",
+                            "fontSize": "14px"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Hero Visual",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "motion": {
+                  "preset": "rise"
+                },
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "alignItems": "center",
+                  "justifyContent": "center",
+                  "minWidth": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {},
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Blob Photo",
+                    "type": "image",
+                    "$slot": "image",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "height": "100%",
+                      "minHeight": "420px",
+                      "borderRadius": "42% 58% 62% 38% / 45% 40% 60% 55%",
+                      "backgroundColor": "rgba(148,163,184,0.12)",
+                      "boxShadow": "0 24px 60px color-mix(in srgb, var(--builder-color-primary, #2563eb) 25%, #ffffff)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "height": "240px",
+                        "minHeight": "240px"
+                      },
+                      "tablet": {
+                        "height": "300px",
+                        "minHeight": "300px"
+                      }
+                    },
+                    "content": {
+                      "caption": ""
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "locations-map-cards",
+      "sectionType": "locations",
+      "layoutVariant": "grid",
+      "styleVariant": "branch-card",
+      "label": "Locations with Maps",
+      "description": "One card per branch/outlet: live embedded Google Map, address, opening hours, and call/WhatsApp buttons. For any multi-location business — kindergartens, clinics, restaurants, studios — and equally good with a single branch.",
+      "tags": [
+        "Locations",
+        "Branches",
+        "Contact",
+        "Map"
+      ],
+      "thumbnail": "locations-map",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "map",
+              "kind": "video"
+            },
+            {
+              "id": "name",
+              "kind": "text"
+            },
+            {
+              "id": "address",
+              "kind": "text"
+            },
+            {
+              "id": "hours",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "whatsapp_cta",
+              "kind": "link",
+              "optional": true
+            },
+            {
+              "id": "phone_cta",
+              "kind": "link",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Our campuses",
+        "heading": "Visit us at either branch.",
+        "subheading": "Drop by for a tour — we'd love to show you around.",
+        "items": [
+          {
+            "name": "Kepong Campus",
+            "address": "12, Jalan Prima 3, Metro Prima, 52100 Kepong, Kuala Lumpur",
+            "hours": "Mon-Fri 8:00am - 6:00pm",
+            "whatsapp_cta": {
+              "innerText": "WhatsApp us",
+              "href": "https://wa.me/60123456789"
+            },
+            "phone_cta": {
+              "innerText": "03-6257 1234",
+              "href": "tel:0362571234"
+            },
+            "map": {
+              "src": "https://maps.google.com/maps?q=Metro+Prima+Kepong+Kuala+Lumpur&output=embed"
+            }
+          },
+          {
+            "name": "Kota Damansara Campus",
+            "address": "8, Jalan Teknologi 3/9, Kota Damansara, 47810 Petaling Jaya, Selangor",
+            "hours": "Mon-Fri 8:00am - 6:00pm",
+            "whatsapp_cta": {
+              "innerText": "WhatsApp us",
+              "href": "https://wa.me/60198765432"
+            },
+            "phone_cta": {
+              "innerText": "03-6142 5678",
+              "href": "tel:0361425678"
+            },
+            "map": {
+              "src": "https://maps.google.com/maps?q=Kota+Damansara+Petaling+Jaya&output=embed"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Locations - Map Cards",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)",
+          "alignItems": "center"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Branch Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "3Col",
+            "$repeat": "items",
+            "$gridFit": true,
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "28px",
+              "minHeight": "180px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "20px",
+                "minHeight": "0px"
+              },
+              "tablet": {
+                "gap": "24px",
+                "minHeight": "0px"
+              }
+            },
+            "content": [
+              {
+                "name": "Branch Cell",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {},
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Branch Card",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "borderRadius": "24px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(255,255,255,0.96)",
+                      "border": "1px solid rgba(148,163,184,0.16)",
+                      "boxShadow": "0 1px 3px rgba(15,23,42,0.05), 0 4px 16px rgba(15,23,42,0.05)",
+                      "height": "100%"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {},
+                      "tablet": {}
+                    },
+                    "content": [
+                      {
+                        "name": "Branch Map",
+                        "type": "video",
+                        "$slot": "map",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "height": "230px",
+                          "display": "block",
+                          "flexShrink": "0",
+                          "border": "none"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "height": "190px"
+                          },
+                          "tablet": {
+                            "height": "210px"
+                          }
+                        },
+                        "content": {}
+                      },
+                      {
+                        "name": "Branch Copy",
+                        "type": "container",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "display": "flex",
+                          "flexDirection": "column",
+                          "gap": "10px",
+                          "padding": "24px 26px 26px"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "paddingTop": "18px",
+                            "paddingRight": "20px",
+                            "paddingBottom": "20px",
+                            "paddingLeft": "20px"
+                          },
+                          "tablet": {
+                            "paddingTop": "20px",
+                            "paddingRight": "22px",
+                            "paddingBottom": "22px",
+                            "paddingLeft": "22px"
+                          }
+                        },
+                        "content": [
+                          {
+                            "name": "Branch Name",
+                            "type": "text",
+                            "$slot": "name",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "left",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-secondary, #0f172a)",
+                              "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                              "width": "100%",
+                              "fontSize": "20px",
+                              "fontWeight": 800
+                            },
+                            "responsiveStyles": {
+                              "mobile": {
+                                "fontSize": "18px"
+                              },
+                              "tablet": {}
+                            }
+                          },
+                          {
+                            "name": "Branch Address",
+                            "type": "text",
+                            "$slot": "address",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "left",
+                              "opacity": "100%",
+                              "color": "rgba(15,23,42,0.72)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "width": "100%",
+                              "fontSize": "15px",
+                              "lineHeight": "1.6"
+                            },
+                            "responsiveStyles": {
+                              "mobile": {
+                                "fontSize": "14px"
+                              },
+                              "tablet": {}
+                            }
+                          },
+                          {
+                            "name": "Branch Hours",
+                            "type": "text",
+                            "$slot": "hours",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "left",
+                              "opacity": "100%",
+                              "color": "rgba(15,23,42,0.68)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "width": "100%",
+                              "fontSize": "14px",
+                              "fontWeight": 600
+                            },
+                            "responsiveStyles": {
+                              "mobile": {
+                                "fontSize": "13px"
+                              },
+                              "tablet": {}
+                            }
+                          },
+                          {
+                            "name": "Branch CTA Row",
+                            "type": "container",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "left",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-text, #111827)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "width": "100%",
+                              "display": "flex",
+                              "flexWrap": "wrap",
+                              "gap": "10px",
+                              "alignItems": "center",
+                              "marginTop": "6px"
+                            },
+                            "responsiveStyles": {
+                              "mobile": {},
+                              "tablet": {}
+                            },
+                            "content": [
+                              {
+                                "name": "WhatsApp CTA",
+                                "type": "link",
+                                "$slot": "whatsapp_cta",
+                                "styles": {
+                                  "backgroundPosition": "center",
+                                  "objectFit": "cover",
+                                  "backgroundRepeat": "no-repeat",
+                                  "textAlign": "left",
+                                  "opacity": "100%",
+                                  "color": "#ffffff",
+                                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                                  "width": "auto",
+                                  "backgroundColor": "#25D366",
+                                  "textDecoration": "none",
+                                  "display": "inline-flex",
+                                  "alignItems": "center",
+                                  "justifyContent": "center",
+                                  "fontWeight": 700,
+                                  "fontSize": "14px",
+                                  "borderRadius": "999px",
+                                  "paddingTop": "10px",
+                                  "paddingBottom": "10px",
+                                  "paddingLeft": "20px",
+                                  "paddingRight": "20px"
+                                },
+                                "responsiveStyles": {
+                                  "mobile": {
+                                    "fontSize": "13px"
+                                  },
+                                  "tablet": {}
+                                }
+                              },
+                              {
+                                "name": "Phone CTA",
+                                "type": "link",
+                                "$slot": "phone_cta",
+                                "styles": {
+                                  "backgroundPosition": "center",
+                                  "objectFit": "cover",
+                                  "backgroundRepeat": "no-repeat",
+                                  "textAlign": "left",
+                                  "opacity": "100%",
+                                  "color": "var(--builder-color-secondary, #0f172a)",
+                                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                                  "width": "auto",
+                                  "backgroundColor": "transparent",
+                                  "border": "1px solid rgba(15,23,42,0.14)",
+                                  "textDecoration": "none",
+                                  "display": "inline-flex",
+                                  "alignItems": "center",
+                                  "justifyContent": "center",
+                                  "fontWeight": 600,
+                                  "fontSize": "14px",
+                                  "borderRadius": "999px",
+                                  "paddingTop": "10px",
+                                  "paddingBottom": "10px",
+                                  "paddingLeft": "20px",
+                                  "paddingRight": "20px"
+                                },
+                                "responsiveStyles": {
+                                  "mobile": {
+                                    "fontSize": "13px"
+                                  },
+                                  "tablet": {}
+                                }
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

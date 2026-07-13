@@ -5,6 +5,7 @@ import unittest
 
 from pydantic import BaseModel
 
+from app.config import Settings
 from app.services import llm as llm_mod
 from app.services.llm import (
     EmptyLlmResponse,
@@ -12,6 +13,7 @@ from app.services.llm import (
     MlxClient,
     OllamaClient,
     get_llm,
+    get_reasoning_llm,
     resolve_llm_backend,
 )
 
@@ -72,7 +74,9 @@ class _FakeAsyncClient:
         return False
 
     def stream(self, method, url, json=None, **kwargs):
-        self._recorder.append({"url": url, "payload": json})
+        self._recorder.append(
+            {"url": url, "payload": json, "headers": kwargs.get("headers")}
+        )
         return _FakeStreamCtx(self._framer(self._bodies.pop(0)))
 
 
@@ -236,6 +240,144 @@ class SettingsDrivenDefaultsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             payload["chat_template_kwargs"], {"enable_thinking": False}
         )
+
+
+class ReasoningRoleTest(unittest.IsolatedAsyncioTestCase):
+    """get_reasoning_llm() routes the judgment-heavy calls to the REASONING_*
+    model when configured, and is a transparent alias for get_llm() when not."""
+
+    _FIELDS = (
+        "llm_backend",
+        "reasoning_backend",
+        "reasoning_base_url",
+        "reasoning_model",
+        "reasoning_api_key",
+        "reasoning_timeout_seconds",
+        "reasoning_max_tokens",
+        "reasoning_num_ctx",
+        "reasoning_think",
+    )
+
+    def setUp(self):
+        s = llm_mod.settings
+        self._orig = {f: getattr(s, f) for f in self._FIELDS}
+
+    def tearDown(self):
+        for f, v in self._orig.items():
+            setattr(llm_mod.settings, f, v)
+
+    def test_unset_model_falls_back_to_default_client(self):
+        s = llm_mod.settings
+        s.llm_backend = "ollama"
+        s.reasoning_model = None
+        client = get_reasoning_llm()
+        self.assertIsInstance(client, OllamaClient)
+        self.assertEqual(client.model, s.ollama_model)
+
+    def test_backend_inherits_llm_backend_when_unset(self):
+        s = llm_mod.settings
+        s.llm_backend = "mlx"
+        s.reasoning_backend = None
+        s.reasoning_model = "glm-z1-9b"
+        s.reasoning_base_url = "http://ai-server:8000"
+        client = get_reasoning_llm()
+        self.assertIsInstance(client, MlxClient)
+        self.assertEqual(client.model, "glm-z1-9b")
+        self.assertEqual(client.base_url, "http://ai-server:8000")
+
+    async def test_openai_path_payload_headers_and_thinking(self):
+        s = llm_mod.settings
+        s.llm_backend = "ollama"  # reasoning_backend must win over this
+        s.reasoning_backend = "mlx"
+        s.reasoning_base_url = "http://ai-server:8000"
+        s.reasoning_model = "glm-z1-9b"
+        s.reasoning_api_key = "sekret"
+        s.reasoning_max_tokens = 16384
+        s.reasoning_think = True
+        recorder = []
+        _patch_httpx(self, ['{"x": 1}'], recorder)
+        out = await get_reasoning_llm().chat_json("sys", "user", _Out)
+        self.assertEqual(out.x, 1)
+        call = recorder[0]
+        self.assertEqual(call["url"], "http://ai-server:8000/v1/chat/completions")
+        self.assertEqual(call["payload"]["model"], "glm-z1-9b")
+        self.assertEqual(call["payload"]["max_tokens"], 16384)
+        self.assertEqual(call["headers"], {"Authorization": "Bearer sekret"})
+        self.assertEqual(
+            call["payload"]["chat_template_kwargs"], {"enable_thinking": True}
+        )
+
+    async def test_explicit_think_beats_reasoning_default(self):
+        s = llm_mod.settings
+        s.reasoning_backend = "mlx"
+        s.reasoning_model = "glm-z1-9b"
+        s.reasoning_think = True
+        recorder = []
+        _patch_httpx(self, ['{"x": 1}'], recorder)
+        await get_reasoning_llm().chat_json("sys", "user", _Out, think=False)
+        self.assertEqual(
+            recorder[0]["payload"]["chat_template_kwargs"], {"enable_thinking": False}
+        )
+
+    async def test_ollama_path_think_num_ctx_and_headers(self):
+        s = llm_mod.settings
+        s.reasoning_backend = "ollama"
+        s.reasoning_base_url = "http://ai-server:11434"
+        s.reasoning_model = "glm-z1:9b"
+        s.reasoning_api_key = "sekret"
+        s.reasoning_num_ctx = 8192
+        s.reasoning_think = True
+        recorder = []
+        _patch_httpx(self, ['{"x": 2}'], recorder, framer=_ndjson)
+        out = await get_reasoning_llm().chat_json("sys", "user", _Out)
+        self.assertEqual(out.x, 2)
+        call = recorder[0]
+        self.assertEqual(call["url"], "http://ai-server:11434/api/chat")
+        self.assertEqual(call["payload"]["model"], "glm-z1:9b")
+        self.assertTrue(call["payload"]["think"])
+        self.assertEqual(call["payload"]["options"]["num_ctx"], 8192)
+        self.assertEqual(call["headers"], {"Authorization": "Bearer sekret"})
+
+    async def test_ollama_path_num_ctx_falls_back_to_global_default(self):
+        s = llm_mod.settings
+        s.reasoning_backend = "ollama"
+        s.reasoning_model = "glm-z1:9b"
+        s.reasoning_num_ctx = None
+        recorder = []
+        _patch_httpx(self, ['{"x": 2}'], recorder, framer=_ndjson)
+        await get_reasoning_llm().chat_json("sys", "user", _Out)
+        self.assertEqual(
+            recorder[0]["payload"]["options"]["num_ctx"], s.llm_default_num_ctx
+        )
+
+    async def test_default_client_is_isolated_from_reasoning_settings(self):
+        # A plain client must not inherit the reasoning role's auth/budget.
+        s = llm_mod.settings
+        s.reasoning_api_key = "sekret"
+        s.reasoning_max_tokens = 16384
+        recorder = []
+        _patch_httpx(self, ['{"x": 3}'], recorder)
+        await MlxClient().chat_json("sys", "user", _Out)
+        call = recorder[0]
+        self.assertIsNone(call["headers"])
+        self.assertEqual(call["payload"]["max_tokens"], s.mlx_max_tokens)
+
+
+class ReasoningConfigCoercionTest(unittest.TestCase):
+    def test_empty_env_strings_mean_unset(self):
+        # `REASONING_X=` (present but empty) in .env must read as None — an empty
+        # REASONING_BACKEND would otherwise fail Literal validation.
+        s = Settings(
+            _env_file=None,
+            reasoning_backend="",
+            reasoning_base_url="",
+            reasoning_model="",
+            reasoning_api_key="",
+        )
+        self.assertIsNone(s.reasoning_backend)
+        self.assertIsNone(s.reasoning_base_url)
+        self.assertIsNone(s.reasoning_model)
+        self.assertIsNone(s.reasoning_api_key)
 
 
 if __name__ == "__main__":

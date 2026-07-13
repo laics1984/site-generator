@@ -9,6 +9,11 @@
 # This script only manages MLX when LLM_BACKEND=mlx in .env — with LLM_BACKEND=
 # ollama (or unset) it just runs Docker and leaves the LLM to Ollama.
 #
+# Remote mode: when MLX_BASE_URL in .env points at a non-local host (the RTX
+# AI server over Tailscale — see ai-server/), there is no local server to
+# manage; `up` just health-checks the remote endpoint and fails fast if it's
+# unreachable.
+#
 # Usage:
 #   ./dev.sh up      # start MLX (if mlx backend) + docker compose up -d
 #   ./dev.sh down    # docker compose down + stop MLX
@@ -33,13 +38,31 @@ get_env() {
 
 BACKEND="$(get_env LLM_BACKEND ollama)"
 MLX_MODEL="$(get_env MLX_MODEL mlx-community/Qwen3-4B-4bit)"
-MLX_PORT="8080"   # matches MLX_BASE_URL in docker-compose (host.docker.internal:8080)
+MLX_BASE_URL="$(get_env MLX_BASE_URL http://localhost:8080)"
+MLX_PORT="8080"   # local mlx_lm.server port; matches the MLX_BASE_URL default
 
-mlx_up() { curl -sf -m 2 "http://localhost:$MLX_PORT/v1/models" >/dev/null 2>&1; }
+# A non-local MLX_BASE_URL means an OpenAI-compatible server elsewhere (the RTX
+# AI box over Tailscale) — nothing to start or stop on this machine.
+case "$MLX_BASE_URL" in
+  http://localhost:*|http://127.0.0.1:*) MLX_REMOTE=0 ;;
+  *) MLX_REMOTE=1 ;;
+esac
+
+mlx_up() { curl -sf -m 3 "$MLX_BASE_URL/v1/models" >/dev/null 2>&1; }
 
 start_mlx() {
   if [ "$BACKEND" != "mlx" ]; then
     echo "LLM_BACKEND=$BACKEND — skipping MLX (Ollama serves the LLM)."
+    return
+  fi
+  if [ "$MLX_REMOTE" = "1" ]; then
+    if mlx_up; then
+      echo "Remote LLM at $MLX_BASE_URL: up."
+    else
+      echo "ERROR: remote LLM at $MLX_BASE_URL is unreachable." >&2
+      echo "Start it on the AI server (ai-server/: docker compose up -d) and check Tailscale on both ends." >&2
+      exit 1
+    fi
     return
   fi
   if mlx_up; then echo "MLX already running on :$MLX_PORT."; return; fi
@@ -59,6 +82,10 @@ start_mlx() {
 }
 
 stop_mlx() {
+  if [ "$MLX_REMOTE" = "1" ]; then
+    echo "Remote LLM at $MLX_BASE_URL — nothing to stop locally."
+    return
+  fi
   if [ -f "$MLX_PID_FILE" ]; then
     kill "$(cat "$MLX_PID_FILE")" 2>/dev/null || true
     rm -f "$MLX_PID_FILE"
@@ -78,7 +105,11 @@ case "${1:-}" in
     ;;
   status)
     echo "LLM_BACKEND=$BACKEND"
-    mlx_up && echo "MLX: up on :$MLX_PORT ($MLX_MODEL)" || echo "MLX: down"
+    if [ "$MLX_REMOTE" = "1" ]; then
+      mlx_up && echo "Remote LLM: up at $MLX_BASE_URL" || echo "Remote LLM: DOWN at $MLX_BASE_URL"
+    else
+      mlx_up && echo "MLX: up on :$MLX_PORT ($MLX_MODEL)" || echo "MLX: down"
+    fi
     docker compose -f "$ROOT/docker-compose.yml" ps
     ;;
   *)

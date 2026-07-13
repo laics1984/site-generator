@@ -46,7 +46,20 @@ async def health_llm() -> dict[str, object]:
 
     backend = resolve_llm_backend()
     model = settings.mlx_model if backend == "mlx" else settings.ollama_model
-    return {"backend": backend, "model": model, "configured": settings.llm_backend}
+    result: dict[str, object] = {
+        "backend": backend,
+        "model": model,
+        "configured": settings.llm_backend,
+    }
+    if settings.reasoning_model:
+        # api_key deliberately excluded — this endpoint is frontend-visible.
+        result["reasoning"] = {
+            "backend": (settings.reasoning_backend or backend).lower(),
+            "model": settings.reasoning_model,
+            "base_url": settings.reasoning_base_url,
+            "think": settings.reasoning_think,
+        }
+    return result
 
 
 @router.get("/health/pexels")

@@ -1,0 +1,42 @@
+# Webtree AI server — llama.cpp on the Windows RTX 5060 Ti 16GB box.
+#
+# Copy this directory to the Windows machine and `docker compose up -d` there.
+# The site-generator backend (on the Mac) reaches this server over Tailscale via
+# its OpenAI-compatible API: LLM_BACKEND=mlx + MLX_BASE_URL=http://<ts-ip>:8080.
+# See ai-server/README.md for prerequisites, firewall, and the --n-cpu-moe
+# tuning procedure.
+
+services:
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: webtree-ai-llm
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Model downloads (-hf) land here; survives image updates.
+      - llama_cache:/root/.cache/llama.cpp
+    # Qwen3-30B-A3B Q4_K_M is ~18.6GB — a bit over the 16GB card. -ngl 999 puts
+    # every layer on the GPU, then --n-cpu-moe walks the MoE *expert* tensors of
+    # the first N layers back to CPU RAM. Attention + KV cache stay on the GPU,
+    # which is why this beats Ollama's whole-layer offload for this model.
+    command: >
+      -hf unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Q4_K_M
+      --alias qwen3-30b-a3b
+      --host 0.0.0.0 --port 8080
+      -ngl 999
+      --n-cpu-moe 14
+      -c 16384
+      -fa on
+      --cache-type-k q8_0 --cache-type-v q8_0
+      --jinja
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  llama_cache:

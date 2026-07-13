@@ -45,7 +45,7 @@ from app.models.content_blocks import (
 from app.config import settings
 from app.models.industry import PageScaffold
 from app.services.industry_personality import personality_prompt_lines
-from app.services.llm import LlmClient, get_llm
+from app.services.llm import LlmClient, get_llm, get_reasoning_llm
 from app.services.source_router import (
     excerpt_for_prompt,
     match_scaffolds_to_pages,
@@ -191,7 +191,7 @@ async def detect_brand(
     # Prompt char cap and temperature are model-variant knobs (see config.py);
     # the lean cap keeps this FIRST call's prefill inside the read timeout —
     # large PDFs were the trigger for the ReadTimeout 502 here.
-    client = llm or get_llm()
+    client = llm or get_reasoning_llm()
     return await client.chat_json(
         system_prompt=DETECT_BRAND_PROMPT,
         user_prompt=_build_user_prompt(
@@ -539,7 +539,7 @@ _SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
           secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, image_ref?, layout:"split"|"background" }
           (headline_accent: the headline's final 1-4 words verbatim, to render in the accent colour — optional)""",
     "features": '- features: { kind:"features", heading, subheading?, items: [{title, description, image_query, image_ref?}] }  (1-6 real items; give EVERY item an image_query so its card carries a photo)',
-    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; give EVERY item an image_query so its card carries a photo)',
+    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, audience?, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; give EVERY item an image_query so its card carries a photo; audience = short who-it\'s-for badge like "Ages 2-4" only when the source states it)',
     "testimonials": '- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews only — omit if none)',
     "about": '- about: { kind:"about", heading, body, image_alt?, image_query, image_ref? }',
     "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (1-20 real Q&As — include ALL Q&As present in the source, omit block only if none)',
@@ -554,6 +554,7 @@ _SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
     "awards": '- awards: { kind:"awards", heading, subheading?, items:[{title, issuer?, year?}] }  (1-12 real awards/certifications — omit if none)',
     "clients": '- clients: { kind:"clients", heading, subheading?, items:[{name, logo_query?}] }  (2-20 real client/customer/partner names — omit if fewer than 2 are named)',
     "stats": '- stats: { kind:"stats", heading?, items:[{value, label}] }  (1-6 real numbers stated in the source — omit if the source states none)',
+    "locations": '- locations: { kind:"locations", heading, subheading?, items:[{name, address, phone?, whatsapp?, hours?}] }  (1-6 real branches/outlets with their real street addresses; whatsapp only in international format like +60123456789 — omit block if the source names no address)',
 }
 
 _SCAFFOLD_PROMPT_TAIL = """

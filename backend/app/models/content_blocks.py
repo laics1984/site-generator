@@ -53,6 +53,7 @@ SectionType = Literal[
     "awards",
     "clients",
     "stats",
+    "locations",
 ]
 
 
@@ -304,6 +305,13 @@ class FeaturesBlock(BaseModel):
 class ServiceItem(BaseModel):
     title: str
     description: str
+    audience: str | None = Field(
+        default=None,
+        description=(
+            "Who this service/program is for, as a short badge — e.g. 'Ages 2-4', "
+            "'For startups'. Only when the source states it."
+        ),
+    )
     cta_label: str | None = None
     cta_href: str | None = None
     image_query: str | None = Field(
@@ -738,6 +746,39 @@ class StatsBlock(BaseModel):
     items: list[StatItem] = Field(min_length=1, max_length=6)
 
 
+class LocationItem(BaseModel):
+    name: str
+    address: str = Field(
+        description="Full street address as stated in the source; drives the embedded map."
+    )
+    phone: str | None = None
+    whatsapp: str | None = Field(
+        default=None,
+        description=(
+            "WhatsApp number in international format (e.g. +60123456789) when the "
+            "source gives one. Leave null rather than guessing a country code."
+        ),
+    )
+    hours: str | None = Field(
+        default=None,
+        description='Operating hours as stated, e.g. "Mon-Fri 8:00am-6:00pm".',
+    )
+
+
+class LocationsBlock(BaseModel):
+    """Physical branches/outlets with real addresses named in the source."""
+
+    kind: Literal["locations"] = "locations"
+    heading: str = "Visit us"
+    subheading: str | None = None
+    items: list[LocationItem] = Field(min_length=1, max_length=6)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Visit us")
+
+
 # Discriminated union — Pydantic dispatches on the `kind` field, so a malformed
 # block produces a focused error list against just that variant instead of all 8.
 ContentBlock = Annotated[
@@ -758,7 +799,8 @@ ContentBlock = Annotated[
     | TimelineBlock
     | AwardsBlock
     | ClientsBlock
-    | StatsBlock,
+    | StatsBlock
+    | LocationsBlock,
     Field(discriminator="kind"),
 ]
 

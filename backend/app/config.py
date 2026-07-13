@@ -1,5 +1,6 @@
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,14 +8,17 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # Which LLM backend serves chat_json calls. Set via LLM_BACKEND in .env:
-    # `mlx` on an Apple-Silicon host running mlx_lm.server, `ollama` otherwise
-    # (Windows, or a Mac running `ollama serve`). See services/llm.resolve_llm_backend.
+    # `mlx` for any OpenAI-compatible /v1/chat/completions server (mlx_lm.server
+    # on the Mac host, or llama-server on the remote RTX AI box — see ai-server/),
+    # `ollama` for Ollama's native /api/chat. See services/llm.resolve_llm_backend.
     llm_backend: Literal["mlx", "ollama"] = "ollama"
 
-    # MLX backend: an OpenAI-compatible server (mlx_lm.server) running natively on
-    # the Apple-Silicon host — Docker can't run MLX, so the container reaches it
-    # over host.docker.internal (see docker-compose.yml). MLX uses HuggingFace repo
-    # ids, not Ollama tags.
+    # "mlx" backend = OpenAI-compatible server. Local default is mlx_lm.server on
+    # the Apple-Silicon host (Docker can't run MLX, so the container reaches it
+    # over host.docker.internal — see docker-compose.yml); point MLX_BASE_URL at a
+    # Tailscale IP to use the remote AI server instead. mlx_model must match the
+    # id the server exposes on /v1/models: a HuggingFace repo id for mlx_lm.server,
+    # the --alias for llama-server.
     mlx_base_url: str = "http://localhost:8080"
     mlx_model: str = "mlx-community/Qwen3-4B-4bit"
     # Generous because this is a per-read (streaming) timeout: once tokens flow
@@ -43,6 +47,45 @@ class Settings(BaseSettings):
     # default 5m can unload the model in between, forcing a cold reload that
     # blows the read timeout. Keeping it warm avoids re-paying the load cost.
     ollama_keep_alive: str = "30m"
+
+    # --- Reasoning role: a second, bigger model for the judgment-heavy calls ---
+    # Routes brand detection (planner.detect_brand), the design-brain passes
+    # (design recipe + design language) and the image tie-break judge
+    # (image_match._llm_pick_best) to a remote model — typically GLM on the AI
+    # server — while the local default model keeps the bulk content generation.
+    # REASONING_MODEL unset ⇒ role disabled: those calls use get_llm() unchanged.
+    reasoning_backend: Literal["mlx", "ollama"] | None = None  # None → inherit llm_backend. "mlx" speaks OpenAI-compatible — also use it for vLLM/sglang/llama.cpp servers.
+    reasoning_base_url: str | None = None  # None → the chosen backend's default base URL
+    reasoning_model: str | None = None  # e.g. "glm-z1:9b"; None → role disabled
+    reasoning_api_key: str | None = None  # sent as "Authorization: Bearer …" when set
+    reasoning_timeout_seconds: float | None = None  # None → backend default (mlx 600s / ollama 180s)
+    # OpenAI-path output budget. Higher than mlx_max_tokens because thinking
+    # tokens count against the completion budget on OpenAI-compatible servers.
+    reasoning_max_tokens: int = 16384
+    # Ollama-path only, and only for calls that pass no num_ctx (detect_brand).
+    # The design/judge calls pass DESIGN_NUM_CTX/JUDGE_NUM_CTX explicitly —
+    # raise those in .env for a bigger reasoning model.
+    reasoning_num_ctx: int | None = None
+    # Thinking ON by default for this role: the reasoning calls are small
+    # prompts with small JSON outputs, where a thinking pass buys better
+    # judgment. REASONING_THINK=false is the kill switch if a model/server
+    # combo misbehaves (e.g. thinking output breaking JSON mode).
+    reasoning_think: bool = True
+
+    @field_validator(
+        "reasoning_backend",
+        "reasoning_base_url",
+        "reasoning_model",
+        "reasoning_api_key",
+        mode="before",
+    )
+    @classmethod
+    def _reasoning_empty_str_is_none(cls, v: object) -> object:
+        """`REASONING_X=` (empty) in .env means unset, not empty-string — also
+        keeps an empty REASONING_BACKEND from failing Literal validation."""
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     # --- LLM tuning: everything you'd retune when swapping model variants ---
     # All of these are env-overridable (upper-cased field name), so moving to a
@@ -119,6 +162,11 @@ class Settings(BaseSettings):
     # it is always a safe no-op: generation falls back to the deterministic
     # mood-ordered template selection that ran before this pass existed.
     design_brain_enabled: bool = True
+    # Off switch for the design-language pass (services/design_brain.py): the
+    # LLM picking a curated palette + font pairing before theme construction.
+    # Disabling is a safe no-op — build_theme falls back to the deterministic
+    # industry/hue/seed pickers that ran before this pass existed.
+    design_language_enabled: bool = True
 
     # Full-bleed photo/abstract background hero on EVERY page (not just the
     # homepage), so the transparent floating header engages site-wide. Imagery

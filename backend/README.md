@@ -58,10 +58,14 @@ Override defaults via env vars or a `.env` file:
 | `MLX_MAX_TOKENS` | `8192` | Output budget (OpenAI servers cap low by default) |
 | `MLX_VISION_BASE_URL` | unset | mlx_vlm.server URL; unset ⇒ falls back to `MLX_BASE_URL` |
 | `MLX_VISION_MODEL` | unset | Opt-in MLX vision model; unset ⇒ vision pass skipped under MLX |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | May point at a remote Ollama (AI server); compose passes a set value through |
 | `OLLAMA_MODEL` | `qwen3.5:9b` | Single resident model; fits 16GB M1 with headroom |
 | `OLLAMA_MODEL_QUALITY` | `qwen2.5:14b-instruct` | Optional quality mode |
 | `OLLAMA_TIMEOUT_SECONDS` | `180` | |
+| `REASONING_MODEL` | unset | Second model for the judgment-heavy calls (brand detection, design language + recipe, image judge), e.g. GLM on the AI server. Unset ⇒ role disabled, default model used |
+| `REASONING_BACKEND` / `REASONING_BASE_URL` | inherit / unset | `mlx` = any OpenAI-compatible server, `ollama` = Ollama API; base URL of the reasoning server |
+| `REASONING_API_KEY` / `REASONING_THINK` | unset / `true` | Bearer auth; thinking mode for the reasoning role (kill switch: `false`) |
+| `DESIGN_LANGUAGE_ENABLED` | `true` | LLM picks curated palette + font pairing pre-theme; `false` ⇒ deterministic theming |
 | `OLLAMA_VISION_MODEL` | unset | Opt-in: multimodal model (e.g. `qwen2.5vl:7b`, `moondream`) that captions/classifies scraped images for better slot matching + profile verification. Unset ⇒ pass skipped |
 | `VISION_MAX_IMAGES` | `12` | Vision annotation cap per generation |
 | `PEXELS_API_KEY` | unset | Free key at pexels.com/api — stock photo fallback (Picsum without it) |
@@ -70,7 +74,7 @@ Override defaults via env vars or a `.env` file:
 ## Endpoints (Phase 1)
 
 - `GET /health` — service heartbeat
-- `GET /health/llm` — active LLM backend (mlx|ollama) + default model
+- `GET /health/llm` — active LLM backend (mlx|ollama) + default model, plus the reasoning role (backend/model/URL/think) when `REASONING_MODEL` is set
 - `GET /health/ollama` — Ollama reachability + installed models
 - `GET /health/mlx` — MLX server reachability + loaded models
 - `POST /api/generate/from-source` — accepts `SourceContent`, returns `GeneratedSite`

@@ -203,8 +203,17 @@ class ImageCardTemplatesTest(unittest.TestCase):
     def test_services_with_item_images_select_image_cards(self):
         from app.services.section_content import block_to_section
 
-        template, content = block_to_section(self._services_block(), mood="friendly")
+        template, content = block_to_section(self._services_block(), mood="modern")
         self.assertEqual(template["id"], "services-image-cards")
+        self.assertTrue(all(i["image"] for i in content["items"]))
+
+    def test_friendly_mood_services_prefer_program_cards(self):
+        # Friendly/playful brands keep the photo-topped card policy but get the
+        # badge-carrying program cards (services-programs-age) instead.
+        from app.services.section_content import block_to_section
+
+        template, content = block_to_section(self._services_block(), mood="friendly")
+        self.assertEqual(template["id"], "services-programs-age")
         self.assertTrue(all(i["image"] for i in content["items"]))
 
     def test_bound_item_photo_fills_src_directly(self):
@@ -226,7 +235,7 @@ class ImageCardTemplatesTest(unittest.TestCase):
         from app.services.section_content import block_to_section
 
         template, content = block_to_section(
-            self._services_block(with_images=False), mood="friendly"
+            self._services_block(with_images=False), mood="modern"
         )
         self.assertEqual(template["id"], "services-image-cards")
         self.assertEqual(content["items"][0]["image"]["query"], "Kindergarten")
@@ -237,7 +246,7 @@ class ImageCardTemplatesTest(unittest.TestCase):
         from app.services.section_content import block_to_section
 
         template, _content = block_to_section(
-            self._services_block(), mood="friendly",
+            self._services_block(), mood="modern",
             explicit_id="services-offer-grid",
         )
         self.assertEqual(template["id"], "services-image-cards")

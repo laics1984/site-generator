@@ -6,9 +6,11 @@ import unittest
 
 from app.config import settings
 from app.services.design_brain import (
+    DesignLanguage,
     SiteDesignRecipe,
     SiteSectionChoice,
     _page_blurb,
+    generate_design_language,
     generate_site_design_recipe,
 )
 
@@ -99,6 +101,89 @@ class NoOpTest(unittest.TestCase):
         finally:
             settings.design_brain_enabled = original
         self.assertEqual(recipe.sections, [])
+
+
+class DesignLanguageTest(unittest.TestCase):
+    """The design-language pass: offers the curated palette/pairing slugs and
+    passes the LLM's picks through; degrades to an empty (deterministic-fallback)
+    DesignLanguage when disabled or the call fails."""
+
+    def test_prompt_offers_options_and_picks_pass_through(self):
+        calls: list[str] = []
+
+        class FakeLLM:
+            async def chat_json(self, *, user_prompt, schema, **_):
+                calls.append(user_prompt)
+                return schema(palette="ai-platform", font_pairing="space-grotesk-dm-sans")
+
+        original = settings.design_language_enabled
+        settings.design_language_enabled = True
+        try:
+            language = asyncio.run(
+                generate_design_language(
+                    brand_name="Acme AI",
+                    mood="modern",
+                    industry="saas",
+                    seed_hex="#7c3aed",
+                    llm=FakeLLM(),
+                )
+            )
+        finally:
+            settings.design_language_enabled = original
+
+        self.assertEqual(len(calls), 1)
+        prompt = calls[0]
+        # The industry's curated palettes and the mood's pairings are offered by slug.
+        self.assertIn('"ai-platform"', prompt)
+        self.assertIn('"space-grotesk-dm-sans"', prompt)
+        # The brand colour is given so the pick can harmonise with the logo.
+        self.assertIn("#7c3aed", prompt)
+        self.assertEqual(language.palette, "ai-platform")
+        self.assertEqual(language.font_pairing, "space-grotesk-dm-sans")
+
+    def test_disabled_returns_empty_without_calling_llm(self):
+        class BoomLLM:
+            async def chat_json(self, *_, **__):
+                raise AssertionError("LLM must not be called when design language is off")
+
+        original = settings.design_language_enabled
+        settings.design_language_enabled = False
+        try:
+            language = asyncio.run(
+                generate_design_language(
+                    brand_name="Acme",
+                    mood="modern",
+                    industry="saas",
+                    seed_hex=None,
+                    llm=BoomLLM(),
+                )
+            )
+        finally:
+            settings.design_language_enabled = original
+        self.assertEqual(language, DesignLanguage())
+
+    def test_llm_failure_degrades_to_empty(self):
+        from app.services.llm import LlmError
+
+        class FailingLLM:
+            async def chat_json(self, *_, **__):
+                raise LlmError("boom")
+
+        original = settings.design_language_enabled
+        settings.design_language_enabled = True
+        try:
+            language = asyncio.run(
+                generate_design_language(
+                    brand_name="Acme",
+                    mood="modern",
+                    industry="saas",
+                    seed_hex=None,
+                    llm=FailingLLM(),
+                )
+            )
+        finally:
+            settings.design_language_enabled = original
+        self.assertEqual(language, DesignLanguage())
 
 
 if __name__ == "__main__":

@@ -301,6 +301,11 @@ _SIGNAL_PATTERNS: dict[SectionType, re.Pattern[str]] = {
         r"(\d+%|\d+\+\b|over \d+|years of experience)",
         re.IGNORECASE,
     ),
+    "locations": re.compile(
+        r"\b(our (branch|location|outlet|centre|center|campus)e?s"
+        r"|branch(es)? (in|at)|visit us (at|in)|find us (at|in)|both branches)\b",
+        re.IGNORECASE,
+    ),
 }
 
 # page_type → which signal kinds are even eligible there. Keeps the new
@@ -310,6 +315,7 @@ _SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
     "awards": frozenset({"home", "about", "services"}),
     "clients": frozenset({"home", "work"}),
     "stats": frozenset({"home", "about"}),
+    "locations": frozenset({"home", "about", "contact"}),
 }
 
 _MAX_EXTRA_SECTIONS = 2  # quality cap — don't let a page balloon past its rhythm

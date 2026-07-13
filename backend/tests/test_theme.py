@@ -352,6 +352,99 @@ class HeroHeightTokenTest(unittest.TestCase):
         )
 
 
+class BrandMoodTokenTest(unittest.TestCase):
+    """to_builder_styles carries the brand mood so the builder's section
+    browser can hide catalog templates gated to other moods (`moods` field)."""
+
+    def test_mood_is_emitted(self):
+        for mood in ("friendly", "playful", "luxury"):
+            theme = build_theme("#2563eb", mood=mood)
+            self.assertEqual(theme.to_builder_styles()["brandMood"], mood)
+
+
+class DesignLanguageOverrideTest(unittest.TestCase):
+    """palette_choice/font_choice (the design-language LLM picks) override the
+    deterministic selection when valid, and are silent no-ops when not."""
+
+    def test_slugs_are_unique(self):
+        palette_slugs = [c.slug for c in _CURATED_PALETTES]
+        self.assertEqual(len(palette_slugs), len(set(palette_slugs)))
+        for mood in MOODS:
+            pool_slugs = [p.slug for p in MOOD_SPECS[mood].font_pool]
+            self.assertEqual(
+                len(pool_slugs), len(set(pool_slugs)), f"{mood}: duplicate pairing slugs"
+            )
+
+    def test_valid_palette_choice_takes_that_curated_palette(self):
+        entry = next(c for c in _CURATED_PALETTES if c.slug == "ai-platform")
+        # A strong brand hue would normally win a Tailwind snap under "auto";
+        # the design-language pick must beat it.
+        theme = build_theme(
+            "#dc2626",
+            mood="modern",
+            palette_mode="auto",
+            industry="saas",
+            palette_choice="ai-platform",
+        )
+        self.assertEqual(theme.palette.primary.lower(), entry.primary.lower())
+        self.assertEqual(theme.palette, _palette_from_curated(entry))
+
+    def test_invalid_palette_choice_changes_nothing(self):
+        base = build_theme("#dc2626", mood="modern", palette_mode="auto", industry="saas")
+        hallucinated = build_theme(
+            "#dc2626",
+            mood="modern",
+            palette_mode="auto",
+            industry="saas",
+            palette_choice="not-a-real-palette",
+        )
+        self.assertEqual(base.palette, hallucinated.palette)
+
+    def test_palette_choice_is_confined_to_industry_candidates(self):
+        # childcare's curated set is forced; a saas palette slug must not escape it.
+        base = build_theme(None, mood="friendly", palette_mode="auto", industry="childcare")
+        cross = build_theme(
+            None,
+            mood="friendly",
+            palette_mode="auto",
+            industry="childcare",
+            palette_choice="ai-platform",
+        )
+        self.assertEqual(base.palette, cross.palette)
+
+    def test_dark_scheme_ignores_palette_choice(self):
+        base = build_theme("#2563eb", mood="modern", color_scheme="dark", industry="saas")
+        picked = build_theme(
+            "#2563eb",
+            mood="modern",
+            color_scheme="dark",
+            industry="saas",
+            palette_choice="ai-platform",
+        )
+        self.assertEqual(base.palette, picked.palette)
+
+    def test_valid_font_choice_takes_that_pairing(self):
+        pool = MOOD_SPECS["modern"].font_pool
+        # Pick a non-default pairing so the assertion can't pass by accident.
+        target = pool[-1]
+        theme = build_theme(
+            "#2563eb", mood="modern", industry="saas", font_choice=target.slug
+        )
+        self.assertEqual(theme.typography.heading_font, target.heading_font)
+        self.assertEqual(theme.typography.body_font, target.body_font)
+
+    def test_invalid_font_choice_changes_nothing(self):
+        base = build_theme("#2563eb", mood="modern", industry="saas", font_seed="Acme")
+        hallucinated = build_theme(
+            "#2563eb",
+            mood="modern",
+            industry="saas",
+            font_seed="Acme",
+            font_choice="comic-sans-papyrus",
+        )
+        self.assertEqual(base.typography, hallucinated.typography)
+
+
 if __name__ == "__main__":
     unittest.main()
 

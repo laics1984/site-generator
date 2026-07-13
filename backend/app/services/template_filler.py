@@ -10,6 +10,8 @@ Keep this in lock-step with the TS engine. Marker directives on a catalog node:
 
   - ``$slot``      bind this node's content from ``scope[$slot]`` (by node type)
   - ``$repeat``    clone ``content[0]`` once per item in ``scope[$repeat]``
+  - ``$bento``     like ``$repeat``, but stamp cloned tiles with varied grid spans
+  - ``$gridFit``   on a ``$repeat`` grid, pick 2Col/3Col by item count
   - ``$content``   fill from a registered factory (e.g. the contact form default)
   - ``$styleSlot`` inject a (resolved) value into a CSS style property
 
@@ -130,6 +132,10 @@ async def _bind_slot(
     if node_type == "image":
         img = await _resolve_image(value, resolve_image)
         return BuilderElementContent(**{**base, "src": img["src"], "alt": img["alt"]})
+    if node_type == "video":
+        # Raw iframe embed (maps, players): value is {src} or a bare URL string.
+        src = value.get("src") if isinstance(value, dict) else value
+        return BuilderElementContent(**{**base, "src": str(src or "")})
     return BuilderElementContent(**{**base, "innerText": str(value)})
 
 

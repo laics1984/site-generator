@@ -1,9 +1,13 @@
 # Webtree Site Generator — local dev compose
 #
-# IMPORTANT: Ollama runs on the HOST, not in a container.
+# IMPORTANT: the LLM never runs in a container HERE.
 # Docker Desktop on macOS cannot pass through the M1 GPU, so an in-container
 # Ollama would fall back to CPU inference (≈2 tok/s vs ≈25 tok/s native).
-# The backend reaches the host's Ollama via host.docker.internal:11434.
+# The backend reaches one of:
+#   - Ollama on the Mac host (default):  host.docker.internal:11434
+#   - mlx_lm.server on the Mac host:     LLM_BACKEND=mlx (managed by dev.sh)
+#   - the remote RTX AI server over Tailscale (llama-server, see ai-server/):
+#     LLM_BACKEND=mlx + MLX_BASE_URL=http://<tailnet-ip>:8080 in .env
 
 services:
   backend:
@@ -22,8 +26,10 @@ services:
     environment:
       # Only the container-networking rewrites live here (environment beats
       # env_file): in-container, "localhost" URLs from a host-context .env must
-      # point at host.docker.internal instead.
-      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      # point at host.docker.internal instead. Each uses ${VAR:-default}
+      # interpolation so a .env that points at a REMOTE server (e.g. Ollama on
+      # the AI server) passes through instead of being clobbered.
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       MLX_BASE_URL: "${MLX_BASE_URL:-http://host.docker.internal:8080}"
       CMS_API_BASE_URL: "${CMS_API_BASE_URL:-http://host.docker.internal:8000}"
     extra_hosts:

@@ -61,6 +61,9 @@ _GRADIENT = HeroDirective("hero-gradient", "split")
 _CENTERED = HeroDirective("hero-centered-minimal", "split")
 _MINIMAL = HeroDirective("hero-minimal", "split")
 _ASYMMETRIC = HeroDirective("hero-asymmetric-display", "split")
+# Blob-masked photo beside sticker-chip copy; light band, dark ink. Only moods
+# whose catalog gate allows it (see the template's `moods` field) rotate it in.
+_PLAYFUL_SPLIT = HeroDirective("hero-playful-split", "split")
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,7 @@ _MOOD_SPECS: dict[BrandMood, _MoodSpec] = {
     "playful": _MoodSpec(
         homepage=_BACKGROUND,
         by_page_type={"contact": _CENTERED},
-        rotation=(_BENTO, _GRADIENT, _SPLIT_WASHED),
+        rotation=(_PLAYFUL_SPLIT, _BENTO, _GRADIENT),
     ),
     "friendly": _MoodSpec(
         homepage=_BACKGROUND,
@@ -141,7 +144,7 @@ _CHILDCARE_SPEC = _MoodSpec(
         "contact": _CENTERED,
         "faq": _CENTERED,
     },
-    rotation=(_SPLIT_WASHED, _CENTERED, _EDITORIAL),
+    rotation=(_PLAYFUL_SPLIT, _SPLIT_WASHED, _CENTERED, _EDITORIAL),
 )
 
 _INDUSTRY_SPECS: dict[str, _MoodSpec] = {

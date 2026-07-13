@@ -222,6 +222,12 @@ class ThemeTokens(BaseModel):
                 or MOOD_MOTION_INTENSITY.get(self.mood, "balanced"),
             },
             "backgroundTexture": self.background_strategy,
+            # The brand mood the theme was built for. The builder's section
+            # browser reads it to hide catalog templates whose `moods` gate
+            # excludes this brand (same gate the generator's mood_allows
+            # enforces) — e.g. playful kindergarten blocks never surface while
+            # editing a law firm. Builder-only; the public renderer ignores it.
+            "brandMood": self.mood,
         }
         # Only emit the hero token when banded; absence → the template's
         # full-screen fallback, so "full" sites stay byte-identical.

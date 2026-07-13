@@ -20,8 +20,10 @@ that descriptions cannot guarantee.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
+from urllib.parse import quote_plus
 
 from app.models.brand import BrandMood, ColorPalette, ThemeTokens
 from app.models.builder_schema import BuilderElement, BuilderElementContent
@@ -34,6 +36,7 @@ from app.models.content_blocks import (
     FeaturesBlock,
     GalleryBlock,
     HeroBlock,
+    LocationsBlock,
     MenuBlock,
     PricingBlock,
     ProcessBlock,
@@ -144,7 +147,7 @@ def _services_content(b: ServicesBlock) -> dict[str, Any]:
             {
                 "title": i.title,
                 "description": i.description,
-                "ideal": None,
+                "ideal": i.audience,
                 "image": _item_image(i, i.title),
             }
             for i in b.items
@@ -294,6 +297,69 @@ def _menu_content(b: MenuBlock) -> dict[str, Any]:
     }
 
 
+def _stats_content(b: Any) -> dict[str, Any]:
+    return {
+        "heading": b.heading,
+        "items": [{"value": i.value, "label": i.label} for i in b.items],
+    }
+
+
+def _clients_content(b: Any) -> dict[str, Any]:
+    return {
+        "heading": b.heading,
+        "subheading": b.subheading,
+        "items": [{"name": i.name} for i in b.items],
+    }
+
+
+def maps_embed_url(name: str, address: str) -> str:
+    """Keyless Google Maps embed URL for a branch (renders via the video/iframe
+    element — see the locations catalog template). Name + address together give
+    the place search its best chance of pinning the exact business."""
+    return f"https://maps.google.com/maps?q={quote_plus(f'{name}, {address}')}&output=embed"
+
+
+def whatsapp_href(number: str | None) -> str | None:
+    """``wa.me`` link for an international-format number; None otherwise.
+
+    wa.me requires the full country-coded number, so a national-format number
+    (leading 0, no country code) yields None — callers fall back to ``tel:``,
+    which any format satisfies.
+    """
+    if not number:
+        return None
+    digits = re.sub(r"\D", "", number)
+    if number.strip().startswith("+") and len(digits) >= 9:
+        return f"https://wa.me/{digits}"
+    if digits.startswith("00") and len(digits) >= 11:
+        return f"https://wa.me/{digits[2:]}"
+    return None
+
+
+def _locations_content(b: LocationsBlock) -> dict[str, Any]:
+    items = []
+    for i in b.items:
+        wa = whatsapp_href(i.whatsapp)
+        items.append(
+            {
+                "name": i.name,
+                "address": i.address,
+                "hours": i.hours,
+                "phone_cta": _link(i.phone, f"tel:{re.sub(r'[^0-9+]', '', i.phone)}")
+                if i.phone
+                else None,
+                "whatsapp_cta": _link("WhatsApp us", wa) if wa else None,
+                "map": {"src": maps_embed_url(i.name, i.address)},
+            }
+        )
+    return {
+        "eyebrow": "Locations",
+        "heading": b.heading,
+        "subheading": b.subheading,
+        "items": items,
+    }
+
+
 def _pricing_content(b: PricingBlock) -> dict[str, Any]:
     return {
         "eyebrow": "Pricing",
@@ -327,6 +393,9 @@ _MAPPERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "process": _process_content,
     "menu": _menu_content,
     "pricing": _pricing_content,
+    "locations": _locations_content,
+    "stats": _stats_content,
+    "clients": _clients_content,
 }
 
 
@@ -502,6 +571,9 @@ def is_feasible(template: dict[str, Any], content: dict[str, Any]) -> bool:
         elif kind == "link":
             if not (isinstance(value, dict) and (value.get("innerText") or value.get("label"))):
                 return False
+        elif kind == "video":
+            if not (isinstance(value, dict) and value.get("src")):
+                return False
         else:  # text
             if not (isinstance(value, str) and value.strip()):
                 return False
@@ -521,10 +593,10 @@ _MOOD_LAYOUT_PREFERENCE: dict[BrandMood, list[str]] = {
     "luxury": ["centered", "editorial", "asymmetric", "narrative", "minimal", "split", "single"],
     # "background" before "split": friendly brands lead photo-forward; split
     # was the reflex that made every friendly-mood page open identically.
-    "friendly": ["grid", "banner", "background", "split"],
+    "friendly": ["grid", "steps", "banner", "background", "split"],
     "technical": ["grid", "minimal", "stacked", "centered", "split"],
     "editorial": ["editorial", "asymmetric", "split", "narrative", "single", "background"],
-    "playful": ["bento", "background", "gradient", "banner", "grid"],
+    "playful": ["steps", "bento", "background", "gradient", "banner", "grid"],
 }
 
 
@@ -546,15 +618,26 @@ def mood_preferred_ids(mood: BrandMood | None, section_type: str) -> list[str]:
     return [t["id"] for t in ordered]
 
 
+def mood_allows(template: dict[str, Any], mood: BrandMood | None) -> bool:
+    """A template with a ``moods`` list is only offered to those brand moods
+    (e.g. playful kindergarten styling never lands on a law firm). Templates
+    without the field — the whole pre-existing catalog — are mood-neutral."""
+    allowed = template.get("moods")
+    if not allowed:
+        return True
+    return mood in allowed
+
+
 def select_template(
     section_type: str,
     content: dict[str, Any],
     *,
     preferred_ids: list[str] | None = None,
     explicit_id: str | None = None,
+    mood: BrandMood | None = None,
 ) -> dict[str, Any] | None:
     """Choose a catalog template for a section: feasibility filter, then preference."""
-    candidates = templates_for_type(section_type)
+    candidates = [t for t in templates_for_type(section_type) if mood_allows(t, mood)]
     if not candidates:
         return None
     feasible = [t for t in candidates if is_feasible(t, content)]
@@ -916,6 +999,83 @@ def _has_real_photo(styles: dict[str, Any]) -> bool:
     return False
 
 
+_WHATSAPP_HREF = re.compile(r"(?:^whatsapp:|//wa\.me/|//api\.whatsapp\.com/)", re.IGNORECASE)
+
+# Official WhatsApp glyph (simple-icons path), white fill, inlined as a data URI
+# so the button needs no asset pipeline. Rendered as a backgroundImage on the
+# link's left edge; paddingLeft clears it.
+_WHATSAPP_ICON = (
+    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
+    "viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M17.472 14.382c-.297-.149-1.758"
+    "-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173."
+    "199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1."
+    "653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198"
+    "-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.24"
+    "2-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-."
+    "272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 "
+    "3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-."
+    "085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-"
+    ".57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982."
+    "998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.8"
+    "84 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.43"
+    "7 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335"
+    ".157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 "
+    "0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3."
+    "48-8.413z'/%3E%3C/svg%3E\")"
+)
+
+# WhatsApp's brand green; fixed on purpose (recognisability over theme harmony —
+# users tap the green pill because they know exactly what it does).
+_WHATSAPP_GREEN = "#25D366"
+
+
+def style_whatsapp_links(elements: list[BuilderElement]) -> int:
+    """First-class WhatsApp buttons: any body link whose href opens a WhatsApp
+    chat (wa.me / api.whatsapp.com / whatsapp:) is restyled as the recognisable
+    green pill with the WhatsApp glyph, regardless of which template or legacy
+    builder produced it. Icon-only links (no visible label) are left alone.
+    Returns the number of links restyled. Run AFTER enforce_text_contrast so the
+    white-on-green ink is never retinted."""
+    styled = 0
+
+    def walk(el: BuilderElement) -> None:
+        nonlocal styled
+        if isinstance(el.content, list):
+            for child in el.content:
+                walk(child)
+            return
+        content = el.content
+        href = getattr(content, "href", None) or ""
+        label = (getattr(content, "innerText", None) or "").strip()
+        if el.type == "link" and len(label) >= 2 and _WHATSAPP_HREF.search(href):
+            el.styles = {
+                **(el.styles or {}),
+                "display": "inline-flex",
+                "alignItems": "center",
+                "justifyContent": "center",
+                "width": "fit-content",
+                "backgroundColor": _WHATSAPP_GREEN,
+                "color": "#ffffff",
+                "backgroundImage": _WHATSAPP_ICON,
+                "backgroundRepeat": "no-repeat",
+                "backgroundPosition": "18px center",
+                "backgroundSize": "18px 18px",
+                "paddingTop": "12px",
+                "paddingBottom": "12px",
+                "paddingLeft": "46px",
+                "paddingRight": "24px",
+                "borderRadius": "999px",
+                "border": "none",
+                "fontWeight": 700,
+                "textDecoration": "none",
+            }
+            styled += 1
+
+    for el in elements:
+        walk(el)
+    return styled
+
+
 def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) -> int:
     """Scheme-agnostic contrast safety net. Retargets any text whose colour fails
     contrast against its *resolved* band background to that band's correct
@@ -1193,13 +1353,17 @@ def block_to_section(
     # otherwise happily re-select the text-only grid).
     if kind in ("features", "services") and _most_items_have_images(content):
         explicit_id = f"{kind}-image-cards"
+        # Friendly/playful brands (childcare et al) get the badge-carrying
+        # program cards instead — same photo-topped policy, warmer framing.
+        if kind == "services" and mood in ("friendly", "playful"):
+            explicit_id = "services-programs-age"
     pref_fn = _PREFERENCE.get(kind)
     content_pref = pref_fn(content, block) if pref_fn else []
     # Content leads the layout choice so available imagery is actually used.
     # Mood remains a fallback/tiebreaker among still-feasible variants.
     preferred = list(content_pref or []) + mood_preferred_ids(mood, kind)
     template = select_template(
-        kind, content, preferred_ids=preferred, explicit_id=explicit_id
+        kind, content, preferred_ids=preferred, explicit_id=explicit_id, mood=mood
     )
     if template is None:
         return None

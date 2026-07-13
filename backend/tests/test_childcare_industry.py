@@ -444,9 +444,14 @@ class ChildcareHeroContrastTest(unittest.TestCase):
 
     def test_interior_heroes_are_light_bg_dark_text_variants(self):
         # Every childcare interior hero should be a light-background/dark-ink
-        # variant (split-washed, centered-minimal, editorial) — never the
-        # full-bleed white-text templates reserved for the homepage.
-        allowed = {"hero-modern-split", "hero-centered-minimal", "hero-editorial"}
+        # variant (playful split, split-washed, centered-minimal, editorial) —
+        # never the full-bleed white-text templates reserved for the homepage.
+        allowed = {
+            "hero-playful-split",
+            "hero-modern-split",
+            "hero-centered-minimal",
+            "hero-editorial",
+        }
         ids = {d.template_id for d in _CHILDCARE_SPEC.rotation}
         ids |= {d.template_id for d in _CHILDCARE_SPEC.by_page_type.values()}
         self.assertTrue(ids <= allowed, ids - allowed)
