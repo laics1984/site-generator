@@ -240,15 +240,27 @@ def rank_candidates(
     candidates = [c for c in candidates if c.role not in _EXCLUDED_ROLES]
     if slot_usage == "inline":
         candidates = [c for c in candidates if c.source_usage != "css_background"]
-    # Large featured slots (hero / about) must be real photographs. A banner,
-    # UI screenshot, graphic (e.g. a QR code) or map blown up as the hero/about
-    # image reads as a scrape failure, so exclude those vision kinds here — not
-    # just from the intent-pin below. They stay eligible for ordinary content
-    # slots (a screenshot is legitimate on a small SaaS feature card).
+    # A background slot stretches its image edge-to-edge behind text. A grid
+    # headshot (role=portrait) blown up that way reads as a scrape failure —
+    # a face filling the viewport — whatever its resolution. Portraits stay
+    # rankable for ordinary content slots (team cards, small features).
+    if slot_usage == "background":
+        candidates = [c for c in candidates if c.role != "portrait"]
+        if slot_intent == "hero":
+            # Gallery cells were cropped for a grid, never art-directed
+            # full-bleed; keep them off the hero background specifically.
+            candidates = [c for c in candidates if c.role != "gallery"]
+    # Large featured slots (hero / about) must be real featured photographs. A
+    # banner, UI screenshot, graphic (e.g. a QR code), map — or a lone grid
+    # headshot — blown up as the hero/about image reads as a scrape failure,
+    # so exclude those here, not just from the intent-pin below. They stay
+    # eligible for ordinary content slots (a screenshot is legitimate on a
+    # small SaaS feature card; a portrait on a team card).
     if slot_intent in PRIMARY_INTENTS:
         candidates = [
             c for c in candidates
-            if c.vision_kind is None or c.vision_kind not in _UNPINNABLE_VISION_KINDS
+            if c.role != "portrait"
+            and (c.vision_kind is None or c.vision_kind not in _UNPINNABLE_VISION_KINDS)
         ]
     if not candidates:
         return RankResult(chosen=None, chosen_score=0.0, decision="fallback", scores=[])
@@ -372,10 +384,6 @@ async def rank_candidates_with_llm_tiebreaker(
 # --- LLM judge ------------------------------------------------------------------
 
 
-class _JudgeResponse:
-    pass  # placeholder — we use a tiny inline schema below
-
-
 _JUDGE_SYSTEM = """You are picking the most-relevant image for a website slot.
 Reply ONLY with a single JSON object: {"pick": <index>|null}.
 - "pick": the array index of the best candidate, 0-based.
@@ -394,7 +402,10 @@ async def _llm_pick_best(
     from pydantic import BaseModel
 
     from app.config import settings  # lazy: heavy import only when judging
-    from app.services.llm import get_reasoning_llm  # lazy: heavy import only when judging
+    from app.services.llm import (  # lazy: heavy import only when judging
+        chat_json_cached,
+        get_reasoning_llm,
+    )
 
     class _JudgePick(BaseModel):
         pick: int | None
@@ -416,7 +427,11 @@ async def _llm_pick_best(
             for i, s in enumerate(contenders)
         ],
     }
-    result = await client.chat_json(
+    # Cached: temp-0 judging is deterministic, so identical slot/candidate sets
+    # (repeat slots in one render, or an unchanged regeneration) reuse the pick
+    # instead of paying another reasoning call on the render critical path.
+    result = await chat_json_cached(
+        client,
         system_prompt=_JUDGE_SYSTEM,
         user_prompt=json.dumps(payload, ensure_ascii=False),
         schema=_JudgePick,

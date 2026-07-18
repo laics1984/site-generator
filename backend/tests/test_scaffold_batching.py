@@ -51,6 +51,58 @@ def test_system_prompt_token_estimate_reflects_measured_size():
     assert est > 2000
 
 
+def test_user_prompt_can_omit_entry_raw_text():
+    # Non-first work items drop the entry page's raw_text (pure duplication —
+    # their pages carry page_source); brand and pages_requested must survive.
+    from app.models.content_blocks import SourceContent
+    import json
+
+    source = SourceContent(
+        source_kind="url", source_ref="x", title="Acme", raw_text="Entry text here."
+    )
+    scaffolds = [_scaffold("services", ["hero", "cta"])]
+    source_map = {"services": source}
+
+    with_text = json.loads(
+        planner._build_scaffolded_user_prompt(source, None, scaffolds, None, source_map)
+    )
+    trimmed = json.loads(
+        planner._build_scaffolded_user_prompt(
+            source, None, scaffolds, None, source_map, include_entry_text=False
+        )
+    )
+
+    assert with_text["source"]["raw_text"] == "Entry text here."
+    assert "raw_text" not in trimmed["source"]
+    assert trimmed["source"]["title"] == "Acme"
+    assert trimmed["pages_requested"][0]["page_source"]  # per-page grounding intact
+    assert len(json.dumps(trimmed)) < len(json.dumps(with_text))
+
+
+def test_measured_fixed_envelope_shrinks_the_budget():
+    # A caller-measured envelope replaces the _TOK_BRAND_SOURCE guess; a huge
+    # envelope must force smaller batches than the default guess would allow.
+    scaffolds = [
+        _scaffold("a", ["hero", "cta"]),
+        _scaffold("b", ["hero", "cta"]),
+        _scaffold("c", ["hero", "cta"]),
+    ]
+    num_ctx = 8192
+    default_batches = planner._build_batches(scaffolds, None, num_ctx)
+    # Leave room for barely one page stub beyond the system prompt.
+    huge = (
+        int(num_ctx * planner._INPUT_SHARE)
+        - planner._system_prompt_tokens(frozenset({"hero", "cta"}))
+        - planner._TOK_PER_PAGE_STUB
+    )
+    tight_batches = planner._build_batches(
+        scaffolds, None, num_ctx, fixed_input_tokens=huge
+    )
+    assert len(tight_batches) == 3  # one page per batch under the tight budget
+    assert len(tight_batches) > len(default_batches)
+    assert [s.slug for b in tight_batches for s in b] == ["a", "b", "c"]
+
+
 def test_batches_fit_the_input_budget():
     scaffolds = [
         _scaffold("", ["hero", "features", "cta"], page_type="home"),

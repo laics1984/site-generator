@@ -40,6 +40,96 @@ class ScraperImageExtractionTest(unittest.TestCase):
         self.assertEqual(images[0].url, "https://example.my/hero-sea-team.jpg")
         self.assertEqual(images[0].intent, "hero")
 
+    def test_responsive_figure_prefers_largest_srcset_over_small_src(self):
+        # A normal responsive <figure> keeps a small fallback in `src` while the
+        # full-resolution variant lives in `srcset`. Capture the large one.
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <figure>
+                <img src="/photo-800.jpg"
+                     srcset="/photo-400.jpg 400w, /photo-800.jpg 800w, /photo-2000.jpg 2000w"
+                     width="1200" height="800" alt="community clinic" />
+                <figcaption>Our clinic</figcaption>
+              </figure>
+            </body></html>
+            """,
+            "lxml",
+        )
+        images = _extract_images(soup, "https://example.my")
+        self.assertEqual(images[0].url, "https://example.my/photo-2000.jpg")
+
+    def test_descriptorless_srcset_does_not_override_good_src(self):
+        # A single-URL srcset with no width/density descriptor is no better than
+        # the base `src`, so keep `src`.
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <img src="/real-photo.jpg" srcset="/same-photo.jpg"
+                   width="1200" height="800" alt="storefront" />
+            </body></html>
+            """,
+            "lxml",
+        )
+        images = _extract_images(soup, "https://example.my")
+        self.assertEqual(images[0].url, "https://example.my/real-photo.jpg")
+
+    def test_wix_blur_placeholder_url_is_upgraded_to_full_resolution(self):
+        # Wix bakes w_/h_/blur into the URL path; the scraper must capture the
+        # untransformed original, not the tiny blurred blur-up placeholder.
+        media_id = "b90fa9_31305eee~mv2_d_7360_4912_s_4_2.jpg"
+        wix = (
+            f"https://static.wixstatic.com/media/{media_id}"
+            "/v1/fill/w_119,h_79,al_c,q_80,usm_0.66_1.00_0.01,blur_2,"
+            f"enc_avif,quality_auto/{media_id}"
+        )
+        soup = BeautifulSoup(
+            f'<html><body><figure><img src="{wix}" width="1200" height="800" '
+            'alt="classroom" /></figure></body></html>',
+            "lxml",
+        )
+        images = _extract_images(soup, "https://www.glorykids.edu.my")
+        # 7360x4912 capped to a 2560 long edge, blur dropped, aspect preserved.
+        self.assertEqual(
+            images[0].url,
+            f"https://static.wixstatic.com/media/{media_id}/v1/fill/w_2560,h_1708,al_c,q_90/{media_id}",
+        )
+
+    def test_comma_bearing_srcset_url_is_not_shattered(self):
+        # Wix bakes a comma-laden transform into the srcset URL; the parser must
+        # keep each URL whole instead of splitting on the internal commas (which
+        # used to yield a dead …/quality_auto/logo.png fragment resolved against
+        # the page domain -> 404).
+        mid = "2b31dd_1743cc~mv2.png"
+        srcset = (
+            f"https://static.wixstatic.com/media/{mid}/v1/fill/"
+            f"w_461,h_161,al_c,q_85,usm_0.66_1.00_0.01,enc_avif,quality_auto/logo.png 1x, "
+            f"https://static.wixstatic.com/media/{mid}/v1/fill/"
+            f"w_759,h_265,al_c,lg_1,q_85,enc_avif,quality_auto/logo.png 2x"
+        )
+        soup = BeautifulSoup(
+            f'<html><body><img srcset="{srcset}" width="461" height="161" '
+            'alt="logo" /></body></html>',
+            "lxml",
+        )
+        images = _extract_images(soup, "https://www.glorykids.edu.my")
+        # No dimensions in this media id → bare original; crucially on the Wix
+        # host, never the page domain.
+        self.assertEqual(
+            images[0].url,
+            f"https://static.wixstatic.com/media/{mid}",
+        )
+        self.assertNotIn("glorykids.edu.my", images[0].url)
+
+    def test_non_wix_url_is_left_unchanged(self):
+        soup = BeautifulSoup(
+            '<html><body><img src="https://cdn.example.com/photo.jpg" '
+            'width="1200" height="800" alt="x" /></body></html>',
+            "lxml",
+        )
+        images = _extract_images(soup, "https://example.com")
+        self.assertEqual(images[0].url, "https://cdn.example.com/photo.jpg")
+
     def test_extract_images_uses_stamped_computed_backgrounds(self):
         soup = BeautifulSoup(
             """
@@ -239,6 +329,58 @@ class ScraperImageExtractionTest(unittest.TestCase):
         profiles = scraper._extract_profile_candidates(soup, "https://example.my")
 
         self.assertEqual(profiles, [])
+
+    def test_logo_url_heuristic_matches_filenames_only(self):
+        self.assertTrue(scraper._looks_like_logo_url("https://x/assets/logo.png?v=4"))
+        self.assertTrue(scraper._looks_like_logo_url("https://x/site-logo.svg"))
+        self.assertFalse(scraper._looks_like_logo_url("https://x/logos/partner-wall.jpg"))
+        self.assertFalse(scraper._looks_like_logo_url("https://x/assets/contact.jpg"))
+
+    def test_profile_bio_preserves_card_line_boundaries(self):
+        # Directory cards pack credentials / specialties / address as separate
+        # lines — the bio must keep them as lines (rendered pre-line), not one
+        # run-on sentence.
+        soup = BeautifulSoup(
+            """
+            <div class="member">
+              <h3>Aisha Rahman</h3>
+              <p class="role">Music Therapist</p>
+              <ul>
+                <li>Children with special needs</li>
+                <li>Palliative care</li>
+              </ul>
+              <p>Home visits (KL and Selangor)</p>
+            </div>
+            """,
+            "lxml",
+        )
+        container = soup.find("div")
+
+        bio = scraper._extract_profile_bio(container, "Aisha Rahman", "Music Therapist")
+
+        self.assertEqual(
+            bio.splitlines(),
+            [
+                "Children with special needs",
+                "Palliative care",
+                "Home visits (KL and Selangor)",
+            ],
+        )
+
+    def test_profile_bio_caps_at_480_chars(self):
+        items = "".join(
+            f"<li>Specialty line number {i} with enough text to add up</li>"
+            for i in range(12)
+        )
+        soup = BeautifulSoup(
+            f'<div class="member"><h3>Aisha Rahman</h3><ul>{items}</ul></div>',
+            "lxml",
+        )
+        container = soup.find("div")
+
+        bio = scraper._extract_profile_bio(container, "Aisha Rahman", None)
+
+        self.assertEqual(len(bio), 480)
 
     def test_looks_like_person_name_rejects_headings_keeps_names(self):
         rejected = [

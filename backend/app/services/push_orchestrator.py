@@ -48,7 +48,7 @@ from app.models.builder_schema import (
 )
 from app.models.content_blocks import ContentCollections
 from app.services.cms_client import CmsApiError, CmsClient
-from app.services.menu_builder import build_menus, wrap_footer, wrap_header
+from app.services.menu_builder import build_layout_payload
 from app.services.timing import stage
 
 logger = logging.getLogger(__name__)
@@ -218,6 +218,10 @@ async def push_site(req: PushRequest) -> PushReport:
     client = CmsClient.for_default()
     try:
         return await _run_push(client, req, report)
+    except Exception as exc:
+        logger.exception("Unexpected error during push")
+        report.error = f"Unexpected error: {exc}"
+        return report
     finally:
         await client.aclose()
 
@@ -303,18 +307,30 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         PushStep(name="guard", ok=True, detail=f"Entity has {len(existing)} existing pages")
     )
 
-    # 3. Media upload — collect unique image srcs, upload, build a rewrite map
+    # 3. Media upload — collect unique image srcs, upload, build a rewrite map.
+    #    Individual failures are non-fatal: the image is stripped from the schema
+    #    so the published site never has a broken reference.
     try:
         with stage("push_media_upload"):
-            rewrites = await _upload_media(client, req)
-        report.record(
-            PushStep(
-                name="media",
-                ok=True,
-                detail=f"{len(rewrites)} image(s) uploaded",
-                data={"uploaded": len(rewrites)},
+            rewrites, failed_srcs = await _upload_media(client, req)
+        if failed_srcs:
+            report.record(
+                PushStep(
+                    name="media",
+                    ok=True,
+                    detail=f"{len(rewrites)} uploaded, {len(failed_srcs)} skipped",
+                    data={"uploaded": len(rewrites), "failed": len(failed_srcs)},
+                )
             )
-        )
+        else:
+            report.record(
+                PushStep(
+                    name="media",
+                    ok=True,
+                    detail=f"{len(rewrites)} image(s) uploaded",
+                    data={"uploaded": len(rewrites)},
+                )
+            )
     except CmsApiError as exc:
         report.record(PushStep(name="media", ok=False, error=str(exc)))
         report.error = str(exc)
@@ -323,6 +339,11 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     # Apply rewrites BEFORE we ship schemas — saves us a second pass and
     # ensures every src on the CMS side is a permanent URL.
     _apply_src_rewrites(req.site, rewrites)
+    # Drop any image that couldn't be re-hosted (dead/404 source URL) so the
+    # published site never renders a broken image pointing back at the source.
+    stripped = _strip_invalid_images(req.site, failed_srcs)
+    if stripped:
+        logger.info("Stripped %d unresolvable image reference(s)", stripped)
 
     # 4. Create pages — homepage first so isHomepage=true is set deterministically,
     #    then the rest concurrently (each create is independent on the CMS side).
@@ -407,38 +428,10 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
 
     # 6. Save layout — wrap + emit menus + PUT once on the homepage
     try:
-        legal_pages = [
-            (p.title, f"/{p.slug or ''}".rstrip("/") or "/")
-            for p in req.site.pages
-            if p.slug.lower() in ("privacy", "terms")
-        ]
-        menus = build_menus(
-            req.site.page_tree,
-            legal_pages=legal_pages,
-            social_links=req.site.social_links,
-        )
-        if req.site.header_schema is None or req.site.footer_schema is None:
-            raise CmsApiError(
-                500,
-                "GeneratedSite is missing header_schema or footer_schema — "
-                "rebuild the site with plan_to_site() before pushing.",
-            )
-        header_payload = wrap_header(
-            req.site.header_schema,
-            menus=menus,
-            overlay=req.site.header_overlay,
-            scroll_reveal_offset=(
-                settings.header_scroll_reveal_offset
-                if req.site.header_overlay
-                else None
-            ),
-            # Shrink applies to every header (independent of overlay); the
-            # renderer shares the reveal offset when overlay is on, so reuse it.
-            shrink_on_scroll=settings.header_shrink_enabled,
-            scroll_shrink_offset=settings.header_scroll_reveal_offset,
-            shrink_amount=settings.header_shrink_amount,
-        )
-        footer_payload = wrap_footer(req.site.footer_schema, menus=menus)
+        try:
+            menus, header_payload, footer_payload = build_layout_payload(req.site)
+        except ValueError as exc:
+            raise CmsApiError(500, str(exc)) from exc
         result = await client.save_page_layout(
             req.entity_token,
             homepage_id,
@@ -590,10 +583,13 @@ _IMAGE_MIME_MAP = {
 }
 
 
-async def _upload_media(client: CmsClient, req: PushRequest) -> dict[str, str]:
+async def _upload_media(
+    client: CmsClient, req: PushRequest
+) -> tuple[dict[str, str], set[str]]:
     """
     Walk every page's BuilderElement tree, find srcs that aren't permanent
-    webtree URLs, upload them, and return a {old_src: new_src} rewrite map.
+    webtree URLs, upload them, and return ({old_src: new_src} rewrite map,
+    {srcs that failed to resolve}).
     """
     rewrites: dict[str, str] = {}
     # Collect unique sources first to avoid uploading the same image twice
@@ -617,7 +613,7 @@ async def _upload_media(client: CmsClient, req: PushRequest) -> dict[str, str]:
 
     uploadable = [src for src in sources if _needs_upload(src)]
     if not uploadable:
-        return rewrites
+        return rewrites, set()
 
     # Resolve + upload concurrently: each image is independent, and the wait is
     # dominated by network (download + POST). One shared download client keeps
@@ -634,29 +630,58 @@ async def _upload_media(client: CmsClient, req: PushRequest) -> dict[str, str]:
                 except _ResolveSkip as exc:
                     logger.info("Skipping unresolvable src %s: %s", src[:80], exc)
                     return None
-                if content_type not in {"image/png", "image/jpeg"}:
-                    # CMS rejects everything except png/jpg. Convert PNG if possible
-                    # (most data URLs we make are already PNG), else skip.
+                # The CMS media store only accepts jpg/png (+ sanitized svg); a
+                # source-served webp/avif/gif would otherwise be skipped and left
+                # hotlinked to the origin. Transcode it so the published site is
+                # self-contained. PIL transcode is CPU-bound — thread it off so
+                # the other bounded-concurrency uploads keep moving.
+                coerced = await asyncio.to_thread(
+                    _coerce_to_cms_image, file_bytes, content_type, filename
+                )
+                if coerced is None:
                     logger.info(
-                        "Skipping non-supported mime %s for src %s", content_type, src[:80]
+                        "Skipping un-storable src %s (mime %s)", src[:80], content_type
                     )
                     return None
-                cdn_url = await client.upload_media(
-                    req.entity_token,
-                    file_bytes=file_bytes,
-                    filename=filename,
-                    content_type=content_type,
-                )
-                return src, cdn_url
+                file_bytes, content_type, filename = coerced
+                # Retry once on transient failures (timeout, connection drop).
+                for attempt in range(2):
+                    try:
+                        cdn_url = await client.upload_media(
+                            req.entity_token,
+                            file_bytes=file_bytes,
+                            filename=filename,
+                            content_type=content_type,
+                        )
+                        return src, cdn_url
+                    except CmsApiError as exc:
+                        if attempt == 0 and exc.status in (502, 503, 504):
+                            logger.warning(
+                                "Upload retry for %s (%s)", filename, exc
+                            )
+                            continue
+                        logger.warning(
+                            "Upload failed for %s: %s", src[:80], exc
+                        )
+                        return None
+            return None
 
         results = await asyncio.gather(
             *(_upload_one(src) for src in uploadable), return_exceptions=True
         )
-    _raise_first_error(results)
+    # Individual upload failures are handled per-image above (return None);
+    # only truly unexpected exceptions propagate here.
+    for res in results:
+        if isinstance(res, BaseException):
+            logger.warning("Unexpected error in media upload: %s", res)
     for res in results:
         if res is not None:
             rewrites[res[0]] = res[1]
-    return rewrites
+    # Uploadable srcs with no rewrite couldn't be fetched/stored (404, hotlink
+    # block, un-decodable) — they're dead references the caller strips so the
+    # published site never renders a broken image.
+    failed = {src for src in uploadable if src not in rewrites}
+    return rewrites, failed
 
 
 def _split_css_layers(value: str) -> list[str]:
@@ -789,6 +814,98 @@ async def _resolve_to_bytes(
     return resp.content, content_type, filename
 
 
+# Formats the CMS media store accepts natively (webtree-cms-api
+# MediaController::store + BackendController thumbnailing; svg via its dedicated
+# SvgSanitizer path). These pass through untouched so webp/avif keep their size
+# advantage. The API routes validation on the uploaded filename's extension, so
+# we always normalize the extension to the canonical one for the format.
+_CMS_NATIVE_EXT_TO_MIME = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "avif": "image/avif",
+    "gif": "image/gif",
+    "svg": "image/svg+xml",
+}
+_CMS_NATIVE_MIME_TO_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "image/avif": "avif",
+    "image/gif": "gif",
+    "image/svg+xml": "svg",
+}
+
+
+def _native_cms_ext(content_type: str, filename: str) -> str | None:
+    """Canonical CMS-storable extension for these bytes, or None if the format
+    isn't natively accepted. Trusts the content-type first, then the filename
+    extension (servers often mislabel svg/avif as text/plain or octet-stream)."""
+    if content_type in _CMS_NATIVE_MIME_TO_EXT:
+        return _CMS_NATIVE_MIME_TO_EXT[content_type]
+    fext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if fext in _CMS_NATIVE_EXT_TO_MIME:
+        return "jpg" if fext == "jpeg" else fext
+    return None
+
+
+_IMAGE_MAX_DIM = 2500
+
+
+def _coerce_to_cms_image(
+    file_bytes: bytes, content_type: str, filename: str
+) -> tuple[bytes, str, str] | None:
+    """Return (bytes, mime, filename) the CMS will store. None ⇒ not a usable image.
+
+    - jpg/png/webp/avif/gif/svg pass through untouched (extension normalized).
+      Oversized raster images (any dimension > 2500px) are downscaled to JPEG
+      to keep upload times and CMS storage reasonable.
+    - anything else the CMS can't store (bmp/tiff/ico/…) is transcoded with PIL:
+      PNG when it carries transparency (logos/icons), else JPEG (photos).
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    base = (filename.rsplit(".", 1)[0] if "." in filename else filename) or "image"
+
+    ext = _native_cms_ext(content_type, filename)
+    if ext is not None:
+        # SVG / GIF always pass through (vector / animated).
+        if ext in ("svg", "gif"):
+            return file_bytes, _CMS_NATIVE_EXT_TO_MIME[ext], f"{base}.{ext}"
+        # Raster native formats: downscale if oversized.
+        try:
+            with Image.open(BytesIO(file_bytes)) as img:
+                if max(img.size) > _IMAGE_MAX_DIM:
+                    converted = img.convert("RGB")
+                    converted.thumbnail((_IMAGE_MAX_DIM, _IMAGE_MAX_DIM))
+                    out = BytesIO()
+                    converted.save(out, format="JPEG", quality=85)
+                    return out.getvalue(), "image/jpeg", f"{base}.jpg"
+        except Exception:  # noqa: BLE001
+            pass
+        return file_bytes, _CMS_NATIVE_EXT_TO_MIME[ext], f"{base}.{ext}"
+
+    try:
+        with Image.open(BytesIO(file_bytes)) as img:
+            img.load()
+            has_alpha = img.mode in ("RGBA", "LA") or (
+                img.mode == "P" and "transparency" in img.info
+            )
+            if max(img.size) > _IMAGE_MAX_DIM:
+                img.thumbnail((_IMAGE_MAX_DIM, _IMAGE_MAX_DIM))
+            out = BytesIO()
+            if has_alpha:
+                img.convert("RGBA").save(out, format="PNG")
+                return out.getvalue(), "image/png", f"{base}.png"
+            img.convert("RGB").save(out, format="JPEG", quality=85)
+            return out.getvalue(), "image/jpeg", f"{base}.jpg"
+    except Exception:  # noqa: BLE001 — unsupported/corrupt bytes ⇒ leave hotlinked
+        return None
+
+
 _DATA_URL_RE = re.compile(r"data:(?P<ct>[^;,]+)(;base64)?,(?P<data>.*)", re.DOTALL)
 
 
@@ -832,6 +949,66 @@ def _apply_src_rewrites(site: GeneratedSite, rewrites: dict[str, str]) -> None:
         _rewrite_srcs(site.header_schema, rewrites)
     if site.footer_schema:
         _rewrite_srcs(site.footer_schema, rewrites)
+
+
+def _strip_invalid_images(site: GeneratedSite, failed: set[str]) -> int:
+    """Remove image elements + background layers whose src couldn't be re-hosted
+    (dead/404 source URL), so nothing renders as a broken image. In-place;
+    returns how many references were removed."""
+    if not failed:
+        return 0
+    removed = 0
+
+    def _is_dead_image(node: BuilderElement) -> bool:
+        content = node.content
+        return (
+            node.type == "image"
+            and isinstance(content, BuilderElementContent)
+            and isinstance(content.src, str)
+            and content.src in failed
+        )
+
+    def _strip_bg(node: BuilderElement) -> None:
+        nonlocal removed
+        styles = node.styles or {}
+        for key in ("backgroundImage", "background"):
+            value = styles.get(key)
+            if not isinstance(value, str) or not any(u in value for u in failed):
+                continue
+            kept = [
+                layer.strip()
+                for layer in _split_css_layers(value)
+                if not any(u in failed for u in _extract_bg_photo_urls(layer))
+            ]
+            new_value = ", ".join(l for l in kept if l)
+            if new_value:
+                styles[key] = new_value
+            else:
+                styles.pop(key, None)
+            removed += 1
+
+    def _prune(children: list[BuilderElement]) -> list[BuilderElement]:
+        nonlocal removed
+        kept: list[BuilderElement] = []
+        for child in children:
+            if _is_dead_image(child):
+                removed += 1
+                continue
+            _strip_bg(child)
+            if isinstance(child.content, list):
+                child.content = _prune(child.content)
+            kept.append(child)
+        return kept
+
+    for page in site.pages:
+        page.body_schema.elements = _prune(page.body_schema.elements)
+    for root in (site.header_schema, site.footer_schema):
+        if root is None:
+            continue
+        _strip_bg(root)
+        if isinstance(root.content, list):
+            root.content = _prune(root.content)
+    return removed
 
 
 def _rewrite_srcs(node: BuilderElement, rewrites: dict[str, str]) -> None:
@@ -967,7 +1144,9 @@ async def _entry_preview_image(
             )
         except _ResolveSkip:
             continue
-        prepared = _prepare_preview_image(file_bytes, filename, max_dim=max_dim)
+        prepared = await asyncio.to_thread(
+            _prepare_preview_image, file_bytes, filename, max_dim=max_dim
+        )
         if prepared:
             return prepared
     return None
@@ -1085,8 +1264,11 @@ async def _push_content_types(
                 raise
 
     with stage("push_content_entries"):
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as dl:
-            for article in cols.articles if category_slug else []:
+        sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+        async def _push_article(article, dl) -> tuple[int, int, str | None]:
+            """Create one migrated article → (published Δ, drafted Δ, failure)."""
+            async with sem:
                 image = await _entry_preview_image(
                     article.image_url, fallback_srcs, dl, max_dim=_ARTICLE_IMAGE_MAX_DIM
                 )
@@ -1097,27 +1279,28 @@ async def _push_content_types(
                     else now_ms
                 )
 
-                async def _create_article(slug: str, _a=article, _img=image, _pub=publish, _ms=published_ms) -> None:
+                async def _create_article(slug: str) -> None:
                     await client.create_article(
                         req.entity_token,
-                        title=_a.title,
+                        title=article.title,
                         slug=slug,
-                        excerpt=_a.excerpt,
-                        body_html=_a.body_html,
+                        excerpt=article.excerpt,
+                        body_html=article.body_html,
                         category_slugs=[category_slug],
-                        published_at_ms=_ms,
-                        image=_img,
-                        publish=_pub,
+                        published_at_ms=published_ms,
+                        image=image,
+                        publish=publish,
                     )
 
                 try:
                     await _create_with_slug_retry(_create_article, article.slug)
-                    published += 1 if publish else 0
-                    drafted += 0 if publish else 1
+                    return (1, 0, None) if publish else (0, 1, None)
                 except CmsApiError as exc:
-                    failures.append(f"article {article.slug}: {exc}")
+                    return 0, 0, f"article {article.slug}: {exc}"
 
-            for event in cols.events:
+        async def _push_event(event, dl) -> tuple[int, int, str | None]:
+            """Create one migrated event → (published Δ, drafted Δ, failure)."""
+            async with sem:
                 image = await _entry_preview_image(
                     event.image_url, fallback_srcs, dl, max_dim=_EVENT_IMAGE_MAX_DIM
                 )
@@ -1127,27 +1310,41 @@ async def _push_content_types(
                 # Publishing requires location + start + end + previewImage.
                 publish = bool(image and start)
 
-                async def _create_event(slug: str, _e=event, _img=image, _pub=publish, _s=start, _en=end, _loc=location) -> None:
+                async def _create_event(slug: str) -> None:
                     await client.create_event(
                         req.entity_token,
-                        title=_e.title,
+                        title=event.title,
                         slug=slug,
-                        excerpt=_e.excerpt,
-                        body_html=_e.body_html,
-                        location=_loc,
-                        start_ms=int(_s.timestamp() * 1000) if _s else None,
-                        end_ms=int(_en.timestamp() * 1000) if _en else None,
+                        excerpt=event.excerpt,
+                        body_html=event.body_html,
+                        location=location,
+                        start_ms=int(start.timestamp() * 1000) if start else None,
+                        end_ms=int(end.timestamp() * 1000) if end else None,
                         published_at_ms=now_ms,
-                        image=_img,
-                        publish=_pub,
+                        image=image,
+                        publish=publish,
                     )
 
                 try:
                     await _create_with_slug_retry(_create_event, event.slug)
-                    published += 1 if publish else 0
-                    drafted += 0 if publish else 1
+                    return (1, 0, None) if publish else (0, 1, None)
                 except CmsApiError as exc:
-                    failures.append(f"event {event.slug}: {exc}")
+                    return 0, 0, f"event {event.slug}: {exc}"
+
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as dl:
+            # Entries are mutually independent (each pays an image download +
+            # resize + a CMS create), so fan them out under the same bounded
+            # concurrency as the other push steps instead of one at a time.
+            # gather preserves submission order → deterministic failure list.
+            outcomes = await asyncio.gather(
+                *[_push_article(a, dl) for a in (cols.articles if category_slug else [])],
+                *[_push_event(e, dl) for e in cols.events],
+            )
+        for pub_delta, draft_delta, failure in outcomes:
+            published += pub_delta
+            drafted += draft_delta
+            if failure:
+                failures.append(failure)
 
     detail = f"{published} published, {drafted} draft(s)"
     if failures:

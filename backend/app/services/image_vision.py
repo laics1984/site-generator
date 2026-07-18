@@ -262,6 +262,14 @@ async def _fetch_image_b64(
     raw = await _fetch_image_bytes(url, client=client)
     if raw is None:
         return None
+    # PIL decode/thumbnail is CPU-bound — thread it off so concurrent prefetch
+    # downloads keep flowing while one image re-encodes.
+    return await asyncio.to_thread(_downscale_to_b64, raw, url)
+
+
+def _downscale_to_b64(raw: bytes, url: str = "") -> str | None:
+    """Decode + downscale + re-encode as base64 JPEG. Sync/CPU on purpose —
+    callers run it via asyncio.to_thread."""
     try:
         # Pillow import is cheap (already a hard dependency via logo palette).
         from PIL import Image

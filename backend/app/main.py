@@ -12,7 +12,7 @@ logging.basicConfig(
 )
 
 from app.config import settings
-from app.routers import brand, cms, document, generate, health, pages, scrape
+from app.routers import brand, cms, document, generate, health, pages, preview, scrape
 from app.services.db import init_db
 
 
@@ -37,6 +37,7 @@ app.include_router(document.router)
 app.include_router(pages.router)
 app.include_router(generate.router)
 app.include_router(cms.router)
+app.include_router(preview.router)
 
 
 @app.on_event("startup")

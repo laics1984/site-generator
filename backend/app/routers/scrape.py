@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.services.crawl_jobs import get_manager
 from app.services.crawl_orchestrator import run_crawl_job
 from app.services.scraper import ScrapeError, ScrapeResult, extend_crawl, scrape_url
@@ -21,9 +22,14 @@ from app.services.sitemap import probe_sitemap
 router = APIRouter(prefix="/api/scrape", tags=["scrape"])
 
 
-# 5-minute in-process cache to absorb double-clicks + back-button traffic.
+# In-process cache absorbing double-clicks, back-button traffic, and
+# regeneration re-POSTs. TTL is config-driven (SCRAPE_CACHE_TTL_SECONDS,
+# default 30 min) so a whole page-picker/editing session stays inside it.
 _CACHE: dict[str, tuple[float, ScrapeResult]] = {}
-_CACHE_TTL = 300
+
+
+def _cache_ttl() -> float:
+    return settings.scrape_cache_ttl_seconds
 
 
 class ScrapePreviewRequest(BaseModel):
@@ -73,7 +79,7 @@ async def scrape_preview(payload: ScrapePreviewRequest) -> dict[str, Any]:
     )
     now = time.time()
     cached = _CACHE.get(cache_key)
-    if cached and (now - cached[0]) < _CACHE_TTL:
+    if cached and (now - cached[0]) < _cache_ttl():
         result = cached[1]
     else:
         try:
@@ -111,7 +117,7 @@ async def scrape_preview(payload: ScrapePreviewRequest) -> dict[str, Any]:
 
 
 def _gc_cache(now: float) -> None:
-    expired = [k for k, (ts, _) in _CACHE.items() if (now - ts) > _CACHE_TTL]
+    expired = [k for k, (ts, _) in _CACHE.items() if (now - ts) > _cache_ttl()]
     for k in expired:
         _CACHE.pop(k, None)
 

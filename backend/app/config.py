@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # fit comfortably in 16GB unified memory (M1) with headroom, so the two
     # passes never fight over which model is loaded. A generation newer than
     # qwen2.5 at the same footprint.
-    ollama_model: str = "qwen3.5:9b"
+    ollama_model: str = "qwen3.6:35b-a3b" #"qwen3.6:35b-q4_K_M"
     ollama_timeout_seconds: float = 180.0
     # How long Ollama keeps the model resident after a request. The picker flow
     # fires brand detection then (after the user picks pages) generation; the
@@ -103,6 +103,22 @@ class Settings(BaseSettings):
     # produces better JSON with its reasoning channel enabled.
     llm_think: bool = False
 
+    # --- regeneration caches -------------------------------------------------
+    # In-process TTL cache over validated LLM responses (llm.chat_json_cached).
+    # Only the deterministic-ish expensive calls opt in (scaffolded content
+    # batches, the image tie-break judge) — re-generating an unchanged site
+    # within the TTL reuses their results instead of re-paying minutes of GPU
+    # time, while the temp-0.7 design passes stay fresh so the look can still
+    # vary run to run. Any input change (source text, page selection, prompts,
+    # sampling knobs) is a different key and generates fresh.
+    llm_cache_enabled: bool = True
+    llm_cache_ttl_seconds: int = 1800
+    llm_cache_max_entries: int = 64
+    # TTL for the scrape-preview cache (routers/scrape.py). 5 minutes routinely
+    # expired while the user was still in the page picker, forcing a full
+    # re-scrape on regeneration; 30 minutes covers a whole editing session.
+    scrape_cache_ttl_seconds: int = 1800
+
     # Brand detection + the legacy free-form planner: faithful rewrite — keep it
     # close to the source, not creative.
     plan_temperature: float = 0.3
@@ -138,10 +154,19 @@ class Settings(BaseSettings):
     multipass_max_chars_per_call: int = 6000
     # Hard caps on how much one scaffolded batch may ask a single call to emit,
     # regardless of the token math — a small model degrades (drops sections,
-    # truncates JSON) well before the context window is actually full. A larger
-    # model can raise these.
+    # truncates JSON) well before the context window is actually full. With the
+    # slimmed system prompt these caps (not tokens) are usually the binding
+    # constraint on batch size, so on a larger model raising them here is the
+    # lever that genuinely cuts the number of content calls.
     max_sections_per_batch: int = 6
     max_pages_per_batch: int = 4
+    # How many scaffold batches may be in flight at once. 1 (default) preserves
+    # strictly serial generation — correct for a single local GPU model, where
+    # parallel requests just queue and slow each other down. Raise it only when
+    # the LLM backend genuinely serves parallel requests (vLLM/llama-server on a
+    # big card, a hosted API); batches are grouped by page depth either way so
+    # child pages still see their parent's hero context.
+    scaffold_batch_concurrency: int = 1
 
     # Char cap on the raw source text sent to the LEGACY free-form planner
     # (planner._build_user_prompt, the /from-source path). The old hardcoded
@@ -184,8 +209,23 @@ class Settings(BaseSettings):
     # (unknown dimensions still pass — CSS-background URLs often omit size).
     hero_min_background_dim: int = 1200
 
+    # Minimum width/height aspect ratio a SCRAPED image with KNOWN dimensions
+    # must have to fill a full-bleed hero background. Full-bleed heroes are
+    # wide bands; a square-ish or portrait-orientation source photo (typically
+    # a headshot or grid cell) stretched behind the hero text reads as a
+    # scrape failure. CSS-background sources are exempt — the source itself
+    # composed them full-bleed. Unknown dimensions still pass.
+    hero_bg_min_aspect: float = 1.2
+
+    # Minimum long-edge (px) a SCRAPED image must have to fill a NON-hero
+    # full-bleed section background (also rendered background-size: cover, so a
+    # small source image softens when upscaled). Lower than the hero minimum
+    # because section bands are shorter, but still guards against stretching a
+    # tiny figure image across a full-width band. Unknown dimensions still pass.
+    section_min_background_dim: int = 500
+
     # Transparent header floating over full-bleed heroes, solidifying to the
-    # header's real chrome after `header_scroll_reveal_offset` px of scroll
+    # header's real chrome after `header_scroll_reveal_offset` px of scrollF
     # (2026 trend look). Fires when the HOMEPAGE hero directive is full-bleed;
     # interior pages opt in per page via the `headerOverlaySafe` marker their
     # hero section carries (webtree-public gates the transparent phase on it).

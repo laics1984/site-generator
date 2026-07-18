@@ -2446,6 +2446,9 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                         "textAlign": "center",
                         "marginTop": "8px",
                         "maxWidth": "280px",
+                        # Scraped directory bios pack credentials / specialties /
+                        # address as newline-separated facts — keep the breaks.
+                        "whiteSpace": "pre-line",
                     },
                 )
             )
@@ -3636,10 +3639,6 @@ async def plan_to_site(
         target_element: BuilderElement | None = None
         # This page's slice of the batched site recipe (computed once above).
         design_recipe: DesignRecipe = site_design_recipe.recipe_for(page_index)
-        # Sub-pages get a breadcrumb prepended above the hero — a non-participant.
-        if page_plan.parent_slug is not None:
-            elements.append(_build_breadcrumb(page_plan, ctx))
-            visual_inputs.append(SectionVisualInput())
         for block_index, block in enumerate(page_plan.blocks):
             # Reset the per-section capture, render, then read the band of the
             # section's featured image (Phase 4b) into the pass input.

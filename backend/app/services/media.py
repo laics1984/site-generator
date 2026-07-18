@@ -95,18 +95,34 @@ _PEOPLE_INTENTS: frozenset[str] = frozenset({"hero", "about", "avatar", "feature
 
 
 def _below_hero_bg_min(meta: ImageMetadata | None, min_long_edge: int) -> bool:
-    """True when a scraped image's KNOWN dimensions are too small to fill a
-    full-bleed hero without softening.
+    """True when a scraped image is unfit to fill a full-bleed background:
+    too small, a measured grid headshot, or the wrong shape for a wide band.
 
     Unknown dimensions pass (return False): CSS-background URLs frequently omit
     size and the source clearly used them full-bleed, so we reject on measured
-    evidence, not missing data — only a long edge below the minimum is too small.
-    A ``min_long_edge`` of 0 disables the gate (non-hero slots).
+    evidence, not missing data. The role veto is the evidence-based rejection
+    that still catches a high-resolution headshot the size rule would pass.
+    A ``min_long_edge`` of 0 disables the gate (non-background slots).
     """
     if min_long_edge <= 0 or meta is None:
         return False
+    # A grid headshot is never a background, whatever its resolution.
+    if meta.role == "portrait":
+        return True
     long_edge = max(meta.width or 0, meta.height or 0)
-    return 0 < long_edge < min_long_edge
+    if 0 < long_edge < min_long_edge:
+        return True
+    # Shape gate: an inline square-ish/portrait-orientation photo can't fill a
+    # wide band without an awkward crop. CSS backgrounds are exempt — the
+    # source composed them full-bleed already.
+    if (
+        meta.width
+        and meta.height
+        and meta.source_usage != "css_background"
+        and meta.width / meta.height < settings.hero_bg_min_aspect
+    ):
+        return True
+    return False
 
 
 class ImageResolver:
@@ -213,20 +229,26 @@ class ImageResolver:
         stock fallback — because the source page actually used this photo for
         this section.
         """
-        # A full-bleed hero stretches its photo edge-to-edge (background-size:
-        # cover), so a small scraped source image softens when upscaled. For that
-        # slot only, require a hero-worthy long edge; too-small candidates are
+        # A full-bleed slot stretches its photo edge-to-edge (background-size:
+        # cover), so a small scraped source image softens when upscaled. For any
+        # background slot, require a minimum long edge; too-small candidates are
         # skipped so Pexels supplies a crisp full-size photo instead (§ below).
-        min_long_edge = (
-            settings.hero_min_background_dim
-            if intent == "hero" and slot_usage == "background"
-            else 0
-        )
+        # Heroes are taller/full-viewport, so they demand a larger minimum than
+        # ordinary section bands.
+        if slot_usage == "background":
+            min_long_edge = (
+                settings.hero_min_background_dim
+                if intent == "hero"
+                else settings.section_min_background_dim
+            )
+        else:
+            min_long_edge = 0
 
         if pinned_url:
             meta = next((c for c in self._pool if c.url == pinned_url), None)
-            # Honour the bound photo unless it's a too-small hero background —
-            # then fall through so the resolver reaches Pexels for a crisp shot.
+            # Honour the bound photo unless it's unfit for a full-bleed
+            # background (too small, a headshot, or the wrong shape) — then
+            # fall through so the resolver reaches Pexels for a crisp shot.
             if not _below_hero_bg_min(meta, min_long_edge):
                 self._used_urls.add(pinned_url)
                 lum, band = _band_fields(meta.dominant_color if meta else None)
@@ -242,8 +264,9 @@ class ImageResolver:
                     band=band,
                 )
             logger.debug(
-                "Pinned hero background %s below %dpx long edge; deferring to stock",
-                pinned_url, min_long_edge,
+                "Pinned %s background %s unfit for full-bleed (size/role/aspect, "
+                "min %dpx); deferring to stock",
+                intent, pinned_url, min_long_edge,
             )
 
         orientation = _INTENT_TO_ORIENTATION[intent]
@@ -450,11 +473,16 @@ class ImageResolver:
                     return result.chosen
                 # No lexical match — but these are the site's real page photos.
                 # Pick the largest unexcluded one rather than deferring to stock.
-                # This bypasses the ranker, so the slot-usage gate must be
-                # re-applied: a source CSS background never fills an inline slot.
+                # This bypasses the ranker, so the slot-usage and featured-slot
+                # gates must be re-applied: a source CSS background never fills
+                # an inline slot, and a grid headshot (role=portrait) never
+                # fills a hero/about slot or any background — on a directory
+                # page the biggest image by area IS a headshot.
                 eligible = [c for c in local if c.role not in {"decoration", "logo"}]
                 if slot_usage == "inline":
                     eligible = [c for c in eligible if c.source_usage != "css_background"]
+                if slot_usage == "background" or intent in ("hero", "about"):
+                    eligible = [c for c in eligible if c.role != "portrait"]
                 if eligible:
                     best = max(eligible, key=lambda c: (c.width or 0) * (c.height or 0))
                     logger.debug(

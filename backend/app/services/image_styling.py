@@ -112,10 +112,10 @@ def washed_photo_background(
     pr, pg, pb = _hex_to_rgb(primary_hex)
     if scheme == "dark":
         br, bg, bb = _hex_to_rgb(secondary_hex)
-        base_a, tint_a = 0.92, 0.18
+        base_a, tint_a = 0.80, 0.18
     else:
         br, bg, bb = _hex_to_rgb(surface_hex)
-        base_a, tint_a = 0.92, 0.10
+        base_a, tint_a = 0.80, 0.10
     return (
         f"linear-gradient(135deg, rgba({br},{bg},{bb},{base_a}), "
         f"rgba({pr},{pg},{pb},{tint_a})), url('{url}')"

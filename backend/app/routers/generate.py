@@ -41,8 +41,8 @@ from app.services.planner import (
     plan_site_with_scaffolds,
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
+from app.services.page_inference import DIRECTORY_MIN_PROFILES
 from app.services.image_refs import bind_image_refs
-from app.services.source_router import match_scaffolds_to_pages
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
     looks_like_team_member_name,
@@ -223,6 +223,7 @@ async def _annotate_source_images(
     source: SourceContent,
     metadata: list[ImageMetadata],
     prefetched: dict[str, str] | None = None,
+    profiles: list[ProfileCandidate] | None = None,
 ) -> dict[str, VisionAnnotation]:
     """Run the opt-in vision pass over the resolver pool + profile portraits.
 
@@ -232,9 +233,9 @@ async def _annotate_source_images(
     content generation (see prefetch_image_pool).
     """
     try:
-        profile_urls = [
-            p.photo_url for p in _profile_pool_for(source) if p.photo_url
-        ]
+        if profiles is None:
+            profiles = _profile_pool_for(source)
+        profile_urls = [p.photo_url for p in profiles if p.photo_url]
         with stage("vision_annotation"):
             return await annotate_image_pool(
                 metadata, extra_urls=profile_urls, prefetched=prefetched
@@ -262,6 +263,7 @@ def _enrich_plan_profile_photos(
     plan: SitePlan,
     source: SourceContent,
     annotations: dict[str, VisionAnnotation] | None = None,
+    profiles: list[ProfileCandidate] | None = None,
 ) -> None:
     """Attach confidently matched scraped portraits to generated team members.
 
@@ -269,8 +271,10 @@ def _enrich_plan_profile_photos(
     ProfileCandidate objects are applied, so older payloads and LLM-only plans
     keep using the existing photo_query fallback.
     """
+    if profiles is None:
+        profiles = _profile_pool_for(source)
     profiles = [
-        p for p in _profile_pool_for(source)
+        p for p in profiles
         if p.photo_url and _profile_photo_vision_ok(p.photo_url, annotations)
     ]
     if not profiles:
@@ -303,10 +307,13 @@ def _enrich_plan_profile_photos(
 def _scraped_team_members(
     source: SourceContent,
     annotations: dict[str, VisionAnnotation] | None = None,
+    profiles: list[ProfileCandidate] | None = None,
 ) -> list[TeamMember]:
     """Deterministic team members built from scraped profile candidates."""
+    if profiles is None:
+        profiles = _profile_pool_for(source)
     members: list[TeamMember] = []
-    for profile in _profile_pool_for(source):
+    for profile in profiles:
         if not looks_like_team_member_name(profile.name):
             continue
         if not profile.photo_url:
@@ -323,7 +330,46 @@ def _scraped_team_members(
                 photo_query=None,
             )
         )
-    return members[:12]
+    return members[:24]
+
+
+def _directory_roster_members(
+    page_source: SourceContent | None,
+    annotations: dict[str, VisionAnnotation] | None = None,
+) -> list[TeamMember]:
+    """Full page-scoped roster for a detected directory page.
+
+    Unlike the site-wide ``_profile_pool_for`` flatten, this reads ONLY the
+    page's own profile_candidates, so one listing's people never leak into
+    another (committee vs. practitioner directories) and the whole roster
+    survives — the LLM typically rewrites only a handful of names.
+    """
+    if page_source is None:
+        return []
+    members: list[TeamMember] = []
+    seen: set[str] = set()
+    for profile in page_source.profile_candidates or []:
+        norm = _normalized_person_name(profile.name)
+        if not norm or norm in seen:
+            continue
+        if not looks_like_team_member_name(profile.name):
+            continue
+        if not profile.photo_url:
+            continue
+        if not _profile_photo_vision_ok(profile.photo_url, annotations):
+            continue
+        seen.add(norm)
+        members.append(
+            TeamMember(
+                name=profile.name,
+                role=profile.role or "",
+                bio=profile.bio,
+                photo_url=profile.photo_url,
+                photo_alt=profile.photo_alt or profile.name,
+                photo_query=None,
+            )
+        )
+    return members[:24]
 
 
 def _ensure_scraped_team_blocks(
@@ -332,6 +378,9 @@ def _ensure_scraped_team_blocks(
     annotations: dict[str, VisionAnnotation] | None = None,
     *,
     team_section_slugs: set[str] | None = None,
+    profiles: list[ProfileCandidate] | None = None,
+    source_map: dict[str, SourceContent] | None = None,
+    directory_slugs: set[str] | None = None,
 ) -> None:
     """Fallback when scraped portraits exist but the final team block lost them.
 
@@ -339,16 +388,64 @@ def _ensure_scraped_team_blocks(
     that photo matching fails. Prefer the concrete scraped roster on pages whose
     scaffold explicitly requested a team section; legacy callers without
     scaffold context still get the old team-page fallback.
+
+    Pages in ``directory_slugs`` (detected profile directories, e.g. a "find a
+    therapist" listing) get their team block replaced WHOLESALE with the source
+    page's own full roster: the LLM keeps only a subset of a long listing, and
+    ``_enrich_plan_profile_photos`` can only attach photos to the members the
+    LLM kept, so a partially photo-bearing block must not short-circuit here.
     """
-    scraped_members = _scraped_team_members(source, annotations)
-    if not scraped_members:
-        return
+    scraped_members = _scraped_team_members(source, annotations, profiles)
     requested_team_slugs = team_section_slugs or set()
+    directory_pages = directory_slugs or set()
+    sources_by_slug = source_map or {}
 
     for page in plan.pages:
         team_indexes = [
             idx for idx, block in enumerate(page.blocks) if getattr(block, "kind", None) == "team"
         ]
+
+        if page.slug in directory_pages:
+            roster = _directory_roster_members(sources_by_slug.get(page.slug), annotations)
+            if roster:
+                if team_indexes:
+                    first = team_indexes[0]
+                    block = page.blocks[first]
+                    page.blocks[first] = TeamBlock(
+                        heading=block.heading,
+                        subheading=block.subheading,
+                        members=roster,
+                    )
+                    # One directory, one roster — drop any duplicate team blocks.
+                    for idx in reversed(team_indexes[1:]):
+                        del page.blocks[idx]
+                else:
+                    insert_at = next(
+                        (
+                            idx
+                            for idx, block in enumerate(page.blocks)
+                            if getattr(block, "kind", None) == "cta"
+                        ),
+                        len(page.blocks),
+                    )
+                    page.blocks.insert(
+                        insert_at,
+                        TeamBlock(
+                            heading=page.title or "Meet the team",
+                            subheading=None,
+                            members=roster,
+                        ),
+                    )
+                logger.info(
+                    "Directory roster: filled /%s with %d scraped profiles",
+                    page.slug, len(roster),
+                )
+                continue
+            # Page-scoped roster came up empty — fall through to the generic path.
+
+        if not scraped_members:
+            continue
+
         if team_indexes:
             for idx in team_indexes:
                 block = page.blocks[idx]
@@ -376,6 +473,67 @@ def _ensure_scraped_team_blocks(
                 members=scraped_members,
             ),
         )
+
+
+def _profile_name_patterns(names: list[str]) -> set[str]:
+    """Matchable word sequences for scraped people, ≥2 tokens each.
+
+    Two variants per person: the raw name ("ivy tan") and the title-stripped
+    one ("sandra cheah" for "Dr. Sandra Cheah"). Single-token remainders are
+    skipped — ``_person_name_tokens`` strips honorifics like "Tan", and a
+    lone "ivy" would false-positive on unrelated questions.
+    """
+    patterns: set[str] = set()
+    for name in names:
+        raw = " ".join(re.findall(r"[a-z0-9]+", (name or "").lower()))
+        if len(raw.split()) >= 2:
+            patterns.add(raw)
+        stripped = _normalized_person_name(name)
+        if len(stripped.split()) >= 2:
+            patterns.add(stripped)
+    return patterns
+
+
+def _strip_profile_faq_items(plan: SitePlan, source: SourceContent) -> None:
+    """Drop FAQ items manufactured from profile listings ("Who is Ivy Tan…?").
+
+    A directory page's card text flattens to prose, and the model reshapes
+    "Name — credentials" pairs into Q&As. Any FAQ question naming a scraped
+    person is such an artifact — the roster renders as a team grid instead
+    (see ``_ensure_scraped_team_blocks``). Name-scoped, so genuine source
+    FAQs survive untouched. Names come from the RAW profile_candidates, not
+    ``_profile_pool_for`` — the pool blocks names that appear as headings,
+    which on a directory page is every card title.
+    """
+    names = [p.name for p in source.profile_candidates or []]
+    for page_src in source.discovered_pages:
+        names.extend(p.name for p in page_src.profile_candidates or [])
+    patterns = _profile_name_patterns(names)
+    if not patterns:
+        return
+
+    def names_profile(question: str | None) -> bool:
+        q = " ".join(re.findall(r"[a-z0-9]+", (question or "").lower()))
+        padded = f" {q} "
+        return any(f" {p} " in padded for p in patterns)
+
+    for page in plan.pages:
+        kept_blocks = []
+        for block in page.blocks:
+            if getattr(block, "kind", None) != "faq":
+                kept_blocks.append(block)
+                continue
+            kept_items = [item for item in block.items if not names_profile(item.question)]
+            if len(kept_items) != len(block.items):
+                logger.info(
+                    "Stripped %d profile-derived FAQ item(s) on /%s",
+                    len(block.items) - len(kept_items), page.slug,
+                )
+            if kept_items:
+                block.items = kept_items
+                kept_blocks.append(block)
+            # An emptied FAQ block was entirely manufactured — drop it.
+        page.blocks = kept_blocks
 
 
 def _drop_hollow_team_pages(plan: SitePlan) -> None:
@@ -636,7 +794,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # critical path for free. The GPU-bound vision judging still runs after
     # content generation (two models on one 16GB GPU would thrash swaps).
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
-    profile_urls = [p.photo_url for p in _profile_pool_for(payload.source) if p.photo_url]
+    page_images = _page_images_by_slug(payload.source)
+    profiles = _profile_pool_for(payload.source)
+    profile_urls = [p.photo_url for p in profiles if p.photo_url]
     prefetch_task = asyncio.create_task(
         prefetch_image_pool(scraped_metadata, extra_urls=profile_urls)
     )
@@ -644,19 +804,16 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
     # This is the heaviest LLM pass (it writes all page copy); time it so the
     # breakdown shows whether content generation, not design/images, dominates.
+    # Also hands back the scaffold→source routing it used, so alignment verifies
+    # fact-bearing content against the actual page it was grounded in.
     try:
         with stage("content_generation"):
-            scaffolded = await plan_site_with_scaffolds(
+            scaffolded, source_map = await plan_site_with_scaffolds(
                 payload.source, detected, content_scaffolds
             )
     except LlmError as exc:
         prefetch_task.cancel()
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
-
-    # Same scaffold→source routing the planner used, recomputed here (cheap,
-    # no LLM call) so alignment can verify fact-bearing content against the
-    # actual page it was supposed to be grounded in.
-    source_map = match_scaffolds_to_pages(content_scaffolds, payload.source)
 
     # Build the SitePlan that schema_builder consumes.
     plan = SitePlan(
@@ -673,6 +830,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             source_map=source_map,
         ),
     )
+    # FAQ items the model manufactured out of profile listings are dropped
+    # before any rendering — the roster ships as a team grid, not as Q&As.
+    _strip_profile_faq_items(plan, payload.source)
     # Hub-page guarantee: every child page is reachable from its parent's body,
     # not just from the footer. Runs after alignment so appended items survive.
     _ensure_hub_child_links(plan.pages)
@@ -692,16 +852,27 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     except Exception:  # noqa: BLE001 — prefetch is advisory, never load-bearing
         logger.exception("Vision image prefetch failed; continuing without it")
     annotations = await _annotate_source_images(
-        payload.source, scraped_metadata, prefetched=prefetched
+        payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
     )
-    _enrich_plan_profile_photos(plan, payload.source, annotations)
+    _enrich_plan_profile_photos(plan, payload.source, annotations, profiles=profiles)
+    team_section_slugs = {s.slug for s in content_scaffolds if "team" in s.sections}
+    # Directory pages: scaffolds with a team section whose grounding source is
+    # itself a profile roster. Intersecting with the team scaffolds guarantees
+    # a contact/faq page fallback-grounded on the directory's text never grows
+    # a roster it shouldn't have.
+    directory_slugs = {
+        slug
+        for slug, src in source_map.items()
+        if len(src.profile_candidates or []) >= DIRECTORY_MIN_PROFILES
+    } & team_section_slugs
     _ensure_scraped_team_blocks(
         plan,
         payload.source,
         annotations,
-        team_section_slugs={
-            s.slug for s in content_scaffolds if "team" in s.sections
-        },
+        team_section_slugs=team_section_slugs,
+        profiles=profiles,
+        source_map=source_map,
+        directory_slugs=directory_slugs,
     )
     _drop_hollow_team_pages(plan)
 
@@ -717,7 +888,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         theme=theme,
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
-        page_images=_page_images_by_slug(payload.source),
+        page_images=page_images,
         contact=payload.contact,
         extra_footer_nav=extra_footer_nav,
         market_cue=market_cue,

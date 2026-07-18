@@ -14,6 +14,7 @@ free-form generate endpoint.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -45,7 +46,13 @@ from app.models.content_blocks import (
 from app.config import settings
 from app.models.industry import PageScaffold
 from app.services.industry_personality import personality_prompt_lines
-from app.services.llm import LlmClient, get_llm, get_reasoning_llm
+from app.services.llm import LlmClient, chat_json_cached, get_llm, get_reasoning_llm
+from app.services.prompts import (
+    DETECT_BRAND_PROMPT,
+    LEGACY_SYSTEM_PROMPT,
+    _SCAFFOLD_BLOCK_SCHEMAS,
+    _SCAFFOLD_PROMPT_HEAD,
+)
 from app.services.source_router import (
     excerpt_for_prompt,
     match_scaffolds_to_pages,
@@ -56,36 +63,8 @@ from app.services.source_router import (
 logger = logging.getLogger(__name__)
 
 
-# --- legacy free-form prompt (kept for back-compat with /from-source) ----------
-
-
-LEGACY_SYSTEM_PROMPT = """You are a senior web developer with extensive UIUX design experience, and experienced SEO copywriter.
-
-You are given raw content extracted from a source (a website or document) belonging to a business.
-Your job: REWRITE that content into a cleaner, better-organised, search-optimised, award winning design website and current web design trend. You
-improve the language; you do not invent a new business.
-
-Hard rules:
-- Reply with ONE JSON object matching the schema. No markdown, no commentary.
-- Every page MUST have a hero block first. The homepage MUST end with a cta or contact block.
-- Headlines: benefit-led, specific, 6-12 words, drawn from what the business actually does.
-  NEVER generic ("Welcome to our site", "About us").
-- CTAs: action verbs ("Book a call", "Get a quote"), never "Click here" or "Learn more" alone.
-- FIDELITY: use ONLY facts present in the source. You may fix grammar, tighten wording, improve
-  flow, and add SEO copy — but NEVER fabricate testimonials, reviewer names, statistics, prices,
-  awards, certifications, team members, contact details, hours, or FAQ specifics. If the source
-  doesn't support a section, leave that section out rather than invent content for it.
-- Preserve real proper nouns, prices, contact details from the source verbatim.
-- SEO titles 50-60 chars. SEO descriptions 140-160 chars, built from the real subject matter.
-- ALWAYS produce specific, visual image_query / background_query / avatar_query phrases
-  (these describe stock imagery, not facts).
-
-Pick `industry_category` from: restaurant, agency, saas, professional-services, ecommerce,
-consultancy, nonprofit, childcare, personal, other.
-Pick `brand_mood` from: modern, luxury, friendly, technical, editorial, playful.
-
-For a typical small business produce 4 pages: home, services, about, contact.
-"""
+# Prompt text lives in app/services/prompts.py (imported above) so prompt edits
+# land as isolated diffs; assembly, sizing, and batching stay here.
 
 
 def _build_user_prompt(source: SourceContent, max_chars: int | None = None) -> str:
@@ -150,39 +129,6 @@ class DetectedBrand(BaseModel):
         if self.brand_mood is None:
             self.brand_mood = industry_default_mood(self.industry_category)
         return self
-
-
-DETECT_BRAND_PROMPT = """You are a brand and industry analyst.
-You will read content extracted from a website or document and identify the business.
-
-Reply with ONE JSON object matching this schema — no markdown, no commentary:
-
-{
-  "site_name": string,
-  "tagline": string|null,           // existing tagline if present, else a short benefit-led one (≤8 words)
-  "brand_summary": string,           // 1-2 sentence description of what this business does
-  "brand_mood": "modern"|"luxury"|"friendly"|"technical"|"editorial"|"playful",
-       // modern    → SaaS, fintech, tech
-       // luxury    → hospitality, jewellery, real estate, premium
-       // friendly  → consumer, wellness, lifestyle, childcare, education
-       // technical → engineering, B2B, dev tools
-       // editorial → media, agencies, portfolios
-       // playful   → entertainment, food, gaming
-  "industry_category": "restaurant"|"agency"|"saas"|"professional-services"
-                       |"ecommerce"|"consultancy"|"nonprofit"|"childcare"|"personal"|"other",
-       // restaurant            → restaurants, cafés, bars, food
-       // agency                → creative / marketing / design agencies, studios
-       // saas                  → software products, apps, platforms
-       // professional-services → legal, dental, medical, accounting
-       // ecommerce             → online stores, product brands
-       // consultancy           → strategy, management, niche advisory
-       // nonprofit             → charities, NGOs, foundations
-       // childcare             → kindergartens, preschools, daycare, early learning
-       // personal              → solo professionals, freelancers, portfolios
-       // other                 → anything that doesn't fit cleanly above
-  "primary_color_hint": string|null   // hex like "#2563eb" if you can infer brand colour, else null
-}
-"""
 
 
 async def detect_brand(
@@ -358,215 +304,11 @@ def _scaffolds_to_prompt_payload(
     return payload
 
 
-_SCAFFOLD_PROMPT_HEAD = """You are a senior web editor and SEO copywriter. Your job is to
-REWRITE the business's own existing content into a cleaner, better-organised,
-search-optimised website — NOT to invent a new business.
-
-Think of yourself as a skilled editor handed the company's real copy. You may
-freely improve it: fix grammar and spelling, tighten wording, improve flow and
-clarity, make headlines benefit-led, and add SEO titles/descriptions/keywords.
-But every CONCRETE FACT must come from the source. You are polishing what is
-already there, never inventing what isn't.
-
-You will receive:
-1. `source`: raw content extracted from the business's entry page (homepage / cover)
-2. `brand`: detected brand metadata (name, mood, industry, etc.)
-3. `pages_requested`: an EXACT list of pages to produce. EACH page entry may
-   include a `page_source` field carrying THAT specific page's scraped content
-   (title, headings, raw_text). When present, it is the FACTUAL BASIS for the
-   page's copy — preserve real names, services, prices, addresses, hours, and
-   numbers. Rephrase and reorganise for clarity and SEO, but never state a fact
-   the source does not support, and never contradict the source.
-
-If a page has no `page_source`, fall back to the top-level `source` and the
-brand summary — still grounded in real content only.
-
-REAL PHOTOS — `page_source.images` (when present) lists the page's ACTUAL
-photos: each has a `ref` number plus `alt`, `role`, and `near` (the source
-heading the photo sat under). These are the business's authentic images —
-strongly prefer them over stock:
-- When a section you're writing corresponds to one of these photos (matching
-  `near` heading or `alt` topic), set that block's `image_ref` to the photo's
-  `ref` number.
-- Only use `ref` numbers that appear in the list — NEVER invent one.
-- Use each ref at most once across the page.
-- Still fill `image_query` with a 2-6 word stock phrase as fallback.
-
-DESIGN INTENT — you are writing for an award-site-calibre layout, not a
-generic template:
-- The input's `industry_personality` is your art direction: write every page's
-  copy in its voice, and let its design cues set the energy of eyebrows,
-  headlines and CTAs. A restaurant should not read like a SaaS dashboard.
-- Headlines read like a confident editorial pull-quote, not boilerplate.
-  Specific > clever > generic, always.
-- `headline_accent` (hero): when the headline ends with 1-4 words that carry
-  its emotional or benefit weight (the craft, the place, the outcome), repeat
-  EXACTLY those trailing words in `headline_accent` — the layout renders them
-  in the brand accent colour as a highlighted line. Copy them verbatim from
-  the headline's tail; omit the field when nothing deserves emphasis.
-- Give every hero an `eyebrow` — it's the small label above the headline that
-  gives the layout visual hierarchy (e.g. "Family-owned since 1998").
-- Homepage hero `layout`: default to "background" (full-bleed photo, the
-  header floats transparent over it on the live site) for visual/brand-led
-  industries — restaurant, hospitality, agency, travel, fitness, ecommerce —
-  and for nonprofit/charity/community organisations, whose homepage leads
-  with an emotional, immersive impact photo. Use "split" for industries that
-  read more credible as clean two-column text+image — saas,
-  professional-services, consultancy, technical/B2B — and for a nonprofit's
-  factual interior pages (programs, contact).
-  This is a default lean, not a rule: follow what the source's own photography
-  and tone actually support.
-
-═══════════════════════════════════════════════════════════════════════════
-FIDELITY RULES — these override every other instruction below:
-- Use ONLY facts present in the source. Improving language is encouraged;
-  inventing information is forbidden.
-- NEVER fabricate any of the following. If the source does not contain it,
-  it does not go on the page:
-    • testimonial quotes, reviewer names, ratings or star counts
-    • statistics, percentages, "trusted by N customers", years-in-business
-    • prices, plan tiers, discounts
-    • awards, certifications, partner/client logos or names
-    • team member names, titles, or bios
-    • addresses, phone numbers, emails, opening hours
-    • FAQ answers that assert specifics (policies, timelines, guarantees)
-    • menu items or dishes and their prices
-    • historical milestones, founding dates, or "our story" timeline events
-    • named clients, customers, or partner logos
-    • any of the above expressed as a "stats" callout (e.g. "15 years",
-      "200+ projects") — a number is only real if the source states it
-- NEVER invent a placeholder name to fill a required field ("John Doe",
-  "Jane Smith", "Test User", "Customer", "Anonymous", "Your Name", etc).
-  If a testimonial/team member/client has no real name in the source, DROP
-  that item (or the whole block) instead of writing a stand-in name — a
-  fabricated name is exactly as much a fidelity violation as a fabricated quote.
-- You MAY paraphrase, summarise, reorder, and sharpen real content. You MAY
-  write general benefit statements that follow directly from what the business
-  actually says it does. You MAY NOT add specifics that aren't in the source.
-
-OMITTING SECTIONS (important):
-- A section is requested in `required_sections`, but if the source contains NO
-  facts to ground it, OMIT that section entirely — leave it out of `blocks`.
-  A shorter, honest page beats a padded one with invented content.
-- Example: `required_sections` includes "testimonials" but the source has no
-  reviews → do NOT output a testimonials block. Same for faq, pricing, team,
-  menu, gallery, process, timeline, awards, clients, stats when the source is silent.
-- Only emit a section when you can fill it with at least its minimum number of
-  REAL, source-grounded items. If you can't, omit it.
-- hero, about, contact and cta are the exception: always keep these when
-  requested (hero restates the page's real topic; cta/contact are calls to
-  action, not factual claims).
-═══════════════════════════════════════════════════════════════════════════
-
-OUTPUT STRUCTURE — follow this skeleton EXACTLY. Every page MUST have a "blocks" array:
-
-{
-  "site_name": "string",
-  "tagline": "string or null",
-  "brand_summary": "1-2 sentence string",
-  "brand_mood": "modern|luxury|friendly|technical|editorial|playful",
-  "industry_category": "restaurant|agency|saas|professional-services|ecommerce|consultancy|nonprofit|childcare|personal|other",
-  "primary_color_hint": "#hexcolor or null",
-  "pages": [
-    {
-      "page_type": "home",
-      "slug": "string",
-      "title": "string",
-      "description": "string",
-      "is_homepage": true,
-      "seo_title": "string (50-60 chars)",
-      "seo_description": "string (140-160 chars)",
-      "seo_keywords": ["keyword1", "keyword2"],
-      "blocks": [
-        { "kind": "hero", "headline": "...", "primary_cta_label": "...", "primary_cta_href": "...", "image_query": "...", "layout": "split" },
-        { "kind": "features", "heading": "...", "items": [{ "title": "...", "description": "..." }] }
-      ]
-    }
-  ]
-}
-
-For each page in `pages_requested`:
-- Use the given `slug`, `title`, `is_homepage` verbatim.
-- Emit the sections from `required_sections` you can ground in the source, in
-  that SAME ORDER, and ONLY those kinds. Drop any section the source can't
-  support (see OMITTING SECTIONS). Do not add kinds that weren't requested.
-- A kind may appear SEVERAL TIMES in `required_sections` (e.g. "about" once per
-  source section on a story-style page). Emit one SEPARATE block per occurrence,
-  each covering a DIFFERENT part of the source (its own heading, its own body,
-  its own image_ref) — never merge them into one block or repeat the same text.
-- Each block must match the schema for its kind (see below).
-- If `parent_slug` is set, this is a SUB-PAGE under another page. When
-  `parent_context` is present, mirror the parent's tone and value prop — do
-  not restate what the company does in the hero; instead deep-dive on this
-  specific offering. Use the parent's voice consistently.
-- INTERIOR-PAGE HEROES (any page that is NOT the homepage) are orientation
-  headers, not conversion blocks: focus on a strong eyebrow + headline +
-  subheadline. The layout decides the hero CTA on its own (a scroll cue for
-  "background" heroes, none for "split" ones), so do NOT add a hero CTA that
-  points back at the same page's content (e.g. a "Testimonials" button on the
-  testimonials page). The real conversion ask belongs in the page's closing
-  `cta` block. You may still set primary_cta on the homepage hero.
-
-Hard rules:
-- Reply with ONE JSON object. No markdown, no commentary.
-- Headlines: benefit-led, specific, 6-12 words, drawn from what the business
-  actually does. NEVER generic ("Welcome to our site").
-- CTAs: action verbs ("Book a call", "Get a quote"), never "Click here" alone.
-- Preserve real proper nouns, prices, contact details from the source verbatim.
-- SEO titles 50-60 chars. SEO descriptions 140-160 chars. Build them from the
-  page's real subject matter and keywords — do not invent claims to fill length.
-- ALWAYS populate visual image_query / background_query / avatar_query / photo_query
-  fields with specific, concrete 2-6 word phrases (these describe stock imagery,
-  not facts, so they're always fine to write).
-- ITEM COUNTS: include as many REAL, source-grounded items as the source
-  supports, up to the schema maximum. Do NOT pad to a minimum with invented
-  items. If you can't reach a section's minimum with real content, OMIT the
-  whole section (see OMITTING SECTIONS above).
-- Every string field you DO emit (headline, cta_label, heading, etc.) MUST be a
-  non-null string — but it's better to omit an optional block than to fill it
-  with a placeholder.
-
-Block schemas (give the block's `kind` exactly).
-(Counts below are MAXIMUMS plus the floor needed to keep the section. Fill with
-real items only; if you can't reach the floor with real content, omit the block.)
-"""
-
-# One schema line per block kind. The system prompt only carries the lines for
-# the kinds a batch actually requests (plus the always-keep kinds), cutting
-# prompt prefill per call and lowering the truncated-JSON risk in small windows.
-_SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
-    "hero": """- hero: { kind:"hero", eyebrow?, headline, headline_accent?, subheadline?, primary_cta_label, primary_cta_href,
-          secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, image_ref?, layout:"split"|"background" }
-          (headline_accent: the headline's final 1-4 words verbatim, to render in the accent colour — optional)""",
-    "features": '- features: { kind:"features", heading, subheading?, items: [{title, description, image_query, image_ref?}] }  (1-6 real items; give EVERY item an image_query so its card carries a photo)',
-    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, audience?, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; give EVERY item an image_query so its card carries a photo; audience = short who-it\'s-for badge like "Ages 2-4" only when the source states it)',
-    "testimonials": '- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews only — omit if none)',
-    "about": '- about: { kind:"about", heading, body, image_alt?, image_query, image_ref? }',
-    "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (1-20 real Q&As — include ALL Q&As present in the source, omit block only if none)',
-    "cta": '- cta: { kind:"cta", headline, subheadline?, cta_label, cta_href, background_query, image_ref? }',
-    "contact": '- contact: { kind:"contact", heading, subheading?, email?, phone? }  (email/phone only if in source)',
-    "pricing": '- pricing: { kind:"pricing", heading, subheading?, tiers:[{name, price, description?, features:[string], cta_label, cta_href, highlighted:boolean}] }  (2-4 real tiers — omit if source has no pricing)',
-    "team": '- team: { kind:"team", heading, subheading?, members:[{name, role, bio?, photo_query}] }  (real people only — omit if none)',
-    "gallery": '- gallery: { kind:"gallery", heading, subheading?, items:[{title?, caption?, image_query, image_ref?}] }  (1-12 items)',
-    "menu": '- menu: { kind:"menu", heading, subheading?, categories:[{name, items:[{name, description?, price?}]}] }  (real menu only — omit if none)',
-    "process": '- process: { kind:"process", heading, subheading?, steps:[{title, description}] }  (1-6 real steps — omit if none)',
-    "timeline": '- timeline: { kind:"timeline", heading, subheading?, items:[{year, title, description?}] }  (1-10 real milestones — omit if the source has no dated history)',
-    "awards": '- awards: { kind:"awards", heading, subheading?, items:[{title, issuer?, year?}] }  (1-12 real awards/certifications — omit if none)',
-    "clients": '- clients: { kind:"clients", heading, subheading?, items:[{name, logo_query?}] }  (2-20 real client/customer/partner names — omit if fewer than 2 are named)',
-    "stats": '- stats: { kind:"stats", heading?, items:[{value, label}] }  (1-6 real numbers stated in the source — omit if the source states none)',
-    "locations": '- locations: { kind:"locations", heading, subheading?, items:[{name, address, phone?, whatsapp?, hours?}] }  (1-6 real branches/outlets with their real street addresses; whatsapp only in international format like +60123456789 — omit block if the source names no address)',
-}
-
-_SCAFFOLD_PROMPT_TAIL = """
-If a page's required_sections list contains a section kind the source can't
-support, OMIT that section — do not invent content to fill it. The requested
-structure is a maximum, not a quota: produce every section you can ground in
-the source (in the given order) and silently drop the rest. The words are yours
-to improve; the facts are the source's to keep.
-"""
+# The scaffold prompt text (_SCAFFOLD_PROMPT_HEAD, _SCAFFOLD_BLOCK_SCHEMAS)
+# lives in app/services/prompts.py and is imported above.
 
 # Always kept in the tailored prompt: they're the always-keep exceptions in the
-# fidelity rules above and their schema lines are small.
+# fidelity rules of the prompt HEAD and their schema lines are small.
 _SCAFFOLD_ALWAYS_KINDS = frozenset({"hero", "about", "cta", "contact"})
 
 
@@ -583,7 +325,7 @@ def _scaffold_system_prompt(kinds: frozenset[str] | None = None) -> str:
         keep = set(kinds) | _SCAFFOLD_ALWAYS_KINDS
         wanted = [k for k in _SCAFFOLD_BLOCK_SCHEMAS if k in keep]
     lines = "\n".join(_SCAFFOLD_BLOCK_SCHEMAS[k] for k in wanted)
-    return _SCAFFOLD_PROMPT_HEAD + lines + "\n" + _SCAFFOLD_PROMPT_TAIL
+    return _SCAFFOLD_PROMPT_HEAD + lines + "\n"
 
 
 def _batch_kinds(scaffolds: list[PageScaffold]) -> frozenset[str]:
@@ -593,9 +335,10 @@ def _batch_kinds(scaffolds: list[PageScaffold]) -> frozenset[str]:
 def _system_prompt_tokens(kinds: frozenset[str] | None) -> int:
     """Measured token estimate for the tailored system prompt (chars/4).
 
-    Replaces the old fixed 700-token guess, which under-counted the real prompt
-    (~2 700 tokens for the full schema set) and let batches overflow num_ctx —
-    truncated JSON output then cost a whole repair-retry LLM call.
+    Replaces an old fixed 700-token guess, which under-counted the real prompt
+    and let batches overflow num_ctx — truncated JSON output then cost a whole
+    repair-retry LLM call. Measuring (not guessing) also means the 2026 prompt
+    slim-down automatically widened the per-batch input budget.
     """
     return len(_scaffold_system_prompt(kinds)) // _CHARS_PER_TOKEN
 
@@ -656,6 +399,8 @@ def _build_batches(
     scaffolds: list[PageScaffold],
     source_map: dict[str, SourceContent] | None,
     num_ctx: int,
+    *,
+    fixed_input_tokens: int | None = None,
 ) -> list[list[PageScaffold]]:
     """Greedy token-aware batching.
 
@@ -668,8 +413,13 @@ def _build_batches(
     When the next page would overflow any limit the current batch is sealed and
     a new one begins.  A page that exceeds the budget on its own is always placed
     in a batch of size 1 so generation never blocks.
+
+    ``fixed_input_tokens`` — the measured brand + entry-source envelope for this
+    generation (see plan_site_with_scaffolds); falls back to the
+    _TOK_BRAND_SOURCE guess when the caller doesn't measure.
     """
-    input_budget = int(num_ctx * _INPUT_SHARE) - _TOK_BRAND_SOURCE
+    fixed = _TOK_BRAND_SOURCE if fixed_input_tokens is None else fixed_input_tokens
+    input_budget = int(num_ctx * _INPUT_SHARE) - fixed
     output_budget = num_ctx - int(num_ctx * _INPUT_SHARE)
 
     batches: list[list[PageScaffold]] = []
@@ -754,17 +504,25 @@ def _build_scaffolded_user_prompt(
     parent_context: dict[str, dict] | None = None,
     source_map: dict[str, SourceContent] | None = None,
     text_overrides: dict[str, str] | None = None,
+    *,
+    include_entry_text: bool = True,
 ) -> str:
+    source_payload: dict = {
+        "title": source.title,
+        "description": source.description,
+        "headings": source.headings[:15],
+    }
+    if include_entry_text:
+        # Entry-page text — brand context only. The real per-page content is
+        # inside each pages_requested[].page_source (see source_map). Only the
+        # FIRST work item of a generation carries it: its result supplies the
+        # site-level fields, while later batches ground every page in its own
+        # page_source, so re-sending the entry text there was pure duplication
+        # (the prompt HEAD tells the model raw_text may be absent).
+        source_payload["raw_text"] = source.raw_text[:_SCAFFOLD_RAW_TEXT_CHARS]
     return json.dumps(
         {
-            "source": {
-                "title": source.title,
-                "description": source.description,
-                "headings": source.headings[:15],
-                # Entry-page text — brand context only. The real per-page content
-                # is inside each pages_requested[].page_source (see source_map).
-                "raw_text": source.raw_text[:_SCAFFOLD_RAW_TEXT_CHARS],
-            },
+            "source": source_payload,
             "brand": brand.model_dump() if brand else None,
             # 2026 art-direction brief for this industry — the DESIGN INTENT
             # section of the system prompt tells the model how to apply it.
@@ -1081,6 +839,8 @@ async def _generate_page_section_chunks(
     parent_context: dict[str, dict],
     source_map: dict[str, SourceContent],
     client: LlmClient,
+    *,
+    include_entry_text: bool = True,
 ) -> tuple[PagePlan | None, "ScaffoldedSitePlan | None"]:
     """Generate a many-section page across several LIGHT calls — one per section
     group — then merge into a single page.
@@ -1105,10 +865,12 @@ async def _generate_page_section_chunks(
     first_result: ScaffoldedSitePlan | None = None
     for idx, group in enumerate(groups):
         sub = scaffold.model_copy(update={"sections": group})
-        result = await client.chat_json(
+        result = await chat_json_cached(
+            client,
             system_prompt=_scaffold_system_prompt(_batch_kinds([sub])),
             user_prompt=_build_scaffolded_user_prompt(
                 source, brand, [sub], parent_context, source_map,
+                include_entry_text=include_entry_text,
             ),
             schema=ScaffoldedSitePlan,
             temperature=settings.scaffold_temperature,
@@ -1140,6 +902,8 @@ async def _generate_page_multipass(
     parent_context: dict[str, dict],
     source_map: dict[str, SourceContent],
     client: LlmClient,
+    *,
+    include_entry_text: bool = True,
 ) -> tuple[PagePlan | None, "ScaffoldedSitePlan | None"]:
     """Generate one oversized page across several chunked calls, then merge.
 
@@ -1164,11 +928,13 @@ async def _generate_page_multipass(
     chunk_plans: list[PagePlan] = []
     first_result: ScaffoldedSitePlan | None = None
     for idx, chunk in enumerate(chunks):
-        result = await client.chat_json(
+        result = await chat_json_cached(
+            client,
             system_prompt=_scaffold_system_prompt(_batch_kinds([scaffold])),
             user_prompt=_build_scaffolded_user_prompt(
                 source, brand, [scaffold], parent_context, source_map,
                 {scaffold.slug: chunk},
+                include_entry_text=include_entry_text,
             ),
             schema=ScaffoldedSitePlan,
             temperature=settings.scaffold_temperature,
@@ -1198,8 +964,11 @@ async def plan_site_with_scaffolds(
     brand: DetectedBrand | None,
     scaffolds: list[PageScaffold],
     llm: LlmClient | None = None,
-) -> ScaffoldedSitePlan:
+) -> tuple[ScaffoldedSitePlan, dict[str, SourceContent]]:
     """Scaffold-driven planning with parent-aware batching + per-page source routing.
+
+    Returns the merged plan plus the scaffold→source routing map (source_map),
+    so callers reuse the routing instead of recomputing it.
 
     Strategy:
       - Build a source_map up front: each scaffold → the scraped page whose
@@ -1209,6 +978,9 @@ async def plan_site_with_scaffolds(
       - After each batch completes, harvest hero headlines from parent pages
         into ``parent_context``. Child batches receive that context so detail
         pages echo the parent's voice instead of restating the company.
+      - settings.scaffold_batch_concurrency > 1 runs same-depth work items in
+        parallel (for backends that serve concurrent requests); the default 1
+        keeps the strictly serial single-GPU behavior.
 
     Token budget per batch (2 pages, num_ctx 8192):
       input  ~3 500 tokens (system + entry source + brand + 2 page stubs each
@@ -1232,28 +1004,54 @@ async def plan_site_with_scaffolds(
     indexed.sort(key=lambda pair: (_scaffold_depth(pair[1]), pair[0]))
     ordered = [s for _, s in indexed]
 
+    # Measure the real fixed input envelope (entry source + brand + industry
+    # personality, with an empty pages list) once, instead of trusting the
+    # _TOK_BRAND_SOURCE guess — an unusually long brand summary or heading list
+    # would otherwise let batches overflow the input budget.
+    fixed_input_tokens = (
+        len(_build_scaffolded_user_prompt(source, brand, [], None, source_map))
+        // _CHARS_PER_TOKEN
+    )
+
     # 3. Build an ordered work-list. Runs of small pages flow through the existing
     #    multi-page batcher; each large page becomes its own chunked multi-pass item.
     #    Depth order is preserved (a large parent still generates before its children)
-    #    so parent hero context is available downstream.
-    worklist: list[tuple[str, object]] = []
+    #    so parent hero context is available downstream. Items are tagged with
+    #    their scaffold depth so the concurrent path can group them.
+    concurrency = max(1, settings.scaffold_batch_concurrency)
+    worklist: list[tuple[str, object, int]] = []
     small_run: list[PageScaffold] = []
 
     def _flush_small_run() -> None:
         if small_run:
-            for batch in _build_batches(small_run, source_map, _scaffold_num_ctx()):
-                worklist.append(("batch", batch))
+            batches = _build_batches(
+                small_run,
+                source_map,
+                _scaffold_num_ctx(),
+                fixed_input_tokens=fixed_input_tokens,
+            )
+            for batch in batches:
+                worklist.append(("batch", batch, _scaffold_depth(batch[0])))
             small_run.clear()
 
+    last_depth: int | None = None
     for s in ordered:
+        depth = _scaffold_depth(s)
+        if concurrency > 1 and last_depth is not None and depth != last_depth:
+            # Concurrent mode runs whole depth groups in parallel, so a batch
+            # must never span a depth boundary (a child sharing a batch with
+            # its parent would race the parent_context harvest). Serial mode
+            # keeps the old packing — no extra batch, identical call count.
+            _flush_small_run()
+        last_depth = depth
         if _needs_chunking(s, source_map):
             _flush_small_run()
-            worklist.append(("multipass", s))
+            worklist.append(("multipass", s, depth))
         elif _needs_section_chunking(s):
             # Too many sections for one light call → generate it in section
             # groups (each a small call) instead of one heavy atomic call.
             _flush_small_run()
-            worklist.append(("section_multipass", s))
+            worklist.append(("section_multipass", s, depth))
         else:
             small_run.append(s)
     _flush_small_run()
@@ -1262,45 +1060,87 @@ async def plan_site_with_scaffolds(
     parent_context: dict[str, dict] = {}
     first: ScaffoldedSitePlan | None = None
 
-    for item_kind, payload in worklist:
+    async def _run_item(
+        item_index: int, item_kind: str, payload: object
+    ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
+        """Execute one work item → (produced pages, site-level result if any).
+
+        Only the first work item carries the entry-page raw_text (its result
+        supplies the site-level fields); later items ground every page in its
+        own page_source, so the entry text there was pure duplication.
+        """
+        include_entry = item_index == 0
         if item_kind == "multipass":
             scaffold = payload  # type: ignore[assignment]
             page, result = await _generate_page_multipass(
-                source, brand, scaffold, parent_context, source_map, client
+                source, brand, scaffold, parent_context, source_map, client,
+                include_entry_text=include_entry,
             )
-            if first is None and result is not None:
-                first = result
-            produced = [page] if page is not None else []
-        elif item_kind == "section_multipass":
+            return ([page] if page is not None else []), result
+        if item_kind == "section_multipass":
             scaffold = payload  # type: ignore[assignment]
             page, result = await _generate_page_section_chunks(
-                source, brand, scaffold, parent_context, source_map, client
+                source, brand, scaffold, parent_context, source_map, client,
+                include_entry_text=include_entry,
             )
-            if first is None and result is not None:
-                first = result
-            produced = [page] if page is not None else []
-        else:
-            batch = payload  # type: ignore[assignment]
-            result = await client.chat_json(
-                system_prompt=_scaffold_system_prompt(_batch_kinds(batch)),
-                user_prompt=_build_scaffolded_user_prompt(
-                    source, brand, batch, parent_context, source_map
-                ),
-                schema=ScaffoldedSitePlan,
-                temperature=settings.scaffold_temperature,
-                num_ctx=_scaffold_num_ctx(),
-            )
-            if first is None:
-                first = result
-            produced = list(result.pages)
+            return ([page] if page is not None else []), result
+        batch = payload  # type: ignore[assignment]
+        result = await chat_json_cached(
+            client,
+            system_prompt=_scaffold_system_prompt(_batch_kinds(batch)),
+            user_prompt=_build_scaffolded_user_prompt(
+                source, brand, batch, parent_context, source_map,
+                include_entry_text=include_entry,
+            ),
+            schema=ScaffoldedSitePlan,
+            temperature=settings.scaffold_temperature,
+            num_ctx=_scaffold_num_ctx(),
+        )
+        return list(result.pages), result
 
-        all_pages.extend(produced)
+    def _absorb(produced: list[PagePlan], result: "ScaffoldedSitePlan | None") -> None:
         # Harvest parent hero context for children that come in later work items.
         # Children are guaranteed later because of the depth sort.
+        nonlocal first
+        if first is None and result is not None:
+            first = result
+        all_pages.extend(produced)
         for page in produced:
             summary = _hero_summary(page)
             if summary is not None:
                 parent_context[page.slug] = summary
+
+    if concurrency == 1:
+        # Strictly serial — the right shape for a single local GPU model, and
+        # every item sees the freshest parent_context (same as always).
+        for item_index, (item_kind, payload, _depth) in enumerate(worklist):
+            _absorb(*await _run_item(item_index, item_kind, payload))
+    else:
+        # Same-depth items are mutually independent (a page never parents a
+        # sibling), so run each contiguous depth group under a semaphore and
+        # harvest parent_context only after the whole group completes — the
+        # next (deeper) group then sees every parent hero. gather preserves
+        # submission order, keeping page order and `first` deterministic.
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _run_bounded(
+            item_index: int, item_kind: str, payload: object
+        ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
+            async with sem:
+                return await _run_item(item_index, item_kind, payload)
+
+        pos = 0
+        while pos < len(worklist):
+            group_depth = worklist[pos][2]
+            group: list[tuple[int, str, object]] = []
+            while pos < len(worklist) and worklist[pos][2] == group_depth:
+                group.append((pos, worklist[pos][0], worklist[pos][1]))
+                pos += 1
+            outcomes = await asyncio.gather(
+                *(_run_bounded(i, kind, payload) for i, kind, payload in group)
+            )
+            for produced, result in outcomes:
+                _absorb(produced, result)
 
     # Stitch parent_slug back onto every PagePlan from its source scaffold.
     by_slug = {s.slug: s for s in scaffolds}
@@ -1322,7 +1162,7 @@ async def plan_site_with_scaffolds(
     final_pages = ordered_pages + extras
 
     assert first is not None
-    return ScaffoldedSitePlan(
+    plan = ScaffoldedSitePlan(
         site_name=first.site_name,
         tagline=first.tagline,
         brand_summary=first.brand_summary,
@@ -1331,3 +1171,4 @@ async def plan_site_with_scaffolds(
         primary_color_hint=first.primary_color_hint,
         pages=final_pages,
     )
+    return plan, source_map

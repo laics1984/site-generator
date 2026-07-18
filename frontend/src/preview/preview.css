@@ -1,0 +1,1938 @@
+/* GENERATED FILE — DO NOT EDIT BY HAND.
+ *
+ * Vendored from webtree-public by frontend/scripts/vendor-preview-css.mjs.
+ * Regenerate with:  node scripts/vendor-preview-css.mjs [path-to-webtree-public]
+ *
+ * These are the public renderer's own styles: Tailwind's preflight (the
+ * published page's baseline — the generated schema depends on its
+ * box-sizing: border-box), main.css's base + wt-ui-* component layers, and the
+ * <style> blocks of the components ported in src/preview/. Vue's scoped-style
+ * data attributes are dropped — every selector is a unique wt- class, so
+ * scoping was never what made them work. Injected into the preview iframe by
+ * PagePreview.
+ *
+ * Edit the source in webtree-public and re-run the script; edits here are lost.
+ */
+
+/* --- from tailwindcss/preflight.css (the published page's baseline reset) --- */
+/*
+  1. Prevent padding and border from affecting element width. (https://github.com/mozdevs/cssremedy/issues/4)
+  2. Remove default margins and padding
+  3. Reset all borders.
+*/
+
+*,
+::after,
+::before,
+::backdrop,
+::file-selector-button {
+  box-sizing: border-box; /* 1 */
+  margin: 0; /* 2 */
+  padding: 0; /* 2 */
+  border: 0 solid; /* 3 */
+}
+
+/*
+  1. Use a consistent sensible line-height in all browsers.
+  2. Prevent adjustments of font size after orientation changes in iOS.
+  3. Use a more readable tab size.
+  4. Use the user's configured `sans` font-family by default.
+  5. Use the user's configured `sans` font-feature-settings by default.
+  6. Use the user's configured `sans` font-variation-settings by default.
+  7. Disable tap highlights on iOS.
+*/
+
+html,
+:host {
+  line-height: 1.5; /* 1 */
+  -webkit-text-size-adjust: 100%; /* 2 */
+  tab-size: 4; /* 3 */
+  font-family: --theme(
+    --default-font-family,
+    ui-sans-serif,
+    system-ui,
+    sans-serif,
+    'Apple Color Emoji',
+    'Segoe UI Emoji',
+    'Segoe UI Symbol',
+    'Noto Color Emoji'
+  ); /* 4 */
+  font-feature-settings: --theme(--default-font-feature-settings, normal); /* 5 */
+  font-variation-settings: --theme(--default-font-variation-settings, normal); /* 6 */
+  -webkit-tap-highlight-color: transparent; /* 7 */
+}
+
+/*
+  1. Add the correct height in Firefox.
+  2. Correct the inheritance of border color in Firefox. (https://bugzilla.mozilla.org/show_bug.cgi?id=190655)
+  3. Reset the default border style to a 1px solid border.
+*/
+
+hr {
+  height: 0; /* 1 */
+  color: inherit; /* 2 */
+  border-top-width: 1px; /* 3 */
+}
+
+/*
+  Add the correct text decoration in Chrome, Edge, and Safari.
+*/
+
+abbr:where([title]) {
+  -webkit-text-decoration: underline dotted;
+  text-decoration: underline dotted;
+}
+
+/*
+  Remove the default font size and weight for headings.
+*/
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+/*
+  Reset links to optimize for opt-in styling instead of opt-out.
+*/
+
+a {
+  color: inherit;
+  -webkit-text-decoration: inherit;
+  text-decoration: inherit;
+}
+
+/*
+  Add the correct font weight in Edge and Safari.
+*/
+
+b,
+strong {
+  font-weight: bolder;
+}
+
+/*
+  1. Use the user's configured `mono` font-family by default.
+  2. Use the user's configured `mono` font-feature-settings by default.
+  3. Use the user's configured `mono` font-variation-settings by default.
+  4. Correct the odd `em` font sizing in all browsers.
+*/
+
+code,
+kbd,
+samp,
+pre {
+  font-family: --theme(
+    --default-mono-font-family,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    'Liberation Mono',
+    'Courier New',
+    monospace
+  ); /* 1 */
+  font-feature-settings: --theme(--default-mono-font-feature-settings, normal); /* 2 */
+  font-variation-settings: --theme(--default-mono-font-variation-settings, normal); /* 3 */
+  font-size: 1em; /* 4 */
+}
+
+/*
+  Add the correct font size in all browsers.
+*/
+
+small {
+  font-size: 80%;
+}
+
+/*
+  Prevent `sub` and `sup` elements from affecting the line height in all browsers.
+*/
+
+sub,
+sup {
+  font-size: 75%;
+  line-height: 0;
+  position: relative;
+  vertical-align: baseline;
+}
+
+sub {
+  bottom: -0.25em;
+}
+
+sup {
+  top: -0.5em;
+}
+
+/*
+  1. Remove text indentation from table contents in Chrome and Safari. (https://bugs.chromium.org/p/chromium/issues/detail?id=999088, https://bugs.webkit.org/show_bug.cgi?id=201297)
+  2. Correct table border color inheritance in all Chrome and Safari. (https://bugs.chromium.org/p/chromium/issues/detail?id=935729, https://bugs.webkit.org/show_bug.cgi?id=195016)
+  3. Remove gaps between table borders by default.
+*/
+
+table {
+  text-indent: 0; /* 1 */
+  border-color: inherit; /* 2 */
+  border-collapse: collapse; /* 3 */
+}
+
+/*
+  Use the modern Firefox focus style for all focusable elements.
+*/
+
+:-moz-focusring {
+  outline: auto;
+}
+
+/*
+  Add the correct vertical alignment in Chrome and Firefox.
+*/
+
+progress {
+  vertical-align: baseline;
+}
+
+/*
+  Add the correct display in Chrome and Safari.
+*/
+
+summary {
+  display: list-item;
+}
+
+/*
+  Make lists unstyled by default.
+*/
+
+ol,
+ul,
+menu {
+  list-style: none;
+}
+
+/*
+  1. Make replaced elements `display: block` by default. (https://github.com/mozdevs/cssremedy/issues/14)
+  2. Add `vertical-align: middle` to align replaced elements more sensibly by default. (https://github.com/jensimmons/cssremedy/issues/14#issuecomment-634934210)
+      This can trigger a poorly considered lint error in some tools but is included by design.
+*/
+
+img,
+svg,
+video,
+canvas,
+audio,
+iframe,
+embed,
+object {
+  display: block; /* 1 */
+  vertical-align: middle; /* 2 */
+}
+
+/*
+  Constrain images and videos to the parent width and preserve their intrinsic aspect ratio. (https://github.com/mozdevs/cssremedy/issues/14)
+*/
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+/*
+  1. Inherit font styles in all browsers.
+  2. Remove border radius in all browsers.
+  3. Remove background color in all browsers.
+  4. Ensure consistent opacity for disabled states in all browsers.
+*/
+
+button,
+input,
+select,
+optgroup,
+textarea,
+::file-selector-button {
+  font: inherit; /* 1 */
+  font-feature-settings: inherit; /* 1 */
+  font-variation-settings: inherit; /* 1 */
+  letter-spacing: inherit; /* 1 */
+  color: inherit; /* 1 */
+  border-radius: 0; /* 2 */
+  background-color: transparent; /* 3 */
+  opacity: 1; /* 4 */
+}
+
+/*
+  Restore default font weight.
+*/
+
+:where(select:is([multiple], [size])) optgroup {
+  font-weight: bolder;
+}
+
+/*
+  Restore indentation.
+*/
+
+:where(select:is([multiple], [size])) optgroup option {
+  padding-inline-start: 20px;
+}
+
+/*
+  Restore space after button.
+*/
+
+::file-selector-button {
+  margin-inline-end: 4px;
+}
+
+/*
+  Reset the default placeholder opacity in Firefox. (https://github.com/tailwindlabs/tailwindcss/issues/3300)
+*/
+
+::placeholder {
+  opacity: 1;
+}
+
+/*
+  Set the default placeholder color to a semi-transparent version of the current text color in browsers that do not
+  crash when using `color-mix(…)` with `currentcolor`. (https://github.com/tailwindlabs/tailwindcss/issues/17194)
+*/
+
+@supports (not (-webkit-appearance: -apple-pay-button)) /* Not Safari */ or
+  (contain-intrinsic-size: 1px) /* Safari 17+ */ {
+  ::placeholder {
+    color: color-mix(in oklab, currentcolor 50%, transparent);
+  }
+}
+
+/*
+  Prevent resizing textareas horizontally by default.
+*/
+
+textarea {
+  resize: vertical;
+}
+
+/*
+  Remove the inner padding in Chrome and Safari on macOS.
+*/
+
+::-webkit-search-decoration {
+  -webkit-appearance: none;
+}
+
+/*
+  1. Ensure date/time inputs have the same height when empty in iOS Safari.
+  2. Ensure text alignment can be changed on date/time inputs in iOS Safari.
+*/
+
+::-webkit-date-and-time-value {
+  min-height: 1lh; /* 1 */
+  text-align: inherit; /* 2 */
+}
+
+/*
+  Prevent height from changing on date/time inputs in macOS Safari when the input is set to `display: block`.
+*/
+
+::-webkit-datetime-edit {
+  display: inline-flex;
+}
+
+/*
+  Remove excess padding from pseudo-elements in date/time inputs to ensure consistent height across browsers.
+*/
+
+::-webkit-datetime-edit-fields-wrapper {
+  padding: 0;
+}
+
+::-webkit-datetime-edit,
+::-webkit-datetime-edit-year-field,
+::-webkit-datetime-edit-month-field,
+::-webkit-datetime-edit-day-field,
+::-webkit-datetime-edit-hour-field,
+::-webkit-datetime-edit-minute-field,
+::-webkit-datetime-edit-second-field,
+::-webkit-datetime-edit-millisecond-field,
+::-webkit-datetime-edit-meridiem-field {
+  padding-block: 0;
+}
+
+/*
+  Center dropdown marker shown on inputs with paired `<datalist>`s in Chrome. (https://github.com/tailwindlabs/tailwindcss/issues/18499)
+*/
+
+::-webkit-calendar-picker-indicator {
+  line-height: 1;
+}
+
+/*
+  Remove the additional `:invalid` styles in Firefox. (https://github.com/mozilla/gecko-dev/blob/2f9eacd9d3d995c937b4251a5557d95d494c9be1/layout/style/res/forms.css#L728-L737)
+*/
+
+:-moz-ui-invalid {
+  box-shadow: none;
+}
+
+/*
+  Correct the inability to style the border radius in iOS Safari.
+*/
+
+button,
+input:where([type='button'], [type='reset'], [type='submit']),
+::file-selector-button {
+  appearance: button;
+}
+
+/*
+  Correct the cursor style of increment and decrement buttons in Safari.
+*/
+
+::-webkit-inner-spin-button,
+::-webkit-outer-spin-button {
+  height: auto;
+}
+
+/*
+  Make elements with the HTML hidden attribute stay hidden by default.
+*/
+
+[hidden]:where(:not([hidden='until-found'])) {
+  display: none !important;
+}
+
+/* --- mirror of app/assets/css/main.css (@layer base) --- */
+html,
+body {
+  margin: 0;
+  background-color: #ffffff;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--wt-font-body, Inter, Arial, sans-serif);
+  background: var(--wt-color-bg, #ffffff);
+  color: var(--wt-color-text, #111827);
+}
+
+a {
+  color: inherit;
+}
+
+/* --- from app/assets/css/main.css (@layer components) --- */
+.wt-ui-card {
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 1.5rem;
+    background: var(--builder-color-surface, #ffffff);
+    color: var(--builder-color-text, var(--wt-color-text, #111827));
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease,
+      background-color 150ms ease;
+  }
+
+  .wt-ui-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: rgba(37, 99, 235, 0.08);
+    color: var(--builder-color-primary, var(--wt-color-primary, #2563eb));
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .wt-ui-heading {
+    font-family: var(--builder-font-heading, var(--wt-font-heading, Inter, Arial, sans-serif));
+    color: var(--builder-color-text, var(--wt-color-text, #111827));
+  }
+
+  .wt-ui-muted {
+    color: var(--wt-color-muted, #6b7280);
+  }
+
+  .wt-ui-link {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .wt-ui-field-label {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    color: var(--wt-color-muted, #6b7280);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .wt-ui-field-shell {
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 1rem;
+    background: var(--builder-color-surface, #ffffff);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease,
+      background-color 150ms ease;
+  }
+
+  .wt-ui-field-shell:focus-within {
+    border-color: rgba(59, 130, 246, 0.4);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+  }
+
+  .wt-ui-field-meta {
+    font-size: 0.75rem;
+    color: var(--wt-color-muted, #6b7280);
+  }
+
+  .wt-ui-input {
+    width: 100%;
+    min-height: 2.75rem;
+    padding: 0.95rem 1rem;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 1rem;
+    background: var(--builder-color-background, var(--wt-color-bg, #ffffff));
+    color: var(--builder-color-text, var(--wt-color-text, #111827));
+    font: inherit;
+    box-sizing: border-box;
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease,
+      background-color 150ms ease;
+  }
+
+  .wt-ui-input::placeholder {
+    color: #94a3b8;
+  }
+
+  .wt-ui-input:focus-visible {
+    outline: none;
+    border-color: rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12);
+  }
+
+  .wt-ui-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-height: 2.75rem;
+    padding: 0.875rem 1.25rem;
+    border: 0;
+    border-radius: 1rem;
+    background: var(--builder-button-background, var(--wt-color-primary, #2563eb));
+    color: var(--builder-button-text, #ffffff);
+    font: inherit;
+    font-weight: 700;
+    text-decoration: none;
+    cursor: pointer;
+    transition:
+      opacity 150ms ease,
+      transform 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .wt-ui-button:hover {
+    opacity: 0.96;
+  }
+
+  .wt-ui-button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+  }
+
+  .wt-ui-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .wt-ui-menu-button {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 999px;
+    background: var(--builder-color-background, rgba(255, 255, 255, 0.96));
+    box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+  }
+
+  .wt-ui-sheet {
+    background: var(--builder-color-background, #ffffff);
+    color: var(--builder-color-text, #0f172a);
+    box-shadow: 0 28px 80px rgba(15, 23, 42, 0.18);
+  }
+
+  .wt-ui-sheet--overlay {
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.82) 0%, rgba(15, 23, 42, 0.92) 100%);
+    color: #ffffff;
+  }
+
+  .wt-ui-divider-link {
+    border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+  }
+
+  .wt-ui-divider-link--inverse {
+    border-bottom-color: rgba(255, 255, 255, 0.12);
+  }
+
+/* --- from components/public/PublicSiteShell.vue --- */
+html,
+body {
+  margin: 0;
+}
+
+body {
+  background: var(--builder-page-background, var(--wt-color-bg, #ffffff));
+}
+
+.wt-site {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  font-family: var(--wt-font-body, Inter, Arial, sans-serif);
+  color: var(--wt-color-text, #111827);
+  background: var(--builder-page-background, var(--wt-color-bg, #ffffff));
+}
+
+.wt-site[data-page-width-mode='contained'] {
+  max-width: var(--builder-page-max-width, 1280px);
+  margin-inline: auto;
+}
+
+.wt-site[data-page-width-mode='full'] {
+  max-width: none;
+}
+
+.wt-page-header,
+.wt-page-footer {
+  flex-shrink: 0;
+}
+
+.wt-page-header {
+  transition: background-color 200ms ease, border-color 200ms ease, backdrop-filter 200ms ease;
+}
+
+.wt-page-header--sticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.wt-page-header--overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 30;
+  background: transparent;
+  border-bottom-color: transparent;
+  backdrop-filter: none;
+}
+
+/* While the header floats transparent over a full-bleed hero, its text-bearing
+   elements (the generator stamps `wt-header-ink` on the brand mark and nav —
+   never the CTA button, which keeps its own solid chrome) switch to white ink.
+   !important is required to beat the generator's inline `color`; the rule
+   vanishes with the class on solidify, so the inline colors return with the
+   200ms header transition. */
+.wt-page-header--overlay .wt-header-ink,
+.wt-page-header--overlay .wt-header-ink * {
+  color: #ffffff !important;
+}
+
+.wt-page-header--overlay .wt-header-ink {
+  text-shadow: 0 1px 12px rgba(15, 23, 42, 0.35);
+}
+
+/* Sticky + overlay combined: pin the transparent header instead of letting
+   it scroll away with the hero before the solid/sticky phase takes over.
+   `position: sticky` would still reserve its own box in flow and never
+   actually overlap anything — `fixed` removes it from flow *and* pins it to
+   the viewport (no scale-transform wrapper here to break that, unlike the
+   builder canvas). */
+.wt-page-header--overlay-sticky {
+  position: fixed;
+}
+
+.wt-page-header--solid {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.wt-main {
+  min-height: 1px;
+  flex: 1 0 auto;
+}
+
+/* --- from components/renderer/ElementRenderer.vue --- */
+.wt-unknown-block {
+  display: contents;
+}
+
+.wt-unknown-label {
+  margin: 0;
+  color: var(--wt-color-muted);
+  font-size: 0.875rem;
+}
+
+/* --- from components/blocks/ContainerBlock.vue --- */
+.wt-container-block {
+  max-width: 100%;
+}
+
+.wt-container-block--has-photo {
+  position: relative;
+}
+
+.wt-container-block__bg-layer {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.wt-container-block__bg-photo,
+.wt-container-block__bg-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.wt-container-block__bg-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wt-container-block__content {
+  position: relative;
+  z-index: 1;
+}
+
+.wt-container-block--column-layout {
+  display: grid;
+  align-items: stretch;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.wt-container-block--three-col {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .wt-container-block--three-col {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .wt-container-block--three-col > :last-child:nth-child(odd) {
+    grid-column: span 2 / span 2;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .wt-container-block--two-col,
+  .wt-container-block--three-col {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+  }
+}
+
+/* --- from components/blocks/SectionBlock.vue --- */
+.wt-section { padding: 2rem 1rem; }
+
+.wt-section--has-photo {
+  position: relative;
+}
+
+.wt-section__bg-layer {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.wt-section__bg-photo,
+.wt-section__bg-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.wt-section__bg-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wt-section__content {
+  position: relative;
+  z-index: 1;
+}
+
+/* --- from components/blocks/TextBlock.vue --- */
+.wt-text { color: var(--builder-color-text, var(--wt-color-text)); }
+
+.wt-clamp-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
+.wt-clamp-toggle {
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.8125em;
+  font-weight: 600;
+  color: var(--builder-color-primary, var(--wt-color-primary, currentColor));
+  cursor: pointer;
+}
+.wt-clamp-toggle:hover { text-decoration: underline; }
+
+/* --- from components/blocks/LinkBlock.vue --- */
+.wt-link { display: inline-flex; }
+
+/* --- from components/blocks/ImageBlock.vue --- */
+.wt-image-block { max-width: 100%; }
+.wt-image-link { display: block; width: 100%; height: 100%; }
+.wt-image { width: 100%; height: 100%; display: block; /* object-fit/object-position driven by :style binding */ }
+
+/* --- from components/blocks/HeroBlock.vue --- */
+.wt-hero { padding: 4rem 1rem; }
+.wt-eyebrow { padding: 0.25rem 0.75rem; }
+.wt-title { margin: 1rem 0 0; }
+.wt-description { margin: 1rem 0 0; }
+.wt-hero-image { margin-top: 1rem; max-width: 100%; height: auto; display: block; }
+
+/* --- from components/blocks/MenuBlock.vue --- */
+.wt-menu-shell {
+  min-width: 0;
+  color: inherit;
+}
+
+.wt-menu {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  color: inherit;
+}
+
+.wt-menu-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Grouped footer navigation — CSS multi-column rather than a grid. A grid
+   couples row heights across columns, so a tall multi-link group inflates its
+   whole row and leaves big gaps below the single-link items beside it.
+   Multi-column packs each column independently: bare links stack tightly and
+   only true groups (with children) take extra separation below. */
+.wt-footer-columns {
+  column-count: 1;
+  column-gap: 2.5rem;
+  color: inherit;
+}
+
+@media (min-width: 768px) {
+  .wt-footer-columns {
+    column-count: 2;
+  }
+}
+
+@media (min-width: 1280px) {
+  .wt-footer-columns {
+    column-count: 3;
+  }
+}
+
+.wt-footer-columns__group {
+  break-inside: avoid;
+  margin-bottom: 0.5rem;
+}
+
+.wt-footer-columns__group--has-children {
+  margin-bottom: 1.5rem;
+}
+
+.wt-footer-columns__heading {
+  display: block;
+  font-weight: 600;
+  color: inherit;
+  text-decoration: none;
+}
+
+.wt-footer-columns__group--has-children .wt-footer-columns__heading {
+  margin-bottom: 0.5rem;
+}
+
+.wt-footer-columns__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  opacity: 0.85;
+}
+
+.wt-menu-item--dropdown {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.wt-menu-item__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.wt-menu-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.wt-menu-caret__icon {
+  display: block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translateY(-15%);
+  transition: transform 0.15s ease;
+}
+
+.wt-menu-item--open .wt-menu-caret__icon {
+  transform: rotate(225deg) translateY(-15%);
+}
+
+.wt-menu-flyout {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 150;
+  display: flex;
+  min-width: 200px;
+  max-width: 280px;
+  flex-direction: column;
+  padding: 0.5rem;
+  border-radius: 12px;
+  background: var(--wt-color-surface, #ffffff);
+  color: var(--wt-color-text, #0f172a);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(148, 163, 184, 0.18);
+}
+
+.wt-menu-flyout--overlay {
+  background: rgba(15, 23, 42, 0.92);
+  color: #ffffff;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32), 0 0 0 1px rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(8px);
+}
+
+.wt-menu-flyout__link {
+  display: block;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  color: inherit;
+  font-size: 0.925rem;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wt-menu-flyout__link:hover,
+.wt-menu-flyout__link:focus-visible {
+  background: rgba(148, 163, 184, 0.16);
+}
+
+.wt-menu-flyout--overlay .wt-menu-flyout__link:hover,
+.wt-menu-flyout--overlay .wt-menu-flyout__link:focus-visible {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.wt-header-menu-toggle {
+  display: none;
+}
+
+.wt-header-menu-toggle__button,
+.wt-mobile-menu-sheet__close {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  padding: 0.625rem 1rem;
+}
+
+.wt-header-menu-toggle__bars {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.wt-header-menu-toggle__bars > span {
+  display: block;
+  width: 14px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.wt-mobile-menu-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  background: rgba(15, 23, 42, 0.22);
+  backdrop-filter: blur(8px);
+}
+
+.wt-mobile-menu-sheet__surface {
+  display: flex;
+  height: 100dvh;
+  flex-direction: column;
+}
+
+.wt-mobile-menu-sheet__top {
+  display: flex;
+  justify-content: flex-end;
+  padding: 1rem 1rem 0;
+}
+
+.wt-mobile-menu-sheet--overlay .wt-mobile-menu-sheet__close {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.wt-mobile-menu-sheet__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1.5rem;
+  overflow-y: auto;
+  padding: 0.75rem 1rem 1.5rem;
+}
+
+.wt-mobile-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wt-mobile-menu-link,
+.wt-mobile-menu-action {
+  display: block;
+  padding: 0.875rem 0.75rem;
+  color: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.wt-mobile-menu-link--secondary {
+  opacity: 0.76;
+}
+
+.wt-mobile-menu-sheet--overlay .wt-mobile-menu-link {
+  border-bottom-color: rgba(255, 255, 255, 0.12);
+}
+
+.wt-mobile-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.wt-mobile-menu-section__title {
+  margin: 0;
+  padding: 0 0.75rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.wt-mobile-menu-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.wt-mobile-menu-action {
+  text-align: center;
+  font-weight: 700;
+}
+
+@media (min-width: 1024px) {
+  .wt-mobile-menu-sheet {
+    display: none;
+  }
+
+  .wt-menu-shell--header-primary {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .wt-menu-shell--header-primary > .wt-menu--desktop {
+    min-width: 0;
+    justify-content: inherit;
+  }
+}
+
+@media (max-width: 1023.98px) {
+  .wt-menu-shell--header-primary {
+    display: flex;
+    flex: 0 0 auto;
+    width: auto;
+    max-width: 100%;
+    margin-left: auto;
+    align-items: center;
+    justify-content: flex-end;
+    align-self: center;
+    justify-self: end;
+  }
+
+  .wt-menu-shell--header-primary > .wt-menu--desktop {
+    display: none;
+  }
+
+  .wt-header-menu-toggle {
+    display: flex;
+    width: auto;
+    max-width: 100%;
+    margin-left: auto;
+    align-items: center;
+    justify-content: flex-end;
+    align-self: center;
+    justify-self: end;
+  }
+
+  .wt-menu--hide-mobile {
+    display: none;
+  }
+}
+
+/* --- from components/blocks/VideoBlock.vue --- */
+.wt-video-block {
+  width: 100%;
+}
+
+.wt-video-block__frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: #000;
+  border-radius: inherit;
+}
+
+.wt-video-block__iframe,
+.wt-video-block__facade {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.wt-video-block__facade {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  background-color: #000;
+  background-size: cover;
+  background-position: center;
+}
+
+.wt-video-block__play {
+  display: inline-flex;
+}
+
+.wt-video-block__play-bg {
+  fill: #212121;
+  fill-opacity: 0.8;
+  transition: fill-opacity 0.2s ease;
+}
+
+.wt-video-block__facade:hover .wt-video-block__play-bg,
+.wt-video-block__facade:focus-visible .wt-video-block__play-bg {
+  fill: #f00;
+  fill-opacity: 1;
+}
+
+/* --- from components/blocks/ContactFormBlock.vue --- */
+.wt-contact-form {
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 24px 60px color-mix(in srgb, var(--builder-color-primary, #2563eb) 14%, transparent);
+}
+
+.wt-contact-form__shells {
+  position: relative;
+  z-index: 1;
+}
+
+.wt-contact-form__glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--builder-color-primary, #2563eb) 18%, transparent), transparent 42%),
+    radial-gradient(circle at bottom right, color-mix(in srgb, var(--builder-color-accent, #f59e0b) 14%, transparent), transparent 34%);
+}
+
+
+.wt-contact-form__panel {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  padding: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .wt-contact-form__panel {
+    gap: 1.5rem;
+    padding: 1rem;
+  }
+}
+
+
+.wt-contact-form__field {
+  display: grid;
+  gap: 0.375rem;
+}
+
+@media (min-width: 640px) {
+  .wt-contact-form__field {
+    gap: 0.5rem;
+  }
+}
+
+.wt-contact-form__label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  opacity: 0.7;
+  color: var(--builder-color-text, #111827);
+}
+
+@media (min-width: 640px) {
+  .wt-contact-form__label {
+    gap: 0.5rem;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+  }
+}
+
+.wt-contact-form__icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+  color: var(--builder-color-primary, #2563eb);
+}
+
+.wt-contact-form__required {
+  border-radius: 999px;
+  padding: 0.125rem 0.5rem;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--builder-color-primary, #2563eb);
+  background: color-mix(in srgb, var(--builder-color-primary, #2563eb) 10%, transparent);
+}
+
+.wt-contact-form__control {
+  width: 100%;
+  height: 2.75rem;
+  padding: 0 0.875rem;
+  font: inherit;
+  font-size: 0.875rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--builder-color-primary, #2563eb) 16%, transparent);
+  outline: none;
+  color: var(--builder-color-text, #111827);
+  background-color: var(--builder-color-background, #ffffff);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--builder-color-background, #ffffff) 94%, white) 0%,
+    color-mix(in srgb, var(--builder-color-surface, #f8fafc) 88%, white) 100%
+  );
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  box-sizing: border-box;
+}
+
+@media (min-width: 640px) {
+  .wt-contact-form__control {
+    height: 3rem;
+    border-radius: 16px;
+    padding: 0 1rem;
+  }
+}
+
+.wt-contact-form__control::placeholder {
+  opacity: 0.55;
+}
+
+.wt-contact-form__textarea {
+  height: auto;
+  min-height: 116px;
+  padding: 0.75rem 0.875rem;
+  resize: vertical;
+}
+
+@media (min-width: 640px) {
+  .wt-contact-form__textarea {
+    min-height: 136px;
+    border-radius: 18px;
+    padding: 0.75rem 1rem;
+  }
+}
+
+.wt-contact-form__honeypot {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.wt-contact-form__error {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #dc2626;
+}
+
+.wt-contact-form__success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.75rem;
+  padding: 2.5rem 1.25rem;
+}
+
+.wt-contact-form__success-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0.5rem;
+  border-radius: 999px;
+  color: var(--builder-color-primary, #2563eb);
+  background: color-mix(in srgb, var(--builder-color-primary, #2563eb) 12%, transparent);
+}
+
+.wt-contact-form__success-heading {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--builder-color-text, #111827);
+  font-family: var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif));
+}
+
+.wt-contact-form__success-body {
+  margin: 0;
+  font-size: 0.95rem;
+  opacity: 0.75;
+  color: var(--builder-color-text, #111827);
+}
+
+.wt-contact-form__submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 2.75rem;
+  padding: 0 1rem;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  border: 0;
+  cursor: pointer;
+  background: var(--builder-button-background, var(--builder-color-primary, #2563eb));
+  border-radius: var(--builder-button-radius, 14px);
+  color: var(--builder-button-text, #ffffff);
+  font-family: var(--builder-font-body, system-ui, sans-serif);
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.18);
+}
+
+.wt-contact-form__submit:disabled {
+  opacity: 0.65;
+  cursor: progress;
+}
+
+@media (min-width: 640px) {
+  .wt-contact-form__submit {
+    height: 3rem;
+    padding: 0 1.25rem;
+  }
+}
+
+/* --- from components/blocks/CmsListBlock.vue --- */
+.wt-cms-list {
+  width: 100%;
+  padding-top: 72px;
+  padding-bottom: 72px;
+  padding-inline: max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2));
+  color: var(--wt-color-text, #111827);
+  font-family: var(--wt-font-body, Inter, Arial, sans-serif);
+}
+
+@media (max-width: 767.98px) {
+  .wt-cms-list {
+    padding-top: 52px;
+    padding-bottom: 60px;
+    padding-inline: 20px;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 1023.98px) {
+  .wt-cms-list {
+    padding-top: 64px;
+    padding-bottom: 64px;
+    padding-inline: 32px;
+  }
+}
+
+.wt-cms-list__header {
+  margin-bottom: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.wt-cms-list__heading {
+  font-family: var(--wt-font-heading, Inter, Arial, sans-serif);
+  color: var(--builder-color-secondary, var(--wt-color-text, #0f172a));
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0;
+}
+
+@media (min-width: 640px) {
+  .wt-cms-list__heading {
+    font-size: 2rem;
+  }
+}
+
+.wt-cms-list__description {
+  margin: 0;
+  max-width: 60ch;
+  white-space: pre-line;
+  line-height: 1.6;
+  font-size: 0.95rem;
+  opacity: 0.75;
+}
+
+@media (min-width: 640px) {
+  .wt-cms-list__description {
+    font-size: 1rem;
+    line-height: 1.7;
+  }
+}
+
+.wt-cms-list__placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 8rem;
+  border-radius: 1rem;
+  border: 1px dashed currentColor;
+  font-size: 0.875rem;
+  opacity: 0.7;
+  padding: 1rem;
+  text-align: center;
+}
+
+.wt-cms-list__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.wt-cms-list__grid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+@media (min-width: 768px) {
+  .wt-cms-list__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .wt-cms-list__grid[data-grid-density='three'] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .wt-cms-list__grid[data-grid-density='four'] {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.wt-cms-list__featured {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 1024px) {
+  .wt-cms-list__featured {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.wt-cms-list__featured-rest {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.wt-cms-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--wt-color-primary, #2563eb) 14%, transparent);
+  background: var(--wt-color-bg, #ffffff);
+  color: inherit;
+  text-decoration: none;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.wt-cms-card:hover {
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.1);
+}
+
+.wt-cms-card--horizontal {
+  flex-direction: column;
+}
+
+@media (min-width: 640px) {
+  .wt-cms-card--horizontal {
+    flex-direction: row;
+  }
+
+  .wt-cms-card--horizontal .wt-cms-card__media {
+    flex: 0 0 40%;
+    align-self: stretch;
+  }
+
+  .wt-cms-card--horizontal .wt-cms-card__image,
+  .wt-cms-card--horizontal .wt-cms-card__image-fallback {
+    height: 100%;
+    min-height: 12rem;
+  }
+}
+
+.wt-cms-card--featured {
+  flex-direction: column;
+}
+
+.wt-cms-card__media {
+  width: 100%;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+}
+
+.wt-cms-card__media--featured {
+  aspect-ratio: 16 / 9;
+}
+
+.wt-cms-card__image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.wt-cms-card__image-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: color-mix(in srgb, var(--wt-color-primary, #2563eb) 8%, transparent);
+  opacity: 0.6;
+}
+
+.wt-cms-card__image-fallback svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.wt-cms-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 1rem;
+}
+
+@media (min-width: 640px) {
+  .wt-cms-card__body {
+    padding: 1.25rem;
+  }
+}
+
+.wt-cms-card__body--featured {
+  gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .wt-cms-card__body--featured {
+    padding: 1.5rem;
+  }
+}
+
+.wt-cms-card__title {
+  font-family: var(--wt-font-heading, Inter, Arial, sans-serif);
+  color: var(--builder-color-secondary, var(--wt-color-text, #0f172a));
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.35;
+  margin: 0;
+  word-break: break-word;
+}
+
+.wt-cms-card__title--featured {
+  font-size: 1.5rem;
+}
+
+@media (min-width: 640px) {
+  .wt-cms-card__title--featured {
+    font-size: 1.875rem;
+  }
+}
+
+.wt-cms-card__excerpt {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  opacity: 0.85;
+  word-break: break-word;
+}
+
+.wt-cms-card__categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.wt-cms-card__category {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  border: 1px solid color-mix(in srgb, var(--wt-color-primary, #2563eb) 24%, transparent);
+  background: color-mix(in srgb, var(--wt-color-primary, #2563eb) 8%, transparent);
+  color: var(--wt-color-primary, #2563eb);
+}
+
+.wt-cms-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.wt-cms-card__meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.wt-cms-card__meta-item svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+}
+
+.wt-cms-list__pagination {
+  margin-top: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.wt-cms-list__pagination-summary {
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+
+.wt-cms-list__pagination-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.wt-cms-list__pagination-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  border: 1px solid currentColor;
+  padding: 0.375rem 0.75rem;
+  color: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
+  text-decoration: none;
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.wt-cms-list__pagination-link:hover {
+  border-color: var(--builder-color-primary, var(--wt-color-primary, #2563eb));
+  background: color-mix(in srgb, var(--builder-color-primary, var(--wt-color-primary, #2563eb)) 8%, transparent);
+}
+
+.wt-cms-list__pagination-link--page {
+  min-width: 2.25rem;
+  font-weight: 600;
+  opacity: 0.55;
+}
+
+.wt-cms-list__pagination-link--active {
+  border-color: var(--builder-color-primary, var(--wt-color-primary, #2563eb));
+  background: var(--builder-color-primary, var(--wt-color-primary, #2563eb));
+  color: var(--builder-color-background, var(--wt-color-bg, #ffffff));
+  opacity: 1;
+}
+
+.wt-cms-list__pagination-link--disabled {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.wt-cms-list__pagination-gap {
+  display: inline-flex;
+  min-width: 1.25rem;
+  justify-content: center;
+  padding-inline: 0.25rem;
+  font-size: 0.75rem;
+  opacity: 0.5;
+}
+
+/* --- from components/blocks/CmsArchiveHeaderBlock.vue --- */
+.wt-archive-header {
+  width: 100%;
+}
+
+.wt-archive-header__image-wrap {
+  width: 100%;
+  overflow: hidden;
+  /* Height is controlled by the builder via element.styles.height (see imageWrapStyle). */
+}
+
+.wt-archive-header__image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* object-fit / object-position driven by :style binding */
+}
+
+.wt-archive-header__text {
+  padding: 1.25rem 0 0.5rem;
+}
+
+.wt-archive-header__title {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--wt-color-heading, inherit);
+  font-family: var(--wt-font-heading, inherit);
+}
+
+.wt-archive-header__description {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--wt-color-muted, inherit);
+  line-height: 1.6;
+}
+
+/* --- from components/blocks/DynamicFieldBlock.vue --- */
+.wt-dynamic-title {
+  font-size: 2rem;
+  line-height: 1.15;
+  font-weight: 700;
+  margin: 0;
+}
+
+.wt-dynamic-excerpt {
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  opacity: 0.85;
+  margin: 0;
+  max-width: 70ch;
+}
+
+.wt-dynamic-body {
+  font-size: 1rem;
+  line-height: 1.7;
+  max-width: 72ch;
+}
+
+.wt-dynamic-body :deep(p) {
+  margin: 0;
+  padding: 0;
+}
+
+.wt-dynamic-body :deep(.wt-rich-empty-paragraph) {
+  height: 1.15em;
+  overflow: hidden;
+  line-height: 1;
+}
+
+.wt-dynamic-body :deep(figure) {
+  margin: 0;
+}
+
+.wt-dynamic-body :deep(figcaption) {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  opacity: 0.7;
+}
+
+.wt-dynamic-body :deep(img) {
+  max-width: 100%;
+  height: auto;
+}
+
+.wt-dynamic-body :deep(.wt-rich-image--align-left) {
+  text-align: left;
+}
+
+.wt-dynamic-body :deep(.wt-rich-image--align-center) {
+  text-align: center;
+}
+
+.wt-dynamic-body :deep(.wt-rich-image--align-right) {
+  text-align: right;
+}
+
+.wt-dynamic-body :deep(.wt-rich-image--full-width img) {
+  width: 100%;
+}
+
+.wt-dynamic-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: cover;
+}
+
+.wt-dynamic-meta {
+  font-size: 0.875rem;
+  opacity: 0.7;
+  margin: 0;
+}
+
+.wt-dynamic-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.wt-dynamic-category-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--wt-color-primary, #2563eb) 24%, transparent);
+  background: color-mix(in srgb, var(--wt-color-primary, #2563eb) 8%, transparent);
+  color: var(--wt-color-primary, #2563eb);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+}
+
+.wt-dynamic-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.wt-dynamic-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+  opacity: 0.75;
+}
+
+.wt-dynamic-empty {
+  padding: 1rem;
+  border: 1px dashed currentColor;
+  opacity: 0.6;
+  border-radius: 12px;
+}

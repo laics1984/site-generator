@@ -404,3 +404,173 @@ class HeroBackgroundMinSizeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(photo.source, "scraped")
         self.assertEqual(photo.url, "https://x/side.jpg")
+
+    async def test_small_scraped_section_background_defers_to_stock(self):
+        # Non-hero backgrounds are also background-size: cover, so a too-small
+        # source image upscales to a blur — defer to a crisp Pexels photo.
+        pexels = FakePexels(
+            {"cafe interior": [_photo("https://pexels.example/cafe.jpg", "cafe interior")]}
+        )
+        resolver = self._resolver(
+            [{"url": "https://x/tiny-section.jpg", "source_usage": "css_background",
+              "role": "background", "intent": "generic", "width": 600, "height": 400,
+              "alt": "cafe interior"}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "cafe interior", intent="generic", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "pexels")
+        self.assertEqual(photo.url, "https://pexels.example/cafe.jpg")
+
+    async def test_section_background_min_is_lower_than_hero_min(self):
+        # An image large enough for a section band (>= section_min_background_dim)
+        # but below the hero minimum is kept for a non-hero background.
+        pexels = FakePexels(
+            {"cafe interior": [_photo("https://pexels.example/cafe.jpg", "cafe interior")]}
+        )
+        resolver = self._resolver(
+            [{"url": "https://x/mid-section.jpg", "source_usage": "css_background",
+              "role": "background", "intent": "generic", "width": 1000, "height": 700,
+              "alt": "cafe interior"}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "cafe interior", intent="generic", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "scraped")
+        self.assertEqual(photo.url, "https://x/mid-section.jpg")
+
+
+class PortraitHeroBackgroundTest(unittest.IsolatedAsyncioTestCase):
+    """A directory page's grid headshots (role=portrait) must never fill a
+    hero background, whatever their resolution — the classic failure is a face
+    blown up huge behind the hero text of a "find a therapist" page."""
+
+    def _resolver(self, metadata, pexels):
+        from app.models.content_blocks import ImageMetadata
+
+        return ImageResolver(
+            scraped_metadata=[ImageMetadata(**m) for m in metadata],
+            pexels=pexels,
+            use_llm_tiebreaker=False,
+        )
+
+    def _stock(self):
+        return FakePexels(
+            {"music therapy": [_photo("https://pexels.example/stock.jpg", "music therapy")]}
+        )
+
+    async def test_all_portrait_pool_defers_hero_background_to_stock(self):
+        # High-res headshots that clear the old size gate — the role veto must
+        # still keep every one of them out of the full-bleed hero.
+        pexels = self._stock()
+        resolver = self._resolver(
+            [
+                {"url": f"https://x/face-{i}.jpg", "role": "portrait",
+                 "intent": "hero" if i == 0 else "generic",
+                 "alt": "music therapy therapist", "width": 1600, "height": 1600}
+                for i in range(3)
+            ],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "music therapy", intent="hero", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "pexels")
+
+    async def test_unknown_dims_portrait_still_rejected_for_background(self):
+        # Unknown dimensions normally get the benefit of the doubt — the
+        # measured portrait role is evidence enough to reject regardless.
+        pexels = self._stock()
+        resolver = self._resolver(
+            [{"url": "https://x/face.jpg", "role": "portrait", "intent": "hero",
+              "alt": "music therapy therapist"}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "music therapy", intent="hero", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "pexels")
+
+    async def test_pinned_portrait_not_honored_for_hero_background(self):
+        pexels = self._stock()
+        resolver = self._resolver(
+            [{"url": "https://x/face.jpg", "role": "portrait", "intent": "hero",
+              "width": 1600, "height": 1600}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "music therapy", intent="hero", slot_usage="background",
+            pinned_url="https://x/face.jpg",
+        )
+
+        self.assertEqual(photo.source, "pexels")
+
+    async def test_square_content_photo_rejected_by_aspect_gate(self):
+        # Big enough by long edge, but square: a full-bleed hero band can't
+        # use it without an awkward crop, so the aspect gate defers to stock.
+        pexels = self._stock()
+        resolver = self._resolver(
+            [{"url": "https://x/square.jpg", "role": "content", "intent": "hero",
+              "source_usage": "inline", "width": 1300, "height": 1300,
+              "alt": "music therapy"}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "music therapy", intent="hero", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "pexels")
+
+    async def test_landscape_content_photo_still_wins_hero_background(self):
+        pexels = self._stock()
+        resolver = self._resolver(
+            [{"url": "https://x/banner.jpg", "role": "content", "intent": "hero",
+              "source_usage": "inline", "width": 1920, "height": 1080,
+              "alt": "music therapy"}],
+            pexels,
+        )
+
+        photo = await resolver.resolve(
+            "music therapy", intent="hero", slot_usage="background"
+        )
+
+        self.assertEqual(photo.source, "scraped")
+        self.assertEqual(photo.url, "https://x/banner.jpg")
+
+    async def test_portrait_size_fallback_never_fills_inline_about_slot(self):
+        # The page-local size fallback bypasses the ranker; its own role filter
+        # must keep a headshot (the biggest image on a directory page) out of
+        # the about split even for inline usage where no size gate applies.
+        from app.models.content_blocks import ImageMetadata
+
+        pexels = FakePexels(
+            {"warm consultation room": [
+                _photo("https://pexels.example/room.jpg", "warm consultation room")
+            ]}
+        )
+        portrait = ImageMetadata(
+            url="https://x/face.jpg", role="portrait", intent="generic",
+            alt="Jane Doe", width=1600, height=1600,
+        )
+        resolver = ImageResolver(
+            scraped_metadata=[portrait], pexels=pexels, use_llm_tiebreaker=False,
+        )
+
+        photo = await resolver.resolve(
+            "warm consultation room", intent="about", slot_usage="inline",
+            prefer=[portrait],
+        )
+
+        self.assertEqual(photo.source, "pexels")

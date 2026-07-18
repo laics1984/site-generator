@@ -15,6 +15,7 @@ On a 20-page crawl that's the difference between ~12s and ~70s of fetching.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -124,41 +125,50 @@ async def try_fast_fetch(
             reason=FastFetchSkipReason.TOO_SHORT, http_status=response.status_code
         )
 
+    # The substance judgment is pure CPU (trafilatura + several lxml parses) —
+    # run it in a worker thread so the crawl pool's other fetches keep moving.
+    skipped = await asyncio.to_thread(_judge_html, html, response.status_code)
+    if skipped is not None:
+        return skipped
+
+    return FastFetchResult(
+        final_url=str(response.url),
+        html=html,
+        http_status=response.status_code,
+    )
+
+
+def _judge_html(html: str, http_status: int) -> FastFetchSkipped | None:
+    """CPU-heavy substance judgment. Returns the skip verdict, or None to accept.
+
+    Accept if EITHER:
+      - We have substantive text AND substantive markup (typical SSR site)
+      - We have very strong markup (lots of headings + nav links) even if
+        text is thin — small static pages like example.com or /contact
+
+    Reject when markup is missing entirely: a React shell can produce 20k+
+    chars of div-soup text yet still lack <title>, <h*>, and <a href> — we
+    can't usefully crawl that without Playwright, so fall back.
+    """
     if _looks_like_js_shell(html):
         return FastFetchSkipped(
-            reason=FastFetchSkipReason.JS_SHELL, http_status=response.status_code
+            reason=FastFetchSkipReason.JS_SHELL, http_status=http_status
         )
 
     text = trafilatura.extract(html, favor_recall=True) or ""
     text_len = len(text.strip())
     markup_ok = _has_substantive_markup(html)
 
-    # Accept if EITHER:
-    #   - We have substantive text AND substantive markup (typical SSR site)
-    #   - We have very strong markup (lots of headings + nav links) even if
-    #     text is thin — small static pages like example.com or /contact
-    #
-    # Reject when markup is missing entirely: a React shell can produce 20k+
-    # chars of div-soup text yet still lack <title>, <h*>, and <a href> — we
-    # can't usefully crawl that without Playwright, so fall back.
-    accept = False
     if markup_ok and text_len >= _SUBSTANTIVE_TEXT_THRESHOLD:
-        accept = True
-    elif _has_strong_markup(html):
+        return None
+    if _has_strong_markup(html):
         # Very small but well-formed page (e.g. example.com, /contact).
-        accept = True
+        return None
 
-    if not accept:
-        return FastFetchSkipped(
-            reason=FastFetchSkipReason.JS_SHELL if not markup_ok else FastFetchSkipReason.TOO_SHORT,
-            http_status=response.status_code,
-            detail=f"text={text_len} markup_ok={markup_ok}",
-        )
-
-    return FastFetchResult(
-        final_url=str(response.url),
-        html=html,
-        http_status=response.status_code,
+    return FastFetchSkipped(
+        reason=FastFetchSkipReason.JS_SHELL if not markup_ok else FastFetchSkipReason.TOO_SHORT,
+        http_status=http_status,
+        detail=f"text={text_len} markup_ok={markup_ok}",
     )
 
 

@@ -46,6 +46,35 @@ export interface PageSeo {
   noindex?: boolean
 }
 
+/** Decorative background strategy. Mirrors BackgroundStrategy in
+ * backend/app/models/builder_schema.py:130 and webtree-public's
+ * types/public.ts. */
+export type BackgroundStrategy = 'flat' | 'mesh' | 'grain' | 'mesh+grain'
+
+export interface SectionDividerEdge {
+  shape?: 'slant' | 'curve' | 'wave' | 'peak'
+  height?: number
+  color?: string
+  flipX?: boolean
+  texture?: BackgroundStrategy | null
+}
+
+export interface SectionDivider {
+  top?: SectionDividerEdge | null
+  bottom?: SectionDividerEdge | null
+}
+
+export interface BuilderElementMotion {
+  preset: string
+  delay?: number | null
+  duration?: number | null
+  stagger?: number | null
+}
+
+/** Mirrors BuilderElement in backend/app/models/builder_schema.py, which in
+ * turn mirrors webtree/builder/src/lib/site-navigation.ts. The preview renderer
+ * reads every field here — dropping one silently drops that visual from the
+ * preview while the published site still shows it. */
 export interface BuilderElement {
   id: string
   name: string
@@ -58,6 +87,10 @@ export interface BuilderElement {
     mobile?: Record<string, unknown>
     tablet?: Record<string, unknown>
   }
+  motion?: BuilderElementMotion | null
+  divider?: SectionDivider | null
+  /** Per-section override of the theme's decorative background strategy. */
+  backgroundTexture?: BackgroundStrategy | null
 }
 
 export interface BodySchema {
@@ -157,6 +190,66 @@ export interface GeneratedSite {
   brand?: BrandIdentity | null
   header_schema?: BuilderElement | null
   footer_schema?: BuilderElement | null
+  /** Transparent header floating over a full-bleed hero. Drives the preview's
+   * overlay spacer exactly as it drives the public renderer's. */
+  header_overlay?: boolean
+  /** (label, url) pairs — source the footer's social menu. */
+  social_links?: Array<[string, string]>
+}
+
+// --- preview layout (POST /api/preview/layout) --------------------------------
+// The payload the push writes to the CMS. `menu` elements resolve their items
+// from `menus[]` by slot, and the header's `behavior` drives overlay/shrink —
+// so the preview needs this to render the header/footer the visitor gets.
+// Mirrors backend/app/services/menu_builder.py's wrap_header / wrap_footer.
+
+export interface PreviewMenuItem {
+  id: string
+  label: string
+  href: string
+  visible?: boolean
+  target?: '_self' | '_blank'
+  rel?: string
+  children?: PreviewMenuItem[]
+}
+
+export interface PreviewMenu {
+  id: string
+  name: string
+  purpose: string
+  items: PreviewMenuItem[]
+}
+
+export interface PreviewHeaderBehavior {
+  position?: 'sticky' | 'static'
+  overlay?: boolean
+  scrollRevealOffset?: number
+  shrinkOnScroll?: boolean
+  scrollShrinkOffset?: number
+  shrinkAmount?: number
+}
+
+export interface PreviewHeader {
+  elements: BuilderElement[]
+  behavior: PreviewHeaderBehavior
+  preset: { id: string | null }
+  slots: { primaryMenuId: string | null; utilityMenuId: string | null }
+}
+
+export interface PreviewFooter {
+  elements: BuilderElement[]
+  preset: { id: string | null }
+  slots: {
+    footerMenuId: string | null
+    legalMenuId: string | null
+    socialMenuId: string | null
+  }
+}
+
+export interface PreviewLayout {
+  menus: PreviewMenu[]
+  header: PreviewHeader
+  footer: PreviewFooter
 }
 
 export type GeneratorMode = 'url' | 'document'

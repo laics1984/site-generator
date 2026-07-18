@@ -21,10 +21,11 @@ This module:
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import uuid4
 
-from app.models.builder_schema import BuilderElement, PageNode
+from app.config import settings
+from app.models.builder_schema import BuilderElement, GeneratedSite, PageNode
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +293,60 @@ def wrap_footer(
             "socialMenuId": SOCIAL_MENU_ID if SOCIAL_MENU_ID in menu_ids else None,
         },
     }
+
+
+class LayoutPayload(NamedTuple):
+    """The three layout artefacts `PUT /pages/{id}/layout` takes."""
+
+    menus: list[dict[str, Any]]
+    header: dict[str, Any]
+    footer: dict[str, Any]
+
+
+def build_layout_payload(site: GeneratedSite) -> LayoutPayload:
+    """Assemble the menus + wrapped header/footer a site pushes to the CMS.
+
+    The preview endpoint routes through here so the preview renders the exact
+    payload the push would: `menus[]` is what a `menu` element resolves its
+    items from, and the header `behavior` block is what drives overlay/shrink —
+    so a preview built from the raw `header_schema` renders a header with no nav
+    and no overlay, i.e. not the page the visitor gets. The push path
+    (services/push_orchestrator) inlines the same three calls; keep the two in
+    lockstep — tests/test_preview_layout.py asserts they produce one payload.
+
+    Raises ValueError when the site has no header/footer schema; callers map it
+    onto whatever error type their transport speaks.
+    """
+    legal_pages = [
+        (p.title, f"/{p.slug or ''}".rstrip("/") or "/")
+        for p in site.pages
+        if p.slug.lower() in ("privacy", "terms")
+    ]
+    menus = build_menus(
+        site.page_tree,
+        legal_pages=legal_pages,
+        social_links=site.social_links,
+    )
+    if site.header_schema is None or site.footer_schema is None:
+        raise ValueError(
+            "GeneratedSite is missing header_schema or footer_schema — "
+            "rebuild the site with plan_to_site() before pushing."
+        )
+    header = wrap_header(
+        site.header_schema,
+        menus=menus,
+        overlay=site.header_overlay,
+        scroll_reveal_offset=(
+            settings.header_scroll_reveal_offset if site.header_overlay else None
+        ),
+        # Shrink applies to every header (independent of overlay); the
+        # renderer shares the reveal offset when overlay is on, so reuse it.
+        shrink_on_scroll=settings.header_shrink_enabled,
+        scroll_shrink_offset=settings.header_scroll_reveal_offset,
+        shrink_amount=settings.header_shrink_amount,
+    )
+    footer = wrap_footer(site.footer_schema, menus=menus)
+    return LayoutPayload(menus=menus, header=header, footer=footer)
 
 
 def _menu(

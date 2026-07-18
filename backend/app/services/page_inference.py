@@ -49,6 +49,12 @@ _TYPE_HINTS: list[tuple[PageType, tuple[str, ...]]] = [
             "governance",
             "trustees",
             "board-members",
+            # Roster/directory listings ("Find a Music Therapist", practitioner
+            # directories). Deliberately conservative: bare "members" would
+            # catch membership-info pages.
+            "directory",
+            "practitioners",
+            "find-a",
         ),
     ),
     ("blog", ("blog", "news", "insights", "articles", "press", "media-centre", "newsroom")),
@@ -98,6 +104,41 @@ def _infer_page_type(slug: str, title: str = "") -> PageType:
                 return page_type
     # No match — depth decides between landing (sub) and services (top).
     return "landing" if "/" in slug else "services"
+
+
+# Minimum scraper-extracted profile cards before a page counts as a people
+# directory. High enough that a page with a couple of inline author/contact
+# cards keeps its own recipe. Imported by routers/generate.py so the roster
+# fill uses the same threshold as the classification.
+DIRECTORY_MIN_PROFILES = 6
+
+
+def _looks_like_directory_page(page: SourceContent | None) -> bool:
+    """True when the page body is a repeated profile-card roster.
+
+    Evidence comes from the scraper's structured card extraction
+    (``SourceContent.profile_candidates``), not from keywords — this catches
+    directory pages whose slug says nothing people-like ("find-a-music-
+    therapist").
+    """
+    return page is not None and len(page.profile_candidates or []) >= DIRECTORY_MIN_PROFILES
+
+
+def _coerce_directory_type(page_type: PageType, page: SourceContent | None) -> PageType:
+    """A page whose body is a profile roster is a people directory, whatever
+    its slug says — type it ``team`` so its recipe renders the roster instead
+    of FAQ-ifying the flattened card text.
+
+    Coerced: the generic fallbacks (services/landing) and contact — sites do
+    park their directory at /contact (MMTA's "Find a Music Therapist" lives
+    there), and a genuine contact page essentially never carries 6+ profile
+    cards. NOT coerced: about (a team grid inside a real about narrative is
+    normal — its recipe already includes a team section, so the roster still
+    renders), faq, home.
+    """
+    if page_type in ("services", "landing", "contact") and _looks_like_directory_page(page):
+        return "team"
+    return page_type
 
 
 # --- sections per inferred page_type --------------------------------------------
@@ -252,6 +293,11 @@ def _sections_for(
     parent_type: PageType | None,
     page: SourceContent | None = None,
 ) -> list[SectionType]:
+    # A detected profile directory renders its roster whatever its nesting —
+    # the team grid IS the page content, so the top-level team recipe wins
+    # even for sub-pages (which would otherwise get the generic detail rhythm).
+    if page_type == "team" and _looks_like_directory_page(page):
+        return _augment_sections(list(_TOP_SECTIONS["team"]), page_type, page)
     # Story pages override the fixed rhythms: the source itself dictates the
     # section list (a photo-and-heading section sequence), not the page type.
     if page_type not in _STORY_INELIGIBLE_TYPES:
@@ -636,6 +682,27 @@ def infer_page_scaffolds(
             else s
             for s in fallback
         ]
+        # The scraped entry page itself may be a profile directory ("find a
+        # therapist" scraped as a single page). Surface it as a source-evidenced
+        # team page so the roster renders instead of feeding template recipes.
+        if _looks_like_directory_page(source):
+            dir_slug = _path_to_slug(source.url_path) or "team"
+            directory_scaffold = PageScaffold(
+                page_type="team",
+                slug=dir_slug,
+                title=_title_from_page(source, dir_slug, site_name=site_name),
+                sections=list(_TOP_SECTIONS["team"]),
+                rationale="Profile directory detected on the scraped page.",
+                source_url=source.source_ref,
+                from_source=True,
+            )
+            existing_idx = next(
+                (i for i, s in enumerate(fallback) if s.slug == dir_slug), None
+            )
+            if existing_idx is not None:
+                fallback[existing_idx] = directory_scaffold
+            else:
+                fallback.append(directory_scaffold)
         for scaffold in fallback:
             scaffold.nav_rank = evidence.rank.get(scaffold.slug)
         return _apply_team_placement(fallback)
@@ -677,7 +744,7 @@ def infer_page_scaffolds(
 
         if len(segments) == 1:
             # Top-level page
-            page_type = _infer_page_type(slug, title)
+            page_type = _coerce_directory_type(_infer_page_type(slug, title), page)
             if page_type in ("privacy", "terms"):
                 # Legal — we generate from boilerplate, not the crawl.
                 continue
@@ -729,6 +796,7 @@ def infer_page_scaffolds(
             # services/x → landing detail unless title looks like a real category.
             if sub_type == parent_type:
                 sub_type = "landing"
+            sub_type = _coerce_directory_type(sub_type, page)
             scaffolds.append(
                 PageScaffold(
                     page_type=sub_type,
@@ -818,6 +886,19 @@ def infer_page_scaffolds(
     for scaffold in scaffolds:
         if scaffold.parent_slug is None and not scaffold.is_homepage:
             scaffold.nav_rank = evidence.rank.get(scaffold.slug)
+
+    # 2d. The entry page itself is a profile directory (the user scraped the
+    #     directory URL directly) and no scaffold surfaced a team section —
+    #     weave the roster into the homepage so the profiles aren't dropped.
+    if _looks_like_directory_page(source) and not any(
+        "team" in s.sections for s in scaffolds
+    ):
+        home = next((s for s in scaffolds if s.is_homepage), None)
+        if home is not None:
+            if "cta" in home.sections:
+                home.sections.insert(home.sections.index("cta"), "team")
+            else:
+                home.sections.append("team")
 
     # 3. Ensure About / Contact are present — they often live in the footer
     #    rather than the nav, so the crawler misses them on small sites.

@@ -265,8 +265,8 @@ class WashedBackgroundTest(unittest.TestCase):
         self.assertIn("url('u')", light)
         self.assertIn("url('u')", dark)
         # Light washes over the surface; dark washes over the dark secondary.
-        self.assertIn("rgba(255,255,255,0.92)", light)
-        self.assertIn("rgba(17,17,17,0.92)", dark)
+        self.assertIn("rgba(255,255,255,0.8)", light)
+        self.assertIn("rgba(17,17,17,0.8)", dark)
         self.assertNotEqual(light, dark)
 
     def test_apply_drops_background_shorthand_and_sets_image(self):

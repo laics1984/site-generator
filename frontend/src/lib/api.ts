@@ -13,6 +13,7 @@ import type {
   IndustryCategory,
   PageRecipeResponse,
   PageScaffold,
+  PreviewLayout,
   ScrapePreview,
   SitemapProbeResult,
   SourceContent,
@@ -297,5 +298,16 @@ export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
       new_entity_name: payload.newEntityName ?? null,
       new_entity_url: payload.newEntityUrl ?? null,
     }),
+  })
+}
+
+/** Fetch the menus + wrapped header/footer this site would push. The preview
+ * renderer needs them to resolve nav items and header overlay/shrink — the
+ * backend builds them with the same code the push uses, so what the preview
+ * renders and what gets published start from one payload. */
+export async function fetchPreviewLayout(site: GeneratedSite): Promise<PreviewLayout> {
+  return jsonRequest('/api/preview/layout', {
+    method: 'POST',
+    body: JSON.stringify(site),
   })
 }

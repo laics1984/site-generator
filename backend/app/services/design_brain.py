@@ -197,24 +197,6 @@ async def generate_site_design_recipe(
         return SiteDesignRecipe()
 
 
-async def generate_design_recipe(
-    *,
-    mood: BrandMood | None,
-    industry: str | None,
-    section_kinds: list[str],
-    llm: LlmClient | None = None,
-) -> DesignRecipe:
-    """Single-page convenience wrapper over `generate_site_design_recipe`.
-
-    Kept for callers that pick layouts for one page in isolation; the batched
-    site-level call is preferred when rendering a whole site (one round-trip
-    instead of one per page)."""
-    site = await generate_site_design_recipe(
-        mood=mood, industry=industry, pages=[section_kinds], llm=llm
-    )
-    return site.recipe_for(0)
-
-
 # --- design language: palette + font pairing --------------------------------
 
 

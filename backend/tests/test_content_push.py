@@ -317,21 +317,77 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
             int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp() * 1000),
         )
 
+        # Entries are pushed concurrently, so locate event calls by slug —
+        # call order is not a contract.
+        event_calls = {c.kwargs["slug"]: c.kwargs for c in create_event.call_args_list}
         # Dated event published with a defaulted end + location fallback.
-        dated = create_event.call_args_list[0].kwargs
+        dated = event_calls["dated-event"]
         self.assertTrue(dated["publish"])
         self.assertEqual(dated["location"], "To be announced")
         self.assertEqual(
             dated["end_ms"] - dated["start_ms"], 2 * 60 * 60 * 1000
         )
         # Undated event downgrades to draft.
-        undated = create_event.call_args_list[1].kwargs
+        undated = event_calls["undated-event"]
         self.assertFalse(undated["publish"])
 
         step = next(s for s in report.steps if s.name == "content_entries")
         self.assertTrue(step.ok)
         self.assertIn("2 published", step.detail)
         self.assertIn("1 draft", step.detail)
+
+    async def test_entries_push_concurrently_under_the_bound(self):
+        # Migration entries used to upload one-at-a-time; they now fan out
+        # under _PUSH_CONCURRENCY like every other push step.
+        import asyncio
+
+        from app.services import push_orchestrator as po
+
+        n = 8
+        collections = ContentCollections(
+            articles=[
+                ArticleEntry(
+                    title=f"Post {i}",
+                    slug=f"post-{i}",
+                    excerpt="x",
+                    body_html="<p>x</p>",
+                    published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    image_url=f"https://src.example/cover-{i}.png",
+                    source_url=f"https://src.example/blog/post-{i}",
+                )
+                for i in range(n)
+            ]
+        )
+        in_flight = {"now": 0, "max": 0}
+
+        async def tracking_resolve(src, client=None):
+            in_flight["now"] += 1
+            in_flight["max"] = max(in_flight["max"], in_flight["now"])
+            try:
+                await asyncio.sleep(0.01)
+                return (_PNG, "image/png", "cover.png")
+            finally:
+                in_flight["now"] -= 1
+
+        with (
+            patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=[])),
+            patch.object(CmsClient, "create_page", new=AsyncMock(return_value={"id": "p"})),
+            patch.object(CmsClient, "create_category", new=AsyncMock(return_value="news")),
+            patch.object(CmsClient, "create_article", new=AsyncMock(return_value="a-1")),
+            patch(
+                "app.services.push_orchestrator._resolve_to_bytes",
+                new=tracking_resolve,
+            ),
+        ):
+            client = CmsClient(base_url="http://cms.test")
+            report = PushReport()
+            await _push_content_types(client, self._request(collections), report)
+
+        self.assertGreater(in_flight["max"], 1)
+        self.assertLessEqual(in_flight["max"], po._PUSH_CONCURRENCY)
+        step = next(s for s in report.steps if s.name == "content_entries")
+        self.assertTrue(step.ok)
+        self.assertIn(f"{n} published", step.detail)
 
     async def test_entry_failure_is_non_fatal(self):
         from app.services.cms_client import CmsApiError

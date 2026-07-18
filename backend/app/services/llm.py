@@ -18,8 +18,10 @@ reliable but not perfect.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import time
 from typing import Any, Awaitable, Callable, Protocol, TypeVar
 
 import httpx
@@ -139,6 +141,121 @@ async def _validated(post: PostChat, payload: dict[str, Any], schema: type[T]) -
         raise LlmError(
             f"LLM produced invalid JSON after retry: {second_err}"
         ) from second_err
+
+
+# --- response cache -----------------------------------------------------------
+# In-process TTL + LRU cache over VALIDATED chat_json results, used via
+# chat_json_cached(). Opt-in per call site: only the deterministic-ish,
+# expensive calls go through it (scaffolded content batches, the image
+# tie-break judge), which is what makes re-generating an unchanged site
+# near-instant. dict insertion order doubles as LRU recency; single event
+# loop ⇒ no locking needed. Entries hold a pristine deep copy and hits hand
+# out fresh deep copies, because callers mutate results in place (alignment,
+# photo enrichment, parent_slug stitching).
+_RESPONSE_CACHE: dict[str, tuple[float, BaseModel]] = {}
+
+
+def _response_cache_key(
+    client: LlmClient,
+    system_prompt: str,
+    user_prompt: str,
+    schema: type[BaseModel],
+    temperature: float | None,
+    num_ctx: int | None,
+    think: bool | None,
+) -> str:
+    """Hash every input that shapes the response — any change is a miss."""
+    ident = "\x1f".join(
+        (
+            type(client).__name__,
+            str(getattr(client, "base_url", "")),
+            str(getattr(client, "model", "")),
+            f"{schema.__module__}.{schema.__qualname__}",
+            repr(temperature),
+            repr(num_ctx),
+            repr(think),
+            system_prompt,
+            user_prompt,
+        )
+    )
+    return hashlib.sha256(ident.encode("utf-8")).hexdigest()
+
+
+def _response_cache_get(key: str) -> BaseModel | None:
+    entry = _RESPONSE_CACHE.get(key)
+    if entry is None:
+        return None
+    stored_at, cached = entry
+    ttl = settings.llm_cache_ttl_seconds
+    if ttl <= 0 or time.monotonic() - stored_at >= ttl:
+        _RESPONSE_CACHE.pop(key, None)
+        return None
+    # Re-insert so dict order tracks recency (LRU eviction in _put).
+    _RESPONSE_CACHE.pop(key, None)
+    _RESPONSE_CACHE[key] = (stored_at, cached)
+    return cached.model_copy(deep=True)
+
+
+def _response_cache_put(key: str, result: BaseModel) -> None:
+    _RESPONSE_CACHE.pop(key, None)
+    _RESPONSE_CACHE[key] = (time.monotonic(), result.model_copy(deep=True))
+    while len(_RESPONSE_CACHE) > settings.llm_cache_max_entries:
+        _RESPONSE_CACHE.pop(next(iter(_RESPONSE_CACHE)))
+
+
+def clear_response_cache() -> None:
+    """Drop every cached LLM response (tests / ops)."""
+    _RESPONSE_CACHE.clear()
+
+
+async def chat_json_cached(
+    client: LlmClient,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    schema: type[T],
+    temperature: float | None = None,
+    num_ctx: int | None = None,
+    think: bool | None = None,
+) -> T:
+    """`client.chat_json` behind the opt-in response cache.
+
+    Identical inputs (same backend/model + prompts + sampling knobs) within
+    `llm_cache_ttl_seconds` return the previously validated result instead of
+    re-hitting the LLM. Kill switch: LLM_CACHE_ENABLED=false. Deliberately has
+    no `images` parameter — multimodal payloads are never cached here (the
+    vision pass keeps its own URL-keyed cache). Only the kwargs the caller
+    actually provided are forwarded, and only REAL backend clients participate
+    in caching — test fakes pass through untouched, so fixtures that count
+    calls or vary responses keep working.
+    """
+    key: str | None = None
+    if settings.llm_cache_enabled and isinstance(client, (OllamaClient, MlxClient)):
+        key = _response_cache_key(
+            client, system_prompt, user_prompt, schema, temperature, num_ctx, think
+        )
+        hit = _response_cache_get(key)
+        if hit is not None:
+            logger.info(
+                "LLM response cache hit for %s — skipping generation", schema.__name__
+            )
+            return hit  # type: ignore[return-value]
+
+    call_kwargs: dict[str, Any] = {
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "schema": schema,
+    }
+    if temperature is not None:
+        call_kwargs["temperature"] = temperature
+    if num_ctx is not None:
+        call_kwargs["num_ctx"] = num_ctx
+    if think is not None:
+        call_kwargs["think"] = think
+    result = await client.chat_json(**call_kwargs)
+    if key is not None:
+        _response_cache_put(key, result)
+    return result
 
 
 def _strip_think(text: str) -> str:

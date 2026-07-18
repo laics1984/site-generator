@@ -1,7 +1,23 @@
 import unittest
 
-from app.models.content_blocks import ImageMetadata, SourceContent
-from app.services.page_inference import _MAX_PAGE_SECTIONS, infer_page_scaffolds
+from app.models.content_blocks import ImageMetadata, ProfileCandidate, SourceContent
+from app.services.page_inference import (
+    _MAX_PAGE_SECTIONS,
+    DIRECTORY_MIN_PROFILES,
+    infer_page_scaffolds,
+)
+
+
+def _profiles(n: int) -> list[ProfileCandidate]:
+    return [
+        ProfileCandidate(
+            name=f"Aisha Rahman{i}",
+            role="Music Therapist",
+            photo_url=f"https://example.my/photos/p{i}.jpg",
+            confidence=0.9,
+        )
+        for i in range(n)
+    ]
 
 
 class PageInferenceTest(unittest.TestCase):
@@ -26,6 +42,175 @@ class PageInferenceTest(unittest.TestCase):
 
         self.assertEqual(committee.page_type, "team")
         self.assertIn("team", committee.sections)
+
+    def test_profile_rich_unmatched_page_becomes_team_directory(self):
+        # "Find a Music Therapist" matches no team keyword by slug alone in the
+        # pre-hint world — the profile-card evidence must classify it, and the
+        # recipe must render the roster, not FAQ-ify it behind a contact form.
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/therapist-listing",
+                    title="Our Practitioner Listing",
+                    raw_text="Aisha Rahman Music Therapist ...",
+                    url_path="/therapist-listing",
+                    profile_candidates=_profiles(DIRECTORY_MIN_PROFILES + 2),
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        directory = next(s for s in scaffolds if s.slug == "therapist-listing")
+
+        self.assertEqual(directory.page_type, "team")
+        self.assertIn("team", directory.sections)
+        self.assertNotIn("contact", directory.sections)
+        self.assertNotIn("faq", directory.sections)
+
+    def test_find_a_slug_keyword_maps_to_team(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/find-a-music-therapist",
+                    title="Find a Music Therapist",
+                    raw_text="Aisha Rahman Music Therapist ...",
+                    url_path="/find-a-music-therapist",
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        directory = next(s for s in scaffolds if s.slug == "find-a-music-therapist")
+
+        self.assertEqual(directory.page_type, "team")
+        self.assertEqual(directory.sections, ["hero", "team", "cta"])
+
+    def test_profile_rich_contact_slug_becomes_directory(self):
+        # MMTA parks its "Find a Music Therapist" directory at /contact — a
+        # slug-typed contact page whose body is a roster must render the
+        # roster, not an invented form + FAQ.
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/contact",
+                    title="Find a Music Therapist",
+                    raw_text="Aisha Rahman Music Therapist ...",
+                    url_path="/contact",
+                    profile_candidates=_profiles(DIRECTORY_MIN_PROFILES + 2),
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        directory = next(s for s in scaffolds if s.slug == "contact")
+
+        self.assertEqual(directory.page_type, "team")
+        self.assertEqual(directory.sections, ["hero", "team", "cta"])
+
+    def test_genuine_contact_page_keeps_contact_recipe(self):
+        # A contact page with a couple of inline staff cards (below the
+        # directory threshold) must keep its form.
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/contact",
+                    title="Contact",
+                    raw_text="Reach our team.",
+                    url_path="/contact",
+                    profile_candidates=_profiles(2),
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        contact = next(s for s in scaffolds if s.slug == "contact")
+
+        self.assertEqual(contact.page_type, "contact")
+        self.assertIn("contact", contact.sections)
+
+    def test_few_profiles_keep_services_classification(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/programmes",
+                    title="Programmes",
+                    raw_text="Our programmes.",
+                    url_path="/programmes",
+                    profile_candidates=_profiles(DIRECTORY_MIN_PROFILES - 3),
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        programmes = next(s for s in scaffolds if s.slug == "programmes")
+
+        self.assertEqual(programmes.page_type, "services")
+
+    def test_no_crawl_directory_entry_gets_source_team_scaffold(self):
+        # Scraping the directory URL directly with no crawl: the roster page
+        # must exist in the fallback template set, source-evidenced.
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my/find-a-music-therapist",
+            title="Find a Music Therapist",
+            raw_text="Aisha Rahman Music Therapist ...",
+            url_path="/find-a-music-therapist",
+            profile_candidates=_profiles(DIRECTORY_MIN_PROFILES + 2),
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        directory = next(
+            (s for s in scaffolds if s.page_type == "team" and s.from_source), None
+        )
+
+        self.assertIsNotNone(directory)
+        self.assertEqual(directory.slug, "find-a-music-therapist")
+        self.assertIn("team", directory.sections)
+
+    def test_crawled_directory_entry_weaves_team_into_homepage(self):
+        # Crawl present, entry page IS the directory, and nothing else claims
+        # a team section — the homepage surfaces the roster.
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my/find-a-music-therapist",
+            title="Find a Music Therapist",
+            raw_text="Aisha Rahman Music Therapist ...",
+            profile_candidates=_profiles(DIRECTORY_MIN_PROFILES + 2),
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/pricing",
+                    title="Pricing",
+                    raw_text="Plans.",
+                    url_path="/pricing",
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        home = next(s for s in scaffolds if s.is_homepage)
+
+        self.assertIn("team", home.sections)
 
     def test_discovered_page_titles_drop_dangling_pipe_suffixes(self):
         source = SourceContent(

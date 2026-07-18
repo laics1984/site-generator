@@ -494,7 +494,9 @@ async def extract_collections(
         if not html:
             return None
         try:
-            return _extract_entry(html, url, kind)
+            # BS4 parse is CPU-bound and this task runs concurrently with the
+            # render loop — thread it off instead of blocking the event loop.
+            return await asyncio.to_thread(_extract_entry, html, url, kind)
         except Exception as exc:  # noqa: BLE001
             logger.warning("collections: extraction failed for %s: %s", url, exc)
             return None

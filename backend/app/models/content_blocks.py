@@ -553,7 +553,9 @@ class TeamBlock(BaseModel):
     kind: Literal["team"] = "team"
     heading: str = "Meet the team"
     subheading: str | None = None
-    members: list[TeamMember] = Field(min_length=1, max_length=12)
+    # Cap matches the scraper's profile_candidates cap (24) so a scraped
+    # directory roster (e.g. a 17-practitioner listing) fits without trimming.
+    members: list[TeamMember] = Field(min_length=1, max_length=24)
 
     @field_validator("heading", mode="before")
     @classmethod

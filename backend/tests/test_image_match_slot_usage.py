@@ -12,10 +12,10 @@ from app.models.content_blocks import ImageMetadata
 from app.services.image_match import rank_candidates
 
 
-def _img(url, *, intent="generic", source_usage="unknown", alt="", w=1200, h=800):
+def _img(url, *, intent="generic", source_usage="unknown", alt="", w=1200, h=800, role="unknown"):
     return ImageMetadata(
         url=url, alt=alt, intent=intent, source_usage=source_usage,
-        width=w, height=h,
+        width=w, height=h, role=role,
     )
 
 
@@ -65,6 +65,63 @@ class BackgroundSlotTest(unittest.TestCase):
         big = _img("https://x/big.jpg", intent="hero", source_usage="inline", w=2400, h=1600)
         result = rank_candidates("anything", "hero", [small, big], slot_usage="background")
         self.assertEqual(result.chosen.url, "https://x/big.jpg")
+
+
+class PortraitVetoTest(unittest.TestCase):
+    """A grid headshot (role=portrait) must never fill a hero/about slot or any
+    background — a face blown up behind hero text is the classic directory-page
+    scrape failure — while staying rankable for ordinary content slots."""
+
+    def test_portrait_never_wins_a_background_slot_whatever_its_size(self):
+        headshot = _img(
+            "https://x/face.jpg", intent="hero", role="portrait",
+            alt="music therapist", w=1600, h=1600,
+        )
+        result = rank_candidates(
+            "music therapist", "hero", [headshot], slot_usage="background"
+        )
+        self.assertIsNone(result.chosen)
+
+    def test_portrait_excluded_from_primary_inline_slots(self):
+        headshot = _img(
+            "https://x/face.jpg", intent="hero", role="portrait",
+            alt="music therapist", w=1600, h=1600, source_usage="inline",
+        )
+        for slot_intent in ("hero", "about"):
+            result = rank_candidates(
+                "music therapist", slot_intent, [headshot], slot_usage="inline"
+            )
+            self.assertIsNone(result.chosen, f"portrait won the {slot_intent} slot")
+
+    def test_portrait_still_ranks_for_generic_feature_slots(self):
+        headshot = _img(
+            "https://x/face.jpg", role="portrait",
+            alt="smiling therapist", w=1600, h=1600,
+        )
+        result = rank_candidates("smiling therapist", "feature", [headshot])
+        self.assertIsNotNone(result.chosen)
+        self.assertEqual(result.chosen.url, "https://x/face.jpg")
+
+    def test_gallery_role_excluded_from_hero_background(self):
+        cell = _img(
+            "https://x/grid-cell.jpg", intent="hero", role="gallery",
+            alt="clinic photo", w=2000, h=1400,
+        )
+        result = rank_candidates("clinic photo", "hero", [cell], slot_usage="background")
+        self.assertIsNone(result.chosen)
+
+    def test_background_slot_falls_through_to_the_real_banner(self):
+        headshot = _img(
+            "https://x/face.jpg", intent="hero", role="portrait",
+            alt="therapist", w=1600, h=1600,
+        )
+        banner = _img(
+            "https://x/banner.jpg", intent="hero", source_usage="css_background",
+            alt="hands on piano", w=1920, h=800,
+        )
+        result = rank_candidates("therapist", "hero", [headshot, banner], slot_usage="background")
+        self.assertIsNotNone(result.chosen)
+        self.assertEqual(result.chosen.url, "https://x/banner.jpg")
 
 
 class LegacyAnyTest(unittest.TestCase):

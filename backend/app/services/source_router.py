@@ -243,7 +243,11 @@ def split_raw_text(
 MAX_PROMPT_IMAGES = 12
 
 # Roles that never belong in a content slot — mirrors image_match's veto set.
-_UNPROMPTABLE_ROLES = frozenset({"logo", "decoration"})
+# Portraits (grid headshots) are also unpromptable: offering them as pinnable
+# image_refs lets the LLM blow a face up as a hero/section image, and on a
+# directory page they crowd every real banner out of the MAX_PROMPT_IMAGES
+# budget. Team photos don't need refs — they flow through profile_candidates.
+_UNPROMPTABLE_ROLES = frozenset({"logo", "decoration", "portrait"})
 
 
 def promptable_images(source: SourceContent) -> list[ImageMetadata]:
