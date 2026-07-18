@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
+from app.services.url_guard import is_public_url
 
 if TYPE_CHECKING:
     from app.services.llm import LlmClient
@@ -295,6 +296,9 @@ async def _fetch_image_bytes(
         except (ValueError, binascii.Error):
             return None
     if not url.startswith(("http://", "https://")):
+        return None
+    if not await is_public_url(url):
+        logger.debug("Vision image fetch refused non-public URL: %s", url[:120])
         return None
     try:
         if client is not None:

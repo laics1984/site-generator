@@ -34,8 +34,10 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_TIMEOUT = 30.0
-_MEDIA_UPLOAD_TIMEOUT = 120.0  # large image uploads can be slow
+# Config-driven (CMS_TIMEOUT_SECONDS / CMS_MEDIA_UPLOAD_TIMEOUT_SECONDS);
+# defaults preserve the prior 30s / 120s behaviour.
+_DEFAULT_TIMEOUT = settings.cms_timeout_seconds
+_MEDIA_UPLOAD_TIMEOUT = settings.cms_media_upload_timeout_seconds  # large uploads are slow
 
 
 class CmsApiError(Exception):
@@ -52,9 +54,11 @@ class CmsClient:
     """Stateful client — holds JWT + optional builder-session cookie jar."""
 
     base_url: str
-    jwt: str | None = None
+    # repr=False on the credentials so an accidental repr()/exception dump of the
+    # client can't leak the bearer token or session cookies.
+    jwt: str | None = field(default=None, repr=False)
     # cookies for builder-session calls (set via launch-code bridge)
-    _builder_cookies: dict[str, str] = field(default_factory=dict)
+    _builder_cookies: dict[str, str] = field(default_factory=dict, repr=False)
     # long-lived connection pool shared by every JWT call + media upload
     _http: httpx.AsyncClient | None = field(default=None, repr=False)
 

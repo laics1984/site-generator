@@ -36,8 +36,10 @@ import trafilatura
 from bs4 import BeautifulSoup, Tag
 from playwright.async_api import async_playwright
 
+from app.config import settings
 from app.models.brand import BrandIdentity
 from app.models.content_blocks import ImageMetadata, ProfileCandidate, SourceContent
+from app.services.url_guard import UnsafeUrlError, assert_public_url, is_public_url
 from app.services.timing import stage
 from app.services.fast_fetch import (
     FastFetchResult,
@@ -149,11 +151,8 @@ async def _robots_allows(url: str, user_agent: str) -> bool:
 # 403 anything that looks like a bot — `WebtreeSiteGenerator/x.y` would fail on
 # the first request. We still respect robots.txt and rate limits; the UA just
 # stops naive blocklist matching from rejecting us at the door.
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/128.0.0.0 Safari/537.36"
-)
+# Single source of truth in config (shared with the httpx fast-fetch path).
+BROWSER_USER_AGENT = settings.http_user_agent
 
 # Used for the robots.txt check only — that endpoint isn't gated by WAFs.
 USER_AGENT = "WebtreeSiteGenerator/0.2 (+contact: hello@example.com)"
@@ -310,8 +309,13 @@ async def _goto_and_render(
 ) -> tuple[str, str]:
     """Render a single URL inside an existing browser context.
 
-    Returns (final_url, html). Raises ScrapeError for 4xx/5xx responses.
+    Returns (final_url, html). Raises ScrapeError for 4xx/5xx responses, or for
+    a URL that fails the SSRF guard (non-public host).
     """
+    try:
+        await assert_public_url(url)
+    except UnsafeUrlError as exc:
+        raise ScrapeError(str(exc), status=400) from exc
     page = await context.new_page()
     try:
         response = await page.goto(
@@ -359,9 +363,11 @@ async def _goto_and_render(
 
 
 async def _fetch_rendered_html(
-    url: str, *, timeout_ms: int = 15000
+    url: str, *, timeout_ms: int | None = None
 ) -> tuple[str, str]:
     """Single-shot render — launches its own browser. Use _fetch_many for crawls."""
+    if timeout_ms is None:
+        timeout_ms = settings.playwright_goto_timeout_ms
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
@@ -1445,9 +1451,14 @@ async def _build_brand_candidate(
 ) -> BrandIdentity | None:
     if not logo_url:
         return None
+    if not await is_public_url(logo_url):
+        logger.warning("Refusing to fetch logo from non-public URL %s", logo_url)
+        return None
     try:
         async with httpx.AsyncClient(
-            timeout=10.0, follow_redirects=True, headers={"User-Agent": USER_AGENT}
+            timeout=settings.robots_fetch_timeout_seconds,
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
         ) as client:
             resp = await client.get(logo_url)
             resp.raise_for_status()
@@ -1881,8 +1892,10 @@ async def scrape_url(
     and attaches them as ``source_content.discovered_pages``. The crawl shares
     one browser context with the primary render for efficiency.
     """
-    if not url.startswith(("http://", "https://")):
-        raise ScrapeError("URL must start with http:// or https://", status=400)
+    try:
+        await assert_public_url(url)
+    except UnsafeUrlError as exc:
+        raise ScrapeError(str(exc), status=400) from exc
 
     if respect_robots and not await _robots_allows(url, USER_AGENT):
         raise ScrapeError(
@@ -2007,6 +2020,14 @@ async def extend_crawl(
     """
     if not seed_urls:
         return ExtendCrawlResult(additional_pages=[], unvisited_urls=[])
+
+    # Reject non-public entry/seed targets up front (each fetch is also guarded).
+    try:
+        await assert_public_url(entry_url)
+        for seed in seed_urls:
+            await assert_public_url(seed)
+    except UnsafeUrlError as exc:
+        raise ScrapeError(str(exc), status=400) from exc
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(

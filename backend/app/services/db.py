@@ -17,18 +17,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
 import aiosqlite
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
-# Default to a path inside the container's app dir; override via env if needed.
-DB_PATH = Path(os.environ.get("SITEGEN_DB_PATH", "/app/data/sitegen.db"))
+# Path comes from config (SITEGEN_DB_PATH); defaults to the container's data volume.
+DB_PATH = Path(settings.sitegen_db_path)
 
 
 _SCHEMA = """

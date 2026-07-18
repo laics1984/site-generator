@@ -18,6 +18,7 @@ from app.services.crawl_jobs import get_manager
 from app.services.crawl_orchestrator import run_crawl_job
 from app.services.scraper import ScrapeError, ScrapeResult, extend_crawl, scrape_url
 from app.services.sitemap import probe_sitemap
+from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 router = APIRouter(prefix="/api/scrape", tags=["scrape"])
 
@@ -186,8 +187,10 @@ async def start_crawl(payload: StartCrawlRequest) -> dict[str, Any]:
     Kick off a crawl as a background task. Returns immediately with a job_id.
     Frontend polls GET /api/scrape/jobs/{id} for status + progress + result.
     """
-    if not payload.url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="URL must start with http(s)://")
+    try:
+        await assert_public_url(payload.url)
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     mgr = get_manager()
     job = await mgr.create(
         payload.url,
@@ -261,8 +264,10 @@ async def probe(payload: SitemapProbeRequest) -> dict[str, Any]:
     Playwright. Falls back to {has_sitemap: false, total_urls: 0} when there's
     no sitemap — the UI then proceeds with the default cap silently.
     """
-    if not payload.url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="URL must start with http(s)://")
+    try:
+        await assert_public_url(payload.url)
+    except UnsafeUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = await probe_sitemap(payload.url)
     return {
         "has_sitemap": result.has_sitemap,

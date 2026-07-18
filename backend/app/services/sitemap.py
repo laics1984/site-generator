@@ -28,11 +28,13 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
 _USER_AGENT = "WebtreeSiteGenerator/0.2 (+sitemap-probe)"
-_HTTP_TIMEOUT = 8.0
+_HTTP_TIMEOUT = settings.robots_fetch_timeout_seconds
 _SITEMAP_MAX_BYTES = 5 * 1024 * 1024  # 5 MB — biggest reasonable sitemap
 _MAX_SUB_SITEMAPS = 8  # cap depth-2 sitemap_index recursion
 _MAX_URLS_RETURNED = 500  # we don't need to ship 50k URLs to the frontend

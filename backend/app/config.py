@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # fit comfortably in 16GB unified memory (M1) with headroom, so the two
     # passes never fight over which model is loaded. A generation newer than
     # qwen2.5 at the same footprint.
-    ollama_model: str = "qwen3.5:4b" #"qwen3.6:35b-q4_K_M|qwen3.6:35b-a3b"
+    ollama_model: str = "qwen3.6:35b-a3b" #"qwen3.5:4b|qwen3.6:35b-q4_K_M|qwen3.6:35b-a3b"
     ollama_timeout_seconds: float = 180.0
     # How long Ollama keeps the model resident after a request. The picker flow
     # fires brand detection then (after the user picks pages) generation; the
@@ -222,7 +222,10 @@ class Settings(BaseSettings):
     # small source image softens when upscaled). Lower than the hero minimum
     # because section bands are shorter, but still guards against stretching a
     # tiny figure image across a full-width band. Unknown dimensions still pass.
-    section_min_background_dim: int = 500
+    # 800 sits between the hero minimum (1200) and genuinely small source images:
+    # a 600px-wide photo still visibly softens across a full-width band, so it
+    # defers to a crisp Pexels shot (see tests/test_media.py section-bg cases).
+    section_min_background_dim: int = 800
 
     # Transparent header floating over full-bleed heroes, solidifying to the
     # header's real chrome after `header_scroll_reveal_offset` px of scrollF
@@ -256,6 +259,10 @@ class Settings(BaseSettings):
 
     cms_api_base_url: str = "http://localhost:8000"
 
+    # SQLite file for durable crawl-job state (services/db.py). Inside the
+    # container this lives on the mounted data volume.
+    sitegen_db_path: str = "/app/data/sitegen.db"
+
     # Luminance-band section rhythm (SECTION_VISUAL_POLICY_SPEC.md). When enabled,
     # the planner assigns a visual_policy per the §5 matrix and the schema_builder
     # luminance pass emits brand band colours / contrasting font / separators —
@@ -281,6 +288,32 @@ class Settings(BaseSettings):
         "http://localhost:5174",
         "http://127.0.0.1:5173",
     ]
+
+    # --- Security -----------------------------------------------------------
+    # SSRF guard: the scrape/fetch layer accepts arbitrary user- and page-
+    # supplied URLs. By default it refuses any URL that resolves to a non-public
+    # address (loopback / private / link-local / cloud-metadata / the Docker
+    # host gateway), so a caller can't drive the backend into internal services.
+    # Set true ONLY for local development when you deliberately want to scrape a
+    # localhost / LAN target on your own machine. See services/url_guard.py.
+    scrape_allow_private_hosts: bool = False
+
+    # --- HTTP client --------------------------------------------------------
+    # Single source of truth for the browser-like User-Agent used by the httpx
+    # fast-fetch path AND the Playwright/robots fetches (previously duplicated
+    # string constants kept in sync by comment).
+    http_user_agent: str = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    )
+    # Network read/connect timeouts (seconds) for the non-LLM HTTP calls. These
+    # were hardcoded at their call sites; the defaults preserve prior behaviour.
+    fast_fetch_timeout_seconds: float = 8.0
+    robots_fetch_timeout_seconds: float = 10.0
+    playwright_goto_timeout_ms: int = 15000
+    cms_timeout_seconds: float = 30.0
+    cms_media_upload_timeout_seconds: float = 120.0
 
 
 settings = Settings()
