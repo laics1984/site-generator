@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # id the server exposes on /v1/models: a HuggingFace repo id for mlx_lm.server,
     # the --alias for llama-server.
     mlx_base_url: str = "http://localhost:8080"
-    mlx_model: str = "mlx-community/Qwen3-4B-4bit"
+    mlx_model: str = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
     # Generous because this is a per-read (streaming) timeout: once tokens flow
     # each one resets the clock, so it only bites on cold time-to-first-token —
     # which on a memory-constrained Mac can run 1-3 min while the OS pages the
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # fit comfortably in 16GB unified memory (M1) with headroom, so the two
     # passes never fight over which model is loaded. A generation newer than
     # qwen2.5 at the same footprint.
-    ollama_model: str = "qwen3.6:35b-a3b" #"qwen3.6:35b-q4_K_M"
+    ollama_model: str = "qwen3.5:4b" #"qwen3.6:35b-q4_K_M|qwen3.6:35b-a3b"
     ollama_timeout_seconds: float = 180.0
     # How long Ollama keeps the model resident after a request. The picker flow
     # fires brand detection then (after the user picks pages) generation; the

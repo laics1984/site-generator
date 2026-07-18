@@ -371,6 +371,56 @@ def _sanitize_stats_block(
     return block.model_copy(update={"items": items})
 
 
+# Page-type-aware fallback stock phrase for a hero the LLM left blank. Keyed
+# by the SCAFFOLD's page_type (deterministic — see industry_templates.py),
+# not PagePlan.page_type, which the LLM merely echoes and can drift (see
+# heal_page_type). Content-sparse interior pages (contact, faq) are where the
+# LLM most often omits image_query — the source gives it nothing concrete to
+# phrase a photo around — so those get a topical, Pexels-friendly phrase
+# instead of falling through to a generic brand-name query.
+_HERO_IMAGE_QUERY_BY_PAGE_TYPE: dict[str, str] = {
+    "contact": "welcoming modern office reception",
+    "about": "team collaborating in bright office",
+    "team": "professional team portrait office",
+    "faq": "friendly customer support team",
+    "services": "professional providing service to client",
+}
+
+
+def _default_hero_image_query(page_type: str, brand_name: str) -> str:
+    """Stock search phrase for a hero with no image_query, by page type.
+
+    Falls back to a brand-name phrase (mirrors _default_block's
+    f"{brand_name} brand photo") for any page type not in the map above.
+    """
+    return _HERO_IMAGE_QUERY_BY_PAGE_TYPE.get(page_type, f"{brand_name} team at work")
+
+
+def _backfill_hero_image_query(
+    block: HeroBlock, *, page_type: str, brand_name: str
+) -> HeroBlock:
+    """Fill a blank `image_query` on an LLM-produced hero block.
+
+    The LLM sometimes leaves `image_query` blank on content-sparse interior
+    pages despite the prompt's blanket "always fill visual query fields"
+    instruction — HeroBlock has no `heal_*` validator for this field (unlike
+    primary_cta_label/href, image_ref, layout on the same model), so nothing
+    repairs it before this point. Left blank, schema_builder's resolver never
+    queries Pexels for the slot and the hero silently degrades to a flat-
+    colour gradient template instead of a photo.
+
+    A no-op when the block already has a query, or already has a bound
+    scraped photo (image_ref/image_url) that resolves independently.
+    """
+    if (block.image_query or "").strip():
+        return block
+    if block.image_ref is not None or (block.image_url or "").strip():
+        return block
+    return block.model_copy(
+        update={"image_query": _default_hero_image_query(page_type, brand_name)}
+    )
+
+
 def sanitize_blocks_against_source(
     blocks: list[ContentBlock], source_text: str | None
 ) -> list[ContentBlock]:
@@ -483,6 +533,10 @@ def align_page_to_scaffold(
                     omitted.append(kind)
                     continue
                 block = sanitized
+            elif kind == "hero" and isinstance(block, HeroBlock):
+                block = _backfill_hero_image_query(
+                    block, page_type=scaffold.page_type, brand_name=brand_name
+                )
             aligned_blocks.append(block)
         elif kind in _STRUCTURAL_FALLBACK_KINDS and occurrence[kind] == 1:
             # Only the FIRST occurrence of a structural kind gets a placeholder

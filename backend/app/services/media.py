@@ -406,9 +406,22 @@ class ImageResolver:
         Used for the split-hero wash and the photoless full-bleed hero: the image
         reads as on-brand texture, so colour match matters more than topical
         relevance. Returns the nearest-colour genuine Pexels photo, or None when
-        Pexels is unconfigured / returns nothing (the caller then decides whether
-        to fall back to a flat band or a gradient hero — we never substitute a
-        random off-colour stock photo here).
+        Pexels is unconfigured / the chain returns nothing / nothing returned has
+        a usable average colour (the caller then decides whether to fall back to
+        a flat band or a gradient hero — we never substitute a random off-colour
+        stock photo here).
+
+        Every hero/wash on a site can share this exact query (see
+        schema_builder._abstract_theme_query — one deterministic, theme-coloured
+        phrase for the whole site), so the ``_seen_pexels_urls`` dedup can
+        exhaust the fresh pool for a page processed late in generation even
+        though Pexels still has plenty of on-colour results left. Unlike a
+        distinct photographic subject, reusing an abstract/atmospheric texture
+        across two pages' hero backgrounds isn't the kind of visible duplication
+        dedup exists to prevent — so when no chain query has a FRESH (unseen)
+        match, we fall back to the best colour match across every candidate
+        already fetched in this call, seen or not, instead of returning None
+        and silently degrading the hero to a flat colour.
         """
         if not (query and self._pexels.configured):
             return None
@@ -416,12 +429,11 @@ class ImageResolver:
         chain = _stock_query_chain(
             query, intent, self._market_cue, self._industry_category, self._place_cue
         )
+        reuse_pool: list[PhotoResult] = []
         for candidate in chain:
             photos = await self._pexels.search_many(candidate, orientation=orientation)
-            fresh = [
-                p for p in photos
-                if p.url not in self._seen_pexels_urls and p.avg_color
-            ]
+            colored = [p for p in photos if p.avg_color]
+            fresh = [p for p in colored if p.url not in self._seen_pexels_urls]
             if fresh:
                 best = min(
                     fresh, key=lambda p: color_distance(p.avg_color, color_target_hex)
@@ -429,6 +441,24 @@ class ImageResolver:
                 self._seen_pexels_urls.add(best.url)
                 lum, band = _band_fields(best.avg_color)
                 return replace(best, luminance=lum, band=band)
+            reuse_pool.extend(colored)
+
+        if reuse_pool:
+            # Every candidate here is already in _seen_pexels_urls — if one
+            # weren't, it would have been in `fresh` above and returned
+            # already — so this is purely a dedup-exhaustion fallback, not a
+            # first use. No need to re-add it to _seen_pexels_urls.
+            best = min(
+                reuse_pool, key=lambda p: color_distance(p.avg_color, color_target_hex)
+            )
+            logger.debug(
+                "resolve_abstract_bg: fresh Pexels pool exhausted for '%s' (dedup) "
+                "— reusing already-seen colour-matched candidate %s",
+                query, best.url,
+            )
+            lum, band = _band_fields(best.avg_color)
+            return replace(best, luminance=lum, band=band)
+
         return None
 
     async def _take_best_scraped(
