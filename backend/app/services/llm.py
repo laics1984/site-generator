@@ -51,6 +51,18 @@ class EmptyLlmResponse(LlmError):
     pass
 
 
+class TruncatedLlmResponse(LlmError):
+    """The backend stopped because it hit its output/context budget mid-generation
+    (Ollama `done_reason='length'`, OpenAI-compatible `finish_reason='length'`),
+    not because the model chose to stop. Distinct from a generic ValidationError
+    so `_validated` can retry with a LARGER budget instead of asking the model to
+    "fix" JSON it was structurally never able to finish — a truncated response
+    that gets the usual repair prompt just produces a bigger prompt against the
+    same budget, and truncates again."""
+
+    pass
+
+
 class LlmClient(Protocol):
     """The surface every backend exposes (Ollama, MLX). Call sites depend only on
     this, so `get_llm()` can return either backend transparently."""
@@ -97,14 +109,80 @@ async def _post_nonempty(post: PostChat, payload: dict[str, Any], attempts: int 
     raise last  # type: ignore[misc]
 
 
+def _boost_budget(payload: dict[str, Any]) -> dict[str, Any]:
+    """Double whichever output/context budget field this transport's payload
+    carries (Ollama's `options.num_ctx` caps prompt+completion together; MLX/
+    OpenAI's `max_tokens` caps the completion alone), capped so a retry can't
+    request an unbounded generation. Used only after a genuine truncation
+    (see TruncatedLlmResponse) — the same prompt just needed more room.
+
+    The cap is 131 072 because a scaffold batch can legitimately bundle several
+    pages' worth of sections into one call (max_pages_per_batch /
+    max_sections_per_batch in config.py) — real generations for content-rich
+    sites can run past 32K output tokens. Models in use here have context
+    windows well beyond that (e.g. Qwen3.5's 262K native), so the cap is a
+    circuit breaker against runaway generation, not a model limitation.
+    Returns `payload` unchanged (same dict) once the cap is reached, so callers
+    can detect "budget can't grow any further" via equality."""
+    boosted = dict(payload)
+    if isinstance(payload.get("options"), dict) and "num_ctx" in payload["options"]:
+        new_num_ctx = min(payload["options"]["num_ctx"] * 2, 131072)
+        if new_num_ctx == payload["options"]["num_ctx"]:
+            return payload
+        boosted["options"] = dict(payload["options"])
+        boosted["options"]["num_ctx"] = new_num_ctx
+    if "max_tokens" in payload:
+        new_max_tokens = min(payload["max_tokens"] * 2, 131072)
+        if new_max_tokens == payload["max_tokens"]:
+            return payload
+        boosted["max_tokens"] = new_max_tokens
+    return boosted
+
+
+async def _retry_with_growing_budget(
+    post: PostChat, payload: dict[str, Any], trunc: TruncatedLlmResponse
+) -> tuple[str, dict[str, Any]]:
+    """Keep doubling the output/context budget (_boost_budget) and retrying
+    after a TruncatedLlmResponse, until a response fits or the budget hits its
+    hard cap. Raises the last TruncatedLlmResponse once doubling stops changing
+    the payload (cap reached) — at that point more retries can't help. Returns
+    the response text AND the boosted payload it was won with, so a caller that
+    goes on to a repair retry (schema validation failure) uses the same larger
+    budget instead of falling back to the original, too-small one."""
+    while True:
+        boosted = _boost_budget(payload)
+        if boosted == payload:
+            raise trunc
+        payload = boosted
+        logger.warning(
+            "LLM response was truncated by the token/context budget (%s) — "
+            "retrying with a larger budget",
+            trunc,
+        )
+        try:
+            return await _post_nonempty(post, payload), payload
+        except TruncatedLlmResponse as exc:
+            trunc = exc
+
+
 async def _validated(post: PostChat, payload: dict[str, Any], schema: type[T]) -> T:
     """POST `payload`, validate the reply against `schema`, and on a validation
     error retry ONCE with the errors fed back to the model. An empty stream is
     retried separately (see _post_nonempty) before validation. Transport-agnostic:
     both Ollama and OpenAI/MLX payloads carry a `messages` list, so the repair
     turn is appended the same way for either backend. Raises LlmError if the
-    second attempt still fails."""
-    response_text = await _post_nonempty(post, payload)
+    second attempt still fails.
+
+    A response that was cut off by the token/context budget (TruncatedLlmResponse)
+    is handled separately from malformed JSON: retrying with the SAME budget would
+    just truncate again (and the repair prompt is even longer than the original),
+    so that case retries with a doubled budget (see _retry_with_growing_budget)
+    instead of a repair message.
+    """
+    try:
+        response_text = await _post_nonempty(post, payload)
+    except TruncatedLlmResponse as trunc:
+        response_text, payload = await _retry_with_growing_budget(post, payload, trunc)
     try:
         return schema.model_validate_json(response_text)
     except ValidationError as exc:
@@ -409,6 +487,7 @@ class OllamaClient:
         chat_json), so long generations don't ReadTimeout while tokens flow.
         """
         chunks: list[str] = []
+        done_reason: str | None = None
         try:
             async with client.stream(
                 "POST",
@@ -433,6 +512,7 @@ class OllamaClient:
                     if isinstance(piece, str):
                         chunks.append(piece)
                     if event.get("done"):
+                        done_reason = event.get("done_reason")
                         break
         except httpx.HTTPError as exc:
             raise LlmError(f"Ollama request failed [{type(exc).__name__}]: {exc}") from exc
@@ -440,6 +520,15 @@ class OllamaClient:
         content = "".join(chunks)
         if not content.strip():
             raise EmptyLlmResponse("Ollama returned empty content (stream produced no tokens)")
+        if done_reason == "length":
+            # num_ctx was exhausted mid-generation (Ollama has no separate
+            # num_predict cap — see config.mlx_max_tokens comment) — the JSON is
+            # cut off mid-token, not merely malformed.
+            snippet = content[-1000:] if len(content) > 1000 else content
+            raise TruncatedLlmResponse(
+                f"Ollama response hit the context limit (done_reason='length') "
+                f"after {len(content)} chars. End snippet: {snippet!r}"
+            )
         return content
 
     async def list_models(self) -> list[str]:
@@ -465,6 +554,7 @@ class MlxClient:
         api_key: str | None = None,
         max_tokens: int | None = None,
         think_default: bool | None = None,
+        repetition_penalty: float | None = None,
     ) -> None:
         self.base_url = (base_url or settings.mlx_base_url).rstrip("/")
         self.model = model or settings.mlx_model
@@ -475,6 +565,7 @@ class MlxClient:
         # the default client); the reasoning role sets its own defaults.
         self._max_tokens = max_tokens
         self._think_default = think_default
+        self._repetition_penalty = repetition_penalty
         # A vision request routes to the vision server when one is configured,
         # else falls back to the text server (a multimodal model may serve both).
         self.vision_base_url = (
@@ -537,6 +628,16 @@ class MlxClient:
             # rationale as OllamaClient — see its chat_json note).
             "stream": True,
         }
+        repetition_penalty = (
+            self._repetition_penalty
+            if self._repetition_penalty is not None
+            else settings.mlx_repetition_penalty
+        )
+        if repetition_penalty:
+            # mlx_lm.server-specific extension (not part of the OpenAI schema);
+            # 0.0 means "disabled", so only send it when actually set — see
+            # config.mlx_repetition_penalty for why this defaults on.
+            payload["repetition_penalty"] = repetition_penalty
         url = f"{base_url}/v1/chat/completions"
 
         client = _shared_client()
@@ -555,6 +656,7 @@ class MlxClient:
         carries each token slice, terminated by `data: [DONE]`. A `<think>` preamble
         (Qwen3) is stripped from the assembled text before the caller validates."""
         chunks: list[str] = []
+        finish_reason: str | None = None
         try:
             async with client.stream(
                 "POST", url, json=payload, timeout=self.timeout, headers=self._headers
@@ -578,12 +680,23 @@ class MlxClient:
                         piece = (choices[0].get("delta") or {}).get("content")
                         if isinstance(piece, str):
                             chunks.append(piece)
+                        reason = choices[0].get("finish_reason")
+                        if reason:
+                            finish_reason = reason
         except httpx.HTTPError as exc:
             raise LlmError(f"MLX request failed [{type(exc).__name__}]: {exc}") from exc
 
         content = _strip_think("".join(chunks))
         if not content.strip():
             raise EmptyLlmResponse("MLX returned empty content (stream produced no tokens)")
+        if finish_reason == "length":
+            # max_tokens was exhausted mid-generation — the JSON is cut off
+            # mid-token, not merely malformed.
+            snippet = content[-1000:] if len(content) > 1000 else content
+            raise TruncatedLlmResponse(
+                f"MLX response hit max_tokens (finish_reason='length') "
+                f"after {len(content)} chars. End snippet: {snippet!r}"
+            )
         return content
 
     async def list_models(self) -> list[str]:

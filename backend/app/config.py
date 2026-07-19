@@ -29,7 +29,19 @@ class Settings(BaseSettings):
     # OpenAI servers default to a small max_tokens that would truncate a multi-
     # section generation mid-JSON; set a generous output budget. (Ollama has no
     # equivalent cap — num_predict defaults to unlimited.)
-    mlx_max_tokens: int = 8192
+    # 16 384 (raised from 8 192): content-rich sites were hitting the old cap
+    # mid-batch and burning an extra retry; 16 384 keeps most generations in one
+    # shot while remaining well under the model's 32 768-token context window.
+    mlx_max_tokens: int = 16384
+    # mlx_lm.server defaults this to 0.0 (disabled) — unlike Ollama, whose
+    # repeat_penalty already defaults to 1.1. Without it, a small model can fall
+    # into a degenerate loop (e.g. re-emitting the same nested block over and
+    # over) that never produces valid JSON and just burns the whole max_tokens
+    # budget as a wall of repeated text — the doubled-budget truncation retry
+    # (see llm._boost_budget) can't fix that, it only lets the loop run longer
+    # before failing again. 1.1 matches Ollama's default. 0.0 restores the
+    # server's own default (off).
+    mlx_repetition_penalty: float = 1.1
     # Opt-in MLX vision server (mlx_vlm.server). Unset ⇒ the vision pass falls back
     # to Ollama / is skipped, exactly as with ollama_vision_model.
     mlx_vision_base_url: str | None = None

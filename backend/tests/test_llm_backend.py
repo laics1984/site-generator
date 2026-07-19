@@ -12,6 +12,7 @@ from app.services.llm import (
     LlmError,
     MlxClient,
     OllamaClient,
+    TruncatedLlmResponse,
     get_llm,
     get_reasoning_llm,
     resolve_llm_backend,
@@ -36,6 +37,22 @@ def _ndjson(body: str) -> list[str]:
     return [
         json.dumps({"message": {"content": body}}),
         json.dumps({"done": True}),
+    ]
+
+
+def _ndjson_truncated(body: str) -> list[str]:
+    """Ollama NDJSON stream that stopped because num_ctx ran out mid-generation."""
+    return [
+        json.dumps({"message": {"content": body}}),
+        json.dumps({"done": True, "done_reason": "length"}),
+    ]
+
+
+def _sse_truncated(body: str) -> list[str]:
+    """OpenAI-style SSE stream that stopped because max_tokens ran out."""
+    return [
+        f'data: {json.dumps({"choices": [{"delta": {"content": body}, "finish_reason": "length"}]})}',
+        "data: [DONE]",
     ]
 
 
@@ -77,7 +94,11 @@ class _FakeAsyncClient:
         self._recorder.append(
             {"url": url, "payload": json, "headers": kwargs.get("headers")}
         )
-        return _FakeStreamCtx(self._framer(self._bodies.pop(0)))
+        body = self._bodies.pop(0)
+        framer = self._framer
+        if isinstance(body, tuple):  # (body, framer) overrides the default for this call
+            body, framer = body
+        return _FakeStreamCtx(framer(body))
 
 
 def _patch_httpx(testcase, bodies, recorder, framer=_sse):
@@ -136,6 +157,23 @@ class MlxClientTest(unittest.IsolatedAsyncioTestCase):
             recorder[1]["payload"]["chat_template_kwargs"], {"enable_thinking": True}
         )
 
+    async def test_repetition_penalty_sent_by_default(self):
+        # mlx_lm.server defaults repetition_penalty to 0.0 (off), unlike Ollama —
+        # send a non-zero default so a small model can't loop re-emitting the same
+        # JSON fragment until it exhausts max_tokens (see config.mlx_repetition_penalty).
+        recorder = []
+        _patch_httpx(self, ['{"x": 1}'], recorder)
+        await MlxClient().chat_json("sys", "user", _Out)
+        self.assertEqual(recorder[0]["payload"]["repetition_penalty"], 1.1)
+
+    async def test_repetition_penalty_override_and_disable(self):
+        recorder = []
+        _patch_httpx(self, ['{"x": 1}', '{"x": 1}'], recorder)
+        await MlxClient(repetition_penalty=1.3).chat_json("sys", "user", _Out)
+        self.assertEqual(recorder[0]["payload"]["repetition_penalty"], 1.3)
+        await MlxClient(repetition_penalty=0.0).chat_json("sys", "user", _Out)
+        self.assertNotIn("repetition_penalty", recorder[1]["payload"])
+
     async def test_think_preamble_is_stripped(self):
         recorder = []
         _patch_httpx(self, ['<think>let me think</think>{"x": 3}'], recorder)
@@ -187,6 +225,80 @@ class MlxClientTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             image_part["image_url"]["url"], "data:image/jpeg;base64,QUJD"
         )
+
+
+class TruncatedResponseTest(unittest.IsolatedAsyncioTestCase):
+    """A response cut off by the token/context budget (Ollama done_reason='length',
+    OpenAI-compatible finish_reason='length') is a different failure than
+    malformed JSON: retrying with the same budget would just truncate again, so
+    _validated keeps DOUBLING the budget and retrying (see
+    _retry_with_growing_budget) instead of the usual repair-prompt retry, until
+    either a response fits or the budget hits its hard cap (131072)."""
+
+    async def test_ollama_truncation_retries_with_doubled_num_ctx(self):
+        recorder = []
+        _patch_httpx(
+            self,
+            [('{"x": 1', _ndjson_truncated), '{"x": 9}'],
+            recorder,
+            framer=_ndjson,
+        )
+        out = await OllamaClient().chat_json("sys", "user", _Out, num_ctx=4096)
+        self.assertEqual(out.x, 9)
+        self.assertEqual(len(recorder), 2)  # boosted retry happened
+        self.assertEqual(recorder[0]["payload"]["options"]["num_ctx"], 4096)
+        self.assertEqual(recorder[1]["payload"]["options"]["num_ctx"], 8192)
+
+    async def test_ollama_truncation_keeps_retrying_across_multiple_boosts(self):
+        # Two truncations in a row, then success — the budget must keep
+        # doubling (not give up after one retry) until it fits.
+        recorder = []
+        _patch_httpx(
+            self,
+            [
+                ('{"x": 1', _ndjson_truncated),
+                ('{"x": 1', _ndjson_truncated),
+                '{"x": 9}',
+            ],
+            recorder,
+            framer=_ndjson,
+        )
+        out = await OllamaClient().chat_json("sys", "user", _Out, num_ctx=4096)
+        self.assertEqual(out.x, 9)
+        self.assertEqual(len(recorder), 3)
+        self.assertEqual(recorder[0]["payload"]["options"]["num_ctx"], 4096)
+        self.assertEqual(recorder[1]["payload"]["options"]["num_ctx"], 8192)
+        self.assertEqual(recorder[2]["payload"]["options"]["num_ctx"], 16384)
+
+    async def test_ollama_still_truncated_at_budget_cap_raises(self):
+        # Starting already at the hard cap: the first failure can't be boosted
+        # any further, so it raises immediately with no extra HTTP call.
+        recorder = []
+        _patch_httpx(self, ['{"x": 1'], recorder, framer=_ndjson_truncated)
+        with self.assertRaises(TruncatedLlmResponse):
+            await OllamaClient().chat_json("sys", "user", _Out, num_ctx=131072)
+        self.assertEqual(len(recorder), 1)
+
+    async def test_mlx_truncation_retries_with_doubled_max_tokens(self):
+        recorder = []
+        _patch_httpx(
+            self,
+            [('{"x": 1', _sse_truncated), '{"x": 9}'],
+            recorder,
+            framer=_sse,
+        )
+        out = await MlxClient(max_tokens=1000).chat_json("sys", "user", _Out)
+        self.assertEqual(out.x, 9)
+        self.assertEqual(len(recorder), 2)
+        self.assertEqual(recorder[0]["payload"]["max_tokens"], 1000)
+        self.assertEqual(recorder[1]["payload"]["max_tokens"], 2000)
+
+    async def test_mlx_still_truncated_at_budget_cap_raises(self):
+        recorder = []
+        _patch_httpx(self, ['{"x": 1'], recorder, framer=_sse_truncated)
+        with self.assertRaises(TruncatedLlmResponse):
+            await MlxClient(max_tokens=131072).chat_json("sys", "user", _Out)
+        self.assertEqual(len(recorder), 1)
 
 
 class SettingsDrivenDefaultsTest(unittest.IsolatedAsyncioTestCase):

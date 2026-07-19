@@ -55,7 +55,8 @@ Override defaults via env vars or a `.env` file:
 | `LLM_BACKEND` | `ollama` | `mlx` \| `ollama` — set in `.env`; see above |
 | `MLX_BASE_URL` | `http://localhost:8080` | mlx_lm.server (OpenAI API). In Docker: `http://host.docker.internal:8080` |
 | `MLX_MODEL` | `mlx-community/Qwen3-8B-4bit` | HuggingFace repo id |
-| `MLX_MAX_TOKENS` | `8192` | Output budget (OpenAI servers cap low by default) |
+| `MLX_MAX_TOKENS` | `16384` | Output budget (OpenAI servers cap low by default) |
+| `MLX_REPETITION_PENALTY` | `1.1` | mlx_lm.server defaults this to 0.0 (off); without it a small model can loop re-emitting the same JSON fragment until it burns the whole token budget. Matches Ollama's default; `0` restores the server default |
 | `MLX_VISION_BASE_URL` | unset | mlx_vlm.server URL; unset ⇒ falls back to `MLX_BASE_URL` |
 | `MLX_VISION_MODEL` | unset | Opt-in MLX vision model; unset ⇒ vision pass skipped under MLX |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | May point at a remote Ollama (AI server); compose passes a set value through |
