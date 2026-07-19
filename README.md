@@ -136,15 +136,29 @@ isn't bound to localhost. Run `ollama serve` in a terminal and re-check.
 
 ---
 
-## What's built (Phase 1)
+## What's built
+
+All five original phases are implemented.
 
 | Phase | Status | Scope |
 |---|---|---|
-| **1** | ✅ done | Backend + frontend scaffold, Pydantic schema mirroring `BuilderElement`, Ollama client, semantic-blocks → BuilderElement mapper, paste-input pipeline end-to-end, Docker compose |
-| 2 | next | Playwright URL scraping + extracted-content preview |
-| 3 | planned | PDF/DOCX upload + parser |
-| 4 | planned | CMS API push (create page → save draft → optional publish) |
-| 5 | planned | Iframe visual preview + per-section regenerate |
+| **1** | ✅ done | Backend + frontend scaffold, Pydantic schema mirroring `BuilderElement`, Ollama/MLX client, semantic-blocks → BuilderElement mapper, paste-input pipeline, Docker compose |
+| **2** | ✅ done | Playwright URL scraping (httpx fast-path + fallback), same-domain crawl, extracted-content preview |
+| **3** | ✅ done | PDF/DOCX upload + parser (`doc_parser.py`, PyMuPDF) |
+| **4** | ✅ done | CMS API push (create page → media → menus → header/footer → styles → publish) |
+| **5** | ✅ done | Iframe visual preview + per-page layout |
+
+## Project docs
+
+| Doc | What's in it |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Services, generation pipeline, config flow, data layer |
+| [CONFIGURATION.md](CONFIGURATION.md) | Every environment variable, default, and description |
+| [SECURITY.md](SECURITY.md) | Trust model, SSRF guard, risks + fixes, remaining recommendations |
+| [PERFORMANCE.md](PERFORMANCE.md) | Optimizations in place and remaining bottlenecks |
+
+**Running tests:** `backend/scripts/run-tests.sh` (runs the suite inside the
+container — no local Python needed). Design history lives in `docs/archive/`.
 
 ---
 

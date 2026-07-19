@@ -37,7 +37,7 @@ get_env() {
 }
 
 BACKEND="$(get_env LLM_BACKEND ollama)"
-MLX_MODEL="$(get_env MLX_MODEL mlx-community/Qwen3-4B-4bit)"
+MLX_MODEL="$(get_env MLX_MODEL mlx-community/Qwen3.5-2B-OptiQ-4bit)"
 MLX_BASE_URL="$(get_env MLX_BASE_URL http://localhost:8080)"
 MLX_PORT="8080"   # local mlx_lm.server port; matches the MLX_BASE_URL default
 

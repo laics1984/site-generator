@@ -574,3 +574,77 @@ class PortraitHeroBackgroundTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(photo.source, "pexels")
+
+
+def _abstract_photo(url, avg_color):
+    return PhotoResult(
+        url=url, alt="Abstract texture", photographer="Tester",
+        photographer_url=None, source="pexels", avg_color=avg_color,
+    )
+
+
+class AbstractBgTest(unittest.IsolatedAsyncioTestCase):
+    async def test_resolve_abstract_bg_picks_nearest_color_match_and_marks_seen(self):
+        pexels = FakePexels(
+            {
+                "abstract texture": [
+                    _abstract_photo("https://pexels.example/red.jpg", "#ff0000"),
+                    _abstract_photo("https://pexels.example/blue.jpg", "#0000ff"),
+                ]
+            }
+        )
+        resolver = ImageResolver(pexels=pexels)
+
+        photo = await resolver.resolve_abstract_bg(
+            "abstract texture", color_target_hex="#0000ee"
+        )
+
+        self.assertEqual(photo.url, "https://pexels.example/blue.jpg")
+        self.assertIn("https://pexels.example/blue.jpg", resolver._seen_pexels_urls)
+
+    async def test_resolve_abstract_bg_reuses_seen_candidate_when_fresh_pool_exhausted(self):
+        pexels = FakePexels(
+            {
+                "abstract texture": [
+                    _abstract_photo("https://pexels.example/red.jpg", "#ff0000"),
+                    _abstract_photo("https://pexels.example/blue.jpg", "#0000ff"),
+                ]
+            }
+        )
+        resolver = ImageResolver(pexels=pexels)
+        # Simulate an earlier page on the same site already having consumed
+        # both candidates via the identical theme-wide abstract query.
+        resolver._seen_pexels_urls.update(
+            {"https://pexels.example/red.jpg", "https://pexels.example/blue.jpg"}
+        )
+
+        photo = await resolver.resolve_abstract_bg(
+            "abstract texture", color_target_hex="#0000ee"
+        )
+
+        self.assertIsNotNone(photo)
+        self.assertEqual(photo.url, "https://pexels.example/blue.jpg")
+
+    async def test_resolve_abstract_bg_returns_none_when_no_candidate_has_avg_color(self):
+        pexels = FakePexels(
+            {"abstract texture": [_abstract_photo("https://pexels.example/red.jpg", None)]}
+        )
+        resolver = ImageResolver(pexels=pexels)
+
+        photo = await resolver.resolve_abstract_bg(
+            "abstract texture", color_target_hex="#0000ee"
+        )
+
+        self.assertIsNone(photo)
+
+    async def test_resolve_abstract_bg_returns_none_when_pexels_unconfigured(self):
+        pexels = FakePexels({})
+        pexels.configured = False
+        resolver = ImageResolver(pexels=pexels)
+
+        photo = await resolver.resolve_abstract_bg(
+            "abstract texture", color_target_hex="#0000ee"
+        )
+
+        self.assertIsNone(photo)
+        self.assertEqual(pexels.queries, [])

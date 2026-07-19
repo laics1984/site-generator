@@ -198,6 +198,9 @@ class OverlayDefaultIntegrationTest(unittest.IsolatedAsyncioTestCase):
         # can't resolve a photo and falls back to a light layout. The header must
         # then stay SOLID (overlay off) so the nav keeps its dark theme ink
         # instead of unreadable white-on-light. Rule: white nav ⇒ dark hero.
+        # Pexels is disabled suite-wide by tests/conftest.py, so the homepage
+        # hero can't resolve a photo and degrades to a compact hero without the
+        # overlay marker (header stays solid; white nav ⇒ dark hero rule).
         original = settings.design_brain_enabled
         settings.design_brain_enabled = False
         try:

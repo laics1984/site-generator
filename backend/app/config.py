@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # id the server exposes on /v1/models: a HuggingFace repo id for mlx_lm.server,
     # the --alias for llama-server.
     mlx_base_url: str = "http://localhost:8080"
-    mlx_model: str = "mlx-community/Qwen3-4B-4bit"
+    mlx_model: str = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
     # Generous because this is a per-read (streaming) timeout: once tokens flow
     # each one resets the clock, so it only bites on cold time-to-first-token —
     # which on a memory-constrained Mac can run 1-3 min while the OS pages the
@@ -29,7 +29,19 @@ class Settings(BaseSettings):
     # OpenAI servers default to a small max_tokens that would truncate a multi-
     # section generation mid-JSON; set a generous output budget. (Ollama has no
     # equivalent cap — num_predict defaults to unlimited.)
-    mlx_max_tokens: int = 8192
+    # 16 384 (raised from 8 192): content-rich sites were hitting the old cap
+    # mid-batch and burning an extra retry; 16 384 keeps most generations in one
+    # shot while remaining well under the model's 32 768-token context window.
+    mlx_max_tokens: int = 16384
+    # mlx_lm.server defaults this to 0.0 (disabled) — unlike Ollama, whose
+    # repeat_penalty already defaults to 1.1. Without it, a small model can fall
+    # into a degenerate loop (e.g. re-emitting the same nested block over and
+    # over) that never produces valid JSON and just burns the whole max_tokens
+    # budget as a wall of repeated text — the doubled-budget truncation retry
+    # (see llm._boost_budget) can't fix that, it only lets the loop run longer
+    # before failing again. 1.1 matches Ollama's default. 0.0 restores the
+    # server's own default (off).
+    mlx_repetition_penalty: float = 1.1
     # Opt-in MLX vision server (mlx_vlm.server). Unset ⇒ the vision pass falls back
     # to Ollama / is skipped, exactly as with ollama_vision_model.
     mlx_vision_base_url: str | None = None
@@ -40,7 +52,7 @@ class Settings(BaseSettings):
     # fit comfortably in 16GB unified memory (M1) with headroom, so the two
     # passes never fight over which model is loaded. A generation newer than
     # qwen2.5 at the same footprint.
-    ollama_model: str = "qwen3.6:35b-a3b" #"qwen3.6:35b-q4_K_M"
+    ollama_model: str = "qwen3.6:35b-a3b" #"qwen3.5:4b|qwen3.6:35b-q4_K_M|qwen3.6:35b-a3b"
     ollama_timeout_seconds: float = 180.0
     # How long Ollama keeps the model resident after a request. The picker flow
     # fires brand detection then (after the user picks pages) generation; the
@@ -222,7 +234,10 @@ class Settings(BaseSettings):
     # small source image softens when upscaled). Lower than the hero minimum
     # because section bands are shorter, but still guards against stretching a
     # tiny figure image across a full-width band. Unknown dimensions still pass.
-    section_min_background_dim: int = 500
+    # 800 sits between the hero minimum (1200) and genuinely small source images:
+    # a 600px-wide photo still visibly softens across a full-width band, so it
+    # defers to a crisp Pexels shot (see tests/test_media.py section-bg cases).
+    section_min_background_dim: int = 800
 
     # Transparent header floating over full-bleed heroes, solidifying to the
     # header's real chrome after `header_scroll_reveal_offset` px of scrollF
@@ -256,6 +271,10 @@ class Settings(BaseSettings):
 
     cms_api_base_url: str = "http://localhost:8000"
 
+    # SQLite file for durable crawl-job state (services/db.py). Inside the
+    # container this lives on the mounted data volume.
+    sitegen_db_path: str = "/app/data/sitegen.db"
+
     # Luminance-band section rhythm (SECTION_VISUAL_POLICY_SPEC.md). When enabled,
     # the planner assigns a visual_policy per the §5 matrix and the schema_builder
     # luminance pass emits brand band colours / contrasting font / separators —
@@ -281,6 +300,32 @@ class Settings(BaseSettings):
         "http://localhost:5174",
         "http://127.0.0.1:5173",
     ]
+
+    # --- Security -----------------------------------------------------------
+    # SSRF guard: the scrape/fetch layer accepts arbitrary user- and page-
+    # supplied URLs. By default it refuses any URL that resolves to a non-public
+    # address (loopback / private / link-local / cloud-metadata / the Docker
+    # host gateway), so a caller can't drive the backend into internal services.
+    # Set true ONLY for local development when you deliberately want to scrape a
+    # localhost / LAN target on your own machine. See services/url_guard.py.
+    scrape_allow_private_hosts: bool = False
+
+    # --- HTTP client --------------------------------------------------------
+    # Single source of truth for the browser-like User-Agent used by the httpx
+    # fast-fetch path AND the Playwright/robots fetches (previously duplicated
+    # string constants kept in sync by comment).
+    http_user_agent: str = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    )
+    # Network read/connect timeouts (seconds) for the non-LLM HTTP calls. These
+    # were hardcoded at their call sites; the defaults preserve prior behaviour.
+    fast_fetch_timeout_seconds: float = 8.0
+    robots_fetch_timeout_seconds: float = 10.0
+    playwright_goto_timeout_ms: int = 15000
+    cms_timeout_seconds: float = 30.0
+    cms_media_upload_timeout_seconds: float = 120.0
 
 
 settings = Settings()

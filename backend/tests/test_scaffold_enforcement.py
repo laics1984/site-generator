@@ -5,6 +5,7 @@ from app.models.content_blocks import (
     AwardsBlock,
     ClientItem,
     ClientsBlock,
+    HeroBlock,
     PagePlan,
     StatItem,
     StatsBlock,
@@ -468,6 +469,106 @@ class ScaffoldEnforcementTest(unittest.TestCase):
 
         self.assertEqual(len(sanitized), 1)
         self.assertEqual(sanitized[0].kind, "hero")
+
+    def test_hero_with_blank_image_query_gets_page_type_topical_default(self):
+        page = PagePlan(
+            page_type="contact",
+            slug="contact",
+            title="Contact",
+            blocks=[HeroBlock(headline="Get in touch", image_query=None)],
+            seo_title="Contact - Example",
+            seo_description="Contact us.",
+        )
+        scaffold = PageScaffold(
+            page_type="contact", slug="contact", title="Contact",
+            sections=["hero", "contact"],
+        )
+
+        aligned = align_page_to_scaffold(page, scaffold, brand_name="Example")
+
+        hero = next(b for b in aligned.blocks if b.kind == "hero")
+        self.assertEqual(hero.image_query, "welcoming modern office reception")
+
+    def test_hero_backfill_uses_scaffold_page_type_not_llm_page_type(self):
+        # The LLM mislabels the page (drift); the scaffold's own page_type,
+        # set purely in code (industry_templates.py), must still win.
+        page = PagePlan(
+            page_type="landing",
+            slug="contact",
+            title="Contact",
+            blocks=[HeroBlock(headline="Get in touch", image_query=None)],
+            seo_title="Contact - Example",
+            seo_description="Contact us.",
+        )
+        scaffold = PageScaffold(
+            page_type="contact", slug="contact", title="Contact",
+            sections=["hero", "contact"],
+        )
+
+        aligned = align_page_to_scaffold(page, scaffold, brand_name="Example")
+
+        hero = next(b for b in aligned.blocks if b.kind == "hero")
+        self.assertEqual(hero.image_query, "welcoming modern office reception")
+
+    def test_hero_with_existing_image_query_is_left_untouched(self):
+        page = PagePlan(
+            page_type="contact",
+            slug="contact",
+            title="Contact",
+            blocks=[
+                HeroBlock(headline="Get in touch", image_query="cozy bakery storefront")
+            ],
+            seo_title="Contact - Example",
+            seo_description="Contact us.",
+        )
+        scaffold = PageScaffold(
+            page_type="contact", slug="contact", title="Contact",
+            sections=["hero", "contact"],
+        )
+
+        aligned = align_page_to_scaffold(page, scaffold, brand_name="Example")
+
+        hero = next(b for b in aligned.blocks if b.kind == "hero")
+        self.assertEqual(hero.image_query, "cozy bakery storefront")
+
+    def test_hero_with_bound_image_ref_is_left_untouched_even_with_blank_query(self):
+        page = PagePlan(
+            page_type="contact",
+            slug="contact",
+            title="Contact",
+            blocks=[HeroBlock(headline="Get in touch", image_query=None, image_ref=0)],
+            seo_title="Contact - Example",
+            seo_description="Contact us.",
+        )
+        scaffold = PageScaffold(
+            page_type="contact", slug="contact", title="Contact",
+            sections=["hero", "contact"],
+        )
+
+        aligned = align_page_to_scaffold(page, scaffold, brand_name="Example")
+
+        hero = next(b for b in aligned.blocks if b.kind == "hero")
+        self.assertIsNone(hero.image_query)
+        self.assertEqual(hero.image_ref, 0)
+
+    def test_hero_unmapped_page_type_falls_back_to_brand_name_phrase(self):
+        page = PagePlan(
+            page_type="landing",
+            slug="pricing",
+            title="Pricing",
+            blocks=[HeroBlock(headline="Simple pricing", image_query=None)],
+            seo_title="Pricing - Example",
+            seo_description="Our pricing.",
+        )
+        scaffold = PageScaffold(
+            page_type="landing", slug="pricing", title="Pricing",
+            sections=["hero"],
+        )
+
+        aligned = align_page_to_scaffold(page, scaffold, brand_name="Example")
+
+        hero = next(b for b in aligned.blocks if b.kind == "hero")
+        self.assertEqual(hero.image_query, "Example team at work")
 
 
 if __name__ == "__main__":

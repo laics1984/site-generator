@@ -23,18 +23,14 @@ import httpx
 import trafilatura
 from bs4 import BeautifulSoup
 
+from app.config import settings
+from app.services.url_guard import UnsafeUrlError, assert_public_url
+
 logger = logging.getLogger(__name__)
 
 
-# Reused from scraper.py. Imported there too — keep in sync if any change.
-_BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/128.0.0.0 Safari/537.36"
-)
-
 _HTTPX_HEADERS = {
-    "User-Agent": _BROWSER_USER_AGENT,
+    "User-Agent": settings.http_user_agent,
     "Accept": (
         "text/html,application/xhtml+xml,application/xml;q=0.9,"
         "image/avif,image/webp,*/*;q=0.8"
@@ -69,6 +65,7 @@ class FastFetchSkipReason:
     JS_SHELL = "js_shell"            # HTML returned but no real content (SPA)
     TOO_SHORT = "too_short"           # HTML returned but text < threshold
     EXCEPTION = "exception"
+    BLOCKED = "blocked"               # URL failed the SSRF guard (non-public host)
 
 
 @dataclass
@@ -83,15 +80,23 @@ class FastFetchSkipped:
 async def try_fast_fetch(
     url: str,
     *,
-    timeout_seconds: float = 8.0,
+    timeout_seconds: float | None = None,
 ) -> FastFetchResult | FastFetchSkipped:
     """
     Attempt to fetch + judge the URL via plain httpx. Returns either:
       - FastFetchResult — page has substantive content, parse downstream as usual
       - FastFetchSkipped — caller should fall back to Playwright
 
-    Never raises. All exceptions become FastFetchSkipped(EXCEPTION).
+    Never raises. All exceptions become FastFetchSkipped(EXCEPTION); a URL that
+    fails the SSRF guard becomes FastFetchSkipped(BLOCKED).
     """
+    if timeout_seconds is None:
+        timeout_seconds = settings.fast_fetch_timeout_seconds
+    try:
+        await assert_public_url(url)
+    except UnsafeUrlError as exc:
+        logger.warning("fast fetch refused non-public URL %s: %s", url, exc)
+        return FastFetchSkipped(reason=FastFetchSkipReason.BLOCKED, detail=str(exc))
     try:
         async with httpx.AsyncClient(
             timeout=timeout_seconds,
@@ -105,6 +110,13 @@ async def try_fast_fetch(
     except Exception as exc:  # noqa: BLE001
         logger.debug("httpx fetch unexpected error %s: %s", url, exc)
         return FastFetchSkipped(reason=FastFetchSkipReason.EXCEPTION, detail=str(exc))
+
+    # Redirects were followed; make sure we didn't land on an internal host.
+    try:
+        await assert_public_url(str(response.url))
+    except UnsafeUrlError as exc:
+        logger.warning("fast fetch refused redirect target %s: %s", response.url, exc)
+        return FastFetchSkipped(reason=FastFetchSkipReason.BLOCKED, detail=str(exc))
 
     if response.status_code >= 400:
         return FastFetchSkipped(
