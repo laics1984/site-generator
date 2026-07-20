@@ -179,6 +179,21 @@ class HeaderOverlayTest(unittest.TestCase):
         self.assertTrue(rich["overlay"])
         self.assertEqual(rich["scrollRevealOffset"], 80)
 
+    def test_wrap_header_reveal_flag_emitted_only_when_disabled(self):
+        # Legacy sites must keep their exact behavior payload: the flag is
+        # ABSENT (renderers default to reveal-on) unless explicitly disabled
+        # — the self-chrome pill path, which stays transparent at every
+        # scroll position.
+        from app.services.menu_builder import wrap_header
+
+        _, header = self._header(overlay=True)
+        default = wrap_header(header, menus=[], overlay=True)["behavior"]
+        self.assertNotIn("revealBackgroundOnScroll", default)
+        pill = wrap_header(
+            header, menus=[], overlay=True, reveal_background_on_scroll=False
+        )["behavior"]
+        self.assertIs(pill["revealBackgroundOnScroll"], False)
+
 
 def _find_type(node, type_name):
     if getattr(node, "type", None) == type_name:

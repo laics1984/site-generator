@@ -15281,6 +15281,1865 @@
           }
         ]
       }
+    },
+    {
+      "id": "chrome-header-classic",
+      "sectionType": "header",
+      "layoutVariant": "classic",
+      "styleVariant": "chrome",
+      "label": "Header — classic",
+      "description": "Logo left, inline primary navigation and a solid CTA on solid chrome. The legacy generated header.",
+      "tags": [
+        "Chrome",
+        "Header"
+      ],
+      "thumbnail": "chrome-header-classic",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree"
+        },
+        {
+          "id": "cta",
+          "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "cta": {
+          "innerText": "Get in touch",
+          "href": "#contact"
+        }
+      },
+      "tree": {
+        "name": "Site Header",
+        "type": "__header",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "{{header.bg}}",
+          "boxShadow": "{{divider.subtle}}",
+          "position": "sticky",
+          "top": "0",
+          "zIndex": "50"
+        },
+        "content": [
+          {
+            "name": "Header bar",
+            "type": "container",
+            "styles": {
+              "display": "flex",
+              "flexDirection": "row",
+              "width": "100%",
+              "alignItems": "center",
+              "justifyContent": "space-between",
+              "maxWidth": "{{page.maxWidthPx}}",
+              "marginLeft": "auto",
+              "marginRight": "auto",
+              "paddingLeft": "24px",
+              "paddingRight": "24px",
+              "paddingTop": "24px",
+              "paddingBottom": "24px",
+              "gap": "24px"
+            },
+            "content": [
+              {
+                "name": "Brand Logo",
+                "type": "image",
+                "styles": {},
+                "$subtree": "logo"
+              },
+              {
+                "name": "Menu",
+                "type": "menu",
+                "styles": {
+                  "width": "100%",
+                  "flex": "1 1 0%",
+                  "color": "{{header.fg}}",
+                  "fontSize": "15px"
+                },
+                "classes": "wt-header-ink",
+                "content": {
+                  "slot": "primary",
+                  "variant": "header-inline",
+                  "menuLabel": "Primary navigation",
+                  "colorMode": "manual"
+                }
+              },
+              {
+                "name": "Menu",
+                "type": "menu",
+                "styles": {
+                  "width": "auto",
+                  "color": "{{header.fg}}"
+                },
+                "classes": "wt-header-ink",
+                "content": {
+                  "slot": "social",
+                  "variant": "social-inline",
+                  "menuLabel": "Social links",
+                  "colorMode": "manual"
+                },
+                "$if": "has_social"
+              },
+              {
+                "name": "Header CTA",
+                "type": "link",
+                "styles": {
+                  "backgroundColor": "{{buttons.bg}}",
+                  "color": "{{buttons.fg}}",
+                  "paddingTop": "10px",
+                  "paddingBottom": "10px",
+                  "paddingLeft": "20px",
+                  "paddingRight": "20px",
+                  "borderRadius": "{{buttons.radiusPx}}",
+                  "fontWeight": 600,
+                  "fontSize": "14px",
+                  "textDecoration": "none",
+                  "display": "inline-flex",
+                  "alignItems": "center"
+                },
+                "$slot": "cta"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "chrome-header-glass-blur",
+      "sectionType": "header",
+      "layoutVariant": "glass-blur",
+      "styleVariant": "chrome",
+      "label": "Header — glass-blur",
+      "description": "The classic bar on translucent frosted chrome — the page scrolls visibly behind it.",
+      "tags": [
+        "Chrome",
+        "Header"
+      ],
+      "thumbnail": "chrome-header-glass-blur",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree"
+        },
+        {
+          "id": "cta",
+          "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "cta": {
+          "innerText": "Get in touch",
+          "href": "#contact"
+        }
+      },
+      "tree": {
+        "name": "Site Header",
+        "type": "__header",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "{{header.bg@72}}",
+          "boxShadow": "{{divider.subtle}}",
+          "position": "sticky",
+          "top": "0",
+          "zIndex": "50",
+          "backdropFilter": "blur(14px) saturate(160%)",
+          "WebkitBackdropFilter": "blur(14px) saturate(160%)"
+        },
+        "content": [
+          {
+            "name": "Header bar",
+            "type": "container",
+            "styles": {
+              "display": "flex",
+              "flexDirection": "row",
+              "width": "100%",
+              "alignItems": "center",
+              "justifyContent": "space-between",
+              "maxWidth": "{{page.maxWidthPx}}",
+              "marginLeft": "auto",
+              "marginRight": "auto",
+              "paddingLeft": "24px",
+              "paddingRight": "24px",
+              "paddingTop": "24px",
+              "paddingBottom": "24px",
+              "gap": "24px"
+            },
+            "content": [
+              {
+                "name": "Brand Logo",
+                "type": "image",
+                "styles": {},
+                "$subtree": "logo"
+              },
+              {
+                "name": "Menu",
+                "type": "menu",
+                "styles": {
+                  "width": "100%",
+                  "flex": "1 1 0%",
+                  "color": "{{header.fg}}",
+                  "fontSize": "15px"
+                },
+                "classes": "wt-header-ink",
+                "content": {
+                  "slot": "primary",
+                  "variant": "header-inline",
+                  "menuLabel": "Primary navigation",
+                  "colorMode": "manual"
+                }
+              },
+              {
+                "name": "Menu",
+                "type": "menu",
+                "styles": {
+                  "width": "auto",
+                  "color": "{{header.fg}}"
+                },
+                "classes": "wt-header-ink",
+                "content": {
+                  "slot": "social",
+                  "variant": "social-inline",
+                  "menuLabel": "Social links",
+                  "colorMode": "manual"
+                },
+                "$if": "has_social"
+              },
+              {
+                "name": "Header CTA",
+                "type": "link",
+                "styles": {
+                  "backgroundColor": "{{buttons.bg}}",
+                  "color": "{{buttons.fg}}",
+                  "paddingTop": "10px",
+                  "paddingBottom": "10px",
+                  "paddingLeft": "20px",
+                  "paddingRight": "20px",
+                  "borderRadius": "{{buttons.radiusPx}}",
+                  "fontWeight": 600,
+                  "fontSize": "14px",
+                  "textDecoration": "none",
+                  "display": "inline-flex",
+                  "alignItems": "center"
+                },
+                "$slot": "cta"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "chrome-header-floating-pill",
+      "sectionType": "header",
+      "layoutVariant": "floating-pill",
+      "styleVariant": "chrome",
+      "label": "Header — floating-pill",
+      "description": "An inset rounded bar floating over the page; the page background shows around it. Overlay-native: floats over full-bleed heroes with its own chrome — no ink markers, no background reveal on scroll.",
+      "tags": [
+        "Chrome",
+        "Header"
+      ],
+      "thumbnail": "chrome-header-floating-pill",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree"
+        },
+        {
+          "id": "cta",
+          "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "cta": {
+          "innerText": "Get in touch",
+          "href": "#contact"
+        }
+      },
+      "tree": {
+        "name": "Site Header",
+        "type": "__header",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "transparent",
+          "position": "sticky",
+          "top": "0",
+          "zIndex": "50",
+          "paddingTop": "14px",
+          "paddingLeft": "16px",
+          "paddingRight": "16px"
+        },
+        "content": [
+          {
+            "name": "Header bar",
+            "type": "container",
+            "headerBar": true,
+            "styles": {
+              "display": "flex",
+              "flexDirection": "row",
+              "width": "100%",
+              "alignItems": "center",
+              "justifyContent": "space-between",
+              "maxWidth": "{{pill.maxWidthPx}}",
+              "marginLeft": "auto",
+              "marginRight": "auto",
+              "paddingLeft": "24px",
+              "paddingRight": "24px",
+              "paddingTop": "12px",
+              "paddingBottom": "12px",
+              "gap": "24px",
+              "backgroundColor": "{{header.bg@88}}",
+              "backdropFilter": "blur(12px) saturate(150%)",
+              "WebkitBackdropFilter": "blur(12px) saturate(150%)",
+              "border": "1px solid {{header.fg@10}}",
+              "borderRadius": "{{pill.radiusPx}}",
+              "boxShadow": "0 2px 4px rgba(15,23,42,0.06), 0 12px 28px rgba(15,23,42,0.10)"
+            },
+            "content": [
+              {
+                "name": "Brand Logo",
+                "type": "image",
+                "styles": {},
+                "$subtree": "logo"
+              },
+              {
+                "name": "Menu",
+                "type": "menu",
+                "styles": {
+                  "width": "100%",
+                  "flex": "1 1 0%",
+                  "color": "{{header.fg}}",
+                  "fontSize": "15px"
+                },
+                "content": {
+                  "slot": "primary",
+                  "variant": "header-inline",
+                  "menuLabel": "Primary navigation",
+                  "colorMode": "manual"
+                }
+              },
+              {
+                "name": "Menu",
+                "type": "menu",
+                "styles": {
+                  "width": "auto",
+                  "color": "{{header.fg}}"
+                },
+                "content": {
+                  "slot": "social",
+                  "variant": "social-inline",
+                  "menuLabel": "Social links",
+                  "colorMode": "manual"
+                },
+                "$if": "has_social"
+              },
+              {
+                "name": "Header CTA",
+                "type": "link",
+                "styles": {
+                  "backgroundColor": "{{buttons.bg}}",
+                  "color": "{{buttons.fg}}",
+                  "paddingTop": "10px",
+                  "paddingBottom": "10px",
+                  "paddingLeft": "20px",
+                  "paddingRight": "20px",
+                  "borderRadius": "{{buttons.radiusPx}}",
+                  "fontWeight": 600,
+                  "fontSize": "14px",
+                  "textDecoration": "none",
+                  "display": "inline-flex",
+                  "alignItems": "center"
+                },
+                "$slot": "cta"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "chrome-header-centered-stack",
+      "sectionType": "header",
+      "layoutVariant": "centered-stack",
+      "styleVariant": "chrome",
+      "label": "Header — centered-stack",
+      "description": "Brand mark centered on its own row over a slim nav row. Editorial/luxury language.",
+      "tags": [
+        "Chrome",
+        "Header"
+      ],
+      "thumbnail": "chrome-header-centered-stack",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree"
+        },
+        {
+          "id": "cta",
+          "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "cta": {
+          "innerText": "Get in touch",
+          "href": "#contact"
+        }
+      },
+      "tree": {
+        "name": "Site Header",
+        "type": "__header",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "{{header.bg}}",
+          "boxShadow": "{{divider.subtle}}",
+          "position": "sticky",
+          "top": "0",
+          "zIndex": "50"
+        },
+        "content": [
+          {
+            "name": "Header bar",
+            "type": "container",
+            "styles": {
+              "display": "flex",
+              "flexDirection": "column",
+              "width": "100%",
+              "gap": "0"
+            },
+            "content": [
+              {
+                "name": "Header brand row",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "width": "100%",
+                  "justifyContent": "space-between",
+                  "alignItems": "center",
+                  "maxWidth": "{{page.maxWidthPx}}",
+                  "marginLeft": "auto",
+                  "marginRight": "auto",
+                  "paddingLeft": "24px",
+                  "paddingRight": "24px",
+                  "paddingTop": "18px",
+                  "paddingBottom": "4px",
+                  "gap": "16px"
+                },
+                "content": [
+                  {
+                    "name": "Brand row spacer",
+                    "type": "container",
+                    "styles": {
+                      "flex": "1 1 0%"
+                    },
+                    "content": []
+                  },
+                  {
+                    "name": "Brand Logo",
+                    "type": "image",
+                    "styles": {},
+                    "$subtree": "logo"
+                  },
+                  {
+                    "name": "Header actions",
+                    "type": "container",
+                    "styles": {
+                      "display": "flex",
+                      "flexDirection": "row",
+                      "alignItems": "center",
+                      "justifyContent": "flex-end",
+                      "flex": "1 1 0%"
+                    },
+                    "content": [
+                      {
+                        "name": "Menu",
+                        "type": "menu",
+                        "styles": {
+                          "width": "auto",
+                          "color": "{{header.fg}}"
+                        },
+                        "classes": "wt-header-ink",
+                        "content": {
+                          "slot": "social",
+                          "variant": "social-inline",
+                          "menuLabel": "Social links",
+                          "colorMode": "manual"
+                        },
+                        "$if": "has_social"
+                      },
+                      {
+                        "name": "Header CTA",
+                        "type": "link",
+                        "styles": {
+                          "backgroundColor": "{{buttons.bg}}",
+                          "color": "{{buttons.fg}}",
+                          "paddingTop": "10px",
+                          "paddingBottom": "10px",
+                          "paddingLeft": "20px",
+                          "paddingRight": "20px",
+                          "borderRadius": "{{buttons.radiusPx}}",
+                          "fontWeight": 600,
+                          "fontSize": "14px",
+                          "textDecoration": "none",
+                          "display": "inline-flex",
+                          "alignItems": "center"
+                        },
+                        "$slot": "cta"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Header nav row",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "width": "100%",
+                  "alignItems": "center",
+                  "justifyContent": "center",
+                  "maxWidth": "{{page.maxWidthPx}}",
+                  "marginLeft": "auto",
+                  "marginRight": "auto",
+                  "paddingLeft": "24px",
+                  "paddingRight": "24px",
+                  "paddingTop": "8px",
+                  "paddingBottom": "14px"
+                },
+                "content": [
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "100%",
+                      "flex": "1 1 0%",
+                      "justifyContent": "center",
+                      "color": "{{header.fg}}",
+                      "fontSize": "15px"
+                    },
+                    "classes": "wt-header-ink",
+                    "content": {
+                      "slot": "primary",
+                      "variant": "header-inline",
+                      "menuLabel": "Primary navigation",
+                      "colorMode": "manual"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "chrome-header-minimal-line",
+      "sectionType": "header",
+      "layoutVariant": "minimal-line",
+      "styleVariant": "chrome",
+      "label": "Header — minimal-line",
+      "description": "Quiet hairline-ruled bar with extra air and a ghost CTA. Technical/editorial language.",
+      "tags": [
+        "Chrome",
+        "Header"
+      ],
+      "thumbnail": "chrome-header-minimal-line",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree"
+        },
+        {
+          "id": "cta",
+          "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "cta": {
+          "innerText": "Get in touch",
+          "href": "#contact"
+        }
+      },
+      "tree": {
+        "name": "Site Header",
+        "type": "__header",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "{{header.bg}}",
+          "position": "sticky",
+          "top": "0",
+          "zIndex": "50",
+          "borderBottom": "1px solid {{header.fg@12}}"
+        },
+        "content": [
+          {
+            "name": "Header bar",
+            "type": "container",
+            "styles": {
+              "display": "flex",
+              "flexDirection": "row",
+              "width": "100%",
+              "alignItems": "center",
+              "justifyContent": "space-between",
+              "maxWidth": "{{page.maxWidthPx}}",
+              "marginLeft": "auto",
+              "marginRight": "auto",
+              "paddingLeft": "24px",
+              "paddingRight": "24px",
+              "paddingTop": "24px",
+              "paddingBottom": "24px",
+              "gap": "32px"
+            },
+            "content": [
+              {
+                "name": "Brand Logo",
+                "type": "image",
+                "styles": {},
+                "$subtree": "logo"
+              },
+              {
+                "name": "Menu",
+                "type": "menu",
+                "styles": {
+                  "width": "100%",
+                  "flex": "1 1 0%",
+                  "color": "{{header.fg}}",
+                  "fontSize": "15px"
+                },
+                "classes": "wt-header-ink",
+                "content": {
+                  "slot": "primary",
+                  "variant": "header-inline",
+                  "menuLabel": "Primary navigation",
+                  "colorMode": "manual"
+                }
+              },
+              {
+                "name": "Menu",
+                "type": "menu",
+                "styles": {
+                  "width": "auto",
+                  "color": "{{header.fg}}"
+                },
+                "classes": "wt-header-ink",
+                "content": {
+                  "slot": "social",
+                  "variant": "social-inline",
+                  "menuLabel": "Social links",
+                  "colorMode": "manual"
+                },
+                "$if": "has_social"
+              },
+              {
+                "name": "Header CTA",
+                "type": "link",
+                "styles": {
+                  "backgroundColor": "transparent",
+                  "color": "{{header.fg}}",
+                  "border": "1px solid {{header.fg@35}}",
+                  "paddingTop": "9px",
+                  "paddingBottom": "9px",
+                  "paddingLeft": "20px",
+                  "paddingRight": "20px",
+                  "borderRadius": "{{buttons.radiusPx}}",
+                  "fontWeight": 600,
+                  "fontSize": "14px",
+                  "textDecoration": "none",
+                  "display": "inline-flex",
+                  "alignItems": "center"
+                },
+                "classes": "wt-header-ink",
+                "$slot": "cta"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "chrome-footer-mega",
+      "sectionType": "footer",
+      "layoutVariant": "mega",
+      "styleVariant": "chrome",
+      "label": "Footer — mega",
+      "description": "Dark brand column + grouped nav columns + legal bar. The legacy generated footer.",
+      "tags": [
+        "Chrome",
+        "Footer"
+      ],
+      "thumbnail": "chrome-footer-mega",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree",
+          "optional": true
+        },
+        {
+          "id": "brand_wordmark",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "tagline",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contact_lines",
+          "kind": "list",
+          "item": [
+            {
+              "id": "text",
+              "kind": "text"
+            }
+          ]
+        },
+        {
+          "id": "copyright",
+          "kind": "text"
+        },
+        {
+          "id": "credits",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "has_legal",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "brand_wordmark": "Acme",
+        "copyright": "© 2026 Acme. All rights reserved.",
+        "contact_lines": []
+      },
+      "tree": {
+        "name": "Site Footer",
+        "type": "__footer",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "{{footer.bg}}",
+          "color": "{{footer.ink}}",
+          "fontFamily": "{{font.body}}"
+        },
+        "content": [
+          {
+            "name": "Footer content",
+            "type": "container",
+            "styles": {
+              "display": "flex",
+              "flexDirection": "column",
+              "width": "100%",
+              "maxWidth": "{{page.maxWidthPx}}",
+              "marginLeft": "auto",
+              "marginRight": "auto",
+              "paddingLeft": "24px",
+              "paddingRight": "24px",
+              "paddingTop": "64px",
+              "paddingBottom": "32px",
+              "gap": "0"
+            },
+            "content": [
+              {
+                "name": "Footer grid",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "alignItems": "flex-start",
+                  "gap": "48px",
+                  "width": "100%"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "flexDirection": "column",
+                    "gap": "32px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Brand column",
+                    "type": "container",
+                    "styles": {
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "width": "100%",
+                      "gap": "8px",
+                      "alignItems": "flex-start",
+                      "flex": "1 1 240px",
+                      "minWidth": "0"
+                    },
+                    "content": [
+                      {
+                        "name": "Brand Logo",
+                        "type": "image",
+                        "styles": {},
+                        "$subtree": "logo"
+                      },
+                      {
+                        "name": "Brand",
+                        "type": "text",
+                        "styles": {
+                          "width": "auto",
+                          "fontFamily": "{{font.heading}}",
+                          "fontSize": "24px",
+                          "fontWeight": 700,
+                          "letterSpacing": "-0.01em",
+                          "color": "{{footer.ink}}"
+                        },
+                        "$slot": "brand_wordmark"
+                      },
+                      {
+                        "name": "Tagline",
+                        "type": "text",
+                        "styles": {
+                          "width": "auto",
+                          "color": "{{footer.muted}}",
+                          "fontSize": "14px",
+                          "lineHeight": 1.5,
+                          "marginTop": "12px",
+                          "maxWidth": "280px"
+                        },
+                        "$slot": "tagline"
+                      },
+                      {
+                        "name": "Contact lines",
+                        "type": "container",
+                        "styles": {},
+                        "$repeat": "contact_lines",
+                        "$splice": true,
+                        "content": [
+                          {
+                            "name": "Contact line",
+                            "type": "text",
+                            "styles": {
+                              "width": "auto",
+                              "color": "{{footer.muted}}",
+                              "fontSize": "13px",
+                              "lineHeight": 1.7,
+                              "marginTop": "4px"
+                            },
+                            "$slot": "text"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "100%",
+                      "flex": "2 1 320px",
+                      "minWidth": "0"
+                    },
+                    "content": {
+                      "slot": "footer",
+                      "variant": "footer-columns",
+                      "menuLabel": "Footer navigation",
+                      "colorMode": "auto"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "Legal bar",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "width": "100%",
+                  "justifyContent": "space-between",
+                  "alignItems": "center",
+                  "paddingTop": "24px",
+                  "marginTop": "32px",
+                  "borderTop": "{{footer.hairline}}",
+                  "gap": "16px",
+                  "flexWrap": "wrap"
+                },
+                "content": [
+                  {
+                    "name": "Copyright",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "color": "{{footer.muted}}",
+                      "fontSize": "12px"
+                    },
+                    "$slot": "copyright"
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "auto",
+                      "fontSize": "12px"
+                    },
+                    "content": {
+                      "slot": "social",
+                      "variant": "social-inline",
+                      "menuLabel": "Social",
+                      "colorMode": "auto"
+                    },
+                    "$if": "has_social"
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "auto",
+                      "fontSize": "12px"
+                    },
+                    "content": {
+                      "slot": "legal",
+                      "variant": "footer-legal",
+                      "menuLabel": "Legal",
+                      "colorMode": "auto"
+                    },
+                    "$if": "has_legal"
+                  },
+                  {
+                    "name": "Photo credits",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "color": "{{footer.muted}}",
+                      "fontSize": "12px"
+                    },
+                    "$slot": "credits"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "chrome-footer-cta-banner",
+      "sectionType": "footer",
+      "layoutVariant": "cta-banner",
+      "styleVariant": "chrome",
+      "label": "Footer — cta-banner",
+      "description": "A conversion banner (headline + primary CTA) above the mega grid.",
+      "tags": [
+        "Chrome",
+        "Footer"
+      ],
+      "thumbnail": "chrome-footer-cta-banner",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree",
+          "optional": true
+        },
+        {
+          "id": "brand_wordmark",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "tagline",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contact_lines",
+          "kind": "list",
+          "item": [
+            {
+              "id": "text",
+              "kind": "text"
+            }
+          ]
+        },
+        {
+          "id": "copyright",
+          "kind": "text"
+        },
+        {
+          "id": "credits",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "has_legal",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "cta_headline",
+          "kind": "text"
+        },
+        {
+          "id": "cta",
+          "kind": "link"
+        }
+      ],
+      "sampleContent": {
+        "brand_wordmark": "Acme",
+        "copyright": "© 2026 Acme. All rights reserved.",
+        "contact_lines": [],
+        "cta_headline": "Ready when you are.",
+        "cta": {
+          "innerText": "Get in touch",
+          "href": "#contact"
+        }
+      },
+      "tree": {
+        "name": "Site Footer",
+        "type": "__footer",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "{{footer.bg}}",
+          "color": "{{footer.ink}}",
+          "fontFamily": "{{font.body}}"
+        },
+        "content": [
+          {
+            "name": "Footer content",
+            "type": "container",
+            "styles": {
+              "display": "flex",
+              "flexDirection": "column",
+              "width": "100%",
+              "maxWidth": "{{page.maxWidthPx}}",
+              "marginLeft": "auto",
+              "marginRight": "auto",
+              "paddingLeft": "24px",
+              "paddingRight": "24px",
+              "paddingTop": "64px",
+              "paddingBottom": "32px",
+              "gap": "0"
+            },
+            "content": [
+              {
+                "name": "Footer CTA banner",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "width": "100%",
+                  "justifyContent": "space-between",
+                  "alignItems": "center",
+                  "gap": "32px",
+                  "flexWrap": "wrap",
+                  "paddingBottom": "40px",
+                  "marginBottom": "40px",
+                  "borderBottom": "{{footer.hairline}}"
+                },
+                "content": [
+                  {
+                    "name": "Footer CTA headline",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "fontFamily": "{{font.heading}}",
+                      "fontSize": "clamp(26px, 3.5vw, 38px)",
+                      "fontWeight": 700,
+                      "lineHeight": "1.15",
+                      "letterSpacing": "-0.015em",
+                      "color": "{{footer.ink}}",
+                      "maxWidth": "620px"
+                    },
+                    "$slot": "cta_headline"
+                  },
+                  {
+                    "name": "Footer CTA",
+                    "type": "link",
+                    "styles": {
+                      "backgroundColor": "{{buttons.bg}}",
+                      "color": "{{buttons.fg}}",
+                      "paddingTop": "13px",
+                      "paddingBottom": "13px",
+                      "paddingLeft": "26px",
+                      "paddingRight": "26px",
+                      "borderRadius": "{{buttons.radiusPx}}",
+                      "fontWeight": 600,
+                      "fontSize": "15px",
+                      "textDecoration": "none",
+                      "display": "inline-flex",
+                      "alignItems": "center",
+                      "flexShrink": "0"
+                    },
+                    "$slot": "cta"
+                  }
+                ]
+              },
+              {
+                "name": "Footer grid",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "alignItems": "flex-start",
+                  "gap": "48px",
+                  "width": "100%"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "flexDirection": "column",
+                    "gap": "32px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Brand column",
+                    "type": "container",
+                    "styles": {
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "width": "100%",
+                      "gap": "8px",
+                      "alignItems": "flex-start",
+                      "flex": "1 1 240px",
+                      "minWidth": "0"
+                    },
+                    "content": [
+                      {
+                        "name": "Brand Logo",
+                        "type": "image",
+                        "styles": {},
+                        "$subtree": "logo"
+                      },
+                      {
+                        "name": "Brand",
+                        "type": "text",
+                        "styles": {
+                          "width": "auto",
+                          "fontFamily": "{{font.heading}}",
+                          "fontSize": "24px",
+                          "fontWeight": 700,
+                          "letterSpacing": "-0.01em",
+                          "color": "{{footer.ink}}"
+                        },
+                        "$slot": "brand_wordmark"
+                      },
+                      {
+                        "name": "Tagline",
+                        "type": "text",
+                        "styles": {
+                          "width": "auto",
+                          "color": "{{footer.muted}}",
+                          "fontSize": "14px",
+                          "lineHeight": 1.5,
+                          "marginTop": "12px",
+                          "maxWidth": "280px"
+                        },
+                        "$slot": "tagline"
+                      },
+                      {
+                        "name": "Contact lines",
+                        "type": "container",
+                        "styles": {},
+                        "$repeat": "contact_lines",
+                        "$splice": true,
+                        "content": [
+                          {
+                            "name": "Contact line",
+                            "type": "text",
+                            "styles": {
+                              "width": "auto",
+                              "color": "{{footer.muted}}",
+                              "fontSize": "13px",
+                              "lineHeight": 1.7,
+                              "marginTop": "4px"
+                            },
+                            "$slot": "text"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "100%",
+                      "flex": "2 1 320px",
+                      "minWidth": "0"
+                    },
+                    "content": {
+                      "slot": "footer",
+                      "variant": "footer-columns",
+                      "menuLabel": "Footer navigation",
+                      "colorMode": "auto"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "Legal bar",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "width": "100%",
+                  "justifyContent": "space-between",
+                  "alignItems": "center",
+                  "paddingTop": "24px",
+                  "marginTop": "32px",
+                  "borderTop": "{{footer.hairline}}",
+                  "gap": "16px",
+                  "flexWrap": "wrap"
+                },
+                "content": [
+                  {
+                    "name": "Copyright",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "color": "{{footer.muted}}",
+                      "fontSize": "12px"
+                    },
+                    "$slot": "copyright"
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "auto",
+                      "fontSize": "12px"
+                    },
+                    "content": {
+                      "slot": "social",
+                      "variant": "social-inline",
+                      "menuLabel": "Social",
+                      "colorMode": "auto"
+                    },
+                    "$if": "has_social"
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "auto",
+                      "fontSize": "12px"
+                    },
+                    "content": {
+                      "slot": "legal",
+                      "variant": "footer-legal",
+                      "menuLabel": "Legal",
+                      "colorMode": "auto"
+                    },
+                    "$if": "has_legal"
+                  },
+                  {
+                    "name": "Photo credits",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "color": "{{footer.muted}}",
+                      "fontSize": "12px"
+                    },
+                    "$slot": "credits"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "chrome-footer-minimal-centered",
+      "sectionType": "footer",
+      "layoutVariant": "minimal-centered",
+      "styleVariant": "chrome",
+      "label": "Footer — minimal-centered",
+      "description": "One calm centered column on the theme surface band.",
+      "tags": [
+        "Chrome",
+        "Footer"
+      ],
+      "thumbnail": "chrome-footer-minimal-centered",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree",
+          "optional": true
+        },
+        {
+          "id": "brand_wordmark",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "tagline",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contact_lines",
+          "kind": "list",
+          "item": [
+            {
+              "id": "text",
+              "kind": "text"
+            }
+          ]
+        },
+        {
+          "id": "copyright",
+          "kind": "text"
+        },
+        {
+          "id": "credits",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "has_legal",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "brand_wordmark": "Acme",
+        "copyright": "© 2026 Acme. All rights reserved.",
+        "contact_lines": []
+      },
+      "tree": {
+        "name": "Site Footer",
+        "type": "__footer",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "{{footer.bg}}",
+          "color": "{{footer.ink}}",
+          "fontFamily": "{{font.body}}"
+        },
+        "content": [
+          {
+            "name": "Footer content",
+            "type": "container",
+            "styles": {
+              "display": "flex",
+              "flexDirection": "column",
+              "width": "100%",
+              "maxWidth": "{{page.maxWidthPx}}",
+              "marginLeft": "auto",
+              "marginRight": "auto",
+              "paddingLeft": "24px",
+              "paddingRight": "24px",
+              "paddingTop": "64px",
+              "paddingBottom": "32px",
+              "gap": "0"
+            },
+            "content": [
+              {
+                "name": "Footer stack",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "width": "100%",
+                  "alignItems": "center",
+                  "gap": "32px"
+                },
+                "content": [
+                  {
+                    "name": "Brand column",
+                    "type": "container",
+                    "styles": {
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "width": "100%",
+                      "gap": "8px",
+                      "alignItems": "center",
+                      "flex": "0 1 auto",
+                      "minWidth": "0",
+                      "textAlign": "center",
+                      "maxWidth": "480px"
+                    },
+                    "content": [
+                      {
+                        "name": "Brand Logo",
+                        "type": "image",
+                        "styles": {},
+                        "$subtree": "logo"
+                      },
+                      {
+                        "name": "Brand",
+                        "type": "text",
+                        "styles": {
+                          "width": "auto",
+                          "fontFamily": "{{font.heading}}",
+                          "fontSize": "24px",
+                          "fontWeight": 700,
+                          "letterSpacing": "-0.01em",
+                          "color": "{{footer.ink}}"
+                        },
+                        "$slot": "brand_wordmark"
+                      },
+                      {
+                        "name": "Tagline",
+                        "type": "text",
+                        "styles": {
+                          "width": "auto",
+                          "color": "{{footer.muted}}",
+                          "fontSize": "14px",
+                          "lineHeight": 1.5,
+                          "marginTop": "12px",
+                          "maxWidth": "280px"
+                        },
+                        "$slot": "tagline"
+                      },
+                      {
+                        "name": "Contact lines",
+                        "type": "container",
+                        "styles": {},
+                        "$repeat": "contact_lines",
+                        "$splice": true,
+                        "content": [
+                          {
+                            "name": "Contact line",
+                            "type": "text",
+                            "styles": {
+                              "width": "auto",
+                              "color": "{{footer.muted}}",
+                              "fontSize": "13px",
+                              "lineHeight": 1.7,
+                              "marginTop": "4px"
+                            },
+                            "$slot": "text"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "100%",
+                      "flex": "0 1 auto",
+                      "minWidth": "0",
+                      "textAlign": "center"
+                    },
+                    "content": {
+                      "slot": "footer",
+                      "variant": "footer-columns",
+                      "menuLabel": "Footer navigation",
+                      "colorMode": "auto"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "Legal bar",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "width": "100%",
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "paddingTop": "24px",
+                  "marginTop": "32px",
+                  "borderTop": "{{footer.hairline}}",
+                  "gap": "16px",
+                  "flexWrap": "wrap"
+                },
+                "content": [
+                  {
+                    "name": "Copyright",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "color": "{{footer.muted}}",
+                      "fontSize": "12px"
+                    },
+                    "$slot": "copyright"
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "auto",
+                      "fontSize": "12px"
+                    },
+                    "content": {
+                      "slot": "social",
+                      "variant": "social-inline",
+                      "menuLabel": "Social",
+                      "colorMode": "auto"
+                    },
+                    "$if": "has_social"
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "auto",
+                      "fontSize": "12px"
+                    },
+                    "content": {
+                      "slot": "legal",
+                      "variant": "footer-legal",
+                      "menuLabel": "Legal",
+                      "colorMode": "auto"
+                    },
+                    "$if": "has_legal"
+                  },
+                  {
+                    "name": "Photo credits",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "color": "{{footer.muted}}",
+                      "fontSize": "12px"
+                    },
+                    "$slot": "credits"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "chrome-footer-editorial",
+      "sectionType": "footer",
+      "layoutVariant": "editorial",
+      "styleVariant": "chrome",
+      "label": "Footer — editorial",
+      "description": "Oversized ghost wordmark over a slim nav row on the surface band.",
+      "tags": [
+        "Chrome",
+        "Footer"
+      ],
+      "thumbnail": "chrome-footer-editorial",
+      "chrome": true,
+      "slots": [
+        {
+          "id": "logo",
+          "kind": "subtree",
+          "optional": true
+        },
+        {
+          "id": "brand_wordmark",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "tagline",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contact_lines",
+          "kind": "list",
+          "item": [
+            {
+              "id": "text",
+              "kind": "text"
+            }
+          ]
+        },
+        {
+          "id": "copyright",
+          "kind": "text"
+        },
+        {
+          "id": "credits",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "has_legal",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "has_social",
+          "kind": "flag",
+          "optional": true
+        }
+      ],
+      "sampleContent": {
+        "brand_wordmark": "Acme",
+        "copyright": "© 2026 Acme. All rights reserved.",
+        "contact_lines": []
+      },
+      "tree": {
+        "name": "Site Footer",
+        "type": "__footer",
+        "styles": {
+          "width": "100%",
+          "backgroundColor": "{{footer.bg}}",
+          "color": "{{footer.ink}}",
+          "fontFamily": "{{font.body}}"
+        },
+        "content": [
+          {
+            "name": "Footer content",
+            "type": "container",
+            "styles": {
+              "display": "flex",
+              "flexDirection": "column",
+              "width": "100%",
+              "maxWidth": "{{page.maxWidthPx}}",
+              "marginLeft": "auto",
+              "marginRight": "auto",
+              "paddingLeft": "24px",
+              "paddingRight": "24px",
+              "paddingTop": "64px",
+              "paddingBottom": "32px",
+              "gap": "0"
+            },
+            "content": [
+              {
+                "name": "Footer wordmark",
+                "type": "text",
+                "styles": {
+                  "width": "auto",
+                  "fontFamily": "{{font.display}}",
+                  "fontSize": "clamp(48px, 9vw, 112px)",
+                  "fontWeight": 700,
+                  "lineHeight": "1",
+                  "letterSpacing": "-0.03em",
+                  "color": "{{footer.ghost}}",
+                  "whiteSpace": "nowrap",
+                  "overflow": "hidden",
+                  "textOverflow": "ellipsis",
+                  "maxWidth": "100%",
+                  "paddingBottom": "40px"
+                },
+                "$slot": "ghost_wordmark"
+              },
+              {
+                "name": "Footer grid",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "alignItems": "flex-start",
+                  "gap": "48px",
+                  "width": "100%"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "flexDirection": "column",
+                    "gap": "32px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Brand column",
+                    "type": "container",
+                    "styles": {
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "width": "100%",
+                      "gap": "8px",
+                      "alignItems": "flex-start",
+                      "flex": "1 1 240px",
+                      "minWidth": "0"
+                    },
+                    "content": [
+                      {
+                        "name": "Brand Logo",
+                        "type": "image",
+                        "styles": {},
+                        "$subtree": "logo"
+                      },
+                      {
+                        "name": "Brand",
+                        "type": "text",
+                        "styles": {
+                          "width": "auto",
+                          "fontFamily": "{{font.heading}}",
+                          "fontSize": "24px",
+                          "fontWeight": 700,
+                          "letterSpacing": "-0.01em",
+                          "color": "{{footer.ink}}"
+                        },
+                        "$slot": "brand_wordmark"
+                      },
+                      {
+                        "name": "Tagline",
+                        "type": "text",
+                        "styles": {
+                          "width": "auto",
+                          "color": "{{footer.muted}}",
+                          "fontSize": "14px",
+                          "lineHeight": 1.5,
+                          "marginTop": "12px",
+                          "maxWidth": "280px"
+                        },
+                        "$slot": "tagline"
+                      },
+                      {
+                        "name": "Contact lines",
+                        "type": "container",
+                        "styles": {},
+                        "$repeat": "contact_lines",
+                        "$splice": true,
+                        "content": [
+                          {
+                            "name": "Contact line",
+                            "type": "text",
+                            "styles": {
+                              "width": "auto",
+                              "color": "{{footer.muted}}",
+                              "fontSize": "13px",
+                              "lineHeight": 1.7,
+                              "marginTop": "4px"
+                            },
+                            "$slot": "text"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "100%",
+                      "flex": "2 1 320px",
+                      "minWidth": "0"
+                    },
+                    "content": {
+                      "slot": "footer",
+                      "variant": "footer-columns",
+                      "menuLabel": "Footer navigation",
+                      "colorMode": "auto"
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "Legal bar",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "width": "100%",
+                  "justifyContent": "space-between",
+                  "alignItems": "center",
+                  "paddingTop": "24px",
+                  "marginTop": "32px",
+                  "borderTop": "{{footer.hairline}}",
+                  "gap": "16px",
+                  "flexWrap": "wrap"
+                },
+                "content": [
+                  {
+                    "name": "Copyright",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "color": "{{footer.muted}}",
+                      "fontSize": "12px"
+                    },
+                    "$slot": "copyright"
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "auto",
+                      "fontSize": "12px"
+                    },
+                    "content": {
+                      "slot": "social",
+                      "variant": "social-inline",
+                      "menuLabel": "Social",
+                      "colorMode": "auto"
+                    },
+                    "$if": "has_social"
+                  },
+                  {
+                    "name": "Menu",
+                    "type": "menu",
+                    "styles": {
+                      "width": "auto",
+                      "fontSize": "12px"
+                    },
+                    "content": {
+                      "slot": "legal",
+                      "variant": "footer-legal",
+                      "menuLabel": "Legal",
+                      "colorMode": "auto"
+                    },
+                    "$if": "has_legal"
+                  },
+                  {
+                    "name": "Photo credits",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "color": "{{footer.muted}}",
+                      "fontSize": "12px"
+                    },
+                    "$slot": "credits"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

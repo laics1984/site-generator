@@ -204,6 +204,16 @@ class Settings(BaseSettings):
     # Disabling is a safe no-op — build_theme falls back to the deterministic
     # industry/hue/seed pickers that ran before this pass existed.
     design_language_enabled: bool = True
+    # Off switch for the design director (services/design_director.py): the
+    # manifest pass that varies header/footer chrome archetypes per brand.
+    # Disabling is a safe no-op — every site gets the legacy "classic" header
+    # and "mega" footer, exactly the pre-manifest output.
+    design_engine_enabled: bool = True
+    # Off switch for the diversity engine (services/diversity.py): the SQLite
+    # usage history that steers consecutive generations away from repeating
+    # the same chrome picks. Disabling is a safe no-op — archetype selection
+    # falls back to the purely seeded (per-brand idempotent) rotation.
+    diversity_engine_enabled: bool = True
 
     # Full-bleed photo/abstract background hero on EVERY page (not just the
     # homepage), so the transparent floating header engages site-wide. Imagery

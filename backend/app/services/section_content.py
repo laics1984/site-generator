@@ -1332,11 +1332,19 @@ def block_to_section(
     mood: BrandMood | None = None,
     is_homepage: bool = True,
     hero_scroll_target_kind: str | None = None,
+    variety_seed: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Map a block to (template, content). Returns None if the kind is unsupported.
 
     Layout precedence (all gated by is_feasible in select_template):
     explicit_id → content preference (_PREFERENCE) → mood preference → pool[0].
+
+    ``variety_seed`` (the brand name, threaded from plan_to_site) rotates the
+    MOOD-preference tail per brand so two same-mood sites stop converging on
+    one identical layout when the LLM design brain is off or fails — the exact
+    convergence design_brain.py documents. Content preference and explicit ids
+    are never rotated: imagery use and the LLM's deliberate picks still lead.
+    None (the default, and every direct test call) keeps the legacy order.
 
     For a hero, ``is_homepage`` / ``hero_scroll_target_kind`` drive the interior-
     page CTA policy (see ``apply_hero_cta_policy``); the default (homepage hero)
@@ -1362,6 +1370,27 @@ def block_to_section(
     # Content leads the layout choice so available imagery is actually used.
     # Mood remains a fallback/tiebreaker among still-feasible variants.
     preferred = list(content_pref or []) + mood_preferred_ids(mood, kind)
+    # Imagery-led preference is a HARD signal (show the photo, don't say it).
+    # Text-only sections have no such anchor — their preference head is just
+    # a sensible default, and "always the default" is exactly the per-mood
+    # convergence design_brain.py documents. With a variety_seed (brand name,
+    # threaded from plan_to_site), rotate the candidate head within the top 3
+    # so different brands lead with different (still feasible, still
+    # mood-gated) variants; one brand stays idempotent, and every direct call
+    # without a seed keeps the legacy order.
+    has_image_signal = bool(content.get("image")) or _most_items_have_images(content)
+    if variety_seed and not has_image_signal:
+        deduped: list[str] = []
+        for pid in preferred:
+            if pid not in deduped:
+                deduped.append(pid)
+        if len(deduped) > 1:
+            from app.services.diversity import seeded_index
+
+            offset = seeded_index(
+                variety_seed, f"template:{kind}", min(3, len(deduped))
+            )
+            preferred = deduped[offset:] + deduped[:offset]
     template = select_template(
         kind, content, preferred_ids=preferred, explicit_id=explicit_id, mood=mood
     )

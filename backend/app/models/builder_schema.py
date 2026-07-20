@@ -302,6 +302,14 @@ class GeneratedSite(BaseModel):
         description="Google Fonts CSV identifiers to load in <link rel='stylesheet'>.",
     )
     brand: Any | None = Field(default=None, description="BrandIdentity used during generation.")
+    design_manifest: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Serialized DesignManifest (models/design_manifest.py): the chrome "
+            "archetype choices plus the rationale/confidence for each design "
+            "decision. Audit/debug artifact — renderers derive nothing from it."
+        ),
+    )
     header_schema: BuilderElement | None = None
     footer_schema: BuilderElement | None = None
     header_overlay: bool = Field(

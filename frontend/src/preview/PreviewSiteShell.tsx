@@ -16,6 +16,7 @@ import { getNodeStyles } from './lib/blockRuntime'
 import { isFirstSectionHeaderOverlaySafe } from './lib/headerOverlay'
 import {
   findFirstNonBreadcrumbNode,
+  getNodeChildren,
   getNodeName,
   isHeroSectionName,
   normalizeBodySectionNodes,
@@ -51,11 +52,18 @@ const BACKGROUND_STYLE_KEYS = [
   'backgroundOrigin',
 ] as const
 
-function pickRootBackgroundStyles(schema: unknown): CSSProperties | undefined {
-  const [root] = normalizeSchemaNodes(schema as Schema)
-  if (!root) return undefined
+function findHeaderBarNode(root: PublicBlockNode): PublicBlockNode | null {
+  const children = getNodeChildren(root)
+  for (const child of children) {
+    if ((child as Record<string, unknown>)?.headerBar === true) {
+      return child
+    }
+  }
+  return null
+}
 
-  const styles = getNodeStyles(root)
+function pickBackgroundStylesFrom(node: PublicBlockNode): CSSProperties | undefined {
+  const styles = getNodeStyles(node)
   const picked: Record<string, string | number> = {}
   for (const key of BACKGROUND_STYLE_KEYS) {
     const value = styles[key]
@@ -64,6 +72,19 @@ function pickRootBackgroundStyles(schema: unknown): CSSProperties | undefined {
     }
   }
   return Object.keys(picked).length ? (picked as CSSProperties) : undefined
+}
+
+function pickRootBackgroundStyles(schema: unknown): CSSProperties | undefined {
+  const [root] = normalizeSchemaNodes(schema as Schema)
+  if (!root) return undefined
+
+  // Self-chrome archetypes (floating pill) carry their background on the inner
+  // headerBar container — the root is transparent. The wrapper must also stay
+  // transparent so the hero section shows through; the bar paints its own chrome.
+  const bar = findHeaderBarNode(root)
+  if (bar) return undefined
+
+  return pickBackgroundStylesFrom(root)
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

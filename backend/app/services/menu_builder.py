@@ -26,6 +26,7 @@ from uuid import uuid4
 
 from app.config import settings
 from app.models.builder_schema import BuilderElement, GeneratedSite, PageNode
+from app.models.design_manifest import SELF_CHROME_HEADERS
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,7 @@ def wrap_header(
     menus: list[dict[str, Any]],
     sticky: bool = True,
     overlay: bool = False,
+    reveal_background_on_scroll: bool = True,
     scroll_reveal_offset: int | None = None,
     shrink_on_scroll: bool = False,
     scroll_shrink_offset: int | None = None,
@@ -246,6 +248,10 @@ def wrap_header(
     Slots reference canonical menu IDs only if those menus exist in `menus`.
     `overlay` marks a transparent header floating over a full-bleed hero; the
     renderer owns the scroll-solidify behaviour this flag implies.
+    `reveal_background_on_scroll=False` (self-chrome archetypes: the floating
+    pill) keeps the overlay header transparent at every scroll position — the
+    bar carries its own chrome, so there is no background to reveal. Emitted
+    only when False; renderers treat a missing field as True (legacy default).
     `scroll_reveal_offset` is the scrolled-pixel threshold before the floating
     header gains its background (renderer clamps 0-600, defaults 80 if absent).
     `shrink_on_scroll` compacts the header (logo + row padding) once scrolled
@@ -258,6 +264,8 @@ def wrap_header(
         "position": "sticky" if sticky else "static",
         "overlay": overlay,
     }
+    if not reveal_background_on_scroll:
+        behavior["revealBackgroundOnScroll"] = False
     if scroll_reveal_offset is not None:
         behavior["scrollRevealOffset"] = scroll_reveal_offset
     if shrink_on_scroll:
@@ -273,6 +281,7 @@ def wrap_header(
         "slots": {
             "primaryMenuId": PRIMARY_MENU_ID if PRIMARY_MENU_ID in menu_ids else None,
             "utilityMenuId": UTILITY_MENU_ID if UTILITY_MENU_ID in menu_ids else None,
+            "socialMenuId": SOCIAL_MENU_ID if SOCIAL_MENU_ID in menu_ids else None,
         },
     }
 
@@ -332,10 +341,16 @@ def build_layout_payload(site: GeneratedSite) -> LayoutPayload:
             "GeneratedSite is missing header_schema or footer_schema — "
             "rebuild the site with plan_to_site() before pushing."
         )
+    # Self-chrome archetypes (floating pill) overlay without ever revealing a
+    # background — the manifest records the archetype; absent/legacy manifests
+    # default to reveal-style (True).
+    header_archetype = (site.design_manifest or {}).get("header_archetype")
+    reveal_background = header_archetype not in SELF_CHROME_HEADERS
     header = wrap_header(
         site.header_schema,
         menus=menus,
         overlay=site.header_overlay,
+        reveal_background_on_scroll=reveal_background,
         scroll_reveal_offset=(
             settings.header_scroll_reveal_offset if site.header_overlay else None
         ),

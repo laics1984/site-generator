@@ -150,6 +150,27 @@ def test_preview_layout_carries_overlay_behavior():
     assert plain["header"]["behavior"]["overlay"] is False
 
 
+def test_pill_site_layout_disables_background_reveal():
+    # A floating-pill site overlays with its own chrome: the layout payload
+    # must carry revealBackgroundOnScroll: false so renderers never solidify
+    # it. Any other (or absent) manifest keeps the flag out of the payload —
+    # legacy behavior byte-identical.
+    client = TestClient(app)
+
+    pill_site = _site(header_overlay=True)
+    pill_site.design_manifest = {"header_archetype": "floating-pill"}
+    pill = client.post(
+        "/api/preview/layout", json=pill_site.model_dump(mode="json")
+    ).json()
+    assert pill["header"]["behavior"]["overlay"] is True
+    assert pill["header"]["behavior"]["revealBackgroundOnScroll"] is False
+
+    classic = client.post(
+        "/api/preview/layout", json=_site(header_overlay=True).model_dump(mode="json")
+    ).json()
+    assert "revealBackgroundOnScroll" not in classic["header"]["behavior"]
+
+
 def test_preview_layout_resolves_menu_slots():
     body = TestClient(app).post(
         "/api/preview/layout", json=_site().model_dump(mode="json")

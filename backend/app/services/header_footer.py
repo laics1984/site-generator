@@ -21,11 +21,29 @@ from app.models.builder_schema import (
     PageNode,
     ResponsiveStyles,
 )
+from app.models.design_manifest import (
+    SELF_CHROME_HEADERS,
+    FooterArchetype,
+    HeaderArchetype,
+)
+from app.services.template_filler import (
+    fill_chrome_template,
+    get_template,
+    resolve_chrome_tokens,
+)
 from app.services.theme import (
     _contrast,
     _ensure_contrast_against,
     _text_for_background,
 )
+
+
+def _rgba(hex_color: str, alpha: float) -> str:
+    """rgba() string for a #rrggbb hex — used for translucent chrome/hairlines."""
+    r = int(hex_color[1:3], 16)
+    g = int(hex_color[3:5], 16)
+    b = int(hex_color[5:7], 16)
+    return f"rgba({r}, {g}, {b}, {alpha})"
 
 # The builder's HeaderSettings "Divider" control is a boxShadow preset on the
 # __header root element. This is the exact "Subtle" preset value
@@ -287,6 +305,8 @@ def build_header(
     page_tree: list[PageNode] | None = None,
     overlay: bool = False,
     industry: str | None = None,
+    archetype: HeaderArchetype = "classic",
+    social_links: list[tuple[str, str]] | None = None,
 ) -> BuilderElement:
     """
     Sticky header: logo · nav · CTA, max-width contained. Chrome follows the
@@ -319,22 +339,13 @@ def build_header(
         # contrast chip even if the solid header wouldn't (the renderer can
         # recolor text ink, not bitmaps).
         logo_lockup = logo_lockup or "#ffffff"
-    nav_menu = _menu_element(
-        slot="primary",
-        variant="header-inline",
-        label="Primary navigation",
-        color_mode="manual",
-        styles={
-            "flex": "1 1 0%",
-            "color": header_fg,
-            "fontSize": "15px",
-        },
-    )
-    # Text-bearing header elements get the ink marker; while the overlay
-    # header is transparent the renderer forces their colour to white
-    # (.wt-page-header--overlay .wt-header-ink). The CTA button keeps its own
-    # solid background/text and is deliberately NOT marked.
-    nav_menu.classes = "wt-header-ink"
+    # The logo is the one computed subtree the shared catalog can't express
+    # (image vs monogram vs contrast-chip lockup) — built here, injected via
+    # the template's `$subtree: "logo"` node. It carries the ink marker: while
+    # an overlay header is transparent the renderer forces `wt-header-ink`
+    # elements to white (.wt-page-header--overlay .wt-header-ink). Self-chrome
+    # archetypes (floating pill) skip the marker — their bar chromes itself
+    # during overlay, so a white flip would break on the light pill.
     logo = _logo_mark(
         brand,
         theme,
@@ -342,81 +353,51 @@ def build_header(
         ink=header_fg,
         logo_height=_LOGO_HEIGHT_BY_INDUSTRY.get(norm_industry, _DEFAULT_LOGO_HEIGHT),
     )
-    logo.classes = "wt-header-ink"
+    if archetype not in SELF_CHROME_HEADERS:
+        logo.classes = "wt-header-ink"
 
-    cta_children: list[BuilderElement] = []
+    # --- materialize from the shared catalog ---------------------------------
+    # The per-archetype layout (bar structure, chrome, ghost vs solid CTA, the
+    # divider/borderless rules, wt-header-ink markers on static nodes) lives in
+    # the shared section catalog (chrome-header-*), single-sourced with the
+    # builder. This function contributes only what a static template cannot:
+    # the computed logo subtree, the CTA content, and the resolved theme tokens.
+    template = get_template(f"chrome-header-{archetype}")
+    if template is None:  # pragma: no cover — catalog out of sync
+        raise ValueError(f"chrome-header-{archetype} missing from section catalog")
+    content: dict[str, Any] = {
+        "logo": logo,
+        "has_social": bool(social_links),
+    }
     if primary_cta:
         label, href = primary_cta
-        cta_children.append(
-            BuilderElement(
-                id=_uid(),
-                name="Header CTA",
-                type="link",
-                styles={
-                    "backgroundColor": theme.buttons.background,
-                    "color": theme.buttons.text,
-                    "paddingTop": "10px",
-                    "paddingBottom": "10px",
-                    "paddingLeft": "20px",
-                    "paddingRight": "20px",
-                    "borderRadius": f"{theme.buttons.radius}px",
-                    "fontWeight": 600,
-                    "fontSize": "14px",
-                    "textDecoration": "none",
-                    "display": "inline-flex",
-                    "alignItems": "center",
-                },
-                content=BuilderElementContent(innerText=label, href=href),
-            )
-        )
+        content["cta"] = {"innerText": label, "href": href}
+    header = fill_chrome_template(template, content)
+    return resolve_chrome_tokens(header, _header_tokens(theme, header_bg, header_fg))
 
-    bar = _container(
-        [
-            logo,
-            nav_menu,
-            *cta_children,
-        ],
-        name="Header bar",
-        styles={
-            "flexDirection": "row",
-            "alignItems": "center",
-            "justifyContent": "space-between",
-            "width": "100%",
-            "maxWidth": f"{theme.page.max_width}px",
-            "marginLeft": "auto",
-            "marginRight": "auto",
-            "paddingLeft": "24px",
-            "paddingRight": "24px",
-            # Generous by default; the shrink-on-scroll pass reduces this row's
-            # vertical padding (getShrunkHeaderRootAndRows) to compact the bar.
-            "paddingTop": "24px",
-            "paddingBottom": "24px",
-            "gap": "24px",
-        },
-    )
 
-    return BuilderElement(
-        id=_uid(),
-        name="Site Header",
-        type="__header",
-        styles={
-            "width": "100%",
-            "backgroundColor": header_bg,
-            # The builder's "Divider" setting reads this boxShadow — emit the
-            # exact "Subtle" preset so a hard border never separates the
-            # header from the page (a 1px solid line read as a black rule on
-            # dark palettes once the header background became visible).
-            "boxShadow": HEADER_DIVIDER_SUBTLE,
-            "position": "sticky",
-            "top": "0",
-            "zIndex": "50",
-            # No backdrop blur by default — it forced a frosted-glass look on
-            # every header and there was no way to opt out. The builder now
-            # exposes a "Frosted glass" toggle (HeaderSettings) for anyone who
-            # wants it; leave the header opaque here.
-        },
-        content=[bar],
-    )
+def _header_tokens(
+    theme: ThemeTokens, header_bg: str, header_fg: str
+) -> dict[str, str]:
+    """The header half of the chrome token contract (see template_filler)."""
+    return {
+        "header.bg": header_bg,
+        "header.fg": header_fg,
+        "header.bg@72": _rgba(header_bg, 0.72),
+        "header.bg@88": _rgba(header_bg, 0.88),
+        "header.fg@10": _rgba(header_fg, 0.10),
+        "header.fg@12": _rgba(header_fg, 0.12),
+        "header.fg@35": _rgba(header_fg, 0.35),
+        "divider.subtle": HEADER_DIVIDER_SUBTLE,
+        "buttons.bg": theme.buttons.background,
+        "buttons.fg": theme.buttons.text,
+        "buttons.radiusPx": f"{theme.buttons.radius}px",
+        "pill.radiusPx": f"{max(20, theme.buttons.radius + 14)}px",
+        "pill.maxWidthPx": f"{max(720, theme.page.max_width - 96)}px",
+        "page.maxWidthPx": f"{theme.page.max_width}px",
+        "font.heading": theme.typography.heading_font,
+        "font.body": theme.typography.body_font,
+    }
 
 
 # --- footer ---------------------------------------------------------------------
@@ -431,11 +412,21 @@ def build_footer(
     page_tree: list[PageNode] | None = None,
     extra_legal_nav: list[tuple[str, str]] | None = None,
     social_links: list[tuple[str, str]] | None = None,
+    archetype: FooterArchetype = "mega",
+    primary_cta: tuple[str, str] | None = None,
 ) -> BuilderElement:
     """
     Themed footer with grouped sub-page navigation.
 
-    Layout depends on what's in the page_tree:
+    ``archetype`` selects the layout philosophy (see models/design_manifest.py):
+      * ``mega`` — dark brand column + grouped nav columns + legal bar (legacy;
+        byte-identical to pre-archetype output)
+      * ``cta-banner`` — a conversion banner (headline + primary CTA) above the
+        mega grid; degrades to ``mega`` when no ``primary_cta`` is given
+      * ``minimal-centered`` — calm centered column on the theme's light band
+      * ``editorial`` — oversized ghost wordmark on the light band, slim nav row
+
+    Layout of the nav grid depends on what's in the page_tree:
       * Brand column (logo + tagline) — always
       * One column per top-level page that has children (Services / Case Studies / …)
       * "Company" column for top-level pages without children (About / Contact / …)
@@ -445,19 +436,35 @@ def build_footer(
     Flat sites (no children anywhere) fall back to the simpler three-column
     layout (brand + explore + contact) for visual balance.
     """
-    on_dark_text = "#ffffff"
-    on_dark_muted = "rgba(255,255,255,0.65)"
+    if archetype == "cta-banner" and not primary_cta:
+        archetype = "mega"
 
-    # ---- brand column (logo and/or wordmark + tagline + contact details) -------
-    # The footer sits on a dark background. When a usable logo exists we show it
-    # alone (mirroring the header) — stacking a text wordmark beneath it just
-    # duplicates the mark. We fall back to the light text wordmark only when there
-    # is no logo, or the logo is known to be dark (so it would vanish on the dark
-    # footer and the text keeps the brand reliably visible).
-    brand_col_children: list[BuilderElement] = []
+    # Chrome per archetype: the dark archetypes sit on `secondary` (the dark,
+    # primary-hued neutral) with white ink; the light archetypes sit on
+    # `surface` with the band's contrast-correct ink. On a dark color scheme
+    # `surface` is itself dark, so the "light" archetypes stay coherent there.
+    if archetype in ("minimal-centered", "editorial"):
+        footer_bg = theme.palette.surface
+    else:
+        footer_bg = theme.palette.secondary
+    ink = _text_for_background(footer_bg)
+    footer_is_dark = ink == "#ffffff"
+    # Exact legacy literals on dark so the default mega output stays
+    # byte-identical; _rgba formatting (with spaces) only reaches new archetypes.
+    on_dark_text = ink
+    on_dark_muted = "rgba(255,255,255,0.65)" if footer_is_dark else _rgba(ink, 0.65)
 
+    # ---- content composition ---------------------------------------------------
+    # Structure lives in the shared catalog (chrome-footer-*); this function
+    # decides WHAT appears (the conditional content contract) and resolves the
+    # theme tokens. When a usable logo exists we show it alone (mirroring the
+    # header); the text wordmark appears only when there is no logo, or the
+    # logo would vanish into the footer band (dark on dark / light on light).
     logo_src = brand.logo_url or brand.logo_data_url
-    show_wordmark = (not logo_src) or (brand.logo_is_light is False)
+    show_wordmark = (not logo_src) or (
+        brand.logo_is_light is (False if footer_is_dark else True)
+    )
+    logo_el: BuilderElement | None = None
     if logo_src:
         # In the footer this is a plain content image — the builder's dedicated
         # logo sizing is header-only (isBrandLogoPlaceholder requires source ===
@@ -466,111 +473,18 @@ def build_footer(
         # absolutely positioned and contributes no intrinsic width. So pin an
         # explicit width + height, object-fit:contain (no crop), left-aligned,
         # and min-height 0.
-        brand_col_children.append(
-            _image(
-                logo_src,
-                alt=brand.name,
-                styles={
-                    "height": "40px",
-                    "minHeight": "0px",
-                    "width": "150px",
-                    "objectFit": "contain",
-                    "objectPosition": "left",
-                    "display": "block",
-                },
-            )
+        logo_el = _image(
+            logo_src,
+            alt=brand.name,
+            styles={
+                "height": "40px",
+                "minHeight": "0px",
+                "width": "150px",
+                "objectFit": "contain",
+                "objectPosition": "left",
+                "display": "block",
+            },
         )
-
-    if show_wordmark:
-        brand_col_children.append(
-            _text(
-                brand.name,
-                name="Brand",
-                styles={
-                    "fontFamily": theme.typography.heading_font,
-                    "fontSize": "24px",
-                    "fontWeight": 700,
-                    "letterSpacing": "-0.01em",
-                    "color": on_dark_text,
-                },
-            )
-        )
-    if brand.tagline:
-        brand_col_children.append(
-            _text(
-                brand.tagline,
-                name="Tagline",
-                styles={
-                    "color": on_dark_muted,
-                    "fontSize": "14px",
-                    "lineHeight": 1.5,
-                    "marginTop": "12px",
-                    "maxWidth": "280px",
-                },
-            )
-        )
-    if contact:
-        for key, value in contact.items():
-            brand_col_children.append(
-                _text(
-                    f"{key.capitalize()}: {value}",
-                    name=key.capitalize(),
-                    styles={
-                        "color": on_dark_muted,
-                        "fontSize": "13px",
-                        "lineHeight": 1.7,
-                        "marginTop": "4px",
-                    },
-                )
-            )
-    brand_col = _container(
-        brand_col_children,
-        name="Brand column",
-        styles={
-            "gap": "8px",
-            "alignItems": "flex-start",
-            "flex": "1 1 240px",
-            "minWidth": "0",
-        },
-    )
-
-    # ---- shared footer navigation menu ------------------------------------
-    # Sub-page navigation is a single grouped ``menu`` element bound to the
-    # ``footer`` slot; its hierarchy (group headers + child links) comes from
-    # the entity's footer menu (built in menu_builder.build_menus). colorMode
-    # "auto" lets the builder pick an accessible text colour against the dark
-    # footer background.
-    footer_menu = _menu_element(
-        slot="footer",
-        variant="footer-columns",
-        label="Footer navigation",
-        color_mode="auto",
-        styles={"flex": "2 1 320px", "minWidth": "0"},
-    )
-
-    # The builder applies an element's `styles` to its outer wrapper but does
-    # NOT honour `gridTemplateColumns` on a plain `container` (only on 2Col/3Col,
-    # whose track count it controls). A `display:grid` container therefore
-    # collapses to a single implicit column, stacking the brand + nav into the
-    # left edge. Use flex with proportional, wrapping children instead — the
-    # builder renders plain flex containers faithfully.
-    grid = BuilderElement(
-        id=_uid(),
-        name="Footer grid",
-        type="container",
-        styles={
-            "display": "flex",
-            "flexDirection": "row",
-            "flexWrap": "wrap",
-            "alignItems": "flex-start",
-            "gap": "48px",
-            "width": "100%",
-        },
-        content=[brand_col, footer_menu],
-        responsiveStyles=ResponsiveStyles(
-            mobile={"flexDirection": "column", "gap": "32px"}
-        ),
-    )
 
     # Whether to emit a legal menu element: only when there are privacy/terms
     # pages, otherwise the block renders the builder's "assign a menu" stub.
@@ -582,88 +496,77 @@ def build_footer(
         and any(node.slug.lower() in ("privacy", "terms") for node in page_tree)
     )
 
-    # Bottom bar: copyright · legal menu · media credits.
     from datetime import datetime
 
     year = datetime.now().year
-    legal_left = _text(
-        f"© {year} {brand.name}. All rights reserved.",
-        name="Copyright",
-        styles={"color": on_dark_muted, "fontSize": "12px"},
-    )
-    bottom_children: list[BuilderElement] = [legal_left]
-    if social_links:
-        # Items come from the entity's menu-social (built in menu_builder from
-        # the scraped profile URLs) — the element only binds the slot.
-        bottom_children.append(
-            _menu_element(
-                slot="social",
-                variant="social-inline",
-                label="Social",
-                color_mode="auto",
-                styles={"width": "auto", "fontSize": "12px"},
-            )
+    content: dict[str, Any] = {
+        "logo": logo_el,
+        "brand_wordmark": brand.name if show_wordmark else None,
+        "tagline": brand.tagline or None,
+        # `_name` keeps the legacy per-key element names ("Email", "Phone").
+        "contact_lines": [
+            {"_name": key.capitalize(), "text": f"{key.capitalize()}: {value}"}
+            for key, value in (contact or {}).items()
+        ],
+        # Only the editorial tree binds this slot; other archetypes ignore it.
+        "ghost_wordmark": brand.name,
+        "copyright": f"© {year} {brand.name}. All rights reserved.",
+        "credits": " · ".join(media_credits) if media_credits else None,
+        "has_legal": has_legal,
+        "has_social": bool(social_links),
+    }
+    if archetype == "cta-banner":
+        # Headline prefers the brand's own tagline; the button is the same
+        # primary CTA the header carries, so the site closes on the action it
+        # opened with. (No-CTA callers were already degraded to mega above.)
+        cta_label, cta_href = primary_cta  # type: ignore[misc]  # guarded above
+        content["cta_headline"] = (
+            brand.tagline
+            if brand.tagline and len(brand.tagline) <= 90
+            else "Ready when you are."
         )
-    if has_legal:
-        bottom_children.append(
-            _menu_element(
-                slot="legal",
-                variant="footer-legal",
-                label="Legal",
-                color_mode="auto",
-                styles={"width": "auto", "fontSize": "12px"},
-            )
-        )
-    credits_text = " · ".join(media_credits) if media_credits else ""
-    if credits_text:
-        bottom_children.append(
-            _text(
-                credits_text,
-                name="Photo credits",
-                styles={"color": on_dark_muted, "fontSize": "12px"},
-            )
-        )
-    legal_bar = _container(
-        bottom_children,
-        name="Legal bar",
-        styles={
-            "flexDirection": "row",
-            "justifyContent": "space-between",
-            "alignItems": "center",
-            "width": "100%",
-            "paddingTop": "24px",
-            "marginTop": "32px",
-            "borderTop": "1px solid rgba(255,255,255,0.12)",
-            "gap": "16px",
-            "flexWrap": "wrap",
-        },
+        content["cta"] = {"innerText": cta_label, "href": cta_href}
+
+    # --- materialize from the shared catalog ---------------------------------
+    # Layout (grid vs centered stack vs CTA banner vs ghost wordmark, hairline
+    # placement, legal-bar alignment) lives in the shared section catalog
+    # (chrome-footer-*), single-sourced with the builder.
+    template = get_template(f"chrome-footer-{archetype}")
+    if template is None:  # pragma: no cover — catalog out of sync
+        raise ValueError(f"chrome-footer-{archetype} missing from section catalog")
+    footer = fill_chrome_template(template, content)
+    return resolve_chrome_tokens(
+        footer, _footer_tokens(theme, footer_bg, ink, footer_is_dark)
     )
 
-    inner = _container(
-        [grid, legal_bar],
-        name="Footer content",
-        styles={
-            "maxWidth": f"{theme.page.max_width}px",
-            "marginLeft": "auto",
-            "marginRight": "auto",
-            "paddingLeft": "24px",
-            "paddingRight": "24px",
-            "paddingTop": "64px",
-            "paddingBottom": "32px",
-            "width": "100%",
-            "gap": "0",
-        },
-    )
 
-    return BuilderElement(
-        id=_uid(),
-        name="Site Footer",
-        type="__footer",
-        styles={
-            "width": "100%",
-            "backgroundColor": theme.palette.secondary,
-            "color": on_dark_text,
-            "fontFamily": theme.typography.body_font,
-        },
-        content=[inner],
-    )
+def _footer_tokens(
+    theme: ThemeTokens, footer_bg: str, ink: str, footer_is_dark: bool
+) -> dict[str, str]:
+    """The footer half of the chrome token contract (see template_filler).
+
+    Exact legacy literals on dark bands so the default mega output stays
+    byte-identical; the _rgba formulas only reach light-band archetypes.
+    """
+    return {
+        "footer.bg": footer_bg,
+        "footer.ink": ink,
+        "footer.muted": (
+            "rgba(255,255,255,0.65)" if footer_is_dark else _rgba(ink, 0.65)
+        ),
+        "footer.hairline": (
+            "1px solid rgba(255,255,255,0.12)"
+            if footer_is_dark
+            else f"1px solid {_rgba(ink, 0.15)}"
+        ),
+        "footer.ghost": _rgba(ink, 0.16),
+        "page.maxWidthPx": f"{theme.page.max_width}px",
+        "buttons.bg": theme.buttons.background,
+        "buttons.fg": theme.buttons.text,
+        "buttons.radiusPx": f"{theme.buttons.radius}px",
+        "font.heading": theme.typography.heading_font,
+        "font.body": theme.typography.body_font,
+        "font.display": (
+            getattr(theme, "display_font", None) or theme.typography.heading_font
+        ),
+    }

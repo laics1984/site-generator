@@ -65,12 +65,19 @@ export function ContainerBlock({ node }: { node: PublicBlockNode }) {
   const isBodyRoot = nodeType === 'body'
   const isHeaderRoot = nodeType === 'header'
   const isFooterRoot = nodeType === 'footer'
+  const isHeaderBar = Boolean((node as Record<string, unknown>)?.headerBar)
 
   // The header ROOT node renders its own backgroundColor/border/shadow inline,
   // which sits inside the shell's <header> wrapper and paints over the
   // wrapper's transparent background — the class alone never made the header
   // look transparent. Strip the background-ish keys here, on the node that
   // actually paints them, whenever the overlay is active.
+  //
+  // Self-chrome archetypes (floating pill) carry their background on the inner
+  // `headerBar` container, NOT the root — the root is always transparent. Their
+  // bar must keep its chrome during overlay (the pill floats as-is, no
+  // transparent-then-solidify phase). Only the root is stripped; the bar is
+  // left untouched.
   const isOverlayHeaderActive = isHeaderRoot && runtimeHeaderOverlay
   const isHeaderShrinkActive = isHeaderRoot && runtimeHeaderShrink.active
 

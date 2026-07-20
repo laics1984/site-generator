@@ -855,12 +855,22 @@ def curated_palette_options(industry: str | None) -> list[dict[str, object]]:
 
 
 def _curated_palette(
-    seed_hex: str | None, industry: str | None, font_seed: str | None
-) -> ColorPalette:
+    seed_hex: str | None,
+    industry: str | None,
+    font_seed: str | None,
+    avoid_slugs: set[str] | None = None,
+) -> tuple[ColorPalette, str]:
     """Pick a curated palette by industry fit, then by nearest hue to the brand
     seed (so the logo colour still steers the choice); the seed breaks ties. With
     no usable brand hue (no/greyscale logo), falls back to a font-seed-deterministic
-    pick. Unknown/empty industries consider the whole set."""
+    pick. Unknown/empty industries consider the whole set.
+
+    ``avoid_slugs`` (diversity history — palettes recent sites used) steps the
+    pick forward within the SAME candidate group, so avoidance can rotate taste
+    but never widen the fit: a brand-hued site still lands in its hue-near
+    group, an industry-pinned site inside its industry set. All-avoided (small
+    groups saturate fast) → the seeded base pick stands, exactly the legacy
+    output. Returns (palette, slug) so callers can record what was chosen."""
     candidates = _curated_candidates(industry)
     if seed_hex and _has_brand_hue(seed_hex):
         seed_h = _rgb_to_hls(*_hex_to_rgb(seed_hex))[0] * 360.0
@@ -870,11 +880,18 @@ def _curated_palette(
             return abs(((ph - seed_h + 180.0) % 360.0) - 180.0)
 
         nearest = min(hue_dist(c) for c in candidates)
-        near = [c for c in candidates if hue_dist(c) - nearest < 1e-9]
-        chosen = near[_seeded_index(font_seed, len(near))]
+        group = [c for c in candidates if hue_dist(c) - nearest < 1e-9]
     else:
-        chosen = candidates[_seeded_index(font_seed, len(candidates))]
-    return _palette_from_curated(chosen)
+        group = candidates
+    base = _seeded_index(font_seed, len(group))
+    chosen = group[base]
+    if avoid_slugs:
+        for offset in range(len(group)):
+            candidate = group[(base + offset) % len(group)]
+            if candidate.slug not in avoid_slugs:
+                chosen = candidate
+                break
+    return _palette_from_curated(chosen), chosen.slug
 
 
 # Maps the generator's controlled IndustryCategory vocabulary (and free-text
@@ -1081,6 +1098,7 @@ def build_theme(
     color_scheme: str = "light",
     palette_choice: str | None = None,
     font_choice: str | None = None,
+    avoid_palettes: set[str] | None = None,
 ) -> ThemeTokens:
     """
     Top-level factory. `seed_hex` is the primary color (usually from the logo).
@@ -1130,18 +1148,29 @@ def build_theme(
         if color_scheme != "dark"
         else None
     )
+    # Track WHICH curated palette was taken (None on the non-curated paths) so
+    # the design manifest can record a real slug and the diversity history can
+    # steer future picks. `avoid_palettes` only ever rotates within a curated
+    # candidate group (_curated_palette) — an explicit design-language pick and
+    # the non-curated paths are never overridden by history.
+    palette_slug: str | None = None
     if color_scheme == "dark":
         # Dark scheme owns palette construction (the curated/Tailwind paths are
         # light-only); brand hue still drives the primary/accent.
         palette = _dark_palette(seed)
     elif chosen_curated is not None:
         palette = _palette_from_curated(chosen_curated)
+        palette_slug = chosen_curated.slug
     elif norm_industry in _INDUSTRY_CURATED_PALETTE:
         # Fixed cheerful pastel palette, logo hue ignored (seed=None) so the
         # brand colour can't override the brief's multi-pastel direction.
-        palette = _curated_palette(None, industry, font_seed)
+        palette, palette_slug = _curated_palette(
+            None, industry, font_seed, avoid_slugs=avoid_palettes
+        )
     elif palette_mode == "curated" or (palette_mode == "auto" and not brand_hue):
-        palette = _curated_palette(seed if has_seed else None, industry, font_seed)
+        palette, palette_slug = _curated_palette(
+            seed if has_seed else None, industry, font_seed, avoid_slugs=avoid_palettes
+        )
     elif palette_mode in ("tailwind", "auto"):
         palette = _snap_palette(seed)
     else:
@@ -1191,5 +1220,6 @@ def build_theme(
         shadow_scale=spec.shadow_scale,  # type: ignore[arg-type]
         display_font=pairing.display_font or pairing.heading_font,
         color_scheme=color_scheme,  # type: ignore[arg-type]
+        palette_slug=palette_slug,
         style=spec.style,
     )

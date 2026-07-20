@@ -13,6 +13,7 @@ from app.models.builder_schema import (
     GeneratedSite,
     PageSeo,
 )
+from app.models.design_manifest import FooterArchetype, HeaderArchetype
 from app.models.content_blocks import (
     ImageMetadata,
     IndustryCategoryLiteral,
@@ -55,6 +56,7 @@ from app.services.image_vision import (
 )
 from app.services.locale import detect_market, image_query_cue, place_query_cue
 from app.services.content_collections import extract_collections
+from app.services.diversity import recent_choices
 from app.services.schema_builder import plan_to_site
 from app.services.theme import build_theme, resolve_color_scheme
 from app.services.timing import stage
@@ -76,6 +78,10 @@ class GenerateRequest(BaseModel):
     color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
     hero_height: HeroBackgroundHeight = "full"  # full-screen vs bounded photo hero, site-wide
     contact: dict[str, str] | None = None
+    # Explicit chrome pins — win over the design director's fit/seed/diversity
+    # pick (see design_director.compose_design_manifest). None → let it decide.
+    header_archetype: HeaderArchetype | None = None
+    footer_archetype: FooterArchetype | None = None
 
 
 def _market_cues_for(source: SourceContent) -> tuple[str, str]:
@@ -643,6 +649,11 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         ),
         palette_choice=language.palette,
         font_choice=language.font_pairing,
+        # Diversity: steer the curated pick off palettes recent sites used
+        # (rotates within the fit group only; fail-open empty set).
+        avoid_palettes=await recent_choices(
+            "palette", site_key=(brand.name if brand else plan.site_name)
+        ),
     )
     theme.hero_background_height = payload.hero_height
 
@@ -664,6 +675,8 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         market_cue=market_cue,
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
+        header_override=payload.header_archetype,
+        footer_override=payload.footer_archetype,
     )
     site.collections = await collections_task
     return site
@@ -692,6 +705,10 @@ class GenerateWithPagesRequest(BaseModel):
     jurisdiction: str | None = None
     legal_contact_email: str | None = None
     detected_brand: DetectedBrand | None = None
+    # Explicit chrome pins — win over the design director's fit/seed/diversity
+    # pick (see design_director.compose_design_manifest). None → let it decide.
+    header_archetype: HeaderArchetype | None = None
+    footer_archetype: FooterArchetype | None = None
 
 
 @router.post("/with-pages", response_model=GeneratedSite)
@@ -779,6 +796,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         ),
         palette_choice=language.palette,
         font_choice=language.font_pairing,
+        # Diversity: steer the curated pick off palettes recent sites used
+        # (rotates within the fit group only; fail-open empty set).
+        avoid_palettes=await recent_choices("palette", site_key=brand.name),
     )
     theme.hero_background_height = payload.hero_height
 
@@ -895,6 +915,8 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
         reserved_image_urls=bound_image_urls,
+        header_override=payload.header_archetype,
+        footer_override=payload.footer_archetype,
     )
     site.collections = await collections_task
 

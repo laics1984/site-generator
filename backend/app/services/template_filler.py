@@ -273,3 +273,131 @@ async def fill_template(
     if root is None:
         raise ValueError(f"Template {template.get('id')!r} filled to nothing")
     return root
+
+
+# --- chrome subset (sync) --------------------------------------------------------
+# The chrome-* catalog entries (header/footer archetypes) use a restricted
+# directive vocabulary that needs no image resolution or content factories, so
+# they materialize synchronously — build_header/build_footer stay sync.
+#
+# Directives beyond the async engine's set (mirrored in the TS engine —
+# builder/src/lib/section-catalog.ts — keep in lock-step):
+#   $if       drop the node when scope[flag] is falsy (conditional shared menus)
+#   $subtree  replace the node with a caller-provided, already-built
+#             BuilderElement (the brand logo/monogram block). Absent → dropped.
+#   $splice   on a $repeat node: splat the materialized children into the
+#             PARENT's content in place of the group (contact lines land as
+#             direct siblings of the wordmark, exactly like the legacy trees).
+#   _name     in a $repeat item object: overrides the cloned node's name
+#             (contact lines keep their legacy "Email"/"Phone" names).
+#
+# Theme flows through {{token}} placeholders in style values, resolved by
+# resolve_chrome_tokens() with values computed by the caller (contrast ink,
+# rgba alphas — things CSS vars can't express). The token vocabulary is the
+# contract; both resolvers implement exactly these names.
+
+
+def _fill_chrome_node(
+    node: dict[str, Any], scope: dict[str, Any]
+) -> BuilderElement | list[BuilderElement] | None:
+    if node.get("$if") and not scope.get(node["$if"]):
+        return None
+
+    if node.get("$subtree"):
+        sub = scope.get(node["$subtree"])
+        return sub if isinstance(sub, BuilderElement) else None
+
+    base = _base_fields(node, node["styles"])
+
+    if node.get("$repeat"):
+        items = scope.get(node["$repeat"]) or []
+        content = node.get("content")
+        item_template = content[0] if isinstance(content, list) and content else None
+        children: list[BuilderElement] = []
+        if item_template:
+            for item in items:
+                el = _fill_chrome_node(item_template, item)
+                if isinstance(el, BuilderElement):
+                    if isinstance(item, dict) and item.get("_name"):
+                        el.name = str(item["_name"])
+                    children.append(el)
+        if node.get("$splice"):
+            return children
+        return BuilderElement(id=str(uuid4()), content=children, **base)
+
+    if node.get("$slot"):
+        value = scope.get(node["$slot"])
+        if value is None or value == "":
+            return None
+        node_content = node.get("content")
+        slot_base = node_content if isinstance(node_content, dict) else {}
+        if node["type"] == "link":
+            v = value if isinstance(value, dict) else {}
+            bound = BuilderElementContent(
+                **{
+                    **slot_base,
+                    "innerText": str(v.get("innerText") or v.get("label") or ""),
+                    "href": str(v.get("href") or "#"),
+                }
+            )
+        else:
+            bound = BuilderElementContent(**{**slot_base, "innerText": str(value)})
+        return BuilderElement(id=str(uuid4()), content=bound, **base)
+
+    content = node.get("content")
+    if isinstance(content, list):
+        children = []
+        for child in content:
+            el = _fill_chrome_node(child, scope)
+            if isinstance(el, list):  # $splice group
+                children.extend(el)
+            elif el is not None:
+                children.append(el)
+        return BuilderElement(id=str(uuid4()), content=children, **base)
+
+    leaf = content if isinstance(content, dict) else {}
+    return BuilderElement(id=str(uuid4()), content=BuilderElementContent(**leaf), **base)
+
+
+def fill_chrome_template(
+    template: dict[str, Any], content: dict[str, Any]
+) -> BuilderElement:
+    """Materialize a chrome-* catalog entry synchronously (no images, no LLM)."""
+    root = _fill_chrome_node(template["tree"], content)
+    if not isinstance(root, BuilderElement):
+        raise ValueError(f"Chrome template {template.get('id')!r} filled to nothing")
+    return root
+
+
+def resolve_chrome_tokens(
+    element: BuilderElement, tokens: dict[str, str]
+) -> BuilderElement:
+    """Replace ``{{token}}`` placeholders in style values, in place.
+
+    Only styles carry tokens (content is caller-composed). Unknown tokens are
+    left verbatim so a stale vendored catalog fails loudly in review, not
+    silently with a half-themed header.
+    """
+
+    def sub(value: Any) -> Any:
+        if not isinstance(value, str) or "{{" not in value:
+            return value
+        for name, resolved in tokens.items():
+            value = value.replace("{{" + name + "}}", resolved)
+        return value
+
+    def walk(el: BuilderElement) -> None:
+        if el.styles:
+            el.styles = {k: sub(v) for k, v in el.styles.items()}
+        if el.responsiveStyles is not None:
+            rs = el.responsiveStyles
+            for bp in ("mobile", "tablet", "desktop"):
+                styles = getattr(rs, bp, None)
+                if isinstance(styles, dict):
+                    setattr(rs, bp, {k: sub(v) for k, v in styles.items()})
+        if isinstance(el.content, list):
+            for child in el.content:
+                walk(child)
+
+    walk(element)
+    return element

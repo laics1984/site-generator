@@ -75,6 +75,8 @@ disabled (those calls use the default model).
 |---|---|---|
 | `DESIGN_BRAIN_ENABLED` | `true` | LLM per-section template variety (safe no-op off). |
 | `DESIGN_LANGUAGE_ENABLED` | `true` | LLM palette/font pairing pass. |
+| `DESIGN_ENGINE_ENABLED` | `true` | Design director: varies header/footer chrome archetypes per brand (off → legacy classic/mega chrome). |
+| `DIVERSITY_ENGINE_ENABLED` | `true` | SQLite usage history steering consecutive sites away from repeating chrome picks (off → pure seeded rotation). |
 | `HERO_FULLBLEED_ALL_PAGES` | `true` | Full-bleed hero on every page. |
 | `HERO_MIN_BACKGROUND_DIM` | `1200` | Min long-edge (px) for a scraped hero background. |
 | `HERO_BG_MIN_ASPECT` | `1.2` | Min width/height for a scraped hero background. |
