@@ -31,3 +31,23 @@ def _offline_pexels():
     finally:
         settings.pexels_api_key = original
         get_pexels_client.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_diversity():
+    """Disable the diversity engine's SQLite history for every test.
+
+    The engine deliberately makes consecutive generations differ (it steers a
+    new site away from the chrome the previous site picked). In a test run
+    that would make one test's generated header depend on which tests ran
+    before it — order-dependent assertions. With the history off, archetype
+    selection is the purely seeded, per-brand-idempotent rotation, which is
+    what structural assertions should target. diversity-specific tests flip
+    the flag back on themselves with an isolated DB path.
+    """
+    original = settings.diversity_engine_enabled
+    settings.diversity_engine_enabled = False
+    try:
+        yield
+    finally:
+        settings.diversity_engine_enabled = original

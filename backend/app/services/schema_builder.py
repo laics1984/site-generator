@@ -64,7 +64,17 @@ from app.models.content_blocks import (
     TestimonialsBlock,
     TimelineBlock,
 )
+from app.models.design_manifest import (
+    DesignDecision,
+    DesignManifest,
+    FooterArchetype,
+    HeaderArchetype,
+)
 from app.services.design_brain import DesignRecipe, generate_site_design_recipe
+from app.services.design_director import (
+    compose_design_manifest,
+    record_manifest_choices,
+)
 from app.services.hero_director import (
     IMAGELESS_HERO_IDS,
     HeroDirective,
@@ -163,6 +173,9 @@ class RenderContext:
     # captured by block_to_element's resolve_image closure and read by
     # plan_to_site to feed the luminance pass. Reset per block. (Phase 4b)
     section_image_band: Band | None = None
+    # Brand-stable seed for template-variety rotation (block_to_section's
+    # variety_seed). Empty → legacy deterministic order.
+    variety_seed: str = ""
 
 
 # --- generation-time modernization pass -----------------------------------------
@@ -3027,6 +3040,7 @@ async def block_to_element(
         is_homepage=is_homepage,
         hero_scroll_target_kind=hero_scroll_target_kind,
         explicit_id=explicit_template_id,
+        variety_seed=ctx.variety_seed or None,
     )
     if mapped is not None:
         template, content = mapped
@@ -3192,6 +3206,8 @@ async def plan_to_site(
     place_cue: str | None = None,
     social_links: list[tuple[str, str]] | None = None,
     reserved_image_urls: set[str] | None = None,
+    header_override: HeaderArchetype | None = None,
+    footer_override: FooterArchetype | None = None,
 ) -> GeneratedSite:
     """
     Build a complete, themed site from a SitePlan.
@@ -3219,6 +3235,8 @@ async def plan_to_site(
             if effective_brand.extracted_palette
             else plan.primary_color_hint
         )
+        from app.services.diversity import recent_choices
+
         theme = build_theme(
             seed,
             mood=effective_brand.mood or "modern",
@@ -3238,7 +3256,29 @@ async def plan_to_site(
                 effective_brand.logo_is_light,
                 industry=plan.industry_category,
             ),
+            # Diversity: steer the curated pick off palettes recent sites used
+            # (rotates within the fit group only; fail-open empty set).
+            avoid_palettes=await recent_choices(
+                "palette", site_key=effective_brand.name or plan.site_name
+            ),
         )
+
+    # Design manifest: the recorded chrome/decision layer composed BEFORE any
+    # page is built (see services/design_director.py). Disabled → the default
+    # manifest, which is exactly the legacy classic-header/mega-footer chrome.
+    # The kill switch is absolute: when the engine is off, an explicit archetype
+    # override is ignored too (no archetype rendering happens at all).
+    if settings.design_engine_enabled:
+        manifest = await compose_design_manifest(
+            brand_name=effective_brand.name or plan.site_name,
+            mood=effective_brand.mood,
+            industry=plan.industry_category,
+            color_scheme=getattr(theme, "color_scheme", "light"),
+            header_override=header_override,
+            footer_override=footer_override,
+        )
+    else:
+        manifest = DesignManifest(seed=effective_brand.name or plan.site_name)
 
     styles = make_style_tokens(theme)
     resolver = ImageResolver(
@@ -3306,6 +3346,62 @@ async def plan_to_site(
         seed=effective_brand.name or plan.site_name,
     )
 
+    # Fold the remaining design decisions into the manifest so it is the ONE
+    # complete audit record: theme language, per-page hero art direction, and
+    # the design-brain's section picks. Recording only — the deciders above
+    # stay the source of the choices; the manifest is where they are explained.
+    if settings.design_engine_enabled:
+        manifest.decisions.append(
+            DesignDecision(
+                area="palette",
+                # Curated slug when a curated path was taken (real, steerable
+                # identity for the diversity history); primary hex otherwise.
+                choice=getattr(theme, "palette_slug", None) or theme.palette.primary,
+                rationale=(
+                    "build_theme palette (design-language LLM pick upstream when "
+                    "enabled, else deterministic industry/hue/seed selection; "
+                    "curated picks steer off recently-used palettes)"
+                ),
+                confidence=0.7,
+            )
+        )
+        manifest.decisions.append(
+            DesignDecision(
+                area="typography",
+                choice=theme.typography.heading_font.split(",")[0].strip("'\" "),
+                rationale="build_theme font pairing (same upstream pass as palette)",
+                confidence=0.7,
+            )
+        )
+        for _slug, _directive in hero_directives.items():
+            _page_plan = next((p for p in plan.pages if p.slug == _slug), None)
+            _is_home = bool(_page_plan and (_page_plan.is_homepage or _page_plan.page_type == "home"))
+            manifest.decisions.append(
+                DesignDecision(
+                    # "hero-homepage" is a diversity-recorded area (see
+                    # design_director._RECORDED_AREAS); interior heroes are
+                    # audit-only.
+                    area="hero-homepage" if _is_home else f"hero:{_slug}",
+                    choice=_directive.template_id,
+                    rationale=(
+                        "hero director site-wide full-bleed policy"
+                        if settings.hero_fullbleed_all_pages
+                        else "hero director per-page rotation (mood/industry spec)"
+                    ),
+                    confidence=0.8,
+                )
+            )
+        for _choice in site_design_recipe.sections:
+            if _choice.template_id:
+                manifest.decisions.append(
+                    DesignDecision(
+                        area=f"section:{_choice.page_index}:{_choice.section_index}",
+                        choice=_choice.template_id,
+                        rationale="design-brain LLM pick (feasibility-gated downstream)",
+                        confidence=0.65,
+                    )
+                )
+
     # Build each page's body
     pages: list[GeneratedPage] = []
     _render_start = perf_counter()
@@ -3321,6 +3417,7 @@ async def plan_to_site(
             children_by_parent=children_by_parent,
             page_title_by_slug=page_title_by_slug,
             page_images=(page_images or {}).get(page_plan.slug, []),
+            variety_seed=manifest.seed if settings.design_engine_enabled else "",
         )
         # Phase 5 activation (gated): deterministically assign visual_policy per
         # the §5 matrix so the luminance pass engages. Off by default — when the
@@ -3472,6 +3569,12 @@ async def plan_to_site(
         settings.header_overlay_enabled
         and home_first_section is not None
         and getattr(home_first_section, "headerOverlaySafe", False) is True
+        # All current archetypes can overlay; the flag stays gated per-archetype
+        # for future non-overlay chrome. Self-chrome archetypes (floating pill)
+        # overlay WITHOUT the transparent phase: their nodes carry no ink
+        # markers and the layout payload emits revealBackgroundOnScroll: false
+        # (see SELF_CHROME_HEADERS + menu_builder.build_layout_payload).
+        and manifest.header_overlay_capable
     )
     header = build_header(
         effective_brand,
@@ -3481,6 +3584,8 @@ async def plan_to_site(
         page_tree=page_tree,
         overlay=header_overlay,
         industry=plan.industry_category,
+        archetype=manifest.header_archetype,
+        social_links=social_links,
     )
     footer = build_footer(
         effective_brand,
@@ -3491,6 +3596,8 @@ async def plan_to_site(
         page_tree=page_tree,
         extra_legal_nav=extra_footer_nav,
         social_links=social_links,
+        archetype=manifest.footer_archetype,
+        primary_cta=primary_cta,
     )
 
     # Symmetric contrast safety net (both schemes): catalogue sections hard-code a
@@ -3509,6 +3616,14 @@ async def plan_to_site(
     for _page in pages:
         style_whatsapp_links(_page.body_schema.elements)
 
+    # The manifest rides builderStyles into the CMS (flexible JSON — the same
+    # channel googleFonts/brandMood use, no migration). The builder's
+    # normalizeBuilderStyles carries `designManifest` through edit/save
+    # round-trips as an opaque record; both renderers ignore it.
+    builder_styles = theme.to_builder_styles()
+    if settings.design_engine_enabled:
+        builder_styles["designManifest"] = manifest.model_dump()
+
     site = GeneratedSite(
         site_name=plan.site_name,
         tagline=plan.tagline,
@@ -3519,13 +3634,19 @@ async def plan_to_site(
         media_credits=resolver.attributions,
         social_links=social_links or [],
         theme=theme,
-        builder_styles=theme.to_builder_styles(),
+        builder_styles=builder_styles,
         google_fonts=theme.typography.google_fonts,
         brand=effective_brand,
+        design_manifest=manifest.model_dump(),
         header_schema=header,
         footer_schema=footer,
         header_overlay=header_overlay,
     )
+
+    # Feed the diversity history so the NEXT generation rotates away from this
+    # site's chrome picks (fail-open; see services/diversity.py).
+    if settings.design_engine_enabled:
+        await record_manifest_choices(manifest)
 
     # Advisory UX/accessibility audit (alt text, contrast, font size, …). Logged
     # only; never mutates or blocks generation.

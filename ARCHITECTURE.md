@@ -61,6 +61,10 @@ stays consistent across model swaps and is unit-testable as pure functions.
   `pexels.py` (stock fallback).
 - **LLM:** `llm.py` (Ollama + MLX clients behind one protocol, validate-or-repair
   retry, response cache), `design_brain.py`, `planner.py`.
+- **Design engine:** `design_director.py` (composes the `DesignManifest` —
+  chrome archetypes + decision log), `diversity.py` (SQLite usage history that
+  steers consecutive sites apart), `header_footer.py` (5 header + 4 footer
+  archetypes). See [docs/DESIGN_ENGINE.md](docs/DESIGN_ENGINE.md).
 - **CMS push:** `push_orchestrator.py`, `cms_client.py`, `content_collections.py`.
 
 ## Configuration flow

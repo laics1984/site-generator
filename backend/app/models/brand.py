@@ -132,6 +132,12 @@ class ThemeTokens(BaseModel):
     # rhythm + text colours follow automatically. Renderers need nothing extra —
     # the dark hexes flow through the existing builderStyles colour tokens.
     color_scheme: Literal["light", "dark"] = "light"
+    # The curated-palette slug the palette came from, when a curated path was
+    # taken (design-language pick, industry default, or the curated/auto mode).
+    # None for tailwind-snap/dark/algorithmic palettes. Internal: feeds the
+    # design manifest's palette decision + the diversity history — NOT part of
+    # BuilderStyles.
+    palette_slug: str | None = None
     # The ui-ux-pro-max style this mood embodies (design lineage / debug metadata).
     style: str = ""
     # Section background rotation drives visual rhythm (avoid wall-of-white).
