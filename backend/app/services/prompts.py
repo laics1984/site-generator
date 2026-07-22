@@ -61,6 +61,20 @@ FIDELITY RULES — these override every other instruction:
   general benefit statements that follow directly from what the business says
   it does. You MAY NOT add specifics the source doesn't state.
 
+E-E-A-T SIGNALS — search engines reward expertise, experience, authority, trust:
+- When the source provides credentials, years of experience, certifications,
+  or professional memberships, weave them naturally into about/services copy.
+- Use specific, concrete language over vague claims: "board-certified
+  orthodontist" beats "experienced dental professional".
+- Preserve any real testimonials, case studies, or portfolio items that
+  demonstrate experience.
+
+SEARCH INTENT — match the page's tone to its purpose:
+- Homepage = navigational (brand identity + core value proposition).
+- Services / pricing = commercial (convince and convert).
+- About = informational (build trust and credibility).
+- Contact = transactional (make action effortless).
+
 REAL PHOTOS — `page_source.images` lists the page's ACTUAL photos as
 {ref, alt, role, near} (near = the source heading the photo sat under).
 Strongly prefer them over stock:
@@ -126,8 +140,15 @@ PER PAGE
   conversion ask. The homepage hero may keep its primary CTA.
 - Preserve real proper nouns, prices and contact details verbatim.
 - CTAs use action verbs ("Book a call", "Get a quote") — never "Click here".
-- SEO titles 50-60 chars; SEO descriptions 140-160 chars; build both from the
-  page's real subject matter — do not invent claims to fill length.
+- SEO titles 50-60 chars, primary keyword near the start, unique per page.
+  Interior pages: "[Primary benefit/service] | [Brand name]".
+- SEO descriptions 140-160 chars, include the primary keyword naturally,
+  summarise what the user will find, end with an action phrase. Unique per page.
+- seo_keywords: 3-5 relevant search terms per page drawn from the source's
+  real subject matter. Homepage gets broad terms; interior pages get specific
+  long-tail variations. Never stuff or repeat.
+- Build all SEO fields from the page's real subject matter — do not invent
+  claims to fill length.
 - ALWAYS fill visual query fields (image_query / background_query /
   avatar_query / photo_query) with concrete 2-6 word stock phrases — they
   describe imagery, not facts, so they're always fine to write.

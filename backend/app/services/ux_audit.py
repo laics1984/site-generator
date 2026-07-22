@@ -39,6 +39,14 @@ _RULES = {
     "color-contrast": ("Accessibility", "high"),
     "readable-font-size": ("Responsive", "high"),
     "image-dimensions": ("Layout", "high"),
+    "seo-title-length": ("SEO", "high"),
+    "seo-desc-length": ("SEO", "high"),
+    "seo-title-unique": ("SEO", "high"),
+    "seo-desc-unique": ("SEO", "medium"),
+    "heading-hierarchy": ("SEO", "high"),
+    "cta-missing": ("SEO", "medium"),
+    "og-image-missing": ("SEO", "medium"),
+    "orphan-page": ("SEO", "medium"),
 }
 
 
@@ -176,6 +184,110 @@ def audit_site(site: GeneratedSite) -> list[Finding]:
         if isinstance(chrome, BuilderElement):
             _walk(chrome, None, label, varmap, out)
     return out
+
+
+def audit_seo(site: GeneratedSite) -> list[Finding]:
+    """SEO-specific audit: title/desc lengths, uniqueness, heading hierarchy,
+    CTA presence, og:image, and orphan pages.  Thresholds read from config."""
+    from app.config import settings
+
+    title_min = settings.seo_title_min_length
+    title_max = settings.seo_title_max_length
+    desc_min = settings.seo_description_min_length
+    desc_max = settings.seo_description_max_length
+
+    out: list[Finding] = []
+    titles_seen: dict[str, str] = {}
+    descs_seen: dict[str, str] = {}
+
+    for page in site.pages:
+        slug = page.slug or "/"
+        seo = page.seo
+
+        if seo and seo.title:
+            tlen = len(seo.title)
+            if tlen < title_min or tlen > title_max:
+                _add(out, "seo-title-length", slug,
+                     f"SEO title is {tlen} chars (target 50-60)")
+            if seo.title in titles_seen:
+                _add(out, "seo-title-unique", slug,
+                     f"SEO title duplicates '{titles_seen[seo.title]}'")
+            else:
+                titles_seen[seo.title] = slug
+
+        if seo and seo.description:
+            dlen = len(seo.description)
+            if dlen < desc_min or dlen > desc_max:
+                _add(out, "seo-desc-length", slug,
+                     f"SEO description is {dlen} chars (target 140-160)")
+            if seo.description in descs_seen:
+                _add(out, "seo-desc-unique", slug,
+                     f"SEO description duplicates '{descs_seen[seo.description]}'")
+            else:
+                descs_seen[seo.description] = slug
+
+        if seo and not seo.ogImage:
+            _add(out, "og-image-missing", slug, "no og:image set")
+
+        elements = page.body_schema.elements if page.body_schema else []
+        _check_heading_hierarchy(elements, slug, out)
+        _check_cta_present(elements, slug, out)
+
+    try:
+        from app.services.seo import detect_orphan_pages
+
+        for orphan in detect_orphan_pages(site):
+            _add(out, "orphan-page", orphan, "page not linked from any other page")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return out
+
+
+def _count_elements_by_name(
+    el: BuilderElement, prefix: str, counts: dict[str, int]
+) -> None:
+    name = getattr(el, "name", "") or ""
+    if name.startswith(prefix):
+        counts[name] = counts.get(name, 0) + 1
+    content = el.content
+    if isinstance(content, list):
+        for child in content:
+            if isinstance(child, BuilderElement):
+                _count_elements_by_name(child, prefix, counts)
+
+
+def _check_heading_hierarchy(
+    elements: list[BuilderElement], slug: str, out: list[Finding]
+) -> None:
+    h1_count = 0
+    for el in elements:
+        counts: dict[str, int] = {}
+        _count_elements_by_name(el, "H1", counts)
+        h1_count += sum(v for k, v in counts.items() if k == "H1")
+    if h1_count == 0 and elements:
+        _add(out, "heading-hierarchy", slug, "no H1 found")
+    elif h1_count > 1:
+        _add(out, "heading-hierarchy", slug, f"{h1_count} H1 elements (should be 1)")
+
+
+def _check_cta_present(
+    elements: list[BuilderElement], slug: str, out: list[Finding]
+) -> None:
+    if _has_cta(elements):
+        return
+    _add(out, "cta-missing", slug, "no CTA block or primary action link found")
+
+
+def _has_cta(elements: list[BuilderElement]) -> bool:
+    for el in elements:
+        name = (getattr(el, "name", "") or "").lower()
+        if "cta" in name or name in ("contact form", "contact"):
+            return True
+        content = el.content
+        if isinstance(content, list) and _has_cta(content):
+            return True
+    return False
 
 
 def summarize(findings: list[Finding]) -> dict[str, int]:

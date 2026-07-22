@@ -311,6 +311,24 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
 
+    # --- SEO ----------------------------------------------------------------
+    # Master switch for SEO enrichment (og:image, twitterCard, structuredData,
+    # canonical). Disabling is a safe no-op — pages get title/description only.
+    seo_enabled: bool = True
+    # Master switch for the advisory SEO audit pass (title length, heading
+    # hierarchy, CTA, duplicates, orphan pages). Logged only, never blocks.
+    seo_audit_enabled: bool = True
+    # Structured data (JSON-LD) generation: Organization/LocalBusiness on
+    # homepage, BreadcrumbList on sub-pages, FAQPage on FAQ blocks.
+    seo_structured_data_enabled: bool = True
+    # SEO title length bounds (chars). The LLM targets 50-60; the audit flags
+    # titles outside these bounds.
+    seo_title_min_length: int = 30
+    seo_title_max_length: int = 65
+    # SEO meta description length bounds (chars).
+    seo_description_min_length: int = 100
+    seo_description_max_length: int = 170
+
     # --- Security -----------------------------------------------------------
     # SSRF guard: the scrape/fetch layer accepts arbitrary user- and page-
     # supplied URLs. By default it refuses any URL that resolves to a non-public

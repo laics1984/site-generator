@@ -324,6 +324,10 @@ def build_privacy_page(
         seo=PageSeo(
             title=f"Privacy Policy — {brand_name}",
             description=f"How {brand_name} collects, uses, and protects your information.",
+            canonical="/privacy",
+            ogTitle=f"Privacy Policy — {brand_name}",
+            ogDescription=f"How {brand_name} collects, uses, and protects your information.",
+            twitterCard="summary",
             noindex=False,
         ),
     )
@@ -351,6 +355,10 @@ def build_terms_page(
         seo=PageSeo(
             title=f"Terms of Service — {brand_name}",
             description=f"The terms that govern use of {brand_name}.",
+            canonical="/terms",
+            ogTitle=f"Terms of Service — {brand_name}",
+            ogDescription=f"The terms that govern use of {brand_name}.",
+            twitterCard="summary",
             noindex=False,
         ),
     )

@@ -208,6 +208,7 @@ class PageSeo(BaseModel):
     title: str | None = None
     description: str | None = None
     keywords: list[str] | None = None
+    canonical: str | None = None
     ogTitle: str | None = None
     ogDescription: str | None = None
     ogImage: str | None = None
