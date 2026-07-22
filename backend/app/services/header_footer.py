@@ -393,7 +393,7 @@ def _header_tokens(
         "buttons.fg": theme.buttons.text,
         "buttons.radiusPx": f"{theme.buttons.radius}px",
         "pill.radiusPx": f"{max(20, theme.buttons.radius + 14)}px",
-        "pill.maxWidthPx": f"{max(720, theme.page.max_width - 96)}px",
+        "pill.maxWidthPx": f"{max(720, theme.page.max_width - 240)}px",
         "page.maxWidthPx": f"{theme.page.max_width}px",
         "font.heading": theme.typography.heading_font,
         "font.body": theme.typography.body_font,

@@ -64,6 +64,11 @@ _NON_PERSON_EXACT_NAMES = {
     "specialists",
     "team",
     "web design",
+    "getting involved",
+    "good food",
+    "latest events",
+    "latest news",
+    "upcoming events",
 }
 _NON_PERSON_NAME_TOKENS = {
     "achievement",
@@ -119,6 +124,17 @@ _NON_NAME_LEAD_TOKENS = {
     "who",
     "why",
     "your",
+    # Gerunds / present participles — section headings, not person names.
+    "getting", "giving", "making", "building", "going", "coming",
+    "taking", "bringing", "keeping", "sharing", "starting", "creating",
+    "becoming", "growing", "supporting", "helping", "working", "leading",
+    "serving", "living", "doing",
+    # CTA verbs not already covered.
+    "welcome", "contact", "discover", "explore", "join", "visit", "view",
+    "see", "find", "get", "learn", "read", "book", "call",
+    # Adjectives that open section headings.
+    "good", "great", "best", "new", "fresh", "clean", "latest",
+    "upcoming", "featured", "popular", "top", "free",
 }
 _NAME_PARTICLES = {
     "al",

@@ -192,6 +192,7 @@ class BuilderElement(BaseModel):
     # follow the theme default; an explicit value (incl. "flat") wins. Only
     # meaningful on section/container-like elements with a plain fill — the
     # right panel hides the control otherwise.
+    htmlTag: str | None = None
     backgroundTexture: BackgroundStrategy | None = None
 
 

@@ -462,6 +462,13 @@ _GENERIC_PROFILE_NAMES = {
     "why choose us",
     "get in touch",
     "join us",
+    "getting involved",
+    "good food",
+    "latest events",
+    "latest news",
+    "upcoming events",
+    "upcoming programs",
+    "upcoming programmes",
 }
 
 # A real name never starts with a determiner/possessive/CTA verb. Catches the
@@ -472,6 +479,15 @@ _NON_NAME_LEAD_TOKENS = {
     "meet", "about", "why", "what", "how", "who", "where", "when",
     "welcome", "contact", "discover", "explore", "join", "visit", "view",
     "see", "find", "get", "learn", "read", "book", "call",
+    # Gerunds / present participles of CTA verbs — "Getting Involved",
+    # "Building Futures", etc. are section headings, not person names.
+    "getting", "giving", "making", "building", "going", "coming",
+    "taking", "bringing", "keeping", "sharing", "starting", "creating",
+    "becoming", "growing", "supporting", "helping", "working", "leading",
+    "serving", "living", "doing",
+    # Adjectives that open section headings ("Good Food", "Best Practice").
+    "good", "great", "best", "new", "fresh", "clean", "latest",
+    "upcoming", "featured", "popular", "top", "free",
 }
 
 # Lowercase tokens allowed inside a capitalised name ("Siti binti Rahman",
