@@ -353,12 +353,14 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         async def _create_one(page: GeneratedPage) -> tuple[GeneratedPage, str, int]:
             seo = {}
             if page.seo:
-                if page.seo.title:
-                    seo["title"] = page.seo.title
-                if page.seo.description:
-                    seo["description"] = page.seo.description
+                for _fld in ("title", "description", "keywords",
+                             "canonical", "ogTitle", "ogDescription",
+                             "ogImage", "twitterCard", "structuredData"):
+                    _val = getattr(page.seo, _fld, None)
+                    if _val is not None:
+                        seo[_fld] = _val
                 if page.seo.noindex:
-                    seo["noindex"] = bool(page.seo.noindex)
+                    seo["noindex"] = True
             created_meta = await client.create_page(
                 req.entity_token,
                 title=page.title,

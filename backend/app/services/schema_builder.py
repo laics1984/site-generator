@@ -957,6 +957,57 @@ def _first_content_section(page: GeneratedPage) -> BuilderElement | None:
     return None
 
 
+def _extract_og_image_safe(elements: list[BuilderElement]) -> str | None:
+    try:
+        from app.services.seo import extract_og_image
+
+        return extract_og_image(elements)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _breadcrumb_slug_chain(
+    slug: str, title_map: dict[str, str]
+) -> list[tuple[str, str]]:
+    try:
+        from app.services.seo import breadcrumb_slug_chain
+
+        return breadcrumb_slug_chain(slug, title_map)
+    except Exception:  # noqa: BLE001
+        return [("", "Home")]
+
+
+def _build_structured_safe(
+    *,
+    page_plan: "PagePlan",
+    site_name: str,
+    brand_name: str,
+    logo_url: str | None,
+    industry_category: str | None,
+    contact: dict[str, str] | None,
+    breadcrumb_slugs: list[tuple[str, str]],
+) -> list[dict[str, Any]] | None:
+    try:
+        from app.services.seo import build_structured_data
+
+        return build_structured_data(
+            page_slug=page_plan.slug,
+            page_title=page_plan.title,
+            page_description=page_plan.description,
+            page_type=page_plan.page_type,
+            is_homepage=page_plan.is_homepage,
+            site_name=site_name,
+            brand_name=brand_name,
+            logo_url=logo_url,
+            industry_category=industry_category,
+            contact=contact,
+            blocks=page_plan.blocks,
+            breadcrumb_slugs=breadcrumb_slugs,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _section(
     ctx: RenderContext,
     children: list[BuilderElement],
@@ -3525,6 +3576,19 @@ async def plan_to_site(
             elements.append(_cms_list_element("articles"))
         elif page_plan.page_type == "events":
             elements.append(_cms_list_element("events"))
+        og_image = _extract_og_image_safe(elements) if settings.seo_enabled else None
+        structured = None
+        if settings.seo_enabled and settings.seo_structured_data_enabled:
+            bc_chain = _breadcrumb_slug_chain(page_plan.slug, page_title_by_slug)
+            structured = _build_structured_safe(
+                page_plan=page_plan,
+                site_name=plan.site_name,
+                brand_name=effective_brand.name or plan.site_name,
+                logo_url=effective_brand.logo_url,
+                industry_category=plan.industry_category,
+                contact=contact,
+                breadcrumb_slugs=bc_chain,
+            )
         pages.append(
             GeneratedPage(
                 slug=page_plan.slug,
@@ -3536,8 +3600,12 @@ async def plan_to_site(
                     title=page_plan.seo_title,
                     description=page_plan.seo_description,
                     keywords=page_plan.seo_keywords or None,
+                    canonical=f"/{page_plan.slug}" if page_plan.slug else "/" if settings.seo_enabled else None,
                     ogTitle=page_plan.seo_title,
                     ogDescription=page_plan.seo_description,
+                    ogImage=og_image,
+                    twitterCard=("summary_large_image" if og_image else "summary") if settings.seo_enabled else None,
+                    structuredData=structured,
                 ),
                 parent_slug=page_plan.parent_slug,
                 nav_rank=page_plan.nav_rank,
@@ -3648,17 +3716,19 @@ async def plan_to_site(
     if settings.design_engine_enabled:
         await record_manifest_choices(manifest)
 
-    # Advisory UX/accessibility audit (alt text, contrast, font size, …). Logged
-    # only; never mutates or blocks generation.
+    # Advisory UX/accessibility + SEO audit. Logged only; never mutates or
+    # blocks generation.
     try:
         import logging
 
-        from app.services.ux_audit import audit_site, summarize
+        from app.services.ux_audit import audit_seo, audit_site, summarize
 
         findings = audit_site(site)
+        if settings.seo_audit_enabled:
+            findings += audit_seo(site)
         if findings:
             logging.getLogger(__name__).info(
-                "UX audit: %d finding(s) %s", len(findings), summarize(findings)
+                "UX+SEO audit: %d finding(s) %s", len(findings), summarize(findings)
             )
     except Exception:  # noqa: BLE001 — an advisory check must never break a build
         pass
