@@ -682,8 +682,9 @@ def _text(
     name: str = "Text",
     styles: dict[str, Any] | None = None,
     mobile: dict[str, Any] | None = None,
+    html_tag: str | None = None,
 ) -> BuilderElement:
-    return BuilderElement(
+    el = BuilderElement(
         id=_uid(),
         name=name,
         type="text",
@@ -691,6 +692,9 @@ def _text(
         content=BuilderElementContent(innerText=inner),
         responsiveStyles=ResponsiveStyles(mobile=mobile) if mobile else None,
     )
+    if html_tag:
+        el.htmlTag = html_tag
+    return el
 
 
 def _link(
@@ -1217,7 +1221,7 @@ def _headline_lines(
     literal tags)."""
     split = _split_headline(block.headline, block.headline_accent)
     if split is None:
-        return _text(block.headline, name="Headline", styles=lead_styles, mobile=mobile)
+        return _text(block.headline, name="Headline", styles=lead_styles, mobile=mobile, html_tag="h1")
     lead, accent = split
     accent_styles = _hero_accent_styles(lead_styles, ctx, on_photo=on_photo)
     container_styles: dict = {"flexDirection": "column", "gap": "0px", "width": "100%"}
@@ -1225,7 +1229,7 @@ def _headline_lines(
         container_styles["alignItems"] = "center"
     return _container(
         [
-            _text(lead, name="Headline", styles=lead_styles, mobile=mobile),
+            _text(lead, name="Headline", styles=lead_styles, mobile=mobile, html_tag="h1"),
             _text(accent, name="Headline accent", styles=accent_styles, mobile=mobile),
         ],
         name="Headline group",

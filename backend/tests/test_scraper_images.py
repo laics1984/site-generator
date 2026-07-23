@@ -392,6 +392,13 @@ class ScraperImageExtractionTest(unittest.TestCase):
             "Get in Touch",
             "Serving Penang since 1998",
             "Book an Appointment",
+            "Getting Involved",
+            "Good Food",
+            "Latest Events",
+            "Upcoming Programs",
+            "Building Futures",
+            "Clean Water",
+            "Best Practice",
         ]
         accepted = [
             "Dr Aisha Rahman",
