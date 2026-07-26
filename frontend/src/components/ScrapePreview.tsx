@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { exportSiteDocument } from '@/lib/api'
 import type { ScrapePreview as ScrapePreviewType } from '@/lib/types'
+import { Button } from '@/ui'
 
 interface ScrapePreviewProps {
   preview: ScrapePreviewType
@@ -252,22 +253,19 @@ export function ScrapePreview({
       </label>
 
       <div className="flex gap-2">
-        <button
-          type="button"
-          disabled={busy || !text.trim()}
+        <Button
+          variant="primary"
+          size="lg"
+          fullWidth
+          disabled={!text.trim()}
+          busy={busy}
           onClick={() => onConfirm(text, title)}
-          className="flex-1 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
         >
-          {busy ? 'Generating…' : 'Generate website'}
-        </button>
-        <button
-          type="button"
-          onClick={onDiscard}
-          disabled={busy}
-          className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-        >
+          {busy ? 'Generating…' : 'Choose pages'}
+        </Button>
+        <Button size="lg" onClick={onDiscard} disabled={busy}>
           Discard
-        </button>
+        </Button>
       </div>
 
       {!isDocument && (
@@ -278,14 +276,15 @@ export function ScrapePreview({
               titles and copy, then re-upload it to build the site from the
               document.
             </div>
-            <button
-              type="button"
+            <Button
+              size="sm"
+              className="shrink-0"
               onClick={handleExport}
-              disabled={busy || exporting}
-              className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={busy}
+              busy={exporting}
             >
               {exporting ? 'Exporting…' : 'Export as document'}
-            </button>
+            </Button>
           </div>
           {exportError && (
             <div className="mt-2 text-xs text-red-600">{exportError}</div>

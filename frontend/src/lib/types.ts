@@ -91,6 +91,10 @@ export interface BuilderElement {
   divider?: SectionDivider | null
   /** Per-section override of the theme's decorative background strategy. */
   backgroundTexture?: BackgroundStrategy | null
+  /** Semantic tag for a `text` node — the generator sets 'h1' on hero
+   * headlines. The public renderer's TextBlock renders this as the element tag;
+   * without it the preview emitted a <div> where the live page has an <h1>. */
+  htmlTag?: string | null
 }
 
 export interface BodySchema {
@@ -398,5 +402,10 @@ export interface CmsPushReport {
   success: boolean
   error: string | null
   steps: CmsPushStep[]
+  /** pageId → slug (not a URL, despite the name — see push_orchestrator.py). */
   page_urls: Record<string, string>
+  /** Deep link into the webtree admin suite for the pushed entity. Present only
+   * when the backend has ADMIN_APP_BASE_URL configured; the UI hides the CTA
+   * otherwise rather than guessing a URL. */
+  admin_url?: string | null
 }

@@ -15,11 +15,27 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.models.builder_schema import GeneratedSite
 from app.services.cms_client import CmsApiError, CmsClient
 from app.services.push_orchestrator import PushRequest, push_site
 
 router = APIRouter(prefix="/api/cms", tags=["cms"])
+
+
+def _admin_url() -> str | None:
+    """Deep link into the webtree admin suite's page list, or None when the
+    admin app's origin isn't configured.
+
+    The frontend reads no `import.meta.env` (see ARCHITECTURE.md), so the only
+    way it can offer an "Open in webtree admin" link is for us to hand one over.
+    Returning None is the honest answer when we don't know the host — the UI
+    then omits the link rather than inventing a URL that 404s.
+    """
+    base = (settings.admin_app_base_url or "").strip().rstrip("/")
+    if not base:
+        return None
+    return f"{base}/webpages/list"
 
 
 class TestConnectionRequest(BaseModel):
@@ -121,4 +137,5 @@ async def push(payload: PushRequestBody) -> dict[str, Any]:
         "error": report.error,
         "steps": [asdict(s) for s in report.steps],
         "page_urls": report.page_urls,
+        "admin_url": _admin_url() if report.success else None,
     }

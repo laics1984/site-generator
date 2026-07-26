@@ -294,6 +294,12 @@ class Settings(BaseSettings):
 
     cms_api_base_url: str = "http://localhost:8000"
 
+    # The webtree admin suite (a separate app on its own origin — the CMS API
+    # above is not it). Set this and a successful push returns an `admin_url`
+    # the frontend turns into an "Open in webtree admin" link. Left unset, the
+    # frontend simply omits the link rather than guessing a host.
+    admin_app_base_url: str | None = None
+
     # SQLite file for durable crawl-job state (services/db.py). Inside the
     # container this lives on the mounted data volume.
     sitegen_db_path: str = "/app/data/sitegen.db"

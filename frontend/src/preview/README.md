@@ -53,12 +53,30 @@ you get a header with no nav, which is what the preview used to do.
 
 Preview-only compromises, each commented at its site:
 
-- Links and the contact form are inert — there's no published site to navigate
-  to or post to.
+- The contact form is inert — there's no published site to post to.
+- Anchors are inert *inside* these blocks, as upstream-parity requires. Links
+  that resolve to another generated page are handled a level up: a capture-phase
+  click listener on the frame's document
+  ([`components/PagePreview.tsx`](../components/PagePreview.tsx), resolver in
+  [`lib/previewNav.ts`](../lib/previewNav.ts)) switches the previewed page before
+  the block's own `preventDefault()` runs. Nothing here changed to make that
+  work, which is the point — off-site links still go nowhere.
 - `articlesList` / `eventsList` / dynamic CMS fields render their frame and an
   empty state; the entries don't exist until the push.
 - Background video shows its poster (upstream also gates playback on
   reduced-motion / small screens / Data Saver).
+
+## Drift log
+
+Divergences found and closed, newest first — record them here so the next
+comparison pass starts from a known state:
+
+| Upstream change | Ported | Note |
+|---|---|---|
+| `htmlTag` on text nodes (`TextBlock.vue` renders `<component :is="htmlTag">`) | ✅ | The generator sets `html_tag="h1"` on hero headlines; before this the preview emitted a `<div>` where the live page has an `<h1>`. `BuilderElement.htmlTag` was also missing from `lib/types.ts`. |
+| `lib/motionRuntime.ts` + `useSchemaMotion` | ❌ | Not ported — sections render in their final state, no entrance motion. |
+| `lib/webglBackdrop.ts` | ❌ | Not ported. |
+| `CmsArchiveHeaderBlock.vue` | ❌ | `cmsArchiveHeader` maps to `DynamicFieldBlock` here. The generator never emits that type, so nothing renders differently today. |
 
 ## Keeping it honest
 

@@ -10,6 +10,7 @@ import type {
   PageScaffold,
   SourceContent,
 } from '@/lib/types'
+import { Button, Spinner } from '@/ui'
 
 interface PagePickerProps {
   source: SourceContent
@@ -308,7 +309,7 @@ export function PagePicker({
           </select>
           {loading && (
             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500">
-              <Spinner size={12} />
+              <Spinner className="h-3 w-3 text-brand-600" />
               Updating…
             </span>
           )}
@@ -391,24 +392,21 @@ export function PagePicker({
       )}
 
       <div className="flex gap-2 pt-2">
-        <button
-          type="button"
-          disabled={busy || selectedPages.length === 0}
+        <Button
+          variant="primary"
+          size="lg"
+          fullWidth
+          disabled={selectedPages.length === 0}
+          busy={busy}
           onClick={onConfirm}
-          className="flex-1 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
         >
           {busy
             ? 'Generating…'
             : `Generate ${selectedPages.length} page${selectedPages.length === 1 ? '' : 's'}`}
-        </button>
-        <button
-          type="button"
-          onClick={onBack}
-          disabled={busy}
-          className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-        >
+        </Button>
+        <Button size="lg" onClick={onBack} disabled={busy}>
           Back
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -702,7 +700,7 @@ function FirstLoadState({ onBack }: { onBack: () => void }) {
     <div className="space-y-3">
       <div className="rounded-xl border border-slate-200 bg-white p-4">
         <div className="flex items-center gap-3">
-          <Spinner />
+          <Spinner className="h-4 w-4 text-brand-600" />
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-900">
               Detecting industry…
@@ -733,20 +731,6 @@ function FirstLoadState({ onBack }: { onBack: () => void }) {
         Back to source
       </button>
     </div>
-  )
-}
-
-function Spinner({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      className="animate-spin text-blue-600"
-      style={{ width: size, height: size }}
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-    </svg>
   )
 }
 
