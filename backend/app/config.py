@@ -1,83 +1,80 @@
-from typing import Literal
-
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Which LLM backend serves chat_json calls. Set via LLM_BACKEND in .env:
-    # `mlx` for any OpenAI-compatible /v1/chat/completions server (mlx_lm.server
-    # on the Mac host, or llama-server on the remote RTX AI box — see ai-server/),
-    # `ollama` for Ollama's native /api/chat. See services/llm.resolve_llm_backend.
-    llm_backend: Literal["mlx", "ollama"] = "ollama"
-
-    # "mlx" backend = OpenAI-compatible server. Local default is mlx_lm.server on
-    # the Apple-Silicon host (Docker can't run MLX, so the container reaches it
-    # over host.docker.internal — see docker-compose.yml); point MLX_BASE_URL at a
-    # Tailscale IP to use the remote AI server instead. mlx_model must match the
-    # id the server exposes on /v1/models: a HuggingFace repo id for mlx_lm.server,
-    # the --alias for llama-server.
-    mlx_base_url: str = "http://localhost:8080"
-    mlx_model: str = "mlx-community/Qwen3.5-2B-OptiQ-4bit"
-    # Generous because this is a per-read (streaming) timeout: once tokens flow
-    # each one resets the clock, so it only bites on cold time-to-first-token —
-    # which on a memory-constrained Mac can run 1-3 min while the OS pages the
-    # model back into unified memory. Too low ⇒ ReadTimeout 502s mid-generation.
-    mlx_timeout_seconds: float = 600.0
+    # --- LLM connection ------------------------------------------------------
+    # The ONLY thing the backend knows about models: where to reach one. Which
+    # engine (Ollama / llama.cpp / MLX / a remote box), which model, quantization,
+    # context length, keep-alive and GPU offload all live in ai-server/.env —
+    # see ai-server/README.md. Every engine serves the same OpenAI-compatible
+    # /v1/chat/completions + /v1/models, so nothing here changes when the engine
+    # does, and swapping models needs no edit on this side at all.
+    #
+    # Server ROOT — no /v1 suffix; the client appends the OpenAI paths itself.
+    # In-container this points at host.docker.internal (the ai-server publishes
+    # its port on the host); set it to a tailnet name/IP for a remote AI box.
+    llm_base_url: str = Field(
+        "http://host.docker.internal:11434",
+        validation_alias=AliasChoices("LLM_BASE_URL", "MLX_BASE_URL", "OLLAMA_BASE_URL"),
+    )
+    # Normally UNSET: the model id is read from /v1/models on first use (see
+    # services/llm.resolve_model), which is what makes a model swap in
+    # ai-server/.env invisible here. Set it only when one server advertises
+    # several models and you need to pin which one this role uses.
+    llm_model: str | None = Field(
+        None,
+        validation_alias=AliasChoices("LLM_MODEL", "MLX_MODEL", "OLLAMA_MODEL"),
+    )
+    # Sent as "Authorization: Bearer …". Ollama has no auth; llama-server does
+    # (--api-key), and a tailnet endpoint should use it — see ai-server/README §D.
+    llm_api_key: str | None = None
+    # Generous because this is a per-READ (streaming) timeout: once tokens flow
+    # each one resets the clock, so it only bites on cold time-to-first-token,
+    # which for a 24GB model loading from disk can run minutes. Too low ⇒
+    # ReadTimeout 502s mid-generation.
+    llm_timeout_seconds: float = Field(
+        600.0,
+        validation_alias=AliasChoices("LLM_TIMEOUT_SECONDS", "MLX_TIMEOUT_SECONDS"),
+    )
     # OpenAI servers default to a small max_tokens that would truncate a multi-
-    # section generation mid-JSON; set a generous output budget. (Ollama has no
-    # equivalent cap — num_predict defaults to unlimited.)
-    # 16 384 (raised from 8 192): content-rich sites were hitting the old cap
-    # mid-batch and burning an extra retry; 16 384 keeps most generations in one
-    # shot while remaining well under the model's 32 768-token context window.
-    mlx_max_tokens: int = 16384
-    # mlx_lm.server defaults this to 0.0 (disabled) — unlike Ollama, whose
-    # repeat_penalty already defaults to 1.1. Without it, a small model can fall
-    # into a degenerate loop (e.g. re-emitting the same nested block over and
-    # over) that never produces valid JSON and just burns the whole max_tokens
-    # budget as a wall of repeated text — the doubled-budget truncation retry
-    # (see llm._boost_budget) can't fix that, it only lets the loop run longer
-    # before failing again. 1.1 matches Ollama's default. 0.0 restores the
-    # server's own default (off).
-    mlx_repetition_penalty: float = 1.1
-    # Opt-in MLX vision server (mlx_vlm.server). Unset ⇒ the vision pass falls back
-    # to Ollama / is skipped, exactly as with ollama_vision_model.
-    mlx_vision_base_url: str | None = None
-    mlx_vision_model: str | None = None
-
-    ollama_base_url: str = "http://localhost:11434"
-    # Single resident model for both content and design-brain calls — picked to
-    # fit comfortably in 16GB unified memory (M1) with headroom, so the two
-    # passes never fight over which model is loaded. A generation newer than
-    # qwen2.5 at the same footprint.
-    ollama_model: str = "qwen3.6:35b-a3b" #"qwen3.5:4b|qwen3.6:35b-q4_K_M|qwen3.6:35b-a3b"
-    ollama_timeout_seconds: float = 180.0
-    # How long Ollama keeps the model resident after a request. The picker flow
-    # fires brand detection then (after the user picks pages) generation; the
-    # default 5m can unload the model in between, forcing a cold reload that
-    # blows the read timeout. Keeping it warm avoids re-paying the load cost.
-    ollama_keep_alive: str = "30m"
+    # section generation mid-JSON, so set a generous output budget. This is a
+    # per-REQUEST cap (unlike the server's context window) and is doubled on
+    # demand by llm._boost_budget after a genuine truncation.
+    llm_max_tokens: int = Field(
+        16384,
+        validation_alias=AliasChoices("LLM_MAX_TOKENS", "MLX_MAX_TOKENS"),
+    )
+    # Sampling knob sent per request, so it stays here rather than moving to the
+    # ai-server. mlx_lm.server defaults it to 0.0 (disabled) — unlike Ollama and
+    # llama.cpp, whose repeat_penalty already defaults to 1.1. Without it a small
+    # model can fall into a degenerate loop (re-emitting the same nested block)
+    # that never produces valid JSON and just burns the whole max_tokens budget;
+    # the doubled-budget truncation retry can't fix that, it only lets the loop
+    # run longer. 0.0 restores the server's own default (off).
+    llm_repetition_penalty: float = Field(
+        1.1,
+        validation_alias=AliasChoices("LLM_REPETITION_PENALTY", "MLX_REPETITION_PENALTY"),
+    )
 
     # --- Reasoning role: a second, bigger model for the judgment-heavy calls ---
     # Routes brand detection (planner.detect_brand), the design-brain passes
     # (design recipe + design language) and the image tie-break judge
-    # (image_match._llm_pick_best) to a remote model — typically GLM on the AI
-    # server — while the local default model keeps the bulk content generation.
-    # REASONING_MODEL unset ⇒ role disabled: those calls use get_llm() unchanged.
-    reasoning_backend: Literal["mlx", "ollama"] | None = None  # None → inherit llm_backend. "mlx" speaks OpenAI-compatible — also use it for vLLM/sglang/llama.cpp servers.
-    reasoning_base_url: str | None = None  # None → the chosen backend's default base URL
-    reasoning_model: str | None = None  # e.g. "glm-z1:9b"; None → role disabled
+    # (image_match._llm_pick_best) to a different endpoint — typically a bigger
+    # model on the AI server — while the default one keeps bulk content
+    # generation. Unset REASONING_BASE_URL *and* REASONING_MODEL ⇒ role disabled:
+    # those calls use get_llm() unchanged. This is application ROUTING (which
+    # role talks to which endpoint), which is why it survives here while engine
+    # selection does not.
+    reasoning_base_url: str | None = None  # None → the default endpoint
+    reasoning_model: str | None = None  # None → auto-discovered from that endpoint
     reasoning_api_key: str | None = None  # sent as "Authorization: Bearer …" when set
-    reasoning_timeout_seconds: float | None = None  # None → backend default (mlx 600s / ollama 180s)
-    # OpenAI-path output budget. Higher than mlx_max_tokens because thinking
-    # tokens count against the completion budget on OpenAI-compatible servers.
+    reasoning_timeout_seconds: float | None = None  # None → llm_timeout_seconds
+    # Output budget. Higher than llm_max_tokens because thinking tokens count
+    # against the completion budget on OpenAI-compatible servers.
     reasoning_max_tokens: int = 16384
-    # Ollama-path only, and only for calls that pass no num_ctx (detect_brand).
-    # The design/judge calls pass DESIGN_NUM_CTX/JUDGE_NUM_CTX explicitly —
-    # raise those in .env for a bigger reasoning model.
-    reasoning_num_ctx: int | None = None
     # Thinking ON by default for this role: the reasoning calls are small
     # prompts with small JSON outputs, where a thinking pass buys better
     # judgment. REASONING_THINK=false is the kill switch if a model/server
@@ -85,16 +82,18 @@ class Settings(BaseSettings):
     reasoning_think: bool = True
 
     @field_validator(
-        "reasoning_backend",
+        "llm_model",
+        "llm_api_key",
         "reasoning_base_url",
         "reasoning_model",
         "reasoning_api_key",
         mode="before",
     )
     @classmethod
-    def _reasoning_empty_str_is_none(cls, v: object) -> object:
-        """`REASONING_X=` (empty) in .env means unset, not empty-string — also
-        keeps an empty REASONING_BACKEND from failing Literal validation."""
+    def _empty_str_is_none(cls, v: object) -> object:
+        """`FOO=` (empty) in .env means unset, not empty-string — which matters
+        for llm_model especially, where empty must fall through to /v1/models
+        auto-discovery rather than being sent as a blank model id."""
         if isinstance(v, str) and not v.strip():
             return None
         return v
@@ -106,8 +105,6 @@ class Settings(BaseSettings):
 
     # Client-level fallbacks used whenever a call site doesn't pass its own value.
     llm_default_temperature: float = 0.4
-    # Ollama's own default of 2048 is too small for most generation tasks.
-    llm_default_num_ctx: int = 4096
     # Hybrid-thinking models (Qwen3/3.5) can emit a `<think>` preamble in a
     # separate channel that burns the token budget before any JSON `content` is
     # produced, so thinking is off by default for the JSON calls. Non-thinking
@@ -137,22 +134,26 @@ class Settings(BaseSettings):
     # Scaffolded content generation: low temperature keeps the rewrite close to
     # the scraped source text.
     scaffold_temperature: float = 0.25
-    # Design-brain pass context: its whole-site prompt repeats each kind's option
-    # list per page, so give it more room than the default to avoid truncation.
-    # (Its temperature is design_temperature below.)
-    design_num_ctx: int = 8192
     # Deterministic judge calls (image tie-break in image_match.py, vision
     # annotation in image_vision.py): tiny prompts, want reproducible picks.
     judge_temperature: float = 0.0
-    judge_num_ctx: int = 2048
 
-    # Context window for the scaffolded content-generation calls (planner.py).
-    # 8192 is the safe default for a 7-9B model on 16GB unified memory. Raising
-    # to e.g. 12288 lets the batcher pack more pages per call (fewer prefill
-    # passes of the fixed prompt) at ~0.5-1GB extra KV cache — check the
-    # "Dynamic batching" log line to confirm the batch count actually drops
-    # before paying that memory.
-    scaffold_num_ctx: int = 8192
+    # The server's context window, as far as the BATCHER is concerned.
+    #
+    # This is no longer sent to the model — the OpenAI wire has no per-request
+    # num_ctx, so the real context size is a server setting (LLM_CTX in
+    # ai-server/.env → OLLAMA_CONTEXT_LENGTH / llama.cpp -c). What stays here is
+    # the backend's *view* of it: planner._plan_batches divides this into input
+    # and output budgets to decide how many pages/sections fit in one call
+    # (see the "Dynamic batching" log line).
+    #
+    # KEEP IT IN STEP WITH ai-server/.env LLM_CTX. Too high ⇒ the batcher packs
+    # calls the server will truncate; too low ⇒ needlessly many small batches
+    # and worse cross-page coherence.
+    llm_context_tokens: int = Field(
+        16384,
+        validation_alias=AliasChoices("LLM_CONTEXT_TOKENS", "SCAFFOLD_NUM_CTX"),
+    )
 
     # Prompt sizing / batching caps, all keyed to the model's usable context.
     # Brand detection only needs enough source to name the business and pick an
@@ -270,11 +271,23 @@ class Settings(BaseSettings):
     # Percent of original size the header shrinks to (renderer clamps 50-100).
     header_shrink_amount: int = 80
 
-    # Vision pass over scraped images (services/image_vision.py). Opt-in: set
-    # to a multimodal Ollama model (e.g. "qwen2.5vl:7b" or "moondream") to
+    # Vision pass over scraped images (services/image_vision.py). Opt-in: set to
+    # a multimodal model served by the ai-server (e.g. "qwen2.5vl:7b") to
     # caption/classify scraped images for better slot matching and profile
-    # verification. Unset ⇒ the pass is skipped entirely.
-    ollama_vision_model: str | None = None
+    # verification. Unset ⇒ the pass is skipped entirely. Images are sent as
+    # OpenAI `image_url` data URIs, which every engine here accepts.
+    llm_vision_model: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "LLM_VISION_MODEL", "MLX_VISION_MODEL", "OLLAMA_VISION_MODEL"
+        ),
+    )
+    # Only needed when the vision model is served by a DIFFERENT endpoint than
+    # the text model. None ⇒ same endpoint as llm_base_url.
+    llm_vision_base_url: str | None = Field(
+        None,
+        validation_alias=AliasChoices("LLM_VISION_BASE_URL", "MLX_VISION_BASE_URL"),
+    )
     vision_max_images: int = 12  # annotation cap per generation
     vision_image_max_bytes: int = 4_000_000  # skip downloads larger than this
     vision_fetch_timeout_seconds: float = 8.0

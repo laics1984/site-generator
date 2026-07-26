@@ -1,7 +1,16 @@
-"""LLM backend selection (resolve_llm_backend / get_llm) and the MLX OpenAI client."""
+"""The single OpenAI-compatible client, model auto-discovery, and role routing.
+
+There is no backend switch any more: every engine the ai-server can run speaks
+the OpenAI wire, so the backend has one client and no notion of which engine is
+behind the URL. The model id is discovered from /v1/models rather than
+configured, which is what lets a model swap in ai-server/.env take effect here
+without an edit or a restart.
+"""
 
 import json
+import os
 import unittest
+from unittest import mock
 
 from pydantic import BaseModel
 
@@ -10,12 +19,10 @@ from app.services import llm as llm_mod
 from app.services.llm import (
     EmptyLlmResponse,
     LlmError,
-    MlxClient,
-    OllamaClient,
+    OpenAIClient,
     TruncatedLlmResponse,
     get_llm,
     get_reasoning_llm,
-    resolve_llm_backend,
 )
 
 
@@ -29,22 +36,6 @@ def _sse(body: str) -> list[str]:
         "",  # blank keep-alive line, must be tolerated
         f'data: {json.dumps({"choices": [{"delta": {"content": body}}]})}',
         "data: [DONE]",
-    ]
-
-
-def _ndjson(body: str) -> list[str]:
-    """Frame an assistant message `body` as an Ollama NDJSON stream."""
-    return [
-        json.dumps({"message": {"content": body}}),
-        json.dumps({"done": True}),
-    ]
-
-
-def _ndjson_truncated(body: str) -> list[str]:
-    """Ollama NDJSON stream that stopped because num_ctx ran out mid-generation."""
-    return [
-        json.dumps({"message": {"content": body}}),
-        json.dumps({"done": True, "done_reason": "length"}),
     ]
 
 
@@ -74,21 +65,39 @@ class _FakeStreamCtx:
             yield line
 
 
-class _FakeAsyncClient:
-    """Stands in for httpx.AsyncClient: each .stream() pops the next prepared body
-    and frames it via `framer` (SSE for MLX, NDJSON for Ollama). Records the
-    url + payload of every call."""
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
 
-    def __init__(self, bodies, recorder, framer=_sse):
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeAsyncClient:
+    """Stands in for httpx.AsyncClient. `.stream()` pops the next prepared body
+    and frames it as SSE, recording url + payload; `.get()` answers the
+    /v1/models probe that model discovery makes. Probes go in their own list so
+    they don't shift the indices tests assert against."""
+
+    def __init__(self, bodies, recorder, framer=_sse, models=("test-model",), probes=None):
         self._bodies = bodies
         self._recorder = recorder
         self._framer = framer
+        self._models = models
+        self._probes = probes if probes is not None else []
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *a):
         return False
+
+    async def get(self, url, headers=None, **kwargs):
+        self._probes.append({"url": url, "headers": headers})
+        return _FakeResponse({"data": [{"id": m} for m in self._models]})
 
     def stream(self, method, url, json=None, **kwargs):
         self._recorder.append(
@@ -101,89 +110,158 @@ class _FakeAsyncClient:
         return _FakeStreamCtx(framer(body))
 
 
-def _patch_httpx(testcase, bodies, recorder, framer=_sse):
+def _patch_httpx(testcase, bodies, recorder, framer=_sse, models=("test-model",), probes=None):
     original = llm_mod.httpx.AsyncClient
     llm_mod.httpx.AsyncClient = lambda *a, **k: _FakeAsyncClient(
-        bodies, recorder, framer
+        bodies, recorder, framer, models, probes
     )
     testcase.addCleanup(setattr, llm_mod.httpx, "AsyncClient", original)
+    # Discovered ids are cached process-wide; without this a test would inherit
+    # whatever model a previous one advertised.
+    llm_mod.clear_model_cache()
+    testcase.addCleanup(llm_mod.clear_model_cache)
 
 
-class ResolveBackendTest(unittest.TestCase):
-    """The backend is whatever LLM_BACKEND (settings.llm_backend) says — no
-    auto-detection; get_llm returns the matching client."""
+class ClientFactoryTest(unittest.TestCase):
+    """One client for every engine — nothing to select."""
+
+    def test_get_llm_returns_the_openai_client(self):
+        self.assertIsInstance(get_llm(), OpenAIClient)
+
+    def test_base_url_comes_from_settings(self):
+        self.assertEqual(
+            get_llm().base_url, llm_mod.settings.llm_base_url.rstrip("/")
+        )
+
+
+class ModelDiscoveryTest(unittest.IsolatedAsyncioTestCase):
+    """The backend stores no model name: it asks the server what it serves."""
 
     def setUp(self):
-        self._orig_choice = llm_mod.settings.llm_backend
+        self._orig_model = llm_mod.settings.llm_model
+        llm_mod.settings.llm_model = None
+        self.addCleanup(setattr, llm_mod.settings, "llm_model", self._orig_model)
 
-    def tearDown(self):
-        llm_mod.settings.llm_backend = self._orig_choice
+    async def test_model_is_read_from_v1_models(self):
+        recorder, probes = [], []
+        _patch_httpx(self, ['{"x": 1}'], recorder, models=("qwen3.6:35b-a3b",), probes=probes)
+        await OpenAIClient().chat_json("sys", "user", _Out)
+        self.assertTrue(probes[0]["url"].endswith("/v1/models"))
+        self.assertEqual(recorder[0]["payload"]["model"], "qwen3.6:35b-a3b")
 
-    def test_ollama_setting_selects_ollama_client(self):
-        llm_mod.settings.llm_backend = "ollama"
-        self.assertEqual(resolve_llm_backend(), "ollama")
-        self.assertIsInstance(get_llm(), OllamaClient)
+    async def test_discovery_is_cached_across_calls(self):
+        recorder, probes = [], []
+        _patch_httpx(self, ['{"x": 1}', '{"x": 2}'], recorder, probes=probes)
+        client = OpenAIClient()
+        await client.chat_json("sys", "user", _Out)
+        await client.chat_json("sys", "user", _Out)
+        self.assertEqual(len(probes), 1)  # second call reused the cached id
 
-    def test_mlx_setting_selects_mlx_client(self):
-        llm_mod.settings.llm_backend = "mlx"
-        self.assertEqual(resolve_llm_backend(), "mlx")
-        self.assertIsInstance(get_llm(), MlxClient)
+    async def test_configured_model_pins_and_skips_discovery(self):
+        recorder, probes = [], []
+        _patch_httpx(self, ['{"x": 1}'], recorder, models=("ignored",), probes=probes)
+        llm_mod.settings.llm_model = "pinned-model"
+        await OpenAIClient().chat_json("sys", "user", _Out)
+        self.assertEqual(probes, [])
+        self.assertEqual(recorder[0]["payload"]["model"], "pinned-model")
 
-    def test_value_is_case_insensitive(self):
-        llm_mod.settings.llm_backend = "MLX"
-        self.assertEqual(resolve_llm_backend(), "mlx")
+    async def test_multiple_models_picks_deterministically(self):
+        # Sorted, so the choice doesn't depend on the server's listing order.
+        recorder, probes = [], []
+        _patch_httpx(self, ['{"x": 1}'], recorder, models=("zeta", "alpha"), probes=probes)
+        await OpenAIClient().chat_json("sys", "user", _Out)
+        self.assertEqual(recorder[0]["payload"]["model"], "alpha")
+
+    async def test_server_with_no_models_raises_llm_error(self):
+        # Ollama answers "data": null (not []) before anything is pulled.
+        recorder = []
+        _patch_httpx(self, ['{"x": 1}'], recorder, models=())
+        with self.assertRaises(LlmError):
+            await OpenAIClient().chat_json("sys", "user", _Out)
 
 
-class MlxClientTest(unittest.IsolatedAsyncioTestCase):
+class OpenAIClientTest(unittest.IsolatedAsyncioTestCase):
     async def test_streamed_json_validates(self):
         recorder = []
         _patch_httpx(self, ['{"x": 7}'], recorder)
-        out = await MlxClient().chat_json("sys", "user", _Out)
+        out = await OpenAIClient().chat_json("sys", "user", _Out)
         self.assertEqual(out.x, 7)
         self.assertTrue(recorder[0]["url"].endswith("/v1/chat/completions"))
         self.assertTrue(recorder[0]["payload"]["stream"])
+
+    async def test_no_num_ctx_is_sent(self):
+        # Context size is a SERVER setting (LLM_CTX in ai-server/.env); the
+        # OpenAI wire has no per-request equivalent.
+        recorder = []
+        _patch_httpx(self, ['{"x": 1}'], recorder)
+        await OpenAIClient().chat_json("sys", "user", _Out)
+        self.assertNotIn("num_ctx", recorder[0]["payload"])
+        self.assertNotIn("options", recorder[0]["payload"])
 
     async def test_thinking_disabled_by_default(self):
         # JSON calls must turn off Qwen3 thinking, else `reasoning` burns the token
         # budget and `content` comes back empty.
         recorder = []
         _patch_httpx(self, ['{"x": 1}', '{"x": 1}'], recorder)
-        await MlxClient().chat_json("sys", "user", _Out)  # default think=False
+        await OpenAIClient().chat_json("sys", "user", _Out)  # default think=False
         self.assertEqual(
             recorder[0]["payload"]["chat_template_kwargs"], {"enable_thinking": False}
         )
-        await MlxClient().chat_json("sys", "user", _Out, think=True)
+        await OpenAIClient().chat_json("sys", "user", _Out, think=True)
         self.assertEqual(
             recorder[1]["payload"]["chat_template_kwargs"], {"enable_thinking": True}
         )
 
+    async def test_thinking_off_sends_both_kill_switches(self):
+        # No single field works everywhere: llama.cpp/mlx honour
+        # chat_template_kwargs, Ollama's OpenAI endpoint ignores it and honours
+        # reasoning_effort. Measured against Ollama: with only
+        # chat_template_kwargs, qwen3 emitted ~1000 reasoning tokens and an
+        # EMPTY content, which the backend would see as an empty stream.
+        recorder = []
+        _patch_httpx(self, ['{"x": 1}'], recorder)
+        await OpenAIClient().chat_json("sys", "user", _Out)
+        payload = recorder[0]["payload"]
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(payload["reasoning_effort"], "none")
+
+    async def test_thinking_on_does_not_force_effort_none(self):
+        # The reasoning role genuinely wants to think — don't tell a server that
+        # implements reasoning_effort to skip it.
+        recorder = []
+        _patch_httpx(self, ['{"x": 1}'], recorder)
+        await OpenAIClient().chat_json("sys", "user", _Out, think=True)
+        payload = recorder[0]["payload"]
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertNotIn("reasoning_effort", payload)
+
     async def test_repetition_penalty_sent_by_default(self):
         # mlx_lm.server defaults repetition_penalty to 0.0 (off), unlike Ollama —
         # send a non-zero default so a small model can't loop re-emitting the same
-        # JSON fragment until it exhausts max_tokens (see config.mlx_repetition_penalty).
+        # JSON fragment until it exhausts max_tokens (config.llm_repetition_penalty).
         recorder = []
         _patch_httpx(self, ['{"x": 1}'], recorder)
-        await MlxClient().chat_json("sys", "user", _Out)
+        await OpenAIClient().chat_json("sys", "user", _Out)
         self.assertEqual(recorder[0]["payload"]["repetition_penalty"], 1.1)
 
     async def test_repetition_penalty_override_and_disable(self):
         recorder = []
         _patch_httpx(self, ['{"x": 1}', '{"x": 1}'], recorder)
-        await MlxClient(repetition_penalty=1.3).chat_json("sys", "user", _Out)
+        await OpenAIClient(repetition_penalty=1.3).chat_json("sys", "user", _Out)
         self.assertEqual(recorder[0]["payload"]["repetition_penalty"], 1.3)
-        await MlxClient(repetition_penalty=0.0).chat_json("sys", "user", _Out)
+        await OpenAIClient(repetition_penalty=0.0).chat_json("sys", "user", _Out)
         self.assertNotIn("repetition_penalty", recorder[1]["payload"])
 
     async def test_think_preamble_is_stripped(self):
         recorder = []
         _patch_httpx(self, ['<think>let me think</think>{"x": 3}'], recorder)
-        out = await MlxClient().chat_json("sys", "user", _Out)
+        out = await OpenAIClient().chat_json("sys", "user", _Out)
         self.assertEqual(out.x, 3)
 
     async def test_invalid_first_response_triggers_repair(self):
         recorder = []
         _patch_httpx(self, ['{"y": 1}', '{"x": 9}'], recorder)  # 1st invalid, 2nd fixed
-        out = await MlxClient().chat_json("sys", "user", _Out)
+        out = await OpenAIClient().chat_json("sys", "user", _Out)
         self.assertEqual(out.x, 9)
         self.assertEqual(len(recorder), 2)  # repair round happened
         # Repair payload carries the original turns + assistant + corrective user.
@@ -195,7 +273,7 @@ class MlxClientTest(unittest.IsolatedAsyncioTestCase):
         recorder = []
         _patch_httpx(self, ["", ""], recorder)
         with self.assertRaises(EmptyLlmResponse):
-            await MlxClient().chat_json("sys", "user", _Out)
+            await OpenAIClient().chat_json("sys", "user", _Out)
         self.assertEqual(len(recorder), 2)  # retried the empty response
 
     async def test_empty_stream_recovers_on_retry(self):
@@ -203,14 +281,14 @@ class MlxClientTest(unittest.IsolatedAsyncioTestCase):
         # response is used — the whole generation no longer dies on one empty.
         recorder = []
         _patch_httpx(self, ["", '{"x": 5}'], recorder)
-        out = await MlxClient().chat_json("sys", "user", _Out)
+        out = await OpenAIClient().chat_json("sys", "user", _Out)
         self.assertEqual(out.x, 5)
         self.assertEqual(len(recorder), 2)
 
     async def test_images_route_to_vision_server_as_data_urls(self):
         recorder = []
         _patch_httpx(self, ['{"x": 1}'], recorder)
-        client = MlxClient(
+        client = OpenAIClient(
             vision_base_url="http://host:8081", vision_model="vlm-model"
         )
         await client.chat_json("sys", "describe", _Out, images=["QUJD"])
@@ -228,110 +306,72 @@ class MlxClientTest(unittest.IsolatedAsyncioTestCase):
 
 
 class TruncatedResponseTest(unittest.IsolatedAsyncioTestCase):
-    """A response cut off by the token/context budget (Ollama done_reason='length',
-    OpenAI-compatible finish_reason='length') is a different failure than
-    malformed JSON: retrying with the same budget would just truncate again, so
-    _validated keeps DOUBLING the budget and retrying (see
-    _retry_with_growing_budget) instead of the usual repair-prompt retry, until
-    either a response fits or the budget hits its hard cap (131072)."""
+    """A response cut off by the output budget (finish_reason='length') is a
+    different failure than malformed JSON: retrying with the same budget would
+    just truncate again, so _validated keeps DOUBLING max_tokens and retrying
+    (see _retry_with_growing_budget) instead of the usual repair-prompt retry,
+    until either a response fits or the budget hits its hard cap (131072)."""
 
-    async def test_ollama_truncation_retries_with_doubled_num_ctx(self):
-        recorder = []
-        _patch_httpx(
-            self,
-            [('{"x": 1', _ndjson_truncated), '{"x": 9}'],
-            recorder,
-            framer=_ndjson,
-        )
-        out = await OllamaClient().chat_json("sys", "user", _Out, num_ctx=4096)
-        self.assertEqual(out.x, 9)
-        self.assertEqual(len(recorder), 2)  # boosted retry happened
-        self.assertEqual(recorder[0]["payload"]["options"]["num_ctx"], 4096)
-        self.assertEqual(recorder[1]["payload"]["options"]["num_ctx"], 8192)
-
-    async def test_ollama_truncation_keeps_retrying_across_multiple_boosts(self):
-        # Two truncations in a row, then success — the budget must keep
-        # doubling (not give up after one retry) until it fits.
-        recorder = []
-        _patch_httpx(
-            self,
-            [
-                ('{"x": 1', _ndjson_truncated),
-                ('{"x": 1', _ndjson_truncated),
-                '{"x": 9}',
-            ],
-            recorder,
-            framer=_ndjson,
-        )
-        out = await OllamaClient().chat_json("sys", "user", _Out, num_ctx=4096)
-        self.assertEqual(out.x, 9)
-        self.assertEqual(len(recorder), 3)
-        self.assertEqual(recorder[0]["payload"]["options"]["num_ctx"], 4096)
-        self.assertEqual(recorder[1]["payload"]["options"]["num_ctx"], 8192)
-        self.assertEqual(recorder[2]["payload"]["options"]["num_ctx"], 16384)
-
-    async def test_ollama_still_truncated_at_budget_cap_raises(self):
-        # Starting already at the hard cap: the first failure can't be boosted
-        # any further, so it raises immediately with no extra HTTP call.
-        recorder = []
-        _patch_httpx(self, ['{"x": 1'], recorder, framer=_ndjson_truncated)
-        with self.assertRaises(TruncatedLlmResponse):
-            await OllamaClient().chat_json("sys", "user", _Out, num_ctx=131072)
-        self.assertEqual(len(recorder), 1)
-
-    async def test_mlx_truncation_retries_with_doubled_max_tokens(self):
+    async def test_truncation_retries_with_doubled_max_tokens(self):
         recorder = []
         _patch_httpx(
             self,
             [('{"x": 1', _sse_truncated), '{"x": 9}'],
             recorder,
-            framer=_sse,
         )
-        out = await MlxClient(max_tokens=1000).chat_json("sys", "user", _Out)
+        out = await OpenAIClient(max_tokens=1000).chat_json("sys", "user", _Out)
         self.assertEqual(out.x, 9)
         self.assertEqual(len(recorder), 2)
         self.assertEqual(recorder[0]["payload"]["max_tokens"], 1000)
         self.assertEqual(recorder[1]["payload"]["max_tokens"], 2000)
 
-    async def test_mlx_still_truncated_at_budget_cap_raises(self):
+    async def test_truncation_keeps_retrying_across_multiple_boosts(self):
+        # Two truncations in a row, then success — the budget must keep doubling
+        # (not give up after one retry) until it fits.
+        recorder = []
+        _patch_httpx(
+            self,
+            [
+                ('{"x": 1', _sse_truncated),
+                ('{"x": 1', _sse_truncated),
+                '{"x": 9}',
+            ],
+            recorder,
+        )
+        out = await OpenAIClient(max_tokens=1000).chat_json("sys", "user", _Out)
+        self.assertEqual(out.x, 9)
+        self.assertEqual(len(recorder), 3)
+        self.assertEqual(recorder[1]["payload"]["max_tokens"], 2000)
+        self.assertEqual(recorder[2]["payload"]["max_tokens"], 4000)
+
+    async def test_still_truncated_at_budget_cap_raises(self):
+        # Starting already at the hard cap: the first failure can't be boosted
+        # any further, so it raises immediately with no extra HTTP call.
         recorder = []
         _patch_httpx(self, ['{"x": 1'], recorder, framer=_sse_truncated)
         with self.assertRaises(TruncatedLlmResponse):
-            await MlxClient(max_tokens=131072).chat_json("sys", "user", _Out)
+            await OpenAIClient(max_tokens=131072).chat_json("sys", "user", _Out)
         self.assertEqual(len(recorder), 1)
 
 
 class SettingsDrivenDefaultsTest(unittest.IsolatedAsyncioTestCase):
-    """chat_json resolves temperature/num_ctx/think from settings when a call
-    site passes nothing — retuning for a different model is a .env change, not
-    a code change."""
+    """chat_json resolves temperature/think from settings when a call site
+    passes nothing — retuning is a .env change, not a code change."""
 
     def setUp(self):
         s = llm_mod.settings
-        self._orig = (s.llm_default_temperature, s.llm_default_num_ctx, s.llm_think)
+        self._orig = (s.llm_default_temperature, s.llm_think)
 
     def tearDown(self):
         s = llm_mod.settings
-        s.llm_default_temperature, s.llm_default_num_ctx, s.llm_think = self._orig
+        s.llm_default_temperature, s.llm_think = self._orig
 
-    async def test_ollama_payload_reflects_settings(self):
-        llm_mod.settings.llm_default_temperature = 0.11
-        llm_mod.settings.llm_default_num_ctx = 3333
-        llm_mod.settings.llm_think = True
-        recorder = []
-        _patch_httpx(self, ['{"x": 2}'], recorder, framer=_ndjson)
-        out = await OllamaClient().chat_json("sys", "user", _Out)
-        self.assertEqual(out.x, 2)
-        payload = recorder[0]["payload"]
-        self.assertEqual(payload["options"], {"temperature": 0.11, "num_ctx": 3333})
-        self.assertTrue(payload["think"])
-
-    async def test_mlx_payload_reflects_settings(self):
+    async def test_payload_reflects_settings(self):
         llm_mod.settings.llm_default_temperature = 0.22
         llm_mod.settings.llm_think = True
         recorder = []
         _patch_httpx(self, ['{"x": 4}'], recorder)
-        out = await MlxClient().chat_json("sys", "user", _Out)
+        out = await OpenAIClient().chat_json("sys", "user", _Out)
         self.assertEqual(out.x, 4)
         payload = recorder[0]["payload"]
         self.assertEqual(payload["temperature"], 0.22)
@@ -344,7 +384,7 @@ class SettingsDrivenDefaultsTest(unittest.IsolatedAsyncioTestCase):
         llm_mod.settings.llm_think = True
         recorder = []
         _patch_httpx(self, ['{"x": 6}'], recorder)
-        await MlxClient().chat_json(
+        await OpenAIClient().chat_json(
             "sys", "user", _Out, think=False, temperature=0.9
         )
         payload = recorder[0]["payload"]
@@ -355,52 +395,49 @@ class SettingsDrivenDefaultsTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ReasoningRoleTest(unittest.IsolatedAsyncioTestCase):
-    """get_reasoning_llm() routes the judgment-heavy calls to the REASONING_*
-    model when configured, and is a transparent alias for get_llm() when not."""
+    """get_reasoning_llm() routes the judgment-heavy calls to a different
+    ENDPOINT when configured, and is a transparent alias for get_llm() when not.
+    Which role talks to which endpoint is application routing, so it survives
+    here even though engine selection does not."""
 
     _FIELDS = (
-        "llm_backend",
-        "reasoning_backend",
         "reasoning_base_url",
         "reasoning_model",
         "reasoning_api_key",
         "reasoning_timeout_seconds",
         "reasoning_max_tokens",
-        "reasoning_num_ctx",
         "reasoning_think",
     )
 
     def setUp(self):
         s = llm_mod.settings
         self._orig = {f: getattr(s, f) for f in self._FIELDS}
+        for f in ("reasoning_base_url", "reasoning_model", "reasoning_api_key"):
+            setattr(s, f, None)
 
     def tearDown(self):
         for f, v in self._orig.items():
             setattr(llm_mod.settings, f, v)
 
-    def test_unset_model_falls_back_to_default_client(self):
+    def test_unset_role_falls_back_to_default_client(self):
         s = llm_mod.settings
-        s.llm_backend = "ollama"
+        s.reasoning_base_url = None
         s.reasoning_model = None
         client = get_reasoning_llm()
-        self.assertIsInstance(client, OllamaClient)
-        self.assertEqual(client.model, s.ollama_model)
+        self.assertIsInstance(client, OpenAIClient)
+        self.assertEqual(client.base_url, s.llm_base_url.rstrip("/"))
 
-    def test_backend_inherits_llm_backend_when_unset(self):
+    def test_base_url_alone_enables_the_role(self):
+        # A second endpoint with its own single model needs no model name.
         s = llm_mod.settings
-        s.llm_backend = "mlx"
-        s.reasoning_backend = None
-        s.reasoning_model = "glm-z1-9b"
         s.reasoning_base_url = "http://ai-server:8000"
+        s.reasoning_model = None
         client = get_reasoning_llm()
-        self.assertIsInstance(client, MlxClient)
-        self.assertEqual(client.model, "glm-z1-9b")
         self.assertEqual(client.base_url, "http://ai-server:8000")
+        self.assertIsNone(client.model)
 
-    async def test_openai_path_payload_headers_and_thinking(self):
+    async def test_payload_headers_and_thinking(self):
         s = llm_mod.settings
-        s.llm_backend = "ollama"  # reasoning_backend must win over this
-        s.reasoning_backend = "mlx"
         s.reasoning_base_url = "http://ai-server:8000"
         s.reasoning_model = "glm-z1-9b"
         s.reasoning_api_key = "sekret"
@@ -421,7 +458,7 @@ class ReasoningRoleTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_think_beats_reasoning_default(self):
         s = llm_mod.settings
-        s.reasoning_backend = "mlx"
+        s.reasoning_base_url = "http://ai-server:8000"
         s.reasoning_model = "glm-z1-9b"
         s.reasoning_think = True
         recorder = []
@@ -431,37 +468,6 @@ class ReasoningRoleTest(unittest.IsolatedAsyncioTestCase):
             recorder[0]["payload"]["chat_template_kwargs"], {"enable_thinking": False}
         )
 
-    async def test_ollama_path_think_num_ctx_and_headers(self):
-        s = llm_mod.settings
-        s.reasoning_backend = "ollama"
-        s.reasoning_base_url = "http://ai-server:11434"
-        s.reasoning_model = "glm-z1:9b"
-        s.reasoning_api_key = "sekret"
-        s.reasoning_num_ctx = 8192
-        s.reasoning_think = True
-        recorder = []
-        _patch_httpx(self, ['{"x": 2}'], recorder, framer=_ndjson)
-        out = await get_reasoning_llm().chat_json("sys", "user", _Out)
-        self.assertEqual(out.x, 2)
-        call = recorder[0]
-        self.assertEqual(call["url"], "http://ai-server:11434/api/chat")
-        self.assertEqual(call["payload"]["model"], "glm-z1:9b")
-        self.assertTrue(call["payload"]["think"])
-        self.assertEqual(call["payload"]["options"]["num_ctx"], 8192)
-        self.assertEqual(call["headers"], {"Authorization": "Bearer sekret"})
-
-    async def test_ollama_path_num_ctx_falls_back_to_global_default(self):
-        s = llm_mod.settings
-        s.reasoning_backend = "ollama"
-        s.reasoning_model = "glm-z1:9b"
-        s.reasoning_num_ctx = None
-        recorder = []
-        _patch_httpx(self, ['{"x": 2}'], recorder, framer=_ndjson)
-        await get_reasoning_llm().chat_json("sys", "user", _Out)
-        self.assertEqual(
-            recorder[0]["payload"]["options"]["num_ctx"], s.llm_default_num_ctx
-        )
-
     async def test_default_client_is_isolated_from_reasoning_settings(self):
         # A plain client must not inherit the reasoning role's auth/budget.
         s = llm_mod.settings
@@ -469,27 +475,65 @@ class ReasoningRoleTest(unittest.IsolatedAsyncioTestCase):
         s.reasoning_max_tokens = 16384
         recorder = []
         _patch_httpx(self, ['{"x": 3}'], recorder)
-        await MlxClient().chat_json("sys", "user", _Out)
+        await OpenAIClient().chat_json("sys", "user", _Out)
         call = recorder[0]
         self.assertIsNone(call["headers"])
-        self.assertEqual(call["payload"]["max_tokens"], s.mlx_max_tokens)
+        self.assertEqual(call["payload"]["max_tokens"], s.llm_max_tokens)
 
 
-class ReasoningConfigCoercionTest(unittest.TestCase):
+class ConfigCoercionTest(unittest.TestCase):
     def test_empty_env_strings_mean_unset(self):
-        # `REASONING_X=` (present but empty) in .env must read as None — an empty
-        # REASONING_BACKEND would otherwise fail Literal validation.
+        # `FOO=` (present but empty) in .env must read as None. It matters most
+        # for LLM_MODEL: empty has to fall through to /v1/models discovery
+        # rather than being sent as a blank model id.
         s = Settings(
             _env_file=None,
-            reasoning_backend="",
+            llm_model="",
+            llm_api_key="",
             reasoning_base_url="",
             reasoning_model="",
             reasoning_api_key="",
         )
-        self.assertIsNone(s.reasoning_backend)
+        self.assertIsNone(s.llm_model)
+        self.assertIsNone(s.llm_api_key)
         self.assertIsNone(s.reasoning_base_url)
         self.assertIsNone(s.reasoning_model)
         self.assertIsNone(s.reasoning_api_key)
+
+    @staticmethod
+    def _env(**overrides):
+        """Environment with the NEW names removed, so a legacy alias is actually
+        what resolves. The test container has LLM_BASE_URL set by compose, and a
+        real env var rightly beats an alias."""
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("LLM_BASE_URL", "LLM_MODEL", "LLM_CONTEXT_TOKENS")
+        }
+        env.update(overrides)
+        return mock.patch.dict(os.environ, env, clear=True)
+
+    def test_legacy_env_names_still_resolve(self):
+        # Old .env files keep working through the rename. Must go through the
+        # ENVIRONMENT: init kwargs bypass alias resolution entirely.
+        for legacy, value in (
+            ("MLX_BASE_URL", "http://legacy-mlx:8080"),
+            ("OLLAMA_BASE_URL", "http://legacy-ollama:11434"),
+        ):
+            with self.subTest(legacy), self._env(**{legacy: value}):
+                self.assertEqual(Settings(_env_file=None).llm_base_url, value)
+
+    def test_new_env_name_wins_over_legacy_alias(self):
+        with self._env(
+            MLX_BASE_URL="http://legacy:8080", LLM_BASE_URL="http://new:11434"
+        ):
+            self.assertEqual(Settings(_env_file=None).llm_base_url, "http://new:11434")
+
+    def test_legacy_context_name_still_resolves(self):
+        # SCAFFOLD_NUM_CTX was a request parameter; it is now the batcher's view
+        # of the server's context window, but old .env files keep working.
+        with self._env(SCAFFOLD_NUM_CTX="9999"):
+            self.assertEqual(Settings(_env_file=None).llm_context_tokens, 9999)
 
 
 if __name__ == "__main__":

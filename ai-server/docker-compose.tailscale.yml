@@ -1,0 +1,63 @@
+# Tailnet overlay — makes the AI server reachable from anywhere as a first-class
+# tailnet device, instead of a published port behind a hand-written firewall rule.
+#
+# Enable with TAILSCALE_ENABLED=1 in ai-server/.env; ai.sh then layers this file
+# over docker-compose.yml. Never pass it with -f by hand.
+#
+# The engine joins the sidecar's network namespace (network_mode: service:tailscale),
+# so the server appears at http://${TS_HOSTNAME}:11434 over MagicDNS on every
+# tailnet device — no Windows Defender rule, no 100.64.0.0/10 range juggling.
+# `ports:` moves to the sidecar (!reset drops the engine's own mapping), so
+# localhost access on this box keeps working exactly as before.
+#
+# ACCESS CONTROL, honestly: Ollama has no API-key support, so the tailnet itself
+# is the auth boundary — restrict who can reach it with Tailscale ACLs (tag the
+# node via TS_EXTRA_ARGS=--advertise-tags=tag:ai and write an ACL for that tag).
+# llama.cpp does support auth: add `--api-key <secret>` via LLAMACPP_EXTRA_ARGS
+# and set the same value as LLM_API_KEY in the site-generator .env.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: webtree-ai-tailscale
+    hostname: "${TS_HOSTNAME:-webtree-ai}"
+    restart: unless-stopped
+    environment:
+      # Generate at https://login.tailscale.com/admin/settings/keys — a reusable,
+      # preferably ephemeral+tagged key. Fails fast when unset.
+      TS_AUTHKEY: "${TS_AUTHKEY:?TS_AUTHKEY is required when TAILSCALE_ENABLED=1 — see ai-server/README.md}"
+      TS_HOSTNAME: "${TS_HOSTNAME:-webtree-ai}"
+      TS_STATE_DIR: "/var/lib/tailscale"
+      # Kernel networking (not userspace-proxy) — needs /dev/net/tun + NET_ADMIN
+      # below, and gives normal throughput for streaming token responses.
+      TS_USERSPACE: "false"
+      TS_EXTRA_ARGS: "${TS_EXTRA_ARGS:-}"
+    volumes:
+      # Node identity — without persistence every restart burns a new auth key
+      # and creates a duplicate machine in the tailnet.
+      - tailscale_state:/var/lib/tailscale
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    ports:
+      # Published here rather than on the engine, because the engine has no
+      # network stack of its own once it joins this namespace.
+      - "${OLLAMA_PORT:-11434}:11434"
+      - "${LLAMACPP_PORT:-8080}:8080"
+
+  ollama:
+    network_mode: "service:tailscale"
+    ports: !reset []
+    depends_on:
+      - tailscale
+
+  llamacpp:
+    network_mode: "service:tailscale"
+    ports: !reset []
+    depends_on:
+      - tailscale
+
+volumes:
+  tailscale_state:

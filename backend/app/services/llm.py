@@ -1,18 +1,21 @@
 """
-LLM clients for structured (JSON) generation.
+LLM client for structured (JSON) generation.
 
-Two interchangeable backends behind a common `LlmClient` interface:
+ONE client, `OpenAIClient`, speaking the OpenAI wire (/v1/chat/completions and
+/v1/models). That is deliberate: every engine the ai-server can run — Ollama,
+llama.cpp's llama-server, mlx_lm.server on Apple Silicon, LM Studio, vLLM —
+serves that same API, so the backend needs no notion of which one is behind the
+URL. Engine, model, quantization, context length, keep-alive and GPU offload all
+live in ai-server/.env; this module only knows `settings.llm_base_url`.
 
-  * `OllamaClient` — Ollama's /api/chat with format='json' (the default everywhere
-    Ollama runs, e.g. Windows, or a Mac host running `ollama serve`).
-  * `MlxClient` — an OpenAI-compatible MLX server (`mlx_lm.server`) running natively
-    on Apple Silicon; Docker can't run MLX, so the container reaches it over HTTP
-    exactly like Ollama (see docker-compose.yml).
+The model id is not configured either — `resolve_model()` reads it from
+/v1/models, so swapping the model in ai-server/.env takes effect here without an
+edit or a restart. `settings.llm_model` exists only to pin one when a server
+advertises several.
 
-`resolve_llm_backend()` picks one from `LLM_BACKEND` (auto|mlx|ollama). `get_llm()`
-returns the matching client. Both stream their response so httpx's read timeout
-applies to the gap BETWEEN tokens, not the whole generation, and both share one
-validate-or-repair retry (`_validated`) since a small model with JSON mode is
+Responses are streamed so httpx's read timeout applies to the gap BETWEEN
+tokens rather than the whole generation, and every call goes through one
+validate-or-repair retry (`_validated`) since a local model in JSON mode is
 reliable but not perfect.
 """
 
@@ -64,8 +67,13 @@ class TruncatedLlmResponse(LlmError):
 
 
 class LlmClient(Protocol):
-    """The surface every backend exposes (Ollama, MLX). Call sites depend only on
-    this, so `get_llm()` can return either backend transparently."""
+    """The surface call sites depend on. There is one real implementation
+    (`OpenAIClient`); the Protocol stays so tests can substitute fakes.
+
+    Note there is no `num_ctx`: the OpenAI wire has no per-request context
+    parameter — context size is a server setting (LLM_CTX in ai-server/.env).
+    Callers that need to *size* their prompts read `settings.llm_context_tokens`
+    instead (see planner._plan_batches)."""
 
     async def chat_json(
         self,
@@ -73,7 +81,6 @@ class LlmClient(Protocol):
         user_prompt: str,
         schema: type[T],
         temperature: float | None = None,
-        num_ctx: int | None = None,
         images: list[str] | None = None,
         think: bool | None = None,
     ) -> T: ...
@@ -110,11 +117,14 @@ async def _post_nonempty(post: PostChat, payload: dict[str, Any], attempts: int 
 
 
 def _boost_budget(payload: dict[str, Any]) -> dict[str, Any]:
-    """Double whichever output/context budget field this transport's payload
-    carries (Ollama's `options.num_ctx` caps prompt+completion together; MLX/
-    OpenAI's `max_tokens` caps the completion alone), capped so a retry can't
-    request an unbounded generation. Used only after a genuine truncation
-    (see TruncatedLlmResponse) — the same prompt just needed more room.
+    """Double the payload's `max_tokens` (the OpenAI completion budget), capped
+    so a retry can't request an unbounded generation. Used only after a genuine
+    truncation (see TruncatedLlmResponse) — the same prompt just needed more room.
+
+    Only the OUTPUT budget can grow from here: the server's context window is
+    fixed at startup (LLM_CTX in ai-server/.env), so a prompt that overflows it
+    needs a smaller batch (planner._plan_batches) or a bigger LLM_CTX, not a
+    retry.
 
     The cap is 131 072 because a scaffold batch can legitimately bundle several
     pages' worth of sections into one call (max_pages_per_batch /
@@ -125,12 +135,6 @@ def _boost_budget(payload: dict[str, Any]) -> dict[str, Any]:
     Returns `payload` unchanged (same dict) once the cap is reached, so callers
     can detect "budget can't grow any further" via equality."""
     boosted = dict(payload)
-    if isinstance(payload.get("options"), dict) and "num_ctx" in payload["options"]:
-        new_num_ctx = min(payload["options"]["num_ctx"] * 2, 131072)
-        if new_num_ctx == payload["options"]["num_ctx"]:
-            return payload
-        boosted["options"] = dict(payload["options"])
-        boosted["options"]["num_ctx"] = new_num_ctx
     if "max_tokens" in payload:
         new_max_tokens = min(payload["max_tokens"] * 2, 131072)
         if new_max_tokens == payload["max_tokens"]:
@@ -168,10 +172,8 @@ async def _retry_with_growing_budget(
 async def _validated(post: PostChat, payload: dict[str, Any], schema: type[T]) -> T:
     """POST `payload`, validate the reply against `schema`, and on a validation
     error retry ONCE with the errors fed back to the model. An empty stream is
-    retried separately (see _post_nonempty) before validation. Transport-agnostic:
-    both Ollama and OpenAI/MLX payloads carry a `messages` list, so the repair
-    turn is appended the same way for either backend. Raises LlmError if the
-    second attempt still fails.
+    retried separately (see _post_nonempty) before validation. Raises LlmError if
+    the second attempt still fails.
 
     A response that was cut off by the token/context budget (TruncatedLlmResponse)
     is handled separately from malformed JSON: retrying with the SAME budget would
@@ -235,22 +237,25 @@ _RESPONSE_CACHE: dict[str, tuple[float, BaseModel]] = {}
 
 def _response_cache_key(
     client: LlmClient,
+    model: str,
     system_prompt: str,
     user_prompt: str,
     schema: type[BaseModel],
     temperature: float | None,
-    num_ctx: int | None,
     think: bool | None,
 ) -> str:
-    """Hash every input that shapes the response — any change is a miss."""
+    """Hash every input that shapes the response — any change is a miss.
+
+    `model` is the RESOLVED id (not settings.llm_model, which is normally None),
+    so swapping the model on the ai-server invalidates these entries instead of
+    serving content the previous model wrote."""
     ident = "\x1f".join(
         (
             type(client).__name__,
             str(getattr(client, "base_url", "")),
-            str(getattr(client, "model", "")),
+            model,
             f"{schema.__module__}.{schema.__qualname__}",
             repr(temperature),
-            repr(num_ctx),
             repr(think),
             system_prompt,
             user_prompt,
@@ -293,24 +298,29 @@ async def chat_json_cached(
     user_prompt: str,
     schema: type[T],
     temperature: float | None = None,
-    num_ctx: int | None = None,
     think: bool | None = None,
 ) -> T:
     """`client.chat_json` behind the opt-in response cache.
 
-    Identical inputs (same backend/model + prompts + sampling knobs) within
+    Identical inputs (same endpoint/model + prompts + sampling knobs) within
     `llm_cache_ttl_seconds` return the previously validated result instead of
     re-hitting the LLM. Kill switch: LLM_CACHE_ENABLED=false. Deliberately has
     no `images` parameter — multimodal payloads are never cached here (the
     vision pass keeps its own URL-keyed cache). Only the kwargs the caller
-    actually provided are forwarded, and only REAL backend clients participate
-    in caching — test fakes pass through untouched, so fixtures that count
-    calls or vary responses keep working.
+    actually provided are forwarded, and only the REAL client participates in
+    caching — test fakes pass through untouched, so fixtures that count calls
+    or vary responses keep working.
     """
     key: str | None = None
-    if settings.llm_cache_enabled and isinstance(client, (OllamaClient, MlxClient)):
+    if settings.llm_cache_enabled and isinstance(client, OpenAIClient):
         key = _response_cache_key(
-            client, system_prompt, user_prompt, schema, temperature, num_ctx, think
+            client,
+            await client.resolve_model(),
+            system_prompt,
+            user_prompt,
+            schema,
+            temperature,
+            think,
         )
         hit = _response_cache_get(key)
         if hit is not None:
@@ -326,8 +336,6 @@ async def chat_json_cached(
     }
     if temperature is not None:
         call_kwargs["temperature"] = temperature
-    if num_ctx is not None:
-        call_kwargs["num_ctx"] = num_ctx
     if think is not None:
         call_kwargs["think"] = think
     result = await client.chat_json(**call_kwargs)
@@ -386,163 +394,63 @@ async def aclose_shared_client() -> None:
     _shared_http = None
 
 
-class OllamaClient:
-    def __init__(
-        self,
-        base_url: str | None = None,
-        model: str | None = None,
-        timeout: float | None = None,
-        api_key: str | None = None,
-        think_default: bool | None = None,
-        num_ctx_default: int | None = None,
-    ) -> None:
-        self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
-        self.model = model or settings.ollama_model
-        self.timeout = timeout or settings.ollama_timeout_seconds
-        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-        # Client-level defaults for calls that pass None. None here ⇒ fall back
-        # to the global settings at call time (preserves env-driven behavior for
-        # the default client); the reasoning role sets its own defaults.
-        self._think_default = think_default
-        self._num_ctx_default = num_ctx_default
+# --- model discovery ----------------------------------------------------------
+# The backend stores no model name — it asks the server what it serves. Cached
+# with a SHORT ttl rather than forever: long enough that a generation's burst of
+# calls doesn't re-probe /v1/models each time, short enough that swapping the
+# model in ai-server/.env takes effect without restarting the backend.
+_MODEL_DISCOVERY_TTL_SECONDS = 60.0
+_MODEL_CACHE: dict[str, tuple[float, str]] = {}
 
-    async def chat_json(
-        self,
-        system_prompt: str,
-        user_prompt: str,
-        schema: type[T],
-        temperature: float | None = None,
-        num_ctx: int | None = None,
-        images: list[str] | None = None,
-        think: bool | None = None,
-    ) -> T:
-        """
-        Send a chat request expecting JSON back, then validate against `schema`.
 
-        `temperature`/`num_ctx`/`think` default to the model-variant settings
-        (llm_default_temperature / llm_default_num_ctx / llm_think) when a call
-        site passes None — resolved per call, so env config (not code) decides.
+def clear_model_cache() -> None:
+    """Forget discovered model ids (tests, or to pick a swap up immediately)."""
+    _MODEL_CACHE.clear()
 
-        `images`: base64-encoded image payloads attached to the user message
-        (Ollama's multimodal chat format). Requires a vision-capable model.
 
-        `think`: hybrid-thinking models (Qwen3/3.5) can emit a `<think>...</think>`
-        preamble before the JSON body, which breaks `format='json'` parsing.
-        Off by default (settings.llm_think) so every caller gets clean JSON;
-        non-thinking models (e.g. Qwen 2.5) ignore the unknown field harmlessly.
-        """
-        temperature = settings.llm_default_temperature if temperature is None else temperature
-        if num_ctx is None:
-            num_ctx = (
-                self._num_ctx_default
-                if self._num_ctx_default is not None
-                else settings.llm_default_num_ctx
-            )
-        if think is None:
-            think = (
-                self._think_default
-                if self._think_default is not None
-                else settings.llm_think
-            )
-        user_message: dict[str, Any] = {"role": "user", "content": user_prompt}
-        if images:
-            user_message["images"] = images
-        payload: dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                user_message,
-            ],
-            "format": "json",
-            "think": think,
-            # Stream the response so httpx's read timeout applies to the gap
-            # BETWEEN tokens, not the whole generation. A long multi-section
-            # generation can't ReadTimeout as long as tokens keep flowing — only
-            # a genuine stall trips the timeout. _post_chat reassembles the chunks.
-            # NB: streaming does NOT cover time-to-first-token (model load +
-            # prompt prefill); keep prompts within num_ctx to bound that.
-            "stream": True,
-            # Keep the model resident between the recipe and generate calls so the
-            # second request doesn't cold-load and trip the read timeout.
-            "keep_alive": settings.ollama_keep_alive,
-            "options": {"temperature": temperature, "num_ctx": num_ctx},
-        }
-
-        client = _shared_client()
-
-        async def post(p: dict[str, Any]) -> str:
-            return await self._post_chat(client, p)
-
-        return await _validated(post, payload, schema)
-
-    async def _post_chat(
-        self, client: httpx.AsyncClient, payload: dict[str, Any]
-    ) -> str:
-        """POST to /api/chat and reassemble the streamed response.
-
-        Ollama streams newline-delimited JSON objects, each carrying a slice of
-        ``message.content``, terminated by an object with ``done: true``. We
-        concatenate the slices into the full JSON string the caller validates.
-        Streaming keeps the read timeout per-chunk (see the stream=True note in
-        chat_json), so long generations don't ReadTimeout while tokens flow.
-        """
-        chunks: list[str] = []
-        done_reason: str | None = None
-        try:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/api/chat",
-                json=payload,
-                timeout=self.timeout,
-                headers=self._headers,
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        # Tolerate any non-JSON keep-alive / blank framing line.
-                        continue
-                    if event.get("error"):
-                        raise LlmError(f"Ollama stream error: {event['error']}")
-                    piece = (event.get("message") or {}).get("content")
-                    if isinstance(piece, str):
-                        chunks.append(piece)
-                    if event.get("done"):
-                        done_reason = event.get("done_reason")
-                        break
-        except httpx.HTTPError as exc:
-            raise LlmError(f"Ollama request failed [{type(exc).__name__}]: {exc}") from exc
-
-        content = "".join(chunks)
-        if not content.strip():
-            raise EmptyLlmResponse("Ollama returned empty content (stream produced no tokens)")
-        if done_reason == "length":
-            # num_ctx was exhausted mid-generation (Ollama has no separate
-            # num_predict cap — see config.mlx_max_tokens comment) — the JSON is
-            # cut off mid-token, not merely malformed.
-            snippet = content[-1000:] if len(content) > 1000 else content
-            raise TruncatedLlmResponse(
-                f"Ollama response hit the context limit (done_reason='length') "
-                f"after {len(content)} chars. End snippet: {snippet!r}"
-            )
-        return content
-
-    async def list_models(self) -> list[str]:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{self.base_url}/api/tags", headers=self._headers)
+async def _discover_model(base_url: str, headers: dict[str, str] | None) -> str:
+    """The id this server advertises on /v1/models."""
+    entry = _MODEL_CACHE.get(base_url)
+    if entry is not None and time.monotonic() - entry[0] < _MODEL_DISCOVERY_TTL_SECONDS:
+        return entry[1]
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{base_url}/v1/models", headers=headers)
             response.raise_for_status()
-            data = response.json()
-            return [m.get("name", "") for m in data.get("models", [])]
+            ids = sorted(
+                m.get("id", "") for m in (response.json().get("data") or [])
+            )
+    except httpx.HTTPError as exc:
+        raise LlmError(
+            f"Could not reach the AI server at {base_url} to discover a model "
+            f"[{type(exc).__name__}]: {exc}. Check it is running — "
+            "ai-server/: ./ai.sh status"
+        ) from exc
+    ids = [i for i in ids if i]
+    if not ids:
+        raise LlmError(
+            f"The AI server at {base_url} advertises no models on /v1/models. "
+            "Load one (ai-server/: ./ai.sh pull) or set LLM_MODEL to pin an id."
+        )
+    if len(ids) > 1:
+        # Sorted above so this stays deterministic rather than depending on the
+        # server's listing order.
+        logger.warning(
+            "AI server at %s advertises %d models %s — using %r. Set LLM_MODEL "
+            "(or REASONING_MODEL) to pin one.",
+            base_url, len(ids), ids, ids[0],
+        )
+    _MODEL_CACHE[base_url] = (time.monotonic(), ids[0])
+    logger.info("Using LLM model %r discovered at %s", ids[0], base_url)
+    return ids[0]
 
 
-class MlxClient:
-    """OpenAI-compatible client for an MLX server (`mlx_lm.server`, and
-    `mlx_vlm.server` for vision). Mirrors OllamaClient's surface so it drops into
-    `get_llm()` and every existing call site unchanged."""
+class OpenAIClient:
+    """Client for any OpenAI-compatible server — which is every engine the
+    ai-server can run (Ollama, llama-server, mlx_lm.server, LM Studio, vLLM).
+
+    `model` is normally None: the id is discovered from /v1/models on first use
+    (see resolve_model), so the backend carries no model configuration at all."""
 
     def __init__(
         self,
@@ -556,22 +464,32 @@ class MlxClient:
         think_default: bool | None = None,
         repetition_penalty: float | None = None,
     ) -> None:
-        self.base_url = (base_url or settings.mlx_base_url).rstrip("/")
-        self.model = model or settings.mlx_model
-        self.timeout = timeout or settings.mlx_timeout_seconds
-        self._headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        self.base_url = (base_url or settings.llm_base_url).rstrip("/")
+        # None ⇒ resolve_model() discovers it from the server.
+        self.model = model or settings.llm_model
+        self.timeout = timeout or settings.llm_timeout_seconds
+        key = api_key or settings.llm_api_key
+        self._headers = {"Authorization": f"Bearer {key}"} if key else None
         # Client-level defaults for calls that pass None. None here ⇒ fall back
         # to the global settings at call time (preserves env-driven behavior for
         # the default client); the reasoning role sets its own defaults.
         self._max_tokens = max_tokens
         self._think_default = think_default
         self._repetition_penalty = repetition_penalty
-        # A vision request routes to the vision server when one is configured,
-        # else falls back to the text server (a multimodal model may serve both).
+        # A vision request routes to the vision endpoint when one is configured,
+        # else falls back to the text one (a multimodal model may serve both).
         self.vision_base_url = (
-            vision_base_url or settings.mlx_vision_base_url or self.base_url
+            vision_base_url or settings.llm_vision_base_url or self.base_url
         ).rstrip("/")
-        self.vision_model = vision_model or settings.mlx_vision_model
+        self.vision_model = vision_model or settings.llm_vision_model
+
+    async def resolve_model(self) -> str:
+        """The model id to send. Configured value if pinned, else whatever the
+        server advertises on /v1/models — cached briefly so a model swap on the
+        ai-server is picked up without restarting the backend."""
+        if self.model:
+            return self.model
+        return await _discover_model(self.base_url, self._headers)
 
     async def chat_json(
         self,
@@ -579,14 +497,13 @@ class MlxClient:
         user_prompt: str,
         schema: type[T],
         temperature: float | None = None,
-        num_ctx: int | None = None,
         images: list[str] | None = None,
         think: bool | None = None,
     ) -> T:
-        """OpenAI Chat Completions in JSON mode. Defaults resolve from the same
-        model-variant settings as OllamaClient. `num_ctx` is accepted for
-        signature parity (the server sizes its own context); thinking output is
-        handled defensively by stripping a `<think>` preamble before validation."""
+        """OpenAI Chat Completions in JSON mode. There is no `num_ctx`: the
+        server owns its context window (LLM_CTX in ai-server/.env). Thinking
+        output is handled defensively by stripping a `<think>` preamble before
+        validation."""
         temperature = settings.llm_default_temperature if temperature is None else temperature
         if think is None:
             think = (
@@ -595,7 +512,10 @@ class MlxClient:
                 else settings.llm_think
             )
         if images:
-            base_url, model = self.vision_base_url, (self.vision_model or self.model)
+            # Only fall back to discovery when no vision model is pinned — a
+            # vision endpoint may not be the one that answers /v1/models.
+            base_url = self.vision_base_url
+            model = self.vision_model or await self.resolve_model()
             content: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
             for b64 in images:
                 content.append(
@@ -606,7 +526,8 @@ class MlxClient:
                 )
             user_message: dict[str, Any] = {"role": "user", "content": content}
         else:
-            base_url, model = self.base_url, self.model
+            base_url = self.base_url
+            model = await self.resolve_model()
             user_message = {"role": "user", "content": user_prompt}
 
         payload: dict[str, Any] = {
@@ -616,27 +537,43 @@ class MlxClient:
                 user_message,
             ],
             "temperature": temperature,
-            "max_tokens": self._max_tokens or settings.mlx_max_tokens,
+            "max_tokens": self._max_tokens or settings.llm_max_tokens,
             "response_format": {"type": "json_object"},
             # Hybrid-thinking off by default (settings.llm_think): the server
             # otherwise streams a long `reasoning` preamble in a separate channel
-            # that burns the whole token budget before any JSON `content` is
-            # produced. Mirrors OllamaClient. Harmlessly ignored by model
-            # templates that don't define `enable_thinking`.
+            # that burns the token budget before any JSON `content` is produced.
+            # Harmlessly ignored by model templates that don't define
+            # `enable_thinking`.
+            #
+            # TWO knobs because no single one works everywhere: llama.cpp
+            # (--jinja) and mlx_lm.server honour chat_template_kwargs, while
+            # Ollama's OpenAI endpoint IGNORES it and honours reasoning_effort
+            # instead — measured on qwen3, which emitted ~1000 reasoning tokens
+            # and an empty `content` with only chat_template_kwargs set. Servers
+            # ignore whichever field they don't implement.
             "chat_template_kwargs": {"enable_thinking": think},
-            # Stream so the read timeout is per-chunk, not whole-generation (same
-            # rationale as OllamaClient — see its chat_json note).
+            # Stream so httpx's read timeout applies to the gap BETWEEN tokens
+            # rather than the whole generation: a long multi-section generation
+            # can't ReadTimeout while tokens keep flowing, only a genuine stall
+            # trips it. NB this does NOT cover time-to-first-token (model load +
+            # prompt prefill) — keep prompts inside the server's context window.
             "stream": True,
         }
+        if not think:
+            # The half of the thinking kill switch that Ollama actually honours
+            # (see chat_template_kwargs above). Only sent when disabling, so a
+            # server that maps it to a real effort level isn't told "none" when
+            # the reasoning role genuinely wants to think.
+            payload["reasoning_effort"] = "none"
         repetition_penalty = (
             self._repetition_penalty
             if self._repetition_penalty is not None
-            else settings.mlx_repetition_penalty
+            else settings.llm_repetition_penalty
         )
         if repetition_penalty:
-            # mlx_lm.server-specific extension (not part of the OpenAI schema);
-            # 0.0 means "disabled", so only send it when actually set — see
-            # config.mlx_repetition_penalty for why this defaults on.
+            # mlx_lm.server extension (not part of the OpenAI schema, ignored by
+            # servers that don't implement it); 0.0 means "disabled", so only
+            # send it when actually set — see config.llm_repetition_penalty.
             payload["repetition_penalty"] = repetition_penalty
         url = f"{base_url}/v1/chat/completions"
 
@@ -674,7 +611,7 @@ class MlxClient:
                     except json.JSONDecodeError:
                         continue
                     if event.get("error"):
-                        raise LlmError(f"MLX stream error: {event['error']}")
+                        raise LlmError(f"LLM stream error: {event['error']}")
                     choices = event.get("choices") or []
                     if choices:
                         piece = (choices[0].get("delta") or {}).get("content")
@@ -684,17 +621,17 @@ class MlxClient:
                         if reason:
                             finish_reason = reason
         except httpx.HTTPError as exc:
-            raise LlmError(f"MLX request failed [{type(exc).__name__}]: {exc}") from exc
+            raise LlmError(f"LLM request failed [{type(exc).__name__}]: {exc}") from exc
 
         content = _strip_think("".join(chunks))
         if not content.strip():
-            raise EmptyLlmResponse("MLX returned empty content (stream produced no tokens)")
+            raise EmptyLlmResponse("LLM returned empty content (stream produced no tokens)")
         if finish_reason == "length":
             # max_tokens was exhausted mid-generation — the JSON is cut off
             # mid-token, not merely malformed.
             snippet = content[-1000:] if len(content) > 1000 else content
             raise TruncatedLlmResponse(
-                f"MLX response hit max_tokens (finish_reason='length') "
+                f"LLM response hit max_tokens (finish_reason='length') "
                 f"after {len(content)} chars. End snippet: {snippet!r}"
             )
         return content
@@ -707,55 +644,38 @@ class MlxClient:
             return [m.get("id", "") for m in data.get("data", [])]
 
 
-def resolve_llm_backend() -> str:
-    """The configured LLM backend ('mlx' | 'ollama'). Set via LLM_BACKEND in .env;
-    there is no auto-detection — the choice is explicit so the same machine can run
-    either backend without code changes."""
-    return settings.llm_backend.lower()
-
-
 def get_llm(model: str | None = None) -> LlmClient:
-    """Return the active backend's client. `model` overrides the backend's default
-    model (used by the opt-in vision pass)."""
-    if resolve_llm_backend() == "mlx":
-        return MlxClient(model=model)
-    return OllamaClient(model=model)
+    """The default client. `model` pins a specific model id (used by the opt-in
+    vision pass); left None the id is discovered from the server."""
+    return OpenAIClient(model=model)
 
 
 def get_reasoning_llm() -> LlmClient:
     """Client for the reasoning/design role: brand detection, the design-brain
-    passes, and the image tie-break judge — typically a bigger remote model
-    (GLM on the AI server) with thinking enabled. Falls back to the default
-    client when REASONING_MODEL is unset, so calling this is always safe."""
-    if not settings.reasoning_model:
+    passes, and the image tie-break judge — optionally a different (bigger)
+    endpoint with thinking enabled, while the default client keeps bulk content
+    generation. Falls back to the default client when neither REASONING_BASE_URL
+    nor REASONING_MODEL is set, so calling this is always safe.
+
+    This is the one piece of model routing that stays in the backend: *which
+    role talks to which endpoint* is an application decision, not a serving one.
+    """
+    if not settings.reasoning_base_url and not settings.reasoning_model:
         return get_llm()
-    backend = (settings.reasoning_backend or settings.llm_backend).lower()
-    if backend == "mlx":  # any OpenAI-compatible server (vLLM, sglang, mlx_lm.server)
-        return MlxClient(
-            base_url=settings.reasoning_base_url,
-            model=settings.reasoning_model,
-            timeout=settings.reasoning_timeout_seconds,
-            api_key=settings.reasoning_api_key,
-            max_tokens=settings.reasoning_max_tokens,
-            think_default=settings.reasoning_think,
-        )
-    return OllamaClient(
+    return OpenAIClient(
         base_url=settings.reasoning_base_url,
         model=settings.reasoning_model,
         timeout=settings.reasoning_timeout_seconds,
         api_key=settings.reasoning_api_key,
-        num_ctx_default=settings.reasoning_num_ctx,
+        max_tokens=settings.reasoning_max_tokens,
         think_default=settings.reasoning_think,
     )
 
 
 def active_vision_model() -> str | None:
-    """The multimodal model for the opt-in vision pass on the active backend
-    (mlx_vision_model under MLX, ollama_vision_model under Ollama). None ⇒ the
-    vision pass is skipped."""
-    if resolve_llm_backend() == "mlx":
-        return settings.mlx_vision_model
-    return settings.ollama_vision_model
+    """The multimodal model for the opt-in vision pass. None ⇒ the pass is
+    skipped entirely (the default)."""
+    return settings.llm_vision_model
 
 
 def extract_json_block(text: str) -> dict[str, Any]:

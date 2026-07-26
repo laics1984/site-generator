@@ -1,7 +1,7 @@
 # Webtree Site Generator
 
 AI-powered website generator that produces pages compatible with the webtree
-builder schema. Runs entirely on a local Ollama model (no cloud LLM calls).
+builder schema. Runs entirely on a locally served model (no cloud LLM calls).
 
 - **Option 1 — Scrape a URL**: pull content from an existing site, rewrite for
   conversion, optimize SEO, add CTAs, and emit a multi-page site.
@@ -13,27 +13,26 @@ builder schema. Runs entirely on a local Ollama model (no cloud LLM calls).
 
 ## How to start the app
 
-> **Important — about Ollama:** Ollama always runs on your **host Mac**, never in a container. Docker for Mac can't pass through the M1 GPU, so an in-container Ollama would fall back to CPU and run ~10× slower. Both the Docker and manual flows below assume Ollama is on the host at `http://localhost:11434`.
+> **Where the model runs:** not in this stack. `ai-server/` is a separate Compose
+> project that owns the model — engine, weights, GPU offload, everything. The app
+> talks to it over one URL (`LLM_BASE_URL`) and reads the model id from
+> `/v1/models`, so swapping models is one line in `ai-server/.env` with no app
+> restart. It can run on this machine or on a different box over Tailscale.
 
-### Step 0 — One-time setup: Ollama + a model
+### Step 0 — One-time setup: start the AI server
 
 ```bash
-# Install Ollama
-brew install ollama
-
-# Start the Ollama server (runs in the background, ~11434)
-brew services start ollama
-# ...or for a one-off session:
-# ollama serve
-
-# Pull the recommended model (≈4.7 GB, M1 16GB friendly)
-ollama pull qwen2.5:7b-instruct
-
-# Verify it works
-ollama run qwen2.5:7b-instruct "Say hello in one short sentence."
+cd site-generator/ai-server
+cp .env.example .env     # LLM_ENGINE=ollama and a model tag are already set
+./ai.sh up               # first run downloads the weights
+./ai.sh status
 ```
 
-That's the only thing that needs to live on the host. Everything else can be Dockerized.
+Pick the engine in `ai-server/.env`: `ollama` (default — easiest model swapping),
+`llamacpp` (fastest for a big MoE on a small GPU), `mlx` (Apple Silicon, runs as
+a host process), or `external` (something already running elsewhere). GPU
+prerequisites, the model swap table, tuning and the Tailscale setup are all in
+[ai-server/README.md](ai-server/README.md).
 
 ### Step 0.5 — Get a Pexels API key (free, instant)
 
@@ -113,13 +112,13 @@ Open **http://localhost:5174**.
 curl http://localhost:8001/health
 # → {"status":"ok"}
 
-# backend → Ollama reachability (lists installed models)
-curl http://localhost:8001/health/ollama
-# → {"status":"ok","models":["qwen2.5:7b-instruct", …]}
+# backend → AI server reachability (lists what it advertises)
+curl http://localhost:8001/health/llm
+# → {"status":"ok","models":["qwen3.6:35b-a3b"],"model":"qwen3.6:35b-a3b", …}
 ```
 
-If `/health/ollama` returns `"unreachable"`, Ollama isn't running on the host or
-isn't bound to localhost. Run `ollama serve` in a terminal and re-check.
+If it returns `"unreachable"`, the AI server isn't up: `./ai-server/ai.sh status`.
+If `models` is empty, no model is loaded yet: `./ai-server/ai.sh pull`.
 
 ---
 
@@ -127,11 +126,12 @@ isn't bound to localhost. Run `ollama serve` in a terminal and re-check.
 
 | Symptom | Cause / Fix |
 |---|---|
-| Header says "Ollama unreachable" | Ollama not running on host. `brew services start ollama` or `ollama serve`. |
+| Header says "AI server unreachable" | The AI server isn't up. `./ai-server/ai.sh status`, then `./ai-server/ai.sh up`. |
 | `host.docker.internal: name does not resolve` | You're on Linux. The compose file already maps this to `host-gateway`, so it should work — restart compose: `docker compose down && docker compose up`. |
 | Frontend won't hot-reload inside Docker | Polling is enabled in `vite.config.ts` but file events from macOS bind mounts can still be slow. As a last resort, `docker compose restart frontend`. |
-| "model 'qwen2.5:7b-instruct' not found" | You skipped `ollama pull qwen2.5:7b-instruct`. Run it. Or set `OLLAMA_MODEL` in `.env` to a model you already have. |
-| Generation takes >60s on first request | Cold model load is normal — Ollama loads weights into VRAM on first call. Subsequent calls are fast. |
+| "advertises no models on /v1/models" | Nothing loaded yet. `./ai-server/ai.sh pull` (or `up`, which pulls when missing). |
+| Generation truncates on content-rich sites | Raise `LLM_CTX` in `ai-server/.env` **and** `LLM_CONTEXT_TOKENS` in `.env` together — the first sizes the server, the second sizes the batcher. |
+| Generation takes >60s on first request | Cold model load is normal — weights page into VRAM on first call. Subsequent calls are fast (`LLM_KEEP_ALIVE` in `ai-server/.env` keeps it resident). |
 | Backend port already in use | Another service is on 8001. Either stop it, or change `ports` in `docker-compose.yml`. |
 
 ---

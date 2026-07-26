@@ -190,7 +190,6 @@ async def generate_site_design_recipe(
             user_prompt=user_prompt,
             schema=SiteDesignRecipe,
             temperature=settings.design_temperature,
-            num_ctx=settings.design_num_ctx,
         )
     except LlmError as exc:
         logger.warning("Design-brain pass failed, falling back to deterministic selection: %s", exc)
@@ -281,7 +280,6 @@ async def generate_design_language(
             user_prompt=user_prompt,
             schema=DesignLanguage,
             temperature=settings.design_temperature,
-            num_ctx=settings.design_num_ctx,
         )
     except LlmError as exc:
         logger.warning(

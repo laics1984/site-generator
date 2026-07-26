@@ -17,20 +17,16 @@ class FakeVisionLlm:
         self.queue = list(annotations)
         self.calls = []
 
-    async def chat_json(self, *, system_prompt, user_prompt, schema, temperature, num_ctx, images):
+    async def chat_json(self, *, system_prompt, user_prompt, schema, temperature, images):
         self.calls.append(images)
         return self.queue.pop(0)
 
 
 def _enable_vision(test):
-    # Pin the Ollama backend so the active vision model is `ollama_vision_model`
-    # (under the MLX backend the vision model is `mlx_vision_model`, unset here).
-    for patcher in (
-        mock.patch.object(settings, "ollama_vision_model", "fake-vl"),
-        mock.patch.object(settings, "llm_backend", "ollama"),
-    ):
-        patcher.start()
-        test.addCleanup(patcher.stop)
+    # The vision pass is opt-in: it runs only when a multimodal model is named.
+    patcher = mock.patch.object(settings, "llm_vision_model", "fake-vl")
+    patcher.start()
+    test.addCleanup(patcher.stop)
 
 
 def _fake_fetch(test, b64="ZmFrZQ==", missing=()):

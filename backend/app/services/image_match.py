@@ -436,7 +436,6 @@ async def _llm_pick_best(
         user_prompt=json.dumps(payload, ensure_ascii=False),
         schema=_JudgePick,
         temperature=settings.judge_temperature,
-        num_ctx=settings.judge_num_ctx,
     )
     if result.pick is None:
         return None

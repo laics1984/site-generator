@@ -12,7 +12,7 @@ they're the perfect fit. One bounded annotation pass fixes that and enables:
 
 Bounded by design: at most `settings.vision_max_images` images per
 generation, one LLM call per image, results cached by URL for the process
-lifetime. Enabled only when `settings.ollama_vision_model` is set — without
+lifetime. Enabled only when `settings.llm_vision_model` is set — without
 it `annotate_image_pool` returns {} without any I/O. Every per-image failure
 (download, decode, LLM) is swallowed: annotation is an enhancement, never
 load-bearing.
@@ -241,7 +241,6 @@ async def _annotate_one(
             user_prompt="Describe this image.",
             schema=VisionAnnotation,
             temperature=settings.judge_temperature,
-            num_ctx=settings.judge_num_ctx,
             images=[image_b64],
         )
     except LlmError as exc:
