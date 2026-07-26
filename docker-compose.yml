@@ -1,13 +1,17 @@
-# Webtree Site Generator — local dev compose
+# Webtree Site Generator — local dev compose (app only).
 #
-# IMPORTANT: the LLM never runs in a container HERE.
-# Docker Desktop on macOS cannot pass through the M1 GPU, so an in-container
-# Ollama would fall back to CPU inference (≈2 tok/s vs ≈25 tok/s native).
-# The backend reaches one of:
-#   - Ollama on the Mac host (default):  host.docker.internal:11434
-#   - mlx_lm.server on the Mac host:     LLM_BACKEND=mlx (managed by dev.sh)
-#   - the remote RTX AI server over Tailscale (llama-server, see ai-server/):
-#     LLM_BACKEND=mlx + MLX_BASE_URL=http://<tailnet-ip>:8080 in .env
+# The model is NOT part of this stack. It is served by ai-server/, an
+# independent Compose project with its own lifecycle (./ai-server/ai.sh), so the
+# app can restart without unloading a 24GB model and the AI box can live on
+# different hardware entirely.
+#
+# The backend reaches it through ONE variable, LLM_BASE_URL, which covers every
+# deployment without a compose edit:
+#   - ai-server container on this host (default): http://host.docker.internal:11434
+#   - a host-native runtime (Windows Ollama, LM Studio, MLX on a Mac): same form,
+#     different port
+#   - a remote AI box over Tailscale: http://<tailnet-name-or-ip>:11434
+# Which engine and which model sit behind that URL is decided in ai-server/.env.
 
 services:
   backend:
@@ -27,10 +31,10 @@ services:
       # Only the container-networking rewrites live here (environment beats
       # env_file): in-container, "localhost" URLs from a host-context .env must
       # point at host.docker.internal instead. Each uses ${VAR:-default}
-      # interpolation so a .env that points at a REMOTE server (e.g. Ollama on
-      # the AI server) passes through instead of being clobbered.
-      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
-      MLX_BASE_URL: "${MLX_BASE_URL:-http://host.docker.internal:8080}"
+      # interpolation so a .env pointing at a REMOTE server (an AI box over
+      # Tailscale) passes through instead of being clobbered.
+      # NOTE: server root, no /v1 suffix — the client appends the OpenAI paths.
+      LLM_BASE_URL: "${LLM_BASE_URL:-http://host.docker.internal:11434}"
       CMS_API_BASE_URL: "${CMS_API_BASE_URL:-http://host.docker.internal:8000}"
     extra_hosts:
       # Required on Linux; harmless on macOS where it's already provided.

@@ -21,21 +21,20 @@ from app.services.db import init_db
 async def lifespan(app: FastAPI):
     # --- startup ---
     await init_db()
-    # Resolve + log the LLM backend once so it's visible at boot (and the
-    # resolution is cached before the first request).
-    from app.services.llm import resolve_llm_backend
-
-    backend = resolve_llm_backend()
-    model = settings.mlx_model if backend == "mlx" else settings.ollama_model
+    # Log where the LLM lives. Deliberately does NOT probe the server or resolve
+    # a model: the ai-server is an independent stack that may start after the
+    # backend, and the model id is discovered lazily on first use (see
+    # services/llm._discover_model) so a swap needs no restart here.
     logging.getLogger("app").info(
-        "LLM backend: %s (model=%s, LLM_BACKEND=%s)", backend, model, settings.llm_backend
+        "LLM endpoint: %s (model=%s)",
+        settings.llm_base_url,
+        settings.llm_model or "auto-discovered from /v1/models",
     )
-    if settings.reasoning_model:
+    if settings.reasoning_base_url or settings.reasoning_model:
         logging.getLogger("app").info(
-            "LLM reasoning role: %s (model=%s, base_url=%s, think=%s)",
-            (settings.reasoning_backend or backend).lower(),
-            settings.reasoning_model,
-            settings.reasoning_base_url or "(backend default)",
+            "LLM reasoning role: base_url=%s (model=%s, think=%s)",
+            settings.reasoning_base_url or settings.llm_base_url,
+            settings.reasoning_model or "auto-discovered",
             settings.reasoning_think,
         )
 

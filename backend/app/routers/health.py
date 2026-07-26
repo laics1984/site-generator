@@ -11,52 +11,41 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# Kept as aliases so existing bookmarks/scripts don't 404. There is only one
+# LLM endpoint now, whichever engine the ai-server happens to be running.
 @router.get("/health/ollama")
-async def health_ollama() -> dict[str, object]:
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        try:
-            response = await client.get(f"{settings.ollama_base_url}/api/tags")
-            response.raise_for_status()
-            payload = response.json()
-            models = [m.get("name") for m in payload.get("models", [])]
-            return {"status": "ok", "models": models}
-        except httpx.HTTPError as exc:
-            return {"status": "unreachable", "error": str(exc)}
-
-
 @router.get("/health/mlx")
-async def health_mlx() -> dict[str, object]:
-    """Reports the MLX server's loaded models (mlx_lm.server, OpenAI-compatible)."""
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        try:
-            response = await client.get(f"{settings.mlx_base_url}/v1/models")
-            response.raise_for_status()
-            payload = response.json()
-            models = [m.get("id") for m in payload.get("data", [])]
-            return {"status": "ok", "models": models}
-        except httpx.HTTPError as exc:
-            return {"status": "unreachable", "error": str(exc)}
-
-
 @router.get("/health/llm")
 async def health_llm() -> dict[str, object]:
-    """The active LLM backend (mlx|ollama) and its default model — lets the
-    frontend show which engine is serving generation."""
-    from app.services.llm import resolve_llm_backend
+    """What the AI server is actually serving right now.
 
-    backend = resolve_llm_backend()
-    model = settings.mlx_model if backend == "mlx" else settings.ollama_model
-    result: dict[str, object] = {
-        "backend": backend,
-        "model": model,
-        "configured": settings.llm_backend,
-    }
-    if settings.reasoning_model:
+    Reports the LIVE model list from /v1/models rather than a configured name —
+    the backend holds no model config, so this is the honest answer and it
+    reflects a model swap on the ai-server immediately.
+    """
+    result: dict[str, object] = {"base_url": settings.llm_base_url}
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            response = await client.get(f"{settings.llm_base_url}/v1/models")
+            response.raise_for_status()
+            # `or []` not `.get("data", [])`: Ollama returns "data": null (not an
+            # empty list) when no model is loaded yet.
+            models = [m.get("id") for m in (response.json().get("data") or [])]
+            result |= {
+                "status": "ok",
+                "models": models,
+                # What a generation would actually use — matches the pinning and
+                # tie-break rules in services/llm._discover_model.
+                "model": settings.llm_model or (sorted(m for m in models if m) or [None])[0],
+                "pinned": bool(settings.llm_model),
+            }
+        except httpx.HTTPError as exc:
+            result |= {"status": "unreachable", "error": str(exc)}
+    if settings.reasoning_base_url or settings.reasoning_model:
         # api_key deliberately excluded — this endpoint is frontend-visible.
         result["reasoning"] = {
-            "backend": (settings.reasoning_backend or backend).lower(),
             "model": settings.reasoning_model,
-            "base_url": settings.reasoning_base_url,
+            "base_url": settings.reasoning_base_url or settings.llm_base_url,
             "think": settings.reasoning_think,
         }
     return result

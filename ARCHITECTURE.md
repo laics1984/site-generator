@@ -76,7 +76,7 @@ reads `os.environ` directly. See [CONFIGURATION.md](CONFIGURATION.md).
 
 - Frontend reads **no** `import.meta.env` at runtime — it talks to the backend
   over relative paths that Vite proxies (`BACKEND_URL`, build-time only).
-- Container networking rewrites (`OLLAMA_BASE_URL` etc. → `host.docker.internal`)
+- Container networking rewrites (`LLM_BASE_URL`, `CMS_API_BASE_URL` → `host.docker.internal`)
   live in `docker-compose.yml`, layered over `.env`.
 
 ## Data layer

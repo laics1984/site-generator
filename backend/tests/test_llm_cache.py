@@ -14,7 +14,7 @@ import unittest
 from pydantic import BaseModel
 
 from app.services import llm as llm_mod
-from app.services.llm import MlxClient, chat_json_cached, clear_response_cache
+from app.services.llm import OpenAIClient, chat_json_cached, clear_response_cache
 
 
 class _Plan(BaseModel):
@@ -80,7 +80,7 @@ class _FakeLlm:
         self.calls = 0
 
     async def chat_json(self, system_prompt, user_prompt, schema, temperature=None,
-                        num_ctx=None, images=None, think=None):
+                        images=None, think=None):
         self.calls += 1
         return _Plan(name=f"call-{self.calls}")
 
@@ -105,7 +105,7 @@ class ChatJsonCachedTest(unittest.IsolatedAsyncioTestCase):
 
     async def _call(self, user_prompt="u", temperature=0.25, **kwargs):
         return await chat_json_cached(
-            MlxClient(),
+            OpenAIClient(model="test-model"),
             system_prompt="sys",
             user_prompt=user_prompt,
             schema=_Plan,

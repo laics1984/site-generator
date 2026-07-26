@@ -452,6 +452,45 @@ def _left_align_header_group(group: BuilderElement) -> None:
         child.styles = cstyles
 
 
+# --- heading levels -----------------------------------------------------------
+
+# Section-title node names, covering both builders: catalog templates
+# (template_filler) name a section's title "Heading", schema_builder's own
+# trees name it "Headline". The " accent" halves are deliberately excluded —
+# they are the trailing phrase of a split headline and stay plain text.
+_TITLE_NAMES = frozenset({"Heading", "Headline"})
+
+
+def _first_title_text(el: BuilderElement) -> BuilderElement | None:
+    """The first descendant section-title text node, in document order."""
+    if el.type == "text" and (el.name or "") in _TITLE_NAMES:
+        return el
+    content = el.content
+    if isinstance(content, list):
+        for child in content:
+            found = _first_title_text(child)
+            if found is not None:
+                return found
+    return None
+
+
+def apply_heading_levels(sections: list[BuilderElement]) -> None:
+    """Stamp semantic heading tags on section titles: the page's first section
+    title becomes the lone <h1>, every later one an <h2>.
+
+    Text elements otherwise render as <div> in the public renderer, so without
+    this pass a generated page has no <h1> at all. Runs over the assembled page
+    so it covers every section builder (catalog templates and the programmatic
+    trees alike). Mutates in place."""
+    seen_h1 = False
+    for section in sections:
+        title = _first_title_text(section)
+        if title is None:
+            continue
+        title.htmlTag = "h2" if seen_h1 else "h1"
+        seen_h1 = True
+
+
 # --- section dividers ---------------------------------------------------------
 
 # Shape per mood (None → no divider; today's plain edges stay byte-identical).
@@ -682,9 +721,8 @@ def _text(
     name: str = "Text",
     styles: dict[str, Any] | None = None,
     mobile: dict[str, Any] | None = None,
-    html_tag: str | None = None,
 ) -> BuilderElement:
-    el = BuilderElement(
+    return BuilderElement(
         id=_uid(),
         name=name,
         type="text",
@@ -692,9 +730,6 @@ def _text(
         content=BuilderElementContent(innerText=inner),
         responsiveStyles=ResponsiveStyles(mobile=mobile) if mobile else None,
     )
-    if html_tag:
-        el.htmlTag = html_tag
-    return el
 
 
 def _link(
@@ -1221,7 +1256,7 @@ def _headline_lines(
     literal tags)."""
     split = _split_headline(block.headline, block.headline_accent)
     if split is None:
-        return _text(block.headline, name="Headline", styles=lead_styles, mobile=mobile, html_tag="h1")
+        return _text(block.headline, name="Headline", styles=lead_styles, mobile=mobile)
     lead, accent = split
     accent_styles = _hero_accent_styles(lead_styles, ctx, on_photo=on_photo)
     container_styles: dict = {"flexDirection": "column", "gap": "0px", "width": "100%"}
@@ -1229,7 +1264,7 @@ def _headline_lines(
         container_styles["alignItems"] = "center"
     return _container(
         [
-            _text(lead, name="Headline", styles=lead_styles, mobile=mobile, html_tag="h1"),
+            _text(lead, name="Headline", styles=lead_styles, mobile=mobile),
             _text(accent, name="Headline accent", styles=accent_styles, mobile=mobile),
         ],
         name="Headline group",
@@ -3566,6 +3601,9 @@ async def plan_to_site(
         # Asymmetric headers + scroll/backdrop motion — applied last so they
         # read the final band/background each section landed on.
         apply_heading_alignment(elements, effective_brand.mood)
+        # Semantic heading tags: the page's first section title becomes its
+        # single <h1>, later ones <h2>. Purely structural — no styles touched.
+        apply_heading_levels(elements)
         apply_motion(
             elements,
             industry=plan.industry_category,

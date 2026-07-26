@@ -347,10 +347,11 @@ _SCAFFOLD_RAW_TEXT_CHARS = 2000  # entry-page key phrases (brand context, not so
 
 
 def _scaffold_num_ctx() -> int:
-    """Context window for scaffolded planning calls. Configurable so a machine
-    with headroom can trade ~0.5-1GB of KV cache for fewer, larger batches
-    (fewer prefill passes of the fixed prompt)."""
-    return settings.scaffold_num_ctx
+    """The server's context window, used to SIZE batches (not sent to the model —
+    the OpenAI wire has no per-request num_ctx). Keep settings.llm_context_tokens
+    in step with LLM_CTX in ai-server/.env: raising both trades ~0.5-1GB of KV
+    cache for fewer, larger batches (fewer prefill passes of the fixed prompt)."""
+    return settings.llm_context_tokens
 
 
 # --- Dynamic batch-size constants (empirical for Qwen 2.5 7B / 8 192 ctx) ---
@@ -874,7 +875,6 @@ async def _generate_page_section_chunks(
             ),
             schema=ScaffoldedSitePlan,
             temperature=settings.scaffold_temperature,
-            num_ctx=_scaffold_num_ctx(),
         )
         if first_result is None:
             first_result = result
@@ -938,7 +938,6 @@ async def _generate_page_multipass(
             ),
             schema=ScaffoldedSitePlan,
             temperature=settings.scaffold_temperature,
-            num_ctx=_scaffold_num_ctx(),
         )
         if first_result is None:
             first_result = result
@@ -1094,7 +1093,6 @@ async def plan_site_with_scaffolds(
             ),
             schema=ScaffoldedSitePlan,
             temperature=settings.scaffold_temperature,
-            num_ctx=_scaffold_num_ctx(),
         )
         return list(result.pages), result
 

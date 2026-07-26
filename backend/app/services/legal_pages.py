@@ -103,7 +103,10 @@ def _section(
 
 
 def _h1(text: str, theme: ThemeTokens) -> BuilderElement:
-    return _text(
+    # Legal pages are assembled straight into a GeneratedPage by the generate
+    # router, bypassing the section pipeline (and its apply_heading_levels
+    # pass), so the semantic tag is stamped here.
+    el = _text(
         text,
         name="H1",
         styles={
@@ -115,10 +118,12 @@ def _h1(text: str, theme: ThemeTokens) -> BuilderElement:
             "margin": "0",
         },
     )
+    el.htmlTag = "h1"
+    return el
 
 
 def _h2(text: str, theme: ThemeTokens) -> BuilderElement:
-    return _text(
+    el = _text(
         text,
         name="H2",
         styles={
@@ -129,6 +134,8 @@ def _h2(text: str, theme: ThemeTokens) -> BuilderElement:
             "margin": "32px 0 0 0",
         },
     )
+    el.htmlTag = "h2"
+    return el
 
 
 def _p(text: str, theme: ThemeTokens) -> BuilderElement:

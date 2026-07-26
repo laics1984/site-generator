@@ -36,15 +36,17 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-export async function checkLlmHealth(): Promise<{ backend: string; model?: string; configured?: string }> {
+// One call: the backend no longer knows (or cares) which engine serves the
+// model — it reports what the AI server advertises on /v1/models. See
+// ai-server/README.md.
+export async function checkLlmHealth(): Promise<{
+  status: string
+  model?: string | null
+  models?: string[]
+  base_url?: string
+  error?: string
+}> {
   return jsonRequest('/health/llm')
-}
-
-export async function checkBackendHealth(
-  backend: string,
-): Promise<{ status: string; models?: string[]; error?: string }> {
-  // The active backend (from LLM_BACKEND) decides which server we probe.
-  return jsonRequest(backend === 'mlx' ? '/health/mlx' : '/health/ollama')
 }
 
 export async function checkPexelsHealth(): Promise<{ status: string; provider?: string; hint?: string }> {

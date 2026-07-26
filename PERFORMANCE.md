@@ -24,7 +24,7 @@ the real bottlenecks remain.
   regenerating an unchanged site within the TTL skips minutes of GPU time. The
   temp-0.7 design passes stay uncached so the look can still vary.
 - **Dynamic batching** — content generation packs multiple pages/sections per
-  call (`MAX_SECTIONS_PER_BATCH`, `MAX_PAGES_PER_BATCH`, `SCAFFOLD_NUM_CTX`) to
+  call (`MAX_SECTIONS_PER_BATCH`, `MAX_PAGES_PER_BATCH`, `LLM_CONTEXT_TOKENS`) to
   amortize the fixed prompt prefill.
 
 ### Scraping
@@ -60,7 +60,7 @@ the real bottlenecks remain.
 ## Remaining bottlenecks (by impact)
 
 1. **LLM inference time** — inherent and hardware-bound. Levers: a faster/remote
-   backend (`LLM_BACKEND=mlx` → the AI server), a smaller model, raising
+   endpoint (`LLM_BASE_URL` → a bigger AI server), a smaller model, raising
    `SCAFFOLD_BATCH_CONCURRENCY` **only** on a backend that truly serves parallel
    requests (vLLM/llama-server), and the response cache for regenerations.
 2. **Playwright fallback** — a browser render is ~10× an httpx fetch. Sites that

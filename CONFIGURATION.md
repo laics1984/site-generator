@@ -8,40 +8,50 @@ upper-cased field name) or a `.env` file at the repo root. No other module reads
 
 - **Required:** none. Every value has a working local default. `PEXELS_API_KEY`
   is *recommended* for real photos (falls back to gradient placeholders).
-- **Secrets** (`PEXELS_API_KEY`, `REASONING_API_KEY`): keep them in `.env` only
+- **Secrets** (`PEXELS_API_KEY`, `LLM_API_KEY`, `REASONING_API_KEY`): keep them in `.env` only
   — `.env` is gitignored and must stay untracked. See [SECURITY.md](SECURITY.md).
 - See [`.env.example`](.env.example) for a heavily-commented catalogue.
 
-## LLM backend selection & clients
+## LLM connection
+
+Model **management** is not configured here. Which engine runs (Ollama /
+llama.cpp / MLX / a remote box), which model it loads, its quantization, context
+length, keep-alive and GPU offload all live in `ai-server/.env` — see
+[ai-server/README.md](ai-server/README.md). The backend holds a URL, because
+every engine serves the same OpenAI-compatible API.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_BACKEND` | `ollama` | `ollama` (native `/api/chat`) or `mlx` (OpenAI-compatible `/v1/chat/completions`). |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server. In Docker, rewritten to `host.docker.internal` by compose. |
-| `OLLAMA_MODEL` | `qwen3.6:35b-a3b` | Model for content + design-brain calls. |
-| `OLLAMA_TIMEOUT_SECONDS` | `180` | Per-read (streaming) timeout. |
-| `OLLAMA_KEEP_ALIVE` | `30m` | How long Ollama keeps the model resident between calls. |
-| `MLX_BASE_URL` | `http://localhost:8080` | OpenAI-compatible server (mlx_lm / llama-server / vLLM). |
-| `MLX_MODEL` | `mlx-community/Qwen3.5-2B-OptiQ-4bit` | Must match the id on `/v1/models`. |
-| `MLX_TIMEOUT_SECONDS` | `600` | Generous: covers cold time-to-first-token. |
-| `MLX_MAX_TOKENS` | `8192` | Output budget (OpenAI servers default too low). |
-| `MLX_VISION_BASE_URL` / `MLX_VISION_MODEL` | `None` | Optional MLX vision server. |
+| `LLM_BASE_URL` | `http://host.docker.internal:11434` | The AI server. Server **root**, no `/v1` suffix. A tailnet address for a remote box works unchanged. |
+| `LLM_MODEL` | `None` | Normally unset — the id is read from `/v1/models` at runtime, so a model swap needs no change here and no restart. Set it only to pin one when a server advertises several. |
+| `LLM_API_KEY` | `None` | **Secret.** Sent as `Authorization: Bearer …`. Ollama has no auth (use Tailscale ACLs); llama-server has `--api-key`. |
+| `LLM_TIMEOUT_SECONDS` | `600` | Per-read (between-token) timeout; covers cold time-to-first-token. |
+| `LLM_MAX_TOKENS` | `16384` | Output budget, doubled automatically on a genuine truncation. |
+| `LLM_REPETITION_PENALTY` | `1.1` | Sampling knob. `mlx_lm.server` defaults it to 0.0 unlike Ollama/llama.cpp; `0.0` restores the server default. |
+| `LLM_VISION_MODEL` | `None` | Opt-in vision pass. Unset ⇒ skipped entirely. |
+| `LLM_VISION_BASE_URL` | `None` | Only when the vision model is on a **different** endpoint. |
 
-## Reasoning role (optional second model)
+Legacy names still resolve for one release: `MLX_BASE_URL` / `OLLAMA_BASE_URL` →
+`LLM_BASE_URL`, `MLX_MODEL` / `OLLAMA_MODEL` → `LLM_MODEL`,
+`MLX_TIMEOUT_SECONDS` → `LLM_TIMEOUT_SECONDS`, `MLX_MAX_TOKENS` →
+`LLM_MAX_TOKENS`, `SCAFFOLD_NUM_CTX` → `LLM_CONTEXT_TOKENS`. **`LLM_BACKEND` is
+gone** — there is no engine to select on this side.
+
+## Reasoning role (optional second endpoint)
 
 Routes judgment-heavy calls (brand detection, design brain, image tie-break) to a
-bigger/remote model (e.g. GLM on the AI server). Unset `REASONING_MODEL` ⇒ role
-disabled (those calls use the default model).
+different endpoint while the default one keeps bulk content generation. This is
+the one piece of model routing that stays in the backend: which *role* talks to
+which endpoint is an application decision, not a serving one. Unset both
+`REASONING_BASE_URL` and `REASONING_MODEL` ⇒ role disabled.
 
 | Variable | Default | Description |
 |---|---|---|
-| `REASONING_BACKEND` | `None` | `mlx`/`ollama`; `None` inherits `LLM_BACKEND`. |
-| `REASONING_BASE_URL` | `None` | `None` ⇒ backend default. |
-| `REASONING_MODEL` | `None` | e.g. `glm-z1:9b`; `None` disables the role. |
+| `REASONING_BASE_URL` | `None` | A second endpoint. Alone, it is enough — the model id is discovered. |
+| `REASONING_MODEL` | `None` | Only needed to pin one of several models. |
 | `REASONING_API_KEY` | `None` | **Secret.** Sent as `Authorization: Bearer …`. |
-| `REASONING_TIMEOUT_SECONDS` | `None` | `None` ⇒ backend default. |
+| `REASONING_TIMEOUT_SECONDS` | `None` | `None` ⇒ `LLM_TIMEOUT_SECONDS`. |
 | `REASONING_MAX_TOKENS` | `16384` | Higher — thinking tokens count against it. |
-| `REASONING_NUM_CTX` | `None` | Ollama path only. |
 | `REASONING_THINK` | `true` | Thinking on by default for this role. |
 
 ## LLM tuning, caching & batching
@@ -49,7 +59,7 @@ disabled (those calls use the default model).
 | Variable | Default | Description |
 |---|---|---|
 | `LLM_DEFAULT_TEMPERATURE` | `0.4` | Fallback when a call site passes none. |
-| `LLM_DEFAULT_NUM_CTX` | `4096` | Default context window. |
+| `LLM_CONTEXT_TOKENS` | `16384` | The server's context window **as far as the batcher is concerned** — not sent to the model (the OpenAI wire has no per-request `num_ctx`). Keep in step with `LLM_CTX` in `ai-server/.env`. |
 | `LLM_THINK` | `false` | Thinking off for JSON calls (avoids budget burn). |
 | `LLM_CACHE_ENABLED` | `true` | In-process TTL/LRU cache over validated responses. |
 | `LLM_CACHE_TTL_SECONDS` | `1800` | Cache TTL. |
@@ -57,11 +67,8 @@ disabled (those calls use the default model).
 | `SCRAPE_CACHE_TTL_SECONDS` | `1800` | Scrape-preview cache TTL (covers an editing session). |
 | `PLAN_TEMPERATURE` | `0.3` | Brand detection / legacy planner. |
 | `SCAFFOLD_TEMPERATURE` | `0.25` | Scaffolded content (stay close to source). |
-| `SCAFFOLD_NUM_CTX` | `8192` | Context for content-generation calls. |
 | `DESIGN_TEMPERATURE` | `0.7` | Design-brain (bolder, enum-constrained). |
-| `DESIGN_NUM_CTX` | `8192` | Design-brain context. |
 | `JUDGE_TEMPERATURE` | `0.0` | Deterministic judge calls. |
-| `JUDGE_NUM_CTX` | `2048` | Judge context. |
 | `BRAND_DETECTION_MAX_CHARS` | `4000` | Source chars for brand detection. |
 | `MULTIPASS_MAX_CHARS_PER_CALL` | `6000` | Chunk size for oversized pages. |
 | `MAX_SECTIONS_PER_BATCH` | `6` | Cap per scaffolded batch. |
