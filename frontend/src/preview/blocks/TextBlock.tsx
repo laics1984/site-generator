@@ -14,6 +14,12 @@ import { getNodeDomId } from '../lib/responsiveRuntime'
 
 export function TextBlock({ node }: { node: PublicBlockNode }) {
   const html = getStringField(node, 'html', 'innerText', 'text') || ''
+  // Semantic tag for this text node ('h1' on hero headlines, set by the
+  // generator — schema_builder.py's `_text(..., html_tag=)`). Absent → 'div',
+  // so existing sites render exactly as before. Upstream binds `:innerHTML` on
+  // a dynamic `<component :is>` for an SSR reason that doesn't apply here; the
+  // resulting DOM is the same.
+  const Tag = (getStringField(node, 'htmlTag') || 'div') as 'div'
   const nodeClasses = getNodeClasses(node)
   const nodeStyles = getNodeStyles(node) as CSSProperties
   const nodeDomId = getNodeDomId(node) || undefined
@@ -42,7 +48,7 @@ export function TextBlock({ node }: { node: PublicBlockNode }) {
 
   if (!isClamp) {
     return (
-      <div
+      <Tag
         className={['wt-text', nodeClasses].filter(Boolean).join(' ')}
         style={nodeStyles}
         data-wt-node-id={nodeDomId}
@@ -58,7 +64,7 @@ export function TextBlock({ node }: { node: PublicBlockNode }) {
 
   return (
     <div className="wt-clamp-wrap">
-      <div
+      <Tag
         ref={textEl}
         className={['wt-text', nodeClasses].filter(Boolean).join(' ')}
         style={clampStyles}

@@ -65,7 +65,6 @@ export function ContainerBlock({ node }: { node: PublicBlockNode }) {
   const isBodyRoot = nodeType === 'body'
   const isHeaderRoot = nodeType === 'header'
   const isFooterRoot = nodeType === 'footer'
-  const isHeaderBar = Boolean((node as Record<string, unknown>)?.headerBar)
 
   // The header ROOT node renders its own backgroundColor/border/shadow inline,
   // which sits inside the shell's <header> wrapper and paints over the

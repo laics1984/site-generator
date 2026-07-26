@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { BrandPanel } from '@/components/BrandPanel'
-import { CmsPushPanel } from '@/components/CmsPushPanel'
 import { CrawlProgress } from '@/components/CrawlProgress'
-import { LlmStatus } from '@/components/LlmStatus'
 import { ModeTabs } from '@/components/ModeTabs'
 import { PageList } from '@/components/PageList'
 import { PagePicker } from '@/components/PagePicker'
 import { PagePreview } from '@/components/PagePreview'
+import { PublishDrawer } from '@/components/PublishDrawer'
 import { ScopeChoice } from '@/components/ScopeChoice'
 import { ScrapePreview } from '@/components/ScrapePreview'
+import { SiteSummaryBar } from '@/components/SiteSummaryBar'
 import { SourcePanel } from '@/components/SourcePanel'
+import { WorkspaceHeader } from '@/components/WorkspaceHeader'
 import {
   cancelCrawlJob,
   deleteCrawlJob,
+  exportSiteDocument,
   extendCrawl,
   generateFromSource,
   generateWithPages,
@@ -21,6 +23,8 @@ import {
   probeSitemap,
   startCrawl,
   uploadDocumentPreview,
+  type GeneratePayload,
+  type GenerateWithPagesPayload,
 } from '@/lib/api'
 import type {
   BrandIdentity,
@@ -38,8 +42,15 @@ import type {
   SitemapProbeResult,
   SourceContent,
 } from '@/lib/types'
+import { Banner, Button, SectionLabel, Stepper, type Step } from '@/ui'
 
 const GOOGLE_FONTS_BASE = 'https://fonts.googleapis.com/css2?'
+
+/** The exact call that produced the current site, kept so "Regenerate" is one
+ * click rather than a walk back through the wizard. */
+type LastGenerate =
+  | { kind: 'with-pages'; payload: GenerateWithPagesPayload }
+  | { kind: 'from-source'; payload: GeneratePayload }
 
 export default function App() {
   const [mode, setMode] = useState<GeneratorMode>('url')
@@ -89,7 +100,16 @@ export default function App() {
   const [site, setSite] = useState<GeneratedSite | null>(null)
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null)
 
-  // Live-load Google Fonts when the theme picks them.
+  // Workspace stage. The wizard is never destroyed on success — it is hidden,
+  // so "Adjust & regenerate" lands back on the page picker with the user's
+  // selections intact and "Back to preview" is free.
+  const [formOpen, setFormOpen] = useState(true)
+  const [lastGenerate, setLastGenerate] = useState<LastGenerate | null>(null)
+  const [publishOpen, setPublishOpen] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
+
+  // Live-load Google Fonts when the theme picks them. This is for the tool's own
+  // brand/theme swatches; the preview frame links its own copy (PagePreview).
   const allGoogleFonts = useMemo(
     () => [...(googleFonts || []), ...(site?.google_fonts || [])],
     [googleFonts, site?.google_fonts],
@@ -112,6 +132,22 @@ export default function App() {
   const selectedPage = useMemo(
     () => site?.pages.find((p) => p.slug === selectedSlug) ?? null,
     [site, selectedSlug],
+  )
+
+  // A site with nothing selectable (0 pages) has nothing to preview, so it must
+  // not collapse the form — that would strand the user on a blank canvas.
+  const stage: 'compose' | 'preview' =
+    site && selectedPage && !formOpen ? 'preview' : 'compose'
+
+  /** The source that fed the current site — used for the summary bar and the
+   * .docx export, which both outlive the scrape preview. */
+  const activeSource = useMemo<SourceContent | null>(
+    () =>
+      confirmedSource ??
+      (lastGenerate ? lastGenerate.payload.source : null) ??
+      scrapeResult?.source_content ??
+      null,
+    [confirmedSource, lastGenerate, scrapeResult],
   )
 
   function setBrandFromManualUpload(b: BrandIdentity | null) {
@@ -315,20 +351,32 @@ export default function App() {
     return null
   }
 
+  /** Land a freshly generated site: show it, and keep the wizard intact behind
+   * the summary bar so Adjust/Regenerate cost nothing. */
+  function acceptSite(result: GeneratedSite, origin: LastGenerate) {
+    setSite(result)
+    setLastGenerate(origin)
+    // Stay on the same page across a regenerate when it still exists.
+    setSelectedSlug((prev) =>
+      prev && result.pages.some((p) => p.slug === prev) ? prev : result.pages[0]?.slug ?? null,
+    )
+    setFormOpen(false)
+  }
+
   /** Legacy free-form generate (doc paste path — no page picker). */
   async function handleGenerateFreeform(source: SourceContent) {
+    const payload: GeneratePayload = {
+      source,
+      brand: effectiveBrand(),
+      mood_override: mood,
+      color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
+      hero_height: heroHeight,
+    }
     setBusy(true)
     setError(null)
     try {
-      const result = await generateFromSource({
-        source,
-        brand: effectiveBrand(),
-        mood_override: mood,
-        color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
-        hero_height: heroHeight,
-      })
-      setSite(result)
-      setSelectedSlug(result.pages[0]?.slug ?? null)
+      const result = await generateFromSource(payload)
+      acceptSite(result, { kind: 'from-source', payload })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Generation failed')
     } finally {
@@ -350,25 +398,21 @@ export default function App() {
   /** User confirmed page selections → run scaffolded generation. */
   async function handlePagesConfirm() {
     if (!confirmedSource || selectedPages.length === 0) return
+    const payload: GenerateWithPagesPayload = {
+      source: confirmedSource,
+      selected_pages: selectedPages,
+      industry: industryOverride || 'other',
+      brand: effectiveBrand(),
+      mood_override: mood,
+      color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
+      hero_height: heroHeight,
+      detected_brand: detectedBrand,
+    }
     setBusy(true)
     setError(null)
     try {
-      const result = await generateWithPages({
-        source: confirmedSource,
-        selected_pages: selectedPages,
-        industry: industryOverride || 'other',
-        brand: effectiveBrand(),
-        mood_override: mood,
-        color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
-        hero_height: heroHeight,
-        detected_brand: detectedBrand,
-      })
-      setSite(result)
-      setSelectedSlug(result.pages[0]?.slug ?? null)
-      // Reset wizard for next run
-      setConfirmedSource(null)
-      setSelectedPages([])
-      setScrapeResult(null)
+      const result = await generateWithPages(payload)
+      acceptSite(result, { kind: 'with-pages', payload })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Generation failed')
     } finally {
@@ -376,67 +420,202 @@ export default function App() {
     }
   }
 
-  return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-white font-bold">
-              W
-            </div>
-            <div>
-              <div className="text-sm font-semibold text-slate-900">
-                Webtree Site Generator
-              </div>
-              <div className="text-xs text-slate-500">
-                Local · AI-powered · Builder-compatible
-              </div>
-            </div>
+  /** Re-run the last generation verbatim. The model varies its output run to
+   * run, so this is the "give me another take" button. */
+  async function handleRegenerate() {
+    if (!lastGenerate) return
+    setBusy(true)
+    setError(null)
+    try {
+      const result =
+        lastGenerate.kind === 'with-pages'
+          ? await generateWithPages(lastGenerate.payload)
+          : await generateFromSource(lastGenerate.payload)
+      // Keep the previous site on screen until the new one is in hand.
+      acceptSite(result, lastGenerate)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Regeneration failed')
+      // Reopen the form so the error is visible next to the inputs that caused it.
+      setFormOpen(true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function handleStartOver() {
+    setSite(null)
+    setSelectedSlug(null)
+    setLastGenerate(null)
+    setConfirmedSource(null)
+    setSelectedPages([])
+    setDetectedBrand(null)
+    setScrapeResult(null)
+    setError(null)
+    setFormOpen(true)
+  }
+
+  async function handleExport() {
+    if (!activeSource) return
+    setExportBusy(true)
+    setError(null)
+    try {
+      await exportSiteDocument(activeSource, site?.site_name ?? brandName)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export failed')
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
+  function backToSource() {
+    setConfirmedSource(null)
+    setSelectedPages([])
+    setDetectedBrand(null)
+  }
+
+  if (stage === 'preview' && site && selectedPage) {
+    return (
+      <div className="flex h-screen flex-col overflow-hidden bg-canvas">
+        <WorkspaceHeader />
+        <SiteSummaryBar
+          site={site}
+          sourceLabel={sourceLabel(activeSource)}
+          canRegenerate={lastGenerate !== null}
+          busy={busy}
+          exportBusy={exportBusy}
+          onRegenerate={handleRegenerate}
+          onAdjust={() => setFormOpen(true)}
+          onPublish={() => setPublishOpen(true)}
+          onStartOver={handleStartOver}
+          onExport={handleExport}
+        />
+
+        {error && (
+          <div className="px-4 pt-3 sm:px-6">
+            <Banner tone="danger" title="Something went wrong">
+              {error}
+            </Banner>
           </div>
-          <LlmStatus />
+        )}
+
+        <main className="flex min-h-0 flex-1">
+          <aside className="scrollbar-slim hidden w-56 shrink-0 overflow-y-auto border-r border-line bg-surface p-2 lg:block">
+            <SectionLabel className="px-2.5 pb-1.5 pt-2">Pages</SectionLabel>
+            <PageList
+              pages={site.pages}
+              selectedSlug={selectedSlug}
+              onSelect={setSelectedSlug}
+            />
+          </aside>
+          <section className="flex min-w-0 flex-1 flex-col overflow-hidden p-3 sm:p-4">
+            <PagePreview
+              page={selectedPage}
+              site={site}
+              mediaCredits={site.media_credits}
+              onNavigate={setSelectedSlug}
+              regenerating={busy}
+            />
+          </section>
+        </main>
+
+        <PublishDrawer
+          open={publishOpen}
+          onClose={() => setPublishOpen(false)}
+          site={site}
+        />
+      </div>
+    )
+  }
+
+  const steps: Step[] = [
+    {
+      id: 'brand',
+      label: 'Brand',
+      detail: brand || brandName ? brandName || brand?.name || 'Set' : 'Optional',
+      status: brand || brandName ? 'done' : 'upcoming',
+    },
+    {
+      id: 'source',
+      label: 'Source',
+      detail: confirmedSource
+        ? sourceLabel(confirmedSource) ?? 'Confirmed'
+        : mode === 'url'
+          ? 'Scrape a website'
+          : 'Upload a document',
+      status: confirmedSource ? 'done' : 'current',
+      onClick: confirmedSource ? backToSource : undefined,
+    },
+    {
+      id: 'pages',
+      label: 'Pages',
+      detail: confirmedSource
+        ? `${selectedPages.length} selected`
+        : 'Chosen after the source is ready',
+      status: confirmedSource ? 'current' : 'upcoming',
+    },
+  ]
+
+  const idle = !confirmedSource && !scrapeResult && !activeJob && !pendingScope
+
+  return (
+    <div className="min-h-screen bg-canvas">
+      <WorkspaceHeader />
+
+      {site && (
+        <div className="sticky top-14 z-20 border-b border-line bg-surface/85 px-4 py-2.5 backdrop-blur sm:px-6">
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+            <p className="min-w-0 truncate text-xs text-ink-muted">
+              Editing the recipe for <span className="font-medium text-ink">{site.site_name}</span>.
+              Nothing changes until you generate again.
+            </p>
+            <Button size="sm" onClick={() => setFormOpen(false)}>
+              ← Back to preview
+            </Button>
+          </div>
         </div>
-      </header>
+      )}
 
-      <main className="mx-auto max-w-7xl px-6 py-8">
-        <div className="grid gap-8 lg:grid-cols-[460px_1fr]">
-          <section className="space-y-6">
-            <div>
-              <h1 className="text-lg font-semibold text-slate-900">Generate</h1>
-              <p className="mt-1 text-sm text-slate-600">
-                Brand → Source → Generate. The theme is built from your logo's palette
-                and mood, applied across every page, header, and footer.
-              </p>
+      <main className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-ink">
+            {site ? 'Adjust and regenerate' : 'Generate a website'}
+          </h1>
+          <p className="mt-1 text-sm text-ink-muted">
+            Point us at a site or a document. We extract the content and brand, you choose
+            the pages, and the theme is built from your logo's palette and mood — applied
+            across every page, header and footer.
+          </p>
+        </div>
+
+        <Stepper steps={steps} className="mt-6" />
+
+        <div className="mt-6 space-y-5">
+          <section>
+            <SectionLabel>1 · Brand</SectionLabel>
+            <div className="mt-2 rounded-2xl border border-line bg-surface p-5 shadow-card">
+              <BrandPanel
+                brandName={brandName}
+                onBrandNameChange={setBrandName}
+                brand={brand}
+                setBrand={setBrandFromManualUpload}
+                themePreview={themePreview}
+                setThemePreview={setThemePreview}
+                googleFonts={googleFonts}
+                setGoogleFonts={setGoogleFonts}
+                mood={mood}
+                setMood={setMood}
+                colorScheme={colorScheme}
+                setColorScheme={setColorScheme}
+                heroHeight={heroHeight}
+                setHeroHeight={setHeroHeight}
+              />
             </div>
+          </section>
 
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-                1 · Brand
-              </h2>
-              <div className="mt-2 rounded-2xl border border-slate-200 bg-white p-5">
-                <BrandPanel
-                  brandName={brandName}
-                  onBrandNameChange={setBrandName}
-                  brand={brand}
-                  setBrand={setBrandFromManualUpload}
-                  themePreview={themePreview}
-                  setThemePreview={setThemePreview}
-                  googleFonts={googleFonts}
-                  setGoogleFonts={setGoogleFonts}
-                  mood={mood}
-                  setMood={setMood}
-                  colorScheme={colorScheme}
-                  setColorScheme={setColorScheme}
-                  heroHeight={heroHeight}
-                  setHeroHeight={setHeroHeight}
-                />
-              </div>
-            </div>
-
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-500">
-                2 · Source
-              </h2>
-              <div className="mt-2 space-y-3">
+          <section>
+            <SectionLabel>{confirmedSource ? '3 · Pages' : '2 · Source'}</SectionLabel>
+            <div className="mt-2 space-y-3">
+              {idle && (
                 <ModeTabs
                   mode={mode}
                   onChange={(m) => {
@@ -445,98 +624,64 @@ export default function App() {
                     setError(null)
                   }}
                 />
-                <div className="rounded-2xl border border-slate-200 bg-white p-5">
-                  {confirmedSource ? (
-                    <PagePicker
-                      source={confirmedSource}
-                      industryOverride={industryOverride}
-                      setIndustryOverride={setIndustryOverride}
-                      selectedPages={selectedPages}
-                      setSelectedPages={setSelectedPages}
-                      setDetectedBrand={setDetectedBrand}
-                      onConfirm={handlePagesConfirm}
-                      onBack={() => {
-                        setConfirmedSource(null)
-                        setSelectedPages([])
-                        setDetectedBrand(null)
-                      }}
-                      busy={busy}
-                    />
-                  ) : scrapeResult ? (
-                    <ScrapePreview
-                      preview={scrapeResult}
-                      hasManualBrand={manualBrand}
-                      onApplyBrand={applyScrapedBrand}
-                      onDiscard={() => setScrapeResult(null)}
-                      onConfirm={handleScrapeConfirm}
-                      onCrawlMore={handleCrawlMore}
-                      extendBusy={extendBusy}
-                      busy={busy}
-                    />
-                  ) : activeJob ? (
-                    <CrawlProgress
-                      job={activeJob}
-                      onCancel={handleJobCancel}
-                      pagesCap={activeJobCap ?? undefined}
-                    />
-                  ) : pendingScope ? (
-                    <ScopeChoice
-                      url={pendingScope.url}
-                      probe={pendingScope.probe}
-                      quickCap={QUICK_SCAN_CAP}
-                      onQuick={handleScopeQuick}
-                      onFull={handleScopeFull}
-                      onCancel={handleScopeCancel}
-                    />
-                  ) : (
-                    <SourcePanel
-                      mode={mode}
-                      busy={busy}
-                      onScrape={handleScrape}
-                      onUpload={handleUpload}
-                      onGenerate={handleGenerateFreeform}
-                      scrapeBusy={scrapeBusy}
-                      uploadBusy={uploadBusy}
-                    />
-                  )}
-                  {error && (
-                    <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-                      {error}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section>
-            {!site ? (
-              <EmptyResultState />
-            ) : (
-              <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
-                <aside className="space-y-4">
-                  <SiteSummary site={site} />
-                  <div className="rounded-2xl border border-slate-200 bg-white p-3">
-                    <div className="px-2 pb-2 pt-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                      Pages
-                    </div>
-                    <PageList
-                      pages={site.pages}
-                      selectedSlug={selectedSlug}
-                      onSelect={setSelectedSlug}
-                    />
-                  </div>
-                  <CmsPushPanel site={site} />
-                </aside>
-                {selectedPage && (
-                  <PagePreview
-                    page={selectedPage}
-                    mediaCredits={site.media_credits}
-                    site={site}
+              )}
+              <div className="rounded-2xl border border-line bg-surface p-5 shadow-card">
+                {confirmedSource ? (
+                  <PagePicker
+                    source={confirmedSource}
+                    industryOverride={industryOverride}
+                    setIndustryOverride={setIndustryOverride}
+                    selectedPages={selectedPages}
+                    setSelectedPages={setSelectedPages}
+                    setDetectedBrand={setDetectedBrand}
+                    onConfirm={handlePagesConfirm}
+                    onBack={backToSource}
+                    busy={busy}
+                  />
+                ) : scrapeResult ? (
+                  <ScrapePreview
+                    preview={scrapeResult}
+                    hasManualBrand={manualBrand}
+                    onApplyBrand={applyScrapedBrand}
+                    onDiscard={() => setScrapeResult(null)}
+                    onConfirm={handleScrapeConfirm}
+                    onCrawlMore={handleCrawlMore}
+                    extendBusy={extendBusy}
+                    busy={busy}
+                  />
+                ) : activeJob ? (
+                  <CrawlProgress
+                    job={activeJob}
+                    onCancel={handleJobCancel}
+                    pagesCap={activeJobCap ?? undefined}
+                  />
+                ) : pendingScope ? (
+                  <ScopeChoice
+                    url={pendingScope.url}
+                    probe={pendingScope.probe}
+                    quickCap={QUICK_SCAN_CAP}
+                    onQuick={handleScopeQuick}
+                    onFull={handleScopeFull}
+                    onCancel={handleScopeCancel}
+                  />
+                ) : (
+                  <SourcePanel
+                    mode={mode}
+                    busy={busy}
+                    onScrape={handleScrape}
+                    onUpload={handleUpload}
+                    onGenerate={handleGenerateFreeform}
+                    scrapeBusy={scrapeBusy}
+                    uploadBusy={uploadBusy}
                   />
                 )}
+                {error && (
+                  <Banner tone="danger" className="mt-4" title="Something went wrong">
+                    {error}
+                  </Banner>
+                )}
               </div>
-            )}
+            </div>
           </section>
         </div>
       </main>
@@ -544,59 +689,18 @@ export default function App() {
   )
 }
 
-function SiteSummary({ site }: { site: GeneratedSite }) {
-  const colors = site.builder_styles?.colors
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-        {site.brand?.mood || 'modern'} · theme
-      </div>
-      <div className="mt-1 text-base font-semibold text-slate-900">{site.site_name}</div>
-      {site.tagline && <div className="text-xs text-slate-500">{site.tagline}</div>}
-      {colors && (
-        <div className="mt-3 grid grid-cols-4 gap-1.5">
-          {(['primary', 'secondary', 'accent', 'surface'] as const).map((key) => (
-            <div key={key} className="flex flex-col items-stretch">
-              <div
-                className="h-6 w-full rounded border border-slate-200"
-                style={{ backgroundColor: colors[key] }}
-                title={`${key}: ${colors[key]}`}
-              />
-              <div className="mt-0.5 text-[10px] font-medium text-slate-500 capitalize">
-                {key}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {site.builder_styles && (
-        <div className="mt-3 text-[11px] text-slate-500">
-          <div>
-            <span className="font-medium text-slate-600">Heading:</span>{' '}
-            {site.builder_styles.typography.headingFont.split(',')[0].replace(/"/g, '')}
-          </div>
-          <div>
-            <span className="font-medium text-slate-600">Radius:</span>{' '}
-            {site.builder_styles.buttons.radius}px
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function EmptyResultState() {
-  return (
-    <div className="flex h-full min-h-[400px] items-center justify-center rounded-2xl border-2 border-dashed border-slate-200 bg-white p-8 text-center">
-      <div>
-        <div className="text-base font-semibold text-slate-900">
-          Your generated site appears here
-        </div>
-        <p className="mx-auto mt-2 max-w-sm text-sm text-slate-600">
-          Paste a URL to scrape, or upload a document. We extract content + brand,
-          show you a preview, then produce a fully themed multi-page site.
-        </p>
-      </div>
-    </div>
-  )
+/** A short human label for where the content came from — host for scrapes,
+ * filename for uploads. */
+function sourceLabel(source: SourceContent | null): string | null {
+  if (!source) return null
+  const ref = source.source_ref || ''
+  if (!ref) return source.title || null
+  if (/^https?:\/\//i.test(ref)) {
+    try {
+      return new URL(ref).host.replace(/^www\./, '')
+    } catch {
+      return ref
+    }
+  }
+  return ref.split(/[\\/]/).pop() || ref
 }

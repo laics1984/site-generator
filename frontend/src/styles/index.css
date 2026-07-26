@@ -14,8 +14,55 @@ html, body, #root {
 
 body {
   margin: 0;
-  background: #fafafa;
-  color: #0f172a;
+  background: theme('colors.canvas');
+  color: theme('colors.ink.DEFAULT');
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+@layer base {
+  /* One focus treatment for the whole tool: keyboard users get a visible ring,
+   * pointer users don't get one stuck on every button they click. Components
+   * no longer each re-declare focus:ring-2 focus:ring-blue-100. */
+  :focus-visible {
+    outline: 2px solid theme('colors.brand.600');
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  button:focus,
+  a:focus,
+  [role='button']:focus {
+    outline: none;
+  }
+}
+
+@layer utilities {
+  /* Scrollable rails in the tool chrome — thin and low-contrast so a long page
+   * list doesn't put a heavy native scrollbar next to the preview. */
+  .scrollbar-slim {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.line.strong') transparent;
+  }
+  .scrollbar-slim::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-slim::-webkit-scrollbar-thumb {
+    background-color: theme('colors.line.strong');
+    border-radius: 9999px;
+  }
+  .scrollbar-slim::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

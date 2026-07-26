@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import type { CrawlJob } from '@/lib/types'
+import { Button, Spinner } from '@/ui'
 
 interface CrawlProgressProps {
   job: CrawlJob
@@ -38,68 +39,56 @@ export function CrawlProgress({ job, onCancel, pagesCap }: CrawlProgressProps) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4">
+      <div
+        className="rounded-2xl border border-brand-200 bg-brand-50 p-4"
+        role="status"
+        aria-live="polite"
+      >
         <div className="flex items-center gap-3">
-          <Spinner size={18} />
-          <div className="flex-1">
-            <div className="text-sm font-semibold text-slate-900">
+          <Spinner className="h-4 w-4 text-brand-600" />
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-ink">
               {isQueued ? 'Queued…' : 'Crawling…'}
             </div>
-            <div className="truncate text-xs text-slate-600">
-              {job.entry_url}
-            </div>
+            <div className="truncate text-xs text-ink-muted">{job.entry_url}</div>
           </div>
         </div>
 
         <div className="mt-3">
           <div className="flex items-baseline justify-between text-xs">
-            <div className="text-slate-700">
-              Pages fetched:{' '}
-              <span className="font-semibold">{pagesDone}</span>
-              {pagesCap ? <span className="text-slate-500"> / {pagesCap}</span> : null}
+            <div className="text-ink-soft">
+              Pages fetched: <span className="font-semibold">{pagesDone}</span>
+              {pagesCap ? <span className="text-ink-muted"> / {pagesCap}</span> : null}
             </div>
-            <div className="text-slate-500">
+            <div className="text-ink-muted">
               {elapsed > 0 ? `${elapsed.toFixed(0)}s elapsed` : ''}
             </div>
           </div>
-          <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-blue-100">
+          <div
+            className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-brand-100"
+            role="progressbar"
+            aria-valuenow={pct ?? undefined}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
             <div
-              className="h-full bg-blue-500 transition-all duration-300 ease-out"
+              className="h-full bg-brand-500 transition-all duration-300 ease-out"
               style={{ width: `${pct ?? (isRunning ? 8 : 0)}%` }}
             />
           </div>
         </div>
 
         {job.progress?.current_url && (
-          <div className="mt-2 truncate text-[11px] text-slate-500">
-            <span className="font-medium text-slate-600">Now:</span>{' '}
+          <div className="mt-2 truncate text-[11px] text-ink-muted">
+            <span className="font-medium text-ink-soft">Now:</span>{' '}
             <span className="font-mono">{job.progress.current_url}</span>
           </div>
         )}
       </div>
 
-      <button
-        type="button"
-        onClick={onCancel}
-        disabled={!isRunning}
-        className="rounded-xl border border-rose-200 bg-white px-4 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-      >
+      <Button variant="ghost" onClick={onCancel} disabled={!isRunning} className="text-rose-700 hover:bg-rose-50 hover:text-rose-800">
         Cancel crawl
-      </button>
+      </Button>
     </div>
-  )
-}
-
-function Spinner({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      className="animate-spin text-blue-600"
-      style={{ width: size, height: size }}
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" className="opacity-25" />
-      <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
-    </svg>
   )
 }

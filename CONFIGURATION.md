@@ -112,6 +112,7 @@ disabled (those calls use the default model).
 | `ROBOTS_FETCH_TIMEOUT_SECONDS` | `10.0` | robots/sitemap/logo fetch timeout. |
 | `PLAYWRIGHT_GOTO_TIMEOUT_MS` | `15000` | Playwright navigation timeout. |
 | `CMS_API_BASE_URL` | `http://localhost:8000` | webtree CMS base. Compose rewrites to host. |
+| `ADMIN_APP_BASE_URL` | `None` | webtree admin suite base (a different app from the CMS API). Set it and `POST /api/cms/push` returns an `admin_url` the UI renders as an "Open in webtree admin" link after a successful push. Unset ⇒ no link. |
 | `CMS_TIMEOUT_SECONDS` | `30.0` | CMS API timeout. |
 | `CMS_MEDIA_UPLOAD_TIMEOUT_SECONDS` | `120.0` | CMS media-upload timeout. |
 | `SITEGEN_DB_PATH` | `/app/data/sitegen.db` | SQLite file for crawl-job state. |
