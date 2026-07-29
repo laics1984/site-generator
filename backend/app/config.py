@@ -72,8 +72,15 @@ class Settings(BaseSettings):
     reasoning_model: str | None = None  # None → auto-discovered from that endpoint
     reasoning_api_key: str | None = None  # sent as "Authorization: Bearer …" when set
     reasoning_timeout_seconds: float | None = None  # None → llm_timeout_seconds
-    # Output budget. Higher than llm_max_tokens because thinking tokens count
-    # against the completion budget on OpenAI-compatible servers.
+    # Output budget for the reasoning calls. Same value as llm_max_tokens, but
+    # kept separate because thinking tokens count against the completion budget
+    # on OpenAI-compatible servers — so this role burns budget before emitting
+    # any JSON, and may need to diverge.
+    #
+    # NB raising this past LLM_CTX does nothing: the server's context window
+    # covers prompt + completion together, so it is the real ceiling. A genuine
+    # truncation needs a bigger LLM_CTX (ai-server/.env, mirrored by
+    # LLM_CONTEXT_TOKENS) or smaller batches — not a bigger max_tokens.
     reasoning_max_tokens: int = 16384
     # Thinking ON by default for this role: the reasoning calls are small
     # prompts with small JSON outputs, where a thinking pass buys better

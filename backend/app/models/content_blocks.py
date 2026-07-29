@@ -423,7 +423,7 @@ class FaqItem(BaseModel):
 class FaqBlock(BaseModel):
     kind: Literal["faq"] = "faq"
     heading: str = "Frequently asked questions"
-    items: list[FaqItem] = Field(min_length=1, max_length=20)
+    items: list[FaqItem] = Field(min_length=1, max_length=50)
 
     @field_validator("heading", mode="before")
     @classmethod

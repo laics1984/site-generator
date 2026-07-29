@@ -173,7 +173,7 @@ _SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
     "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, audience?, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; give EVERY item an image_query so its card carries a photo; audience = short who-it\'s-for badge like "Ages 2-4" only when the source states it)',
     "testimonials": '- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews with real names only)',
     "about": '- about: { kind:"about", heading, body, image_alt?, image_query, image_ref? }',
-    "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (1-20 Q&As copied from the source — ONLY questions the source page itself asks; if the page has no Q&A content, omit the block; NEVER turn people, staff or profile listings into questions)',
+    "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (transcribe EVERY genuine Q&A the source page asks — this is the one block where you must NOT curate or pick a "representative" subset; include all of them, up to 50; if the page has no Q&A content, omit the block; NEVER turn people, staff or profile listings into questions)',
     "cta": '- cta: { kind:"cta", headline, subheadline?, cta_label, cta_href, background_query, image_ref? }',
     "contact": '- contact: { kind:"contact", heading, subheading?, email?, phone? }  (email/phone only if in source)',
     "pricing": '- pricing: { kind:"pricing", heading, subheading?, tiers:[{name, price, description?, features:[string], cta_label, cta_href, highlighted:boolean}] }  (2-4 real tiers)',

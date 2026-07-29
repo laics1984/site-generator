@@ -160,6 +160,27 @@ def match_scaffolds_to_pages(
         out[scaffold.slug] = primary_source
         logger.debug("Routed scaffold %r to entry source (fallback)", scaffold.slug)
 
+    # FAQ content is often spread across more than one URL (e.g. a dedicated
+    # /faq page plus a /support or /help page) — combine every keyword-matching
+    # page's text into the routed source so none of it is silently dropped.
+    for scaffold in scaffolds:
+        if scaffold.is_legal or scaffold.page_type != "faq":
+            continue
+        primary = out.get(scaffold.slug)
+        if primary is None:
+            continue
+        extras = [
+            page
+            for page in _match_by_keywords_all("faq", discovered)
+            if page is not primary
+        ]
+        if extras:
+            out[scaffold.slug] = _combine_sources(primary, extras)
+            logger.debug(
+                "Combined %d extra FAQ source(s) into scaffold %r",
+                len(extras), scaffold.slug,
+            )
+
     return out
 
 
@@ -177,6 +198,38 @@ def _match_by_keywords(
             if kw in haystack:
                 return page
     return None
+
+
+def _match_by_keywords_all(
+    page_type: str,
+    discovered: list[SourceContent],
+) -> list[SourceContent]:
+    """Every discovered page whose path/title/headings mention this page_type
+    (not just the first) — used to aggregate content spread across multiple
+    matching URLs, e.g. FAQ content on both /faq and /support."""
+    keywords = _PAGE_TYPE_KEYWORDS.get(page_type, ())
+    if not keywords:
+        return []
+    return [page for page in discovered if any(kw in _source_haystack(page) for kw in keywords)]
+
+
+def _combine_sources(primary: SourceContent, extras: list[SourceContent]) -> SourceContent:
+    """Merge extra pages' text into the primary source so downstream generation
+    (chunking, item extraction) sees content from every matching URL as one
+    page. Only raw_text/headings are combined — title/url_path/images/links
+    stay the primary's, since those describe the routed page's own identity."""
+    raw_text = "\n\n".join(
+        text for text in (primary.raw_text, *(p.raw_text for p in extras)) if text
+    )
+    headings = list(primary.headings)
+    seen = {h.strip().lower() for h in headings if h.strip()}
+    for page in extras:
+        for h in page.headings:
+            key = h.strip().lower()
+            if key and key not in seen:
+                headings.append(h)
+                seen.add(key)
+    return primary.model_copy(update={"raw_text": raw_text, "headings": headings})
 
 
 def split_raw_text(
