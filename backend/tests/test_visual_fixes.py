@@ -5,14 +5,38 @@ import asyncio
 import unittest
 
 from app.models.builder_schema import BuilderElement
+from app.models.content_blocks import (
+    AwardItem,
+    AwardsBlock,
+    MenuBlock,
+    MenuCategory,
+    MenuItem,
+    PricingBlock,
+    PricingTier,
+    StatItem,
+    StatsBlock,
+    TeamBlock,
+    TeamMember,
+    TimelineBlock,
+    TimelineItem,
+)
 from app.services.image_styling import color_distance
 from app.services.schema_builder import (
+    RenderContext,
+    _build_awards,
+    _build_menu,
+    _build_pricing,
+    _build_stats,
+    _build_team,
+    _build_timeline,
     apply_section_dividers,
     cap_gradient_textures,
     glass_card_styles,
+    make_style_tokens,
     mesh_gradient,
     modernize_sections,
 )
+from app.services.style_tokens import emphasis_ink, meta_ink
 from app.services.template_filler import fill_template
 from app.services.theme import _adjust_lightness, _hex_to_rgb, build_theme
 
@@ -272,6 +296,96 @@ class CapGradientTexturesTest(unittest.TestCase):
 
         self.assertEqual(mesh.backgroundTexture, "flat")
         self.assertNotIn("backgroundImage", mesh.styles)
+
+
+def _find_by_name(node, name):
+    if getattr(node, "name", None) == name:
+        return node
+    content = getattr(node, "content", None)
+    if isinstance(content, list):
+        for child in content:
+            found = _find_by_name(child, name)
+            if found is not None:
+                return found
+    return None
+
+
+class ElementAccentBalanceTest(unittest.TestCase):
+    """Decorative 'pop' elements (badges, borders, step numbers, stat
+    numbers) should draw from the brand accent via `emphasis_ink`, and pure
+    metadata (role labels, prices, dates) should read as neutral via
+    `meta_ink` — neither should independently default to `palette.primary`,
+    which is what made one hue dominate every generated page. Section
+    backgrounds/CTAs are untouched by this fix and aren't covered here."""
+
+    @staticmethod
+    def _ctx(theme):
+        return RenderContext(theme=theme, resolver=None, styles=make_style_tokens(theme))
+
+    def test_pricing_badge_and_highlighted_border_use_accent_not_primary(self):
+        theme = build_theme("#2563eb")
+        ctx = self._ctx(theme)
+        block = PricingBlock(
+            heading="Plans",
+            tiers=[
+                PricingTier(name="Basic", price="$9/mo"),
+                PricingTier(name="Pro", price="$29/mo", highlighted=True),
+            ],
+        )
+        section = asyncio.run(_build_pricing(block, ctx))
+        expected = emphasis_ink(theme)
+
+        badge = _find_by_name(section, "Badge")
+        self.assertEqual(badge.styles["color"], expected)
+        self.assertNotEqual(badge.styles["color"], theme.palette.primary)
+
+        grid = _find_by_name(section, "Two Columns")
+        highlighted_col = grid.content[1]  # the "Pro" tier, marked highlighted
+        self.assertIn(expected, highlighted_col.styles["border"])
+        self.assertNotIn(theme.palette.primary, highlighted_col.styles["border"])
+
+    def test_stats_big_number_uses_accent_not_primary(self):
+        theme = build_theme("#2563eb")
+        ctx = self._ctx(theme)
+        block = StatsBlock(items=[StatItem(value="10k", label="Users")])
+        section = asyncio.run(_build_stats(block, ctx))
+
+        stat_value = _find_by_name(section, "Stat value")
+        self.assertEqual(stat_value.styles["color"], emphasis_ink(theme))
+        self.assertNotEqual(stat_value.styles["color"], theme.palette.primary)
+
+    def test_meta_text_no_longer_brand_colored(self):
+        theme = build_theme("#2563eb")
+        ctx = self._ctx(theme)
+        expected = meta_ink(theme)
+
+        team_block = TeamBlock(
+            members=[TeamMember(name="Ada Lovelace", role="Engineer", photo_url="https://x/a.jpg")]
+        )
+        team_section = asyncio.run(_build_team(team_block, ctx))
+        role = _find_by_name(team_section, "Member role")
+        self.assertEqual(role.styles["color"], expected)
+        self.assertNotEqual(role.styles["color"], theme.palette.primary)
+
+        menu_block = MenuBlock(
+            categories=[MenuCategory(name="Mains", items=[MenuItem(name="Burger", price="$12")])]
+        )
+        menu_section = asyncio.run(_build_menu(menu_block, ctx))
+        price = _find_by_name(menu_section, "Item price")
+        self.assertEqual(price.styles["color"], expected)
+        self.assertNotEqual(price.styles["color"], theme.palette.primary)
+
+        timeline_block = TimelineBlock(items=[TimelineItem(year="2020", title="Founded")])
+        timeline_section = asyncio.run(_build_timeline(timeline_block, ctx))
+        year = _find_by_name(timeline_section, "Timeline year")
+        self.assertEqual(year.styles["color"], expected)
+        self.assertNotEqual(year.styles["color"], theme.palette.primary)
+
+        awards_block = AwardsBlock(items=[AwardItem(title="Best of 2020", issuer="Acme", year="2020")])
+        awards_section = asyncio.run(_build_awards(awards_block, ctx))
+        meta = _find_by_name(awards_section, "Award meta")
+        self.assertEqual(meta.styles["color"], expected)
+        self.assertNotEqual(meta.styles["color"], theme.palette.primary)
 
 
 if __name__ == "__main__":

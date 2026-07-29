@@ -112,10 +112,7 @@ from app.services.theme import (
     _contrast,
     _ensure_contrast_against,
     _hex_to_rgb,
-    _hls_to_rgb,
-    _relative_luminance,
     _rgb_to_hex,
-    _rgb_to_hls,
     band_colors,
     build_theme,
     color_family_name,
@@ -125,14 +122,17 @@ from app.services.theme import (
 # path app.services.schema_builder.<name> is unchanged for callers and tests.
 from app.services.style_tokens import (
     StyleTokens,
+    _accent_ink_for,
     _fluid,
     _fluid_heading,
     _hairline,
     _muted,
     apply_section_decoration,
+    emphasis_ink,
     glass_card_styles,
     grain_data_uri,
     make_style_tokens,
+    meta_ink,
     mesh_gradient,
     section_background_image,
     shadow,
@@ -1214,20 +1214,6 @@ def _midpoint_word_split(headline: str) -> tuple[str, str] | None:
     return head[:at], head[at + 1:]
 
 
-def _accent_ink_for(surface: str, accent: str) -> str:
-    """Accent ink that stays recognisably the accent hue on any surface.
-
-    Light surfaces: darken the accent until AA. Dark surfaces (scrims, brand
-    gradients): a plain AA lift can bleach the accent to pure white, erasing
-    the highlight — re-emit it as a high-lightness pastel of the SAME hue
-    first, then nudge for AA."""
-    if _relative_luminance(surface) >= 0.5:
-        return _ensure_contrast_against(surface, accent, min_ratio=4.5)
-    h, _l, s = _rgb_to_hls(*_hex_to_rgb(accent))
-    pastel = _rgb_to_hex(*_hls_to_rgb(h, 0.82, min(1.0, max(s, 0.55))))
-    return _ensure_contrast_against(surface, pastel, min_ratio=4.5)
-
-
 def _hero_accent_styles(base: dict, ctx: RenderContext, *, on_photo: bool) -> dict:
     """Styles for the highlighted headline line: brand accent colour lifted to
     AA contrast against the actual surface; luxury/editorial moods get the 2026
@@ -2047,7 +2033,7 @@ async def _build_pricing(block: PricingBlock, ctx: RenderContext) -> BuilderElem
                         "fontWeight": 700,
                         "letterSpacing": "0.08em",
                         "textTransform": "uppercase",
-                        "color": palette.primary,
+                        "color": emphasis_ink(ctx.theme),
                         "margin": "0 0 8px 0",
                     },
                 )
@@ -2148,10 +2134,11 @@ async def _build_pricing(block: PricingBlock, ctx: RenderContext) -> BuilderElem
     if isinstance(grid.content, list):
         for col, tier in zip(grid.content, block.tiers):
             if tier.highlighted:
+                tier_accent = emphasis_ink(ctx.theme)
                 col.styles = {
                     **col.styles,
-                    "border": f"2px solid {palette.primary}",
-                    "boxShadow": f"0 8px 24px {_hairline(palette.primary, 0.18)}",
+                    "border": f"2px solid {tier_accent}",
+                    "boxShadow": f"0 8px 24px {_hairline(tier_accent, 0.18)}",
                 }
 
     return _section(ctx, [header, grid], name="Pricing")
@@ -2199,7 +2186,7 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                     "overflow": "hidden",
                     "border": "3px solid rgba(255,255,255,0.96)",
                     "boxShadow": (
-                        f"0 0 0 4px {_hairline(ctx.theme.palette.primary, 0.10)}, "
+                        f"0 0 0 4px {_hairline('#0f172a', 0.10)}, "
                         "0 14px 30px rgba(15,23,42,0.18)"
                     ),
                 },
@@ -2224,7 +2211,7 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                     **s.body,
                     "fontSize": "12px",
                     "lineHeight": "1.35",
-                    "color": ctx.theme.palette.primary,
+                    "color": meta_ink(ctx.theme),
                     "textAlign": "center",
                     "fontWeight": 800,
                     "letterSpacing": "0.08em",
@@ -2433,7 +2420,7 @@ async def _build_menu(block: MenuBlock, ctx: RenderContext) -> BuilderElement:
                             "fontFamily": ctx.theme.typography.heading_font,
                             "fontSize": "16px",
                             "fontWeight": 600,
-                            "color": ctx.theme.palette.primary,
+                            "color": meta_ink(ctx.theme),
                             "whiteSpace": "nowrap",
                             "marginLeft": "16px",
                         },
@@ -2466,7 +2453,7 @@ async def _build_menu(block: MenuBlock, ctx: RenderContext) -> BuilderElement:
                             "color": ctx.theme.palette.secondary,
                             "margin": "0 0 12px 0",
                             "paddingBottom": "8px",
-                            "borderBottom": f"2px solid {ctx.theme.palette.primary}",
+                            "borderBottom": f"2px solid {emphasis_ink(ctx.theme)}",
                         },
                     ),
                     *item_children,
@@ -2517,7 +2504,7 @@ async def _build_process(block: ProcessBlock, ctx: RenderContext) -> BuilderElem
                             "fontSize": "13px",
                             "fontWeight": 700,
                             "letterSpacing": "0.06em",
-                            "color": ctx.theme.palette.primary,
+                            "color": emphasis_ink(ctx.theme),
                             "margin": "0 0 8px 0",
                         },
                     ),
@@ -2656,7 +2643,7 @@ async def _build_timeline(block: TimelineBlock, ctx: RenderContext) -> BuilderEl
                     "fontSize": "14px",
                     "fontWeight": 700,
                     "letterSpacing": "0.06em",
-                    "color": ctx.theme.palette.primary,
+                    "color": meta_ink(ctx.theme),
                     "margin": "0",
                 },
             ),
@@ -2733,7 +2720,7 @@ async def _build_awards(block: AwardsBlock, ctx: RenderContext) -> BuilderElemen
                         **s.body,
                         "fontSize": "13px",
                         "textAlign": "center",
-                        "color": ctx.theme.palette.primary,
+                        "color": meta_ink(ctx.theme),
                         "fontWeight": 700,
                         "letterSpacing": "0.04em",
                         "textTransform": "uppercase",
@@ -2841,7 +2828,7 @@ async def _build_stats(block: StatsBlock, ctx: RenderContext) -> BuilderElement:
                         "fontFamily": ctx.theme.typography.heading_font,
                         "fontSize": "40px",
                         "fontWeight": 800,
-                        "color": ctx.theme.palette.primary,
+                        "color": emphasis_ink(ctx.theme),
                         "margin": "0",
                         "textAlign": "center",
                     },

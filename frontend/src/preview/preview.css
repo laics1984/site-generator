@@ -1677,9 +1677,9 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  border: 1px solid color-mix(in srgb, var(--wt-color-primary, #2563eb) 24%, transparent);
-  background: color-mix(in srgb, var(--wt-color-primary, #2563eb) 8%, transparent);
-  color: var(--wt-color-primary, #2563eb);
+  border: 1px solid color-mix(in srgb, var(--builder-color-accent, #f59e0b) 24%, transparent);
+  background: color-mix(in srgb, var(--builder-color-accent, #f59e0b) 8%, transparent);
+  color: var(--builder-color-accent, #f59e0b);
 }
 
 .wt-cms-card__meta {

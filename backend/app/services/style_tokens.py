@@ -18,7 +18,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.models.brand import ThemeTokens
-from app.services.theme import _adjust_lightness
+from app.services.theme import (
+    _adjust_lightness,
+    _ensure_contrast_against,
+    _hex_to_rgb,
+    _hls_to_rgb,
+    _relative_luminance,
+    _rgb_to_hex,
+    _rgb_to_hls,
+)
 
 
 @dataclass
@@ -99,7 +107,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "fontWeight": 600,
         "letterSpacing": "0.14em",
         "textTransform": "uppercase",
-        "color": palette.primary,
+        "color": emphasis_ink(theme),
         "margin": "0",
     }
     body = {
@@ -180,6 +188,37 @@ def _muted(hex_color: str) -> str:
     ng = round(g + (96 - g) * 0.25)
     nb = round(b + (110 - b) * 0.25)
     return f"#{nr:02x}{ng:02x}{nb:02x}"
+
+
+def _accent_ink_for(surface: str, accent: str) -> str:
+    """Accent ink that stays recognisably the accent hue on any surface.
+
+    Light surfaces: darken the accent until AA. Dark surfaces (scrims, brand
+    gradients): a plain AA lift can bleach the accent to pure white, erasing
+    the highlight — re-emit it as a high-lightness pastel of the SAME hue
+    first, then nudge for AA."""
+    if _relative_luminance(surface) >= 0.5:
+        return _ensure_contrast_against(surface, accent, min_ratio=4.5)
+    h, _l, s = _rgb_to_hls(*_hex_to_rgb(accent))
+    pastel = _rgb_to_hex(*_hls_to_rgb(h, 0.82, min(1.0, max(s, 0.55))))
+    return _ensure_contrast_against(surface, pastel, min_ratio=4.5)
+
+
+def emphasis_ink(theme: ThemeTokens, surface: str | None = None) -> str:
+    """Colour for a decorative, non-CTA 'pop' element (eyebrows, badges, step
+    numbers, stat big-numbers, single accent borders/glows) — always the brand
+    accent, AA-corrected against `surface` (defaults to the page background).
+    NOT for full section/card backgrounds — accent is banned there by
+    SECTION_VISUAL_POLICY_SPEC §7; text/border/shadow-tint call sites only."""
+    return _accent_ink_for(surface or theme.palette.background, theme.palette.accent)
+
+
+def meta_ink(theme: ThemeTokens) -> str:
+    """Colour for de-emphasised informational/meta text (role labels, prices,
+    dates) that shouldn't carry brand colour — the same muted-secondary tone
+    already used for body copy, so meta text reads calmly instead of as a
+    miniature CTA."""
+    return _muted(theme.palette.secondary)
 
 
 def _hairline(hex_color: str, alpha: float = 0.10) -> str:
