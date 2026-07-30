@@ -80,6 +80,12 @@ REAL PHOTOS — `page_source.images` lists the page's ACTUAL photos as
 Strongly prefer them over stock:
 - When a section matches a photo (its `near` heading or `alt` topic), set the
   block's `image_ref` to that photo's `ref` number.
+- NEVER bind `image_ref` to a photo whose `role` is "background" for a
+  content section (about, features, services, team, gallery, or a split-hero
+  side image) — that role means the source used it as a decorative CSS
+  backdrop, not a photo of the section's subject, and it will read as
+  meaningless there. A "background"-role photo is only appropriate for a
+  hero whose `layout` is "background".
 - Use only `ref` numbers from the list, each at most once across the page.
 - Still fill `image_query` (2-6 word stock phrase) as fallback.
 
@@ -152,6 +158,31 @@ PER PAGE
 - ALWAYS fill visual query fields (image_query / background_query /
   avatar_query / photo_query) with concrete 2-6 word stock phrases — they
   describe imagery, not facts, so they're always fine to write.
+- For CONTENT sections (about, features, services, team, gallery), DEFAULT to
+  a query that depicts PEOPLE doing or receiving the thing being described,
+  in a real setting — e.g. "dentist examining patient smiling", not "dental
+  clinic interior" or a bare mood word. This is the majority case: it's what
+  makes a business feel real and builds trust.
+  Exception — when an item's actual subject is a THING, not a person's
+  action (a menu dish, a product, a finished portfolio/project piece, a room
+  or space, a piece of equipment), write a concrete, real photo of THAT
+  thing instead of inventing an unrelated person to stand next to it. This
+  is the norm, not a fallback, for gallery items, ecommerce/product
+  features, restaurant menu photography, and agency/creative portfolio
+  pieces — a real dish or product shot beats a generic person-holding-object
+  stock photo every time.
+  Either way, never write a vague single-word phrase ("modern", "abstract",
+  "professional") alone; pair it with a concrete subject and action/detail.
+  Save textural/atmospheric phrasing (gradients, skylines, textures) for
+  `background_query` on cta/hero-wash slots, where an abstract backdrop is
+  intentional — never for a content section's own featured photo, whether
+  its subject is a person or a thing.
+- Never write a negative or downbeat word into any visual query ("stressed",
+  "tired", "empty", "alone", "arguing", "sad", "bored"). Aim for confident,
+  upbeat energy appropriate to the brand's mood — warm and cheerful for
+  hospitality/childcare/lifestyle brands, composed and confident for
+  professional-services/technical brands — but never dour, chaotic, or
+  negative, whatever the industry.
 - Every string field you DO emit must be a non-null string; omitting an
   optional block always beats filling it with a placeholder.
 
@@ -210,7 +241,17 @@ Hard rules:
 - Preserve real proper nouns, prices, contact details from the source verbatim.
 - SEO titles 50-60 chars. SEO descriptions 140-160 chars, built from the real subject matter.
 - ALWAYS produce specific, visual image_query / background_query / avatar_query phrases
-  (these describe stock imagery, not facts).
+  (these describe stock imagery, not facts). For content sections (about, features,
+  services, team), DEFAULT to a phrase that depicts PEOPLE doing or receiving the thing
+  described, in a real setting — that's the majority case and builds trust. Exception:
+  when an item's real subject is a THING, not a person's action (a menu dish, a product,
+  a portfolio piece, a room/space), write a concrete real photo of that thing instead of
+  forcing in an unrelated person — this is the norm for gallery items, ecommerce/product
+  features, restaurant menu photos, and agency portfolio pieces. Either way, never a bare
+  mood word ("modern", "abstract") alone. Reserve atmospheric/textural phrasing for
+  background_query on hero/cta backdrops only. Never write a negative or downbeat word
+  into any visual query ("stressed", "tired", "empty", "alone", "sad") — aim for confident,
+  upbeat energy appropriate to the brand's mood, never dour or negative.
 
 Pick `industry_category` from: restaurant, agency, saas, professional-services, ecommerce,
 consultancy, nonprofit, childcare, personal, other.

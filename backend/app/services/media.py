@@ -34,6 +34,7 @@ import httpx
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
 from app.services.image_match import (
+    _UNPINNABLE_VISION_KINDS,
     SlotUsage,
     _tokens,
     rank_candidates,
@@ -123,6 +124,24 @@ def _below_hero_bg_min(meta: ImageMetadata | None, min_long_edge: int) -> bool:
     ):
         return True
     return False
+
+
+def _unfit_for_featured_pin(meta: ImageMetadata | None, slot_usage: SlotUsage) -> bool:
+    """True when a scraped image the LLM bound via image_ref must not be
+    honored as-is for a content section's featured slot.
+
+    A background/texture-style scrape (a CSS background, or a role the
+    render-evidence pass tagged "background") may fill a full-bleed
+    background pin — that's the source's own art-directed backdrop — but it
+    must never win an inline "featured" slot (about, features, services,
+    team, gallery, a split-hero side image): it's decorative, not a photo of
+    the section's subject. A `background` slot_usage is exempt outright.
+    """
+    if meta is None or slot_usage == "background":
+        return False
+    if meta.role == "background" or meta.source_usage == "css_background":
+        return True
+    return meta.vision_kind in _UNPINNABLE_VISION_KINDS
 
 
 class ImageResolver:
@@ -247,9 +266,13 @@ class ImageResolver:
         if pinned_url:
             meta = next((c for c in self._pool if c.url == pinned_url), None)
             # Honour the bound photo unless it's unfit for a full-bleed
-            # background (too small, a headshot, or the wrong shape) — then
-            # fall through so the resolver reaches Pexels for a crisp shot.
-            if not _below_hero_bg_min(meta, min_long_edge):
+            # background (too small, a headshot, or the wrong shape), or it's
+            # a decorative/background-style scrape being asked to fill an
+            # inline featured slot — then fall through so the resolver
+            # reaches Pexels for a real photo instead.
+            if not _below_hero_bg_min(meta, min_long_edge) and not _unfit_for_featured_pin(
+                meta, slot_usage
+            ):
                 self._used_urls.add(pinned_url)
                 lum, band = _band_fields(meta.dominant_color if meta else None)
                 return PhotoResult(
@@ -264,9 +287,9 @@ class ImageResolver:
                     band=band,
                 )
             logger.debug(
-                "Pinned %s background %s unfit for full-bleed (size/role/aspect, "
-                "min %dpx); deferring to stock",
-                intent, pinned_url, min_long_edge,
+                "Pinned %s photo %s unfit for slot_usage=%s (size/role/aspect/"
+                "decorative, min %dpx); deferring to stock",
+                intent, pinned_url, slot_usage, min_long_edge,
             )
 
         orientation = _INTENT_TO_ORIENTATION[intent]
@@ -382,15 +405,45 @@ class ImageResolver:
         text best matches the slot (Pexels' first hit is often a tangent).
         Already-used photos are skipped so multi-section sites don't repeat;
         falls through the chain when a cue exhausts its results (availability).
+
+        A batch's top pick is only accepted when its alt text has REAL
+        relevance to either the slot's own query (best case: it matches the
+        actual topic) OR the chain candidate that was searched for (the
+        industry/contextual fallback entries are deliberately DIFFERENT
+        wording from the slot query — e.g. "restaurant interior food
+        service" for a slot query like "our signature experience" — so
+        checking only against the slot query would wrongly reject an
+        on-target fallback hit). Zero relevance to BOTH means Pexels handed
+        back a genuine tangent unrelated to anything we searched for, so we
+        keep walking the chain instead of returning it. The chain's final
+        entry is a deliberately broad, always-real term (see
+        `_stock_query_chain`), so it's accepted even at zero relevance rather
+        than falling all the way to the gradient placeholder.
+
+        A batch is also screened for vibe before ranking: any candidate whose
+        alt text reads as sad/angry/distressed/chaotic (`_has_negative_vibe`)
+        is dropped, so a downbeat tangent never wins just for sharing a
+        keyword. If that screen would empty the whole batch (all 15 results
+        happened to read negative — rare, the wordlist is narrow), we fall
+        back to the unfiltered batch rather than dead-ending the chain here.
         """
         chain = _stock_query_chain(
             query, intent, self._market_cue, self._industry_category, self._place_cue
         )
-        for candidate in chain:
+        for i, candidate in enumerate(chain):
             photos = await self._pexels.search_many(candidate, orientation=orientation)
             fresh = [p for p in photos if p.url not in self._seen_pexels_urls]
-            if fresh:
-                return max(fresh, key=lambda p: _stock_relevance(p, query, self._market_cue))
+            if not fresh:
+                continue
+            upbeat = [p for p in fresh if not _has_negative_vibe(p.alt)]
+            pool = upbeat or fresh
+            best = max(pool, key=lambda p: _stock_relevance(p, query, self._market_cue))
+            relevant = (
+                _stock_relevance(best, query, self._market_cue) > 0
+                or _stock_relevance(best, candidate, self._market_cue) > 0
+            )
+            if relevant or i == len(chain) - 1:
+                return best
         return None
 
     async def resolve_abstract_bg(
@@ -637,12 +690,49 @@ def _blend_hex(a: str, b: str) -> str:
     return f"#{(ar + br) // 2:02x}{(ag + bg) // 2:02x}{(ab + bb) // 2:02x}"
 
 
+# Alt-text vibe screening. Pexels has no sentiment/mood search parameter —
+# search is plain keyword text — so tone can only be enforced downstream, on
+# whatever a batch actually returns. Deliberately narrow: only emotion/outcome
+# words (crying, chaos, abandoned), never domain nouns (hospital, patient) —
+# a healthcare or legal business's own legitimate subject matter must never
+# be screened out just because its industry sounds serious.
+_NEGATIVE_VIBE_WORDS = frozenset({
+    "sad", "crying", "cry", "tears", "angry", "anger", "furious", "fight",
+    "fighting", "argument", "arguing", "conflict", "violence", "violent",
+    "war", "protest", "riot", "funeral", "grief", "grieving", "mourning",
+    "death", "dying", "dead", "sick", "illness", "emergency", "accident",
+    "crash", "disaster", "injury", "injured", "wound", "blood", "pain",
+    "suffering", "despair", "hopeless", "depressed", "depression", "anxiety",
+    "anxious", "stressed", "stress", "exhausted", "tired", "bored", "boring",
+    "lonely", "alone", "isolated", "abandoned", "crime", "criminal",
+    "arrest", "prison", "jail", "weapon", "danger", "dangerous", "threat",
+    "scared", "fear", "afraid", "panic", "chaos", "destroyed", "broken",
+    "damaged", "poverty", "homeless", "hungry", "starving", "bankrupt",
+    "evicted", "fired", "layoff", "dirty", "filthy", "decay", "garbage",
+})
+_POSITIVE_VIBE_WORDS = frozenset({
+    "smiling", "smile", "happy", "happiness", "joy", "joyful", "cheerful",
+    "laughing", "laughter", "celebrating", "celebration", "excited",
+    "confident", "thriving", "success", "successful", "welcoming", "warm",
+    "friendly", "bright", "vibrant", "relaxed", "content", "proud",
+    "grateful", "fun", "playful", "energetic", "positive", "optimistic",
+    "hopeful", "cheer", "cheering", "delighted", "enthusiastic",
+})
+
+
+def _has_negative_vibe(alt: str) -> bool:
+    return bool(_tokens(alt) & _NEGATIVE_VIBE_WORDS)
+
+
 def _stock_relevance(photo: PhotoResult, query: str, market_cue: str) -> float:
     """Token overlap between a stock photo's own alt text and the slot query.
 
     Used to re-rank a Pexels result batch — the API's first hit is often a
     tangent ("dental clinic" → toothbrush macro). A small bonus rewards alts
-    that mention the audience region, so on-market imagery wins ties.
+    that mention the audience region, so on-market imagery wins ties. A
+    smaller bonus rewards an upbeat-described alt, so a cheerful/confident
+    photo wins a tie over a flat one — negative-vibe photos are excluded
+    entirely upstream in `_search_pexels`, not merely down-weighted here.
     """
     alt_tokens = _tokens(photo.alt)
     if not alt_tokens:
@@ -652,6 +742,8 @@ def _stock_relevance(photo: PhotoResult, query: str, market_cue: str) -> float:
     cue_tokens = _tokens(market_cue)
     if cue_tokens and cue_tokens & alt_tokens:
         score += 0.25
+    if alt_tokens & _POSITIVE_VIBE_WORDS:
+        score += 0.15
     return score
 
 
@@ -696,6 +788,19 @@ def _stock_query_chain(
         if "asian" in market_cue.lower() and market_cue.lower() != "asian":
             add(f"Asian {query}")
 
+    # Positive-vibe search bias: try an upbeat-qualified variant before the
+    # plain query, so Pexels' own results lean cheerful rather than relying
+    # solely on downstream re-ranking. Avatars (a person's own face) always
+    # read fine as "smiling", any industry. For scene-level people intents,
+    # only bias industries where a jovial qualifier fits the brand's own
+    # tone (restaurant, childcare, ecommerce, agency, nonprofit) — forcing it
+    # onto a professional-services/consultancy/saas query risks fighting a
+    # brand that wants to read as composed and serious, not jolly.
+    if intent == "avatar":
+        add(f"{query} smiling")
+    elif industry_category.strip().lower() in _UPBEAT_INDUSTRIES:
+        add(f"{query} joyful")
+
     contextual = _contextual_non_person_query(query, industry_category)
     if contextual:
         if place_cue:
@@ -713,6 +818,14 @@ def _stock_query_chain(
 # Last-resort stock query when nothing more specific is known. Reaches Pexels'
 # huge generic catalog instead of dropping straight to the placeholder.
 _GENERIC_ATMOSPHERIC_FALLBACK = "modern abstract texture gradient"
+
+
+# Industries whose own brand tone welcomes a jovial stock-search qualifier
+# ("joyful") without fighting a more serious/composed positioning. See the
+# positive-vibe search bias in _stock_query_chain.
+_UPBEAT_INDUSTRIES = frozenset({
+    "restaurant", "childcare", "ecommerce", "agency", "nonprofit",
+})
 
 
 # Site-level contextual fallback per SitePlan.industry_category — used when
