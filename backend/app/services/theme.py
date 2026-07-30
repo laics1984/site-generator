@@ -787,6 +787,36 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
 )
 
 
+# Chroma/lightness ceiling for the brand INK (palette.secondary). `secondary` is
+# the single most-repeated colour on a generated page: every heading, every body
+# line (via _muted), every dark band, and one end of every brand gradient. A
+# curated palette's `dark` token is usually a fully-saturated deep brand shade
+# (violet-900, red-950), and spending it on all of those makes the page read as
+# one flat colour wash — the classic "everything is purple" result — with no
+# contrast left for the brand colour to actually mean anything.
+#
+# The 60-30-10 rule is the fix: neutrals carry the page (60% background, 30%
+# surface bands), the brand hue is the 10% that marks what matters (buttons,
+# eyebrows, links). So the ink keeps the curated `dark`'s HUE — the page still
+# feels on-brand, never a generic grey — but drops to near-neutral chroma and a
+# true ink lightness. `primary` and `accent` are untouched: they stay vivid,
+# which is the whole point of pushing the ink out of their way.
+_INK_MAX_SATURATION = 0.20
+_INK_MAX_LIGHTNESS = 0.14
+
+
+def _brand_ink(dark_hex: str) -> str:
+    """A near-neutral ink carrying `dark_hex`'s hue but not its chroma.
+
+    Only ever darkens/desaturates — a curated `dark` that is already an inky
+    near-black (#020617, #09090B) passes through unchanged.
+    """
+    h, l, s = _rgb_to_hls(*_hex_to_rgb(dark_hex))
+    return _rgb_to_hex(
+        *_hls_to_rgb(h, min(l, _INK_MAX_LIGHTNESS), min(s, _INK_MAX_SATURATION))
+    )
+
+
 def _palette_from_curated(c: CuratedPalette) -> ColorPalette:
     """Map a curated palette's source tokens onto the builder's 6-token palette,
     keeping our light-bg / dark-band invariants and the WCAG text guard."""
@@ -794,11 +824,14 @@ def _palette_from_curated(c: CuratedPalette) -> ColorPalette:
     # Light section surface: the catalogue's page tint, clamped to stay clearly
     # light (so body text keeps contrast on alternating sections).
     surface = c.tint if _relative_luminance(c.tint) >= 0.9 else "#f8fafc"
-    # `dark` doubles as the dark-band background and the body text colour.
-    text = _ensure_contrast_against(background, c.dark, min_ratio=7.0)
+    # `dark` doubles as the dark-band background and the body text colour, so it
+    # is taken as a hue-tinted ink rather than at full brand chroma (see
+    # _brand_ink). Darkening only ever helps the 7:1 text guard below.
+    ink = _brand_ink(c.dark)
+    text = _ensure_contrast_against(background, ink, min_ratio=7.0)
     return ColorPalette(
         primary=c.primary,
-        secondary=c.dark,
+        secondary=ink,
         accent=c.accent,
         text=text,
         background=background,

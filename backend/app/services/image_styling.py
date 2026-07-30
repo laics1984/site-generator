@@ -53,7 +53,20 @@ def band_for_color(
     return band_for_luminance(relative_luminance(avg_hex), threshold=threshold)
 
 
-def overlay_alpha(avg_hex: str, *, min_alpha: float = 0.30, max_alpha: float = 0.62) -> float:
+# Full-frame cast strength. This layer covers the WHOLE photo, including the
+# parts no text sits on, so it is kept faint on purpose: its job is to bind the
+# photo to the brand, not to dim it. Legibility is bought separately, by the
+# centre scrim below, where the copy actually is — a uniform sheet heavy enough
+# for a bright photo's headline also flattens the 70% of the frame that has
+# nothing on it, which is what makes a hero read as a colour block with a
+# picture buried in it rather than as a photograph.
+_CAST_MIN_ALPHA = 0.14  # already-dark photo: barely a tint
+_CAST_MAX_ALPHA = 0.34  # bright/busy photo: still see-through
+
+
+def overlay_alpha(
+    avg_hex: str, *, min_alpha: float = _CAST_MIN_ALPHA, max_alpha: float = _CAST_MAX_ALPHA
+) -> float:
     """Pick the dark-overlay opacity from the photo's average luminance.
 
     A dark photo already provides contrast for white text → light overlay
@@ -64,15 +77,39 @@ def overlay_alpha(avg_hex: str, *, min_alpha: float = 0.30, max_alpha: float = 0
     return round(min_alpha + (max_alpha - min_alpha) * max(0.0, min(1.0, lum)), 2)
 
 
+# How far the overlay's BRAND end is pulled toward the ink end before it is
+# painted. A saturated primary composited at ~0.5 alpha does not tint a photo,
+# it repaints it: hue information in the pixels underneath is replaced, so a
+# guitar, a classroom and a plate of food all arrive as the same flat sheet of
+# brand colour — duotone applied as a default rather than chosen. Darkening the
+# same pixels preserves their hue relationships, so mixing the primary toward
+# the ink keeps the photograph legible AS a photograph while the gradient still
+# runs visibly on-brand. Alpha is deliberately NOT lowered to achieve this: the
+# white headline's contrast comes from that alpha.
+_BRAND_END_INK_MIX = 0.55
+
+
+def _mix(a_hex: str, b_hex: str, t: float) -> tuple[int, int, int]:
+    """`a` moved `t` of the way toward `b` in sRGB."""
+    ar, ag, ab = _hex_to_rgb(a_hex)
+    br, bg, bb = _hex_to_rgb(b_hex)
+    return (
+        round(ar + (br - ar) * t),
+        round(ag + (bg - ag) * t),
+        round(ab + (bb - ab) * t),
+    )
+
+
 def brand_overlay_gradient(secondary_hex: str, primary_hex: str, alpha: float) -> str:
     """A brand-tinted dark overlay layer (CSS gradient string, no image).
 
-    Tinting the overlay toward the brand colours makes ANY photo harmonise with
-    the theme — the modern duotone/brand-wash technique. Slightly lighter on the
-    primary end so the brand hue reads without washing out the photo.
+    Tinting the overlay toward the brand colours makes any photo harmonise with
+    the theme, but the tint is a cast, not a repaint: the brand end is mixed
+    toward the ink first (see `_BRAND_END_INK_MIX`), so the photo keeps its own
+    colours instead of arriving as a flat sheet of the brand hue.
     """
     sr, sg, sb = _hex_to_rgb(secondary_hex)
-    pr, pg, pb = _hex_to_rgb(primary_hex)
+    pr, pg, pb = _mix(primary_hex, secondary_hex, _BRAND_END_INK_MIX)
     a2 = round(alpha * 0.82, 2)
     return (
         f"linear-gradient(135deg, rgba({sr},{sg},{sb},{alpha}), "
@@ -80,13 +117,49 @@ def brand_overlay_gradient(secondary_hex: str, primary_hex: str, alpha: float) -
     )
 
 
-def photo_background(avg_hex: str | None, url: str, secondary_hex: str, primary_hex: str) -> str:
-    """Full `background-image` value: brand-tinted adaptive overlay over the photo.
+# Centre scrim: the layer that actually buys legibility, concentrated where the
+# copy sits (photo heroes and CTA bands centre their headline block) and faded
+# out well before the edges, so the frame's corners keep the photograph almost
+# untouched. Expressed as a multiple of the cast alpha, so a bright photo gets a
+# stronger scrim on the same curve rather than a second hand-tuned ramp.
+#
+# The ratio is chosen so that cast and scrim COMPOUND to the pre-split single
+# sheet (0.30→0.62 on the same luminance ramp) behind the copy: the headline
+# lands on the same backdrop it always did — which is what keeps
+# schema_builder._SCRIM_COMPOSITE_BG, and every ink derived from it, honest —
+# while everything outside the scrim is roughly half as covered as before.
+_TEXT_SCRIM_RATIO = 1.25
+# Where the scrim starts easing off and where it reaches zero, as ellipse radii.
+_TEXT_SCRIM_MID_STOP = "44%"
+_TEXT_SCRIM_END_STOP = "78%"
 
-    Falls back to a fixed mid overlay when the average colour is unknown.
+
+def text_scrim_gradient(secondary_hex: str, alpha: float) -> str:
+    """A centre-weighted legibility scrim (CSS gradient string, no image)."""
+    r, g, b = _hex_to_rgb(secondary_hex)
+    a = round(alpha * _TEXT_SCRIM_RATIO, 2)
+    return (
+        f"radial-gradient(115% 88% at 50% 50%, rgba({r},{g},{b},{a}), "
+        f"rgba({r},{g},{b},{round(a * 0.55, 2)}) {_TEXT_SCRIM_MID_STOP}, "
+        f"rgba({r},{g},{b},0) {_TEXT_SCRIM_END_STOP})"
+    )
+
+
+def photo_background(avg_hex: str | None, url: str, secondary_hex: str, primary_hex: str) -> str:
+    """Full `background-image` value: photo, a faint brand cast over the whole
+    frame, and a centre scrim behind the copy.
+
+    Splitting the two is what lets the overlay be light without costing
+    contrast: behind the headline the layers compound to roughly the old single
+    sheet, while the rest of the frame carries only the cast and reads as a
+    photograph. Falls back to a mid cast when the average colour is unknown.
     """
-    alpha = overlay_alpha(avg_hex) if avg_hex else 0.55
-    return f"{brand_overlay_gradient(secondary_hex, primary_hex, alpha)}, url('{url}')"
+    alpha = overlay_alpha(avg_hex) if avg_hex else 0.26
+    return (
+        f"{text_scrim_gradient(secondary_hex, alpha)}, "
+        f"{brand_overlay_gradient(secondary_hex, primary_hex, alpha)}, "
+        f"url('{url}')"
+    )
 
 
 def washed_photo_background(

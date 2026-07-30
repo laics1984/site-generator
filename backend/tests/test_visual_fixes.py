@@ -2,6 +2,7 @@
 glass cards, and orphan-free card grids."""
 
 import asyncio
+import re
 import unittest
 
 from app.models.builder_schema import BuilderElement
@@ -20,7 +21,14 @@ from app.models.content_blocks import (
     TimelineBlock,
     TimelineItem,
 )
-from app.services.image_styling import color_distance
+from app.services.image_styling import (
+    _TEXT_SCRIM_RATIO,
+    brand_overlay_gradient,
+    color_distance,
+    overlay_alpha,
+    photo_background,
+    text_scrim_gradient,
+)
 from app.services.schema_builder import (
     RenderContext,
     _build_awards,
@@ -227,6 +235,80 @@ class ColorDistanceTest(unittest.TestCase):
         grey = color_distance("#9ca3af", theme)
         off_hue = color_distance("#16a34a", theme)  # saturated green
         self.assertLess(grey, off_hue)
+
+
+class PhotoOverlayTest(unittest.TestCase):
+    """The hero/CTA photo overlay tints a photograph; it must not repaint it.
+    A saturated brand hue composited at legibility alpha turns every photo into
+    the same flat sheet of brand colour, which is what makes a generated page
+    read as one-colour."""
+
+    def _rgba(self, css: str) -> list[tuple[int, int, int, float]]:
+        return [
+            (int(r), int(g), int(b), float(a))
+            for r, g, b, a in re.findall(
+                r"rgba\((\d+),(\d+),(\d+),([\d.]+)\)", css.replace(" ", "")
+            )
+        ]
+
+    def test_brand_end_is_mixed_toward_the_ink(self):
+        ink, primary = "#221d2b", "#7c3aed"
+        stops = self._rgba(brand_overlay_gradient(ink, primary, 0.55))
+        self.assertEqual(len(stops), 2)
+        (_, _, _, a1), (pr, pg, pb, _) = stops
+        # The ink end keeps the full legibility alpha…
+        self.assertEqual(a1, 0.55)
+        # …and the brand end is closer to the ink than the raw primary is, so
+        # the photo underneath keeps its own hues.
+        raw = _hex_to_rgb(primary)
+        ink_rgb = _hex_to_rgb(ink)
+        dist = lambda c: sum(abs(x - y) for x, y in zip(c, ink_rgb))  # noqa: E731
+        self.assertLess(dist((pr, pg, pb)), dist(raw))
+
+    def test_brand_end_still_carries_the_hue(self):
+        # Mixing toward ink must not flatten the tint to grey — the gradient
+        # still has to read as the brand's colour.
+        stops = self._rgba(brand_overlay_gradient("#221d2b", "#7c3aed", 0.55))
+        pr, pg, pb, _ = stops[1]
+        self.assertGreater(max(pr, pg, pb) - min(pr, pg, pb), 30)
+
+    def test_alpha_ratio_between_the_two_ends_is_preserved(self):
+        for alpha in (0.14, 0.24, 0.34):
+            stops = self._rgba(brand_overlay_gradient("#0f172a", "#2563eb", alpha))
+            self.assertEqual(stops[0][3], alpha)
+            self.assertAlmostEqual(stops[1][3], round(alpha * 0.82, 2), places=2)
+
+    def test_photo_background_layers_scrim_over_cast_over_photo(self):
+        css = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        layers, depth, start = [], 0, 0
+        for i, ch in enumerate(css):  # split on top-level commas only
+            depth += (ch == "(") - (ch == ")")
+            if ch == "," and depth == 0:
+                layers.append(css[start:i].strip())
+                start = i + 1
+        layers.append(css[start:].strip())
+        self.assertTrue(layers[0].startswith("radial-gradient("), layers[0][:24])
+        self.assertTrue(layers[1].startswith("linear-gradient("), layers[1][:24])
+        self.assertEqual(layers[2], "url('https://x/p.jpg')")
+
+    def test_scrim_fades_to_fully_transparent_before_the_edge(self):
+        # The corners must show the photograph, not a wash — that is the whole
+        # point of paying for legibility locally.
+        css = text_scrim_gradient("#221d2b", 0.34)
+        self.assertIn(",0)", css.replace(" ", ""))
+
+    def test_cast_and_scrim_compound_to_the_legibility_sheet(self):
+        """The invariant the split rests on: behind the copy the two layers add
+        up to the single sheet that was there before (0.30→0.62 on the same
+        luminance ramp), so every ink derived from _SCRIM_COMPOSITE_BG stays
+        valid — while the edges carry only the much fainter cast."""
+        for avg, old_sheet in (("#2b2b2b", 0.31), ("#808080", 0.37), ("#e0e0e0", 0.54)):
+            cast = overlay_alpha(avg)
+            scrim = round(cast * _TEXT_SCRIM_RATIO, 2)
+            centre = 1 - (1 - cast) * (1 - scrim)
+            self.assertAlmostEqual(centre, old_sheet, delta=0.02, msg=avg)
+            # …and outside the scrim the photo is roughly twice as visible.
+            self.assertLess(cast, old_sheet * 0.62, msg=avg)
 
 
 class CapGradientTexturesTest(unittest.TestCase):

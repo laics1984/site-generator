@@ -11,9 +11,13 @@ from app.services.theme import (
     build_theme,
     resolve_color_scheme,
     _CURATED_PALETTES,
+    _INK_MAX_LIGHTNESS,
+    _INK_MAX_SATURATION,
+    _hex_to_rgb,
     _palette_from_curated,
     _contrast,
     _relative_luminance,
+    _rgb_to_hls,
 )
 
 MOODS: tuple[BrandMood, ...] = (
@@ -173,6 +177,43 @@ class CuratedPaletteTest(unittest.TestCase):
             self.assertGreaterEqual(_contrast(p.secondary, "#ffffff"), 4.5, c.name)
             # Light section surface stays clearly light for section rhythm.
             self.assertGreater(_relative_luminance(p.surface), 0.85, c.name)
+
+    def test_curated_dark_band_is_an_ink_not_a_saturated_brand_shade(self):
+        """`secondary` paints every heading, every body line and every dark
+        band, so it must read as a hue-tinted ink. Left at a curated palette's
+        full-chroma `dark` (violet-900, red-950) the whole page becomes one
+        colour wash and the brand hue stops meaning anything — the 60-30-10
+        split needs the neutrals to be neutral."""
+        # Tolerance covers one 8-bit rounding step through the HLS round-trip.
+        eps = 1 / 255
+        for c in _CURATED_PALETTES:
+            p = _palette_from_curated(c)
+            _, l, s = _rgb_to_hls(*_hex_to_rgb(p.secondary))
+            self.assertLessEqual(s, _INK_MAX_SATURATION + eps, f"{c.name}: ink too saturated")
+            self.assertLessEqual(l, _INK_MAX_LIGHTNESS + eps, f"{c.name}: ink too light")
+            # …while a CHROMATIC `primary` stays vivid: it is the 10% that
+            # marks actions. Deliberately achromatic palettes (E-commerce
+            # Luxury's near-black stone) are exempt — they have no hue to keep.
+            primary_s = _rgb_to_hls(*_hex_to_rgb(p.primary))[2]
+            if primary_s >= 0.3:
+                self.assertGreater(
+                    primary_s, s, f"{c.name}: primary no more saturated than the ink"
+                )
+
+    def test_curated_ink_keeps_the_palette_hue(self):
+        # Desaturating must not flatten the ink to a generic grey — the deep
+        # violet band should still read violet-black, not slate.
+        community = next(c for c in _CURATED_PALETTES if c.slug == "community")
+        ink = _palette_from_curated(community).secondary
+        ink_h, _, ink_s = _rgb_to_hls(*_hex_to_rgb(ink))
+        dark_h = _rgb_to_hls(*_hex_to_rgb(community.dark))[0]
+        self.assertGreater(ink_s, 0.05, "ink flattened to grey")
+        # Within a few degrees — an inky colour quantises coarsely in 8-bit.
+        self.assertLess(abs(ink_h - dark_h) * 360, 5)
+
+    def test_an_already_inky_curated_dark_is_left_alone(self):
+        luxury = next(c for c in _CURATED_PALETTES if c.slug == "e-commerce-luxury")
+        self.assertEqual(_palette_from_curated(luxury).secondary, luxury.dark.lower())
 
     def test_curated_mode_picks_within_industry(self):
         saas = {c.primary.lower() for c in _CURATED_PALETTES if "saas" in c.categories}

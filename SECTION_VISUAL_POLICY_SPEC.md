@@ -117,7 +117,24 @@ The luminance pass runs in this order:
 |---|---|---|
 | 1 | Font ↔ its own background (readability, WCAG AA) | **hard** |
 | 2 | Featured image ↔ its container (anchored band) | **hard** |
-| 3 | Strict alternation / adjacent-bg contrast | best-effort (separator fallback) |
+| 3 | Panelled section forced light (§3.3a) | **hard** |
+| 4 | Strict alternation / adjacent-bg contrast | best-effort (separator fallback) |
+
+#### 3.3a Panelled sections are forced light
+
+A section whose content sits inside **one** inset, rounded, self-filled card —
+the banner-CTA shape, `cta-banner` and anything built like it — is forced to the
+**light** band before resolution, as a `band_override`. The panel is the
+section's colour statement; painted onto a dark brand band its fill lands on a
+near-identical colour and its border/radius read as a rendering accident rather
+than a frame. Such templates say so themselves by defaulting their own root to
+the page background, and the pass must not override that intent.
+
+Detection is structural (`section_content._has_inset_panel`): exactly one child
+container carrying its own fill and a ≥16px radius. A card **grid** never
+matches — its cards are self-filled *siblings*, so the count is >1 — and a
+filled button never matches, being a `link` rather than a container. An explicit
+`band_override` still wins, so a deliberate dark panelled section stays dark.
 
 ### 3.4 Photos filtered to their band (flexible photos)
 
@@ -253,8 +270,20 @@ class ImageMetadata(BaseModel):
 | 1 | **Font ↔ its own background** | within section | hard | `theme._text_for_background()`; `_ensure_contrast_against()` nudges a failing brand colour (hue preserved). Holds even when a light-band section is forced dark — font flips. |
 | 2 | **Featured image ↔ its container** | within section | hard | Anchored band = opposite of measured image luminance (§3.2). |
 | 3 | **Background ↔ adjacent background** | between sections | best-effort | Strict alternation; separator fallback (§3.3 step 4) when two anchors collide. |
+| 4 | **Ink ↔ a brand gradient it prints on** | within a filled panel/band | hard | `section_content.enforce_fill_contrast` resolves `var(--builder-color-*)` stops to concrete hexes and darkens them until every ink on the fill clears AA. |
 
-No new colour math — all three use existing `theme.py` helpers.
+No new colour math — all four use existing `theme.py` helpers.
+
+Pairing 4 exists because a catalog template paints with **tokens**, so it cannot
+know what its own fill will look like in a given theme: `cta-banner` ramps
+`secondary → primary`, and white lands at 3.7:1 on a teal brand, 2.0:1 on a lime
+one. Thresholds are size-aware — 4.5:1 for body copy, 3.5:1 for WCAG "large"
+display type (above the 3:1 floor, since a gradient puts part of every line on
+its weakest end) — so a display-only panel keeps its brand colour and only real
+small-text failures cost saturation. Translucent inks are composited over the
+stop before measuring. Resolving the tokens has a second benefit: `ux_audit`
+reads no colour from a gradient, so a token-painted fill was invisible to the
+contrast audit entirely.
 
 ---
 
@@ -268,10 +297,29 @@ palette already encodes 60-30-10, WCAG AA, and a split-complementary accent
 | Need | Brand token / helper |
 |---|---|
 | **light** band flat/grain | `surface` / `background` (faint primary tint) |
-| **dark** band flat/grain | `secondary` (dark, primary-hued, not pure black) |
-| photo filter wash | overlay tinted toward `primary`/`secondary` — binds photos into the brand |
+| **dark** band flat/grain | `secondary` — the brand **ink**: the palette hue at near-neutral chroma, not a saturated deep brand shade (see below) |
+| photo filter wash | two layers (`image_styling.photo_background`): a faint all-over brand cast whose brand end is mixed toward the ink, plus a centre scrim behind the copy. They compound to the legibility sheet where text sits and leave the rest of the frame reading as a photograph |
 | derived light/dark shade (incl. separator step) | `_adjust_lightness()` off `surface`/`secondary` |
 | font colour | `_text_for_background()` / `_ensure_contrast_against()` |
+
+**`secondary` is an ink, not a brand colour.** It is the most-repeated value on a
+page — every heading, every body line (via `_muted`), every dark band, one end of
+every brand gradient. Spent at full brand chroma (violet-900, red-950) the page
+becomes a single colour wash and the brand hue stops signalling anything, so
+`theme._brand_ink()` caps it at low saturation and ink lightness while keeping
+the palette's hue. `primary`/`accent` stay vivid: that is the 10% that marks
+actions. The same reasoning bounds the photo overlay — a saturated hue
+composited at legibility alpha *repaints* a photo rather than tinting it, so the
+overlay's brand end is mixed toward the ink first.
+
+**The photo overlay pays for legibility locally, not everywhere.** One uniform
+sheet dark enough for a bright photo's headline also flattens the ~70% of the
+frame that carries no text, which is what turns a hero into a colour block with
+a picture buried in it. So the wash is split: an all-over brand *cast*
+(α 0.14→0.34 on the luminance ramp) plus a centre *scrim* that fades to zero
+before the edges. Behind the copy the two compound back to the old single sheet
+(α 0.30→0.62), so `_SCRIM_COMPOSITE_BG` and every ink derived from it stay
+valid; outside it, coverage roughly halves and the photograph shows.
 
 **"Complementary site theme" clarified:** one cohesive palette, alternating
 **luminance within it** (`surface` ↔ `secondary`, same hue family). The true

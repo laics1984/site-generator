@@ -21,7 +21,7 @@ that descriptions cannot guarantee.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal
 from urllib.parse import quote_plus
 
@@ -49,6 +49,7 @@ from app.services.template_filler import get_template, templates_for_type
 from app.services.theme import (
     _adjust_lightness,
     _contrast,
+    _ensure_contrast_against,
     _hex_to_rgb,
     _relative_luminance,
     _text_for_background,
@@ -846,6 +847,53 @@ def _is_own_surface(styles: dict[str, Any]) -> bool:
     return bg not in (None, "transparent", "rgba(0,0,0,0)")
 
 
+# A "panelled" section holds its whole message inside ONE inset card that paints
+# its own fill — the banner-CTA pattern (a rounded, bordered gradient panel
+# floating on the page background). That panel is the section's colour
+# statement, and it only works when the band behind it stays quiet: paint the
+# band dark and the panel's brand fill lands on a near-identical colour, so its
+# border and corner radius read as a rendering accident rather than a frame.
+# Templates like `cta-banner` say as much by defaulting their own root to the
+# page background — this keeps the luminance pass from overriding that intent.
+_PANEL_MIN_RADIUS_PX = 16
+_PX = re.compile(r"(-?[\d.]+)\s*px")
+
+
+def _radius_px(styles: dict[str, Any]) -> float:
+    """First px value in `borderRadius`, or 0 for absent/non-px (%, var()) radii."""
+    m = _PX.search(str(styles.get("borderRadius") or ""))
+    return float(m.group(1)) if m else 0.0
+
+
+def _lone_inset_panel(node: BuilderElement) -> bool:
+    """True when exactly ONE of `node`'s children is a rounded, self-filled
+    container — the inset-panel shape. A card GRID never matches: its cards are
+    self-filled siblings, so the count is >1. Buttons never match either: they
+    are `link`s, not containers."""
+    children = node.content if isinstance(node.content, list) else []
+    surfaced = [
+        c for c in children if c.type == "container" and _is_own_surface(c.styles or {})
+    ]
+    return len(surfaced) == 1 and _radius_px(surfaced[0].styles or {}) >= _PANEL_MIN_RADIUS_PX
+
+
+def _has_inset_panel(node: BuilderElement, depth: int = 0) -> bool:
+    """Whether a section is panelled (see `_lone_inset_panel`). Descends only
+    through fill-less wrapper containers — a template may centre its panel in a
+    plain max-width wrapper — and stops at the first element that paints
+    something, so nothing nested inside a panel or card counts."""
+    if _lone_inset_panel(node):
+        return True
+    if depth >= 2:
+        return False
+    children = node.content if isinstance(node.content, list) else []
+    return any(
+        _has_inset_panel(c, depth + 1)
+        for c in children
+        if c.type == "container" and not _is_own_surface(c.styles or {})
+    )
+
+
 def _recolor_text_for_dark(
     node: BuilderElement, color: str, *, inside_surface: bool = False
 ) -> None:
@@ -876,7 +924,20 @@ def apply_luminance_rhythm(
     step + hairline border on forced anchor collisions (§3.3 step 4). Returns the
     plans so the caller can run the legacy rhythm over the non-participants.
     Mutates `sections` in place. See SECTION_VISUAL_POLICY_SPEC.md §6/§7.
+
+    A panelled section (its content sits in one inset, self-filled card — see
+    `_has_inset_panel`) is forced LIGHT before the plan resolves, so the panel
+    keeps a quiet backdrop to sit on. Overriding at the input stage rather than
+    repainting afterwards keeps alternation and the separator rule honest: the
+    neighbouring sections flip around the forced band instead of colliding with
+    it unannounced.
     """
+    inputs = [
+        replace(s, band_override="light")
+        if s.participates and s.band_override is None and _has_inset_panel(section)
+        else s
+        for s, section in zip(inputs, sections)
+    ]
     plans = resolve_section_bands(inputs)
     for section, plan in zip(sections, plans):
         if plan.band is None:
@@ -997,6 +1058,221 @@ def _has_real_photo(styles: dict[str, Any]) -> bool:
                 if not m.group(1).strip().lower().startswith("data:"):
                     return True
     return False
+
+
+# --- filled-panel passes --------------------------------------------------------
+#
+# A catalog template paints its brand fills with `var(--builder-color-*)` tokens,
+# which the renderer resolves per theme — so the template cannot know what its
+# own gradient will end up looking like, and cannot guarantee the ink printed on
+# it stays readable. `cta-banner` is the case that bites: its panel ramps
+# secondary → primary, and on a mid-luminance brand (teal #0891b2) white lands at
+# 3.7:1, which is under AA for anything but large text; on an amber or lime brand
+# even the headline fails. These passes run over the ASSEMBLED tree, where both
+# the fill and the inks on it are known, and resolve the tokens to concrete hexes
+# the audit can also read (ux_audit._color_of returns None for a gradient, so a
+# token-painted fill is invisible to it).
+
+# AA thresholds. Large text (WCAG: ≥24px, or ≥18.66px bold) is allowed 3:1, but a
+# floor is not a target on a marketing surface — and a gradient means part of the
+# line always sits at the weakest end — so display type is held to 3.5:1.
+_FILL_MIN_CONTRAST = 4.5
+_FILL_MIN_CONTRAST_LARGE = 3.5
+_LARGE_TEXT_PX = 24.0
+_LARGE_BOLD_PX = 18.66
+_PX_VALUE = _re.compile(r"(-?[\d.]+)\s*px")
+# `var(--builder-color-x, #fallback)` / `var(--builder-page-background)`
+_VAR_COLOR = _re.compile(r"var\(\s*(--builder-[a-z-]+)\s*(?:,[^)]*)?\)")
+_HEX_LITERAL = _re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
+
+
+def _first_px(value: object) -> float | None:
+    m = _PX_VALUE.search(str(value or ""))
+    return float(m.group(1)) if m else None
+
+
+def _is_large_text(styles: dict[str, Any]) -> bool:
+    """WCAG "large text": ≥24px, or ≥18.66px at bold. A fluid clamp() reads as
+    its smallest px value, which is the size that has to pass."""
+    size = _first_px(styles.get("fontSize"))
+    if size is None:
+        return False
+    try:
+        weight = int(styles.get("fontWeight") or 400)
+    except (TypeError, ValueError):
+        weight = 400
+    return size >= _LARGE_TEXT_PX or (weight >= 700 and size >= _LARGE_BOLD_PX)
+
+
+def _inks_printed_on(node: BuilderElement, theme: ThemeTokens) -> list[tuple[tuple[int, int, int], float, float]]:
+    """Every ink printed directly on `node`'s own fill, as
+    (rgb, alpha, min_contrast). Stops at any descendant carrying its own surface
+    — a white button on the panel brings its own background, so its label is
+    that button's problem, not the fill's."""
+    out: list[tuple[tuple[int, int, int], float, float]] = []
+
+    def visit(el: BuilderElement, *, root: bool = False) -> None:
+        st = el.styles or {}
+        if not root and _is_own_surface(st):
+            return
+        if el.type in ("text", "link"):
+            parsed = _parse_color(st.get("color"), theme)
+            if parsed is not None:
+                rgb, alpha = parsed
+                floor = _FILL_MIN_CONTRAST_LARGE if _is_large_text(st) else _FILL_MIN_CONTRAST
+                out.append((rgb, alpha, floor))
+        if isinstance(el.content, list):
+            for child in el.content:
+                visit(child)
+
+    visit(node, root=True)
+    return out
+
+
+def _darkened_for_inks(
+    stop_hex: str, inks: list[tuple[tuple[int, int, int], float, float]]
+) -> str:
+    """`stop_hex` pushed away from every ink until each clears its own floor.
+
+    Translucent inks are composited over the stop before measuring — an
+    rgba(255,255,255,0.86) subheading reads dimmer than pure white, so it needs
+    a darker stop, and the composite shifts as the stop moves. Two rounds settle
+    it (each `_ensure_contrast_against` call is itself iterative)."""
+    result = stop_hex
+    for _ in range(2):
+        for rgb, alpha, floor in inks:
+            effective = _to_hex(
+                _composite(rgb, alpha, _hex_to_rgb(result)) if alpha < 1.0 else rgb
+            )
+            if _contrast(effective, result) < floor:
+                result = _ensure_contrast_against(effective, result, min_ratio=floor)
+    return result
+
+
+def enforce_fill_contrast(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """Resolve brand-token colour stops in opaque gradient fills to concrete
+    hexes, darkened until the ink printed on them meets AA. In place.
+
+    Only fills with no photo are touched (a photo's own overlay is tuned
+    separately in `image_styling.photo_background`), and only `var(--builder-*)`
+    tokens and hex literals are rewritten — rgba() stops are decorative
+    highlights layered over the real fill, so moving them would change the
+    design rather than its contrast.
+    """
+    def visit(el: BuilderElement) -> None:
+        st = el.styles or {}
+        if _has_opaque_gradient(st) and not _has_real_photo(st):
+            inks = _inks_printed_on(el, theme)
+            if inks:
+                new_styles = dict(st)
+                changed = False
+                for key in ("background", "backgroundImage"):
+                    css = new_styles.get(key)
+                    if not isinstance(css, str) or "gradient(" not in css:
+                        continue
+
+                    def fix(hex_value: str) -> str:
+                        return _darkened_for_inks(_expand_hex(hex_value), inks)
+
+                    def sub_var(m: _re.Match[str]) -> str:
+                        concrete = _token_hex(m.group(1), theme)
+                        return fix(concrete) if concrete else m.group(0)
+
+                    rewritten = _HEX_LITERAL.sub(
+                        lambda m: fix(m.group(0)), _VAR_COLOR.sub(sub_var, css)
+                    )
+                    if rewritten != css:
+                        new_styles[key] = rewritten
+                        changed = True
+                if changed:
+                    el.styles = new_styles
+        if isinstance(el.content, list):
+            for child in el.content:
+                visit(child)
+
+    for section in sections:
+        visit(section)
+
+
+# Measure cap for a panel's centred headline. Without one the line runs the full
+# inner width of a 1280px panel — ~60 characters on a single line that stops just
+# short of the padding, which reads as a strip of text rather than a headline.
+# `cta-gradient`, the sibling template, caps its content at 760px for the same
+# reason. `balance` splits the wrap evenly instead of leaving one orphan word.
+_PANEL_HEADING_MAX_WIDTH = "820px"
+
+
+def polish_inset_panels(sections: list[BuilderElement]) -> None:
+    """Fix the two things a template can't know about its own inset panel: the
+    headline has no measure cap, and the panel's hairline was authored for a
+    light page. In place.
+
+    A dark-filled panel with a DARK hairline has no visible edge at all (over
+    the ink end it disappears, over the brand end it muddies); what reads on a
+    filled panel is a light inner hairline, so the border is flipped to match
+    the fill it actually sits on.
+    """
+    for section in sections:
+        if not _has_inset_panel(section):
+            continue
+        panel = _find_panel(section)
+        if panel is None:
+            continue
+        st = dict(panel.styles or {})
+        border = st.get("border")
+        if isinstance(border, str) and border and _fill_is_dark(st):
+            st["border"] = "1px solid rgba(255,255,255,0.14)"
+            panel.styles = st
+        heading = _first_text(panel)
+        if heading is not None and "maxWidth" not in (heading.styles or {}):
+            heading.styles = {
+                **(heading.styles or {}),
+                "maxWidth": _PANEL_HEADING_MAX_WIDTH,
+                "marginLeft": "auto",
+                "marginRight": "auto",
+                "textWrap": "balance",
+            }
+
+
+def _find_panel(node: BuilderElement, depth: int = 0) -> BuilderElement | None:
+    """The inset panel `_has_inset_panel` matched (same walk, returns the node)."""
+    children = node.content if isinstance(node.content, list) else []
+    surfaced = [
+        c for c in children if c.type == "container" and _is_own_surface(c.styles or {})
+    ]
+    if len(surfaced) == 1 and _radius_px(surfaced[0].styles or {}) >= _PANEL_MIN_RADIUS_PX:
+        return surfaced[0]
+    if depth >= 2:
+        return None
+    for child in children:
+        if child.type == "container" and not _is_own_surface(child.styles or {}):
+            found = _find_panel(child, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _fill_is_dark(styles: dict[str, Any]) -> bool:
+    """Whether a panel's own fill reads dark — judged on its LIGHTEST colour
+    stop, the one a hairline has to survive against."""
+    text = " ".join(
+        str(styles.get(k) or "") for k in ("background", "backgroundImage", "backgroundColor")
+    )
+    lums = [
+        _relative_luminance(_expand_hex(m.group(0))) for m in _HEX_LITERAL.finditer(text)
+    ]
+    return bool(lums) and max(lums) < 0.5
+
+
+def _first_text(node: BuilderElement) -> BuilderElement | None:
+    if node.type == "text":
+        return node
+    if isinstance(node.content, list):
+        for child in node.content:
+            found = _first_text(child)
+            if found is not None:
+                return found
+    return None
 
 
 _WHATSAPP_HREF = re.compile(r"(?:^whatsapp:|//wa\.me/|//api\.whatsapp\.com/)", re.IGNORECASE)

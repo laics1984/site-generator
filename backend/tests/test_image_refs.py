@@ -9,11 +9,15 @@ import unittest
 
 from app.models.content_blocks import (
     AboutBlock,
+    FeatureItem,
+    FeaturesBlock,
     GalleryBlock,
     GalleryItem,
     HeroBlock,
     ImageMetadata,
     PagePlan,
+    ServiceItem,
+    ServicesBlock,
     SourceContent,
 )
 from app.services.image_refs import bind_image_refs
@@ -182,6 +186,109 @@ class BindImageRefsTest(unittest.TestCase):
         pages = self._pages([AboutBlock(heading="A", body="", image_ref=0)])
         bind_image_refs(pages, {"school-life": _source(images)})
         self.assertEqual(pages[0].blocks[0].image_url, "https://x/photo.jpg")
+
+
+class BindFitnessTest(unittest.TestCase):
+    """A ref the LLM bound is only honoured when the photo SUITS the section.
+    The headline case: a committee headshot must not become a services card's
+    photo (four strangers' faces where the services should be).
+
+    Photos the render pass already tagged role="portrait" never reach the
+    prompt list at all (promptable_images filters them), so what this guard
+    catches is the headshot that got through as ordinary content and only the
+    vision pass recognised."""
+
+    def _pages(self, blocks) -> list[PagePlan]:
+        return [
+            PagePlan(
+                page_type="landing",
+                slug="school-life",
+                title="School Life",
+                description="",
+                is_homepage=False,
+                blocks=blocks,
+                seo_title="t",
+                seo_description="d",
+            )
+        ]
+
+    def _services(self, **item_kw) -> ServicesBlock:
+        return ServicesBlock(
+            heading="Our Services",
+            items=[ServiceItem(title="Assessment", description="…", **item_kw)],
+        )
+
+    def test_portrait_is_not_bound_to_a_services_card(self):
+        images = [_meta("https://x/chair.jpg", vision_portrait=True, alt="Dr Lim, Chair")]
+        pages = self._pages([self._services(image_query="therapist with client", image_ref=0)])
+        bound = bind_image_refs(pages, {"school-life": _source(images)})
+
+        item = pages[0].blocks[0].items[0]
+        self.assertIsNone(item.image_url)  # falls back to its image_query
+        self.assertIsNone(item.image_ref)
+        self.assertEqual(bound, set())
+
+    def test_portrait_is_not_bound_to_a_features_card_either(self):
+        images = [_meta("https://x/face.jpg", vision_portrait=True)]
+        pages = self._pages(
+            [
+                FeaturesBlock(
+                    heading="What we do",
+                    items=[
+                        FeatureItem(
+                            title="Assessment",
+                            description="…",
+                            image_query="therapist assessing a client",
+                            image_ref=0,
+                        )
+                    ],
+                )
+            ]
+        )
+        bind_image_refs(pages, {"school-life": _source(images)})
+        self.assertIsNone(pages[0].blocks[0].items[0].image_url)
+
+    def test_portrait_still_binds_for_a_gallery(self):
+        images = [_meta("https://x/chair.jpg", vision_portrait=True)]
+        pages = self._pages(
+            [GalleryBlock(heading="G", items=[GalleryItem(image_query="k", image_ref=0)])]
+        )
+        bind_image_refs(pages, {"school-life": _source(images)})
+        self.assertEqual(pages[0].blocks[0].items[0].image_url, "https://x/chair.jpg")
+
+    def test_css_background_is_not_bound_to_an_about_section(self):
+        images = [_meta("https://x/wash.jpg", source_usage="css_background")]
+        pages = self._pages([AboutBlock(heading="A", body="", image_ref=0)])
+        bind_image_refs(pages, {"school-life": _source(images)})
+        self.assertIsNone(pages[0].blocks[0].image_url)
+
+    def test_background_role_still_binds_to_a_background_hero(self):
+        images = [_meta("https://x/wash.jpg", role="background")]
+        pages = self._pages([HeroBlock(headline="H", layout="background", image_ref=0)])
+        bind_image_refs(pages, {"school-life": _source(images)})
+        self.assertEqual(pages[0].blocks[0].image_url, "https://x/wash.jpg")
+
+    def test_screenshot_is_never_bound(self):
+        images = [_meta("https://x/ui.png", vision_kind="screenshot")]
+        pages = self._pages([AboutBlock(heading="A", body="", image_ref=0)])
+        bind_image_refs(pages, {"school-life": _source(images)})
+        self.assertIsNone(pages[0].blocks[0].image_url)
+
+    def test_a_rejected_ref_leaves_the_photo_free_for_a_later_section(self):
+        # The drop must not consume the photo: the team section that SHOULD own
+        # the headshot still gets it.
+        images = [_meta("https://x/chair.jpg", vision_portrait=True)]
+        pages = self._pages(
+            [
+                self._services(image_query="therapy session", image_ref=0),
+                GalleryBlock(
+                    heading="G", items=[GalleryItem(image_query="k", image_ref=0)]
+                ),
+            ]
+        )
+        bind_image_refs(pages, {"school-life": _source(images)})
+        self.assertIsNone(pages[0].blocks[0].items[0].image_url)
+        self.assertEqual(pages[0].blocks[1].items[0].image_url, "https://x/chair.jpg")
 
 
 class PinnedResolveTest(unittest.TestCase):

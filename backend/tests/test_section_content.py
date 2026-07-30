@@ -295,3 +295,36 @@ class ImageCardTemplatesTest(unittest.TestCase):
         self.assertEqual(len(srcs), 3)
         self.assertIn("https://x/kindy.jpg", srcs)  # bound photo used verbatim
         self.assertTrue(any("stock.example" in s for s in srcs))  # queries resolved
+
+
+class CtaLabelHealingTest(unittest.TestCase):
+    """A button label is a verb phrase, not a sentence. Over-long labels are
+    almost always a source nav link that leaked into the slot — the button then
+    offers a different journey than its headline just promised."""
+
+    def _label(self, raw):
+        return CtaBlock(headline="Join our effort", cta_label=raw).cta_label
+
+    def test_a_nav_link_is_trimmed_to_its_verb_phrase(self):
+        self.assertEqual(self._label("Learn More About Our Committee Members"), "Learn More")
+
+    def test_a_trailing_function_word_is_dropped(self):
+        # "Register For" reads worse than "Register".
+        self.assertEqual(self._label("Register For The Annual Conference Today"), "Register")
+
+    def test_a_label_with_no_function_word_is_capped_by_words(self):
+        self.assertEqual(self._label("Find a Music Therapist Near You"), "Find a Music Therapist")
+
+    def test_tight_labels_are_left_alone(self):
+        for label in ("Join Our Community", "Get Involved Now", "Donate", "Book a call"):
+            self.assertEqual(self._label(label), label)
+
+    def test_blank_still_heals_to_the_default(self):
+        self.assertEqual(self._label("   "), "Get started")
+        self.assertEqual(self._label(None), "Get started")
+
+    def test_the_hero_cta_gets_the_same_treatment(self):
+        hero = HeroBlock(
+            headline="H", primary_cta_label="Learn More About Our Committee Members"
+        )
+        self.assertEqual(hero.primary_cta_label, "Learn More")

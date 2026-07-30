@@ -220,6 +220,7 @@ def rank_candidates(
     candidates: list[ImageMetadata],
     *,
     slot_usage: SlotUsage = "any",
+    allow_portrait: bool = False,
 ) -> RankResult:
     """Pure-Python ranking — no LLM. Returns the best candidate or None.
 
@@ -234,32 +235,45 @@ def rank_candidates(
     cropped into an <img> it reads as a scrape failure. A 'background' slot
     prefers the source's own background images over inline photos.
 
+    `allow_portrait` opts a slot INTO head-and-shoulders photos of people; see
+    the filter below for why it defaults off.
+
     Use rank_candidates_with_llm_tiebreaker() if you want the LLM judge to
     settle ambiguous cases.
     """
     candidates = [c for c in candidates if c.role not in _EXCLUDED_ROLES]
     if slot_usage == "inline":
         candidates = [c for c in candidates if c.source_usage != "css_background"]
-    # A background slot stretches its image edge-to-edge behind text. A grid
-    # headshot (role=portrait) blown up that way reads as a scrape failure —
-    # a face filling the viewport — whatever its resolution. Portraits stay
-    # rankable for ordinary content slots (team cards, small features).
-    if slot_usage == "background":
+    # Portraits are OPT-IN, because almost no slot wants one. A scraped site's
+    # headshots come from its team/committee/directory page, and a headshot
+    # only means something in a slot that is ABOUT that person (a team card, a
+    # testimonial author). Dropped into any other slot it shows a stranger's
+    # face where the slot's subject belongs — a services grid rendering four
+    # committee members as if they were the services. Team/testimonial avatars
+    # come from stock (intent="avatar" skips the scraped pool entirely), so the
+    # opt-in is for the slots that replay the source's own photos: gallery
+    # cells, and directory rosters built from scraped profiles.
+    if not allow_portrait:
+        candidates = [
+            c for c in candidates if c.role != "portrait" and not c.vision_portrait
+        ]
+    elif slot_usage == "background":
+        # A grid headshot stretched edge-to-edge behind text reads as a scrape
+        # failure — a face filling the viewport — whatever the slot allows.
         candidates = [c for c in candidates if c.role != "portrait"]
-        if slot_intent == "hero":
-            # Gallery cells were cropped for a grid, never art-directed
-            # full-bleed; keep them off the hero background specifically.
-            candidates = [c for c in candidates if c.role != "gallery"]
+    if slot_usage == "background" and slot_intent == "hero":
+        # Gallery cells were cropped for a grid, never art-directed full-bleed;
+        # keep them off the hero background specifically.
+        candidates = [c for c in candidates if c.role != "gallery"]
     # Large featured slots (hero / about) must be real featured photographs. A
-    # banner, UI screenshot, graphic (e.g. a QR code), map — or a lone grid
-    # headshot — blown up as the hero/about image reads as a scrape failure,
-    # so exclude those here, not just from the intent-pin below. They stay
-    # eligible for ordinary content slots (a screenshot is legitimate on a
-    # small SaaS feature card; a portrait on a team card).
+    # banner, UI screenshot, graphic (e.g. a QR code) or map blown up as the
+    # hero/about image reads as a scrape failure, so exclude those here, not
+    # just from the intent-pin below. They stay eligible for ordinary content
+    # slots (a screenshot is legitimate on a small SaaS feature card).
     if slot_intent in PRIMARY_INTENTS:
         candidates = [
             c for c in candidates
-            if c.role != "portrait"
+            if c.role != "portrait"  # never, whatever the slot opted into
             and (c.vision_kind is None or c.vision_kind not in _UNPINNABLE_VISION_KINDS)
         ]
     if not candidates:
@@ -341,12 +355,16 @@ async def rank_candidates_with_llm_tiebreaker(
     *,
     llm: LlmClient | None = None,
     slot_usage: SlotUsage = "any",
+    allow_portrait: bool = False,
 ) -> RankResult:
     """Heuristic first; if ambiguous AND multiple candidates are tied near the
     top, ask the LLM to break the tie. Falls through to fallback if the LLM
     says none of them fit.
     """
-    initial = rank_candidates(query, slot_intent, candidates, slot_usage=slot_usage)
+    initial = rank_candidates(
+        query, slot_intent, candidates, slot_usage=slot_usage,
+        allow_portrait=allow_portrait,
+    )
     if initial.decision != "tiebreaker":
         return initial
 

@@ -126,7 +126,9 @@ def _below_hero_bg_min(meta: ImageMetadata | None, min_long_edge: int) -> bool:
     return False
 
 
-def _unfit_for_featured_pin(meta: ImageMetadata | None, slot_usage: SlotUsage) -> bool:
+def _unfit_for_featured_pin(
+    meta: ImageMetadata | None, slot_usage: SlotUsage, *, allow_portrait: bool = False
+) -> bool:
     """True when a scraped image the LLM bound via image_ref must not be
     honored as-is for a content section's featured slot.
 
@@ -136,8 +138,18 @@ def _unfit_for_featured_pin(meta: ImageMetadata | None, slot_usage: SlotUsage) -
     must never win an inline "featured" slot (about, features, services,
     team, gallery, a split-hero side image): it's decorative, not a photo of
     the section's subject. A `background` slot_usage is exempt outright.
+
+    A headshot is rejected on the same grounds unless the slot opted into
+    portraits (`allow_portrait`, see image_match.rank_candidates) — a bound
+    committee photo on a services card is still the wrong photo, whoever chose
+    it. Portraits are checked before the background exemption: a face stretched
+    full-bleed is never right.
     """
-    if meta is None or slot_usage == "background":
+    if meta is None:
+        return False
+    if not allow_portrait and (meta.role == "portrait" or meta.vision_portrait):
+        return True
+    if slot_usage == "background":
         return False
     if meta.role == "background" or meta.source_usage == "css_background":
         return True
@@ -230,6 +242,7 @@ class ImageResolver:
         prefer: list[ImageMetadata] | None = None,
         slot_usage: SlotUsage = "any",
         pinned_url: str | None = None,
+        allow_portrait: bool = False,
     ) -> PhotoResult:
         """Returns a usable PhotoResult. Always succeeds — the gradient placeholder is the final fallback.
 
@@ -247,6 +260,11 @@ class ImageResolver:
         image_ref (services/image_refs.py). It wins outright — no ranking, no
         stock fallback — because the source page actually used this photo for
         this section.
+
+        `allow_portrait`: set only by slots that are ABOUT a person or that
+        replay the source's own photos (gallery cells, directory rosters).
+        Every other slot excludes scraped headshots — see
+        image_match.rank_candidates.
         """
         # A full-bleed slot stretches its photo edge-to-edge (background-size:
         # cover), so a small scraped source image softens when upscaled. For any
@@ -271,7 +289,7 @@ class ImageResolver:
             # inline featured slot — then fall through so the resolver
             # reaches Pexels for a real photo instead.
             if not _below_hero_bg_min(meta, min_long_edge) and not _unfit_for_featured_pin(
-                meta, slot_usage
+                meta, slot_usage, allow_portrait=allow_portrait
             ):
                 self._used_urls.add(pinned_url)
                 lum, band = _band_fields(meta.dominant_color if meta else None)
@@ -298,7 +316,7 @@ class ImageResolver:
         if intent in _SCRAPED_ELIGIBLE_INTENTS:
             picked = await self._take_best_scraped(
                 query, intent, prefer=prefer, slot_usage=slot_usage,
-                min_long_edge=min_long_edge,
+                min_long_edge=min_long_edge, allow_portrait=allow_portrait,
             )
             if picked is not None:
                 self._used_urls.add(picked.url)
@@ -522,6 +540,7 @@ class ImageResolver:
         prefer: list[ImageMetadata] | None = None,
         slot_usage: SlotUsage = "any",
         min_long_edge: int = 0,
+        allow_portrait: bool = False,
     ) -> ImageMetadata | None:
         """Rank unused scraped candidates against the slot. Returns None if the
         best match doesn't clear the threshold — caller falls through to Pexels.
@@ -547,7 +566,10 @@ class ImageResolver:
             prefer_urls = {c.url for c in prefer}
             local = [c for c in candidates if c.url in prefer_urls]
             if local:
-                result = await self._rank(query, intent, local, slot_usage=slot_usage)
+                result = await self._rank(
+                    query, intent, local, slot_usage=slot_usage,
+                    allow_portrait=allow_portrait,
+                )
                 if result.chosen is not None:
                     logger.debug(
                         "Page-local scraped image for '%s' (intent=%s): score=%.2f decision=%s",
@@ -564,8 +586,15 @@ class ImageResolver:
                 eligible = [c for c in local if c.role not in {"decoration", "logo"}]
                 if slot_usage == "inline":
                     eligible = [c for c in eligible if c.source_usage != "css_background"]
-                if slot_usage == "background" or intent in ("hero", "about"):
-                    eligible = [c for c in eligible if c.role != "portrait"]
+                if (
+                    not allow_portrait
+                    or slot_usage == "background"
+                    or intent in ("hero", "about")
+                ):
+                    eligible = [
+                        c for c in eligible
+                        if c.role != "portrait" and not c.vision_portrait
+                    ]
                 if eligible:
                     best = max(eligible, key=lambda c: (c.width or 0) * (c.height or 0))
                     logger.debug(
@@ -574,7 +603,10 @@ class ImageResolver:
                     )
                     return best
 
-        result = await self._rank(query, intent, candidates, slot_usage=slot_usage)
+        result = await self._rank(
+            query, intent, candidates, slot_usage=slot_usage,
+            allow_portrait=allow_portrait,
+        )
         if result.chosen is not None:
             logger.debug(
                 "Scraped image picked for '%s' (intent=%s): score=%.2f decision=%s",
@@ -595,13 +627,18 @@ class ImageResolver:
         candidates: list[ImageMetadata],
         *,
         slot_usage: SlotUsage = "any",
+        allow_portrait: bool = False,
     ):
         """Heuristic ranking, optionally with the bounded LLM tiebreaker."""
         if self._use_llm_tiebreaker:
             return await rank_candidates_with_llm_tiebreaker(
-                query, intent, candidates, slot_usage=slot_usage
+                query, intent, candidates, slot_usage=slot_usage,
+                allow_portrait=allow_portrait,
             )
-        return rank_candidates(query, intent, candidates, slot_usage=slot_usage)
+        return rank_candidates(
+            query, intent, candidates, slot_usage=slot_usage,
+            allow_portrait=allow_portrait,
+        )
 
     def strongest_source_background(self, min_dim: int = 900) -> ImageMetadata | None:
         """The best unused image the SOURCE site used as a CSS background, or

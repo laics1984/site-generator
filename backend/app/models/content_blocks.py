@@ -88,6 +88,42 @@ def _default_if_blank(value: object, default: str) -> object:
     return value
 
 
+# A button is a promise of one action, so its label is a verb phrase, not a
+# sentence. Long labels are almost always a source NAV link that leaked into the
+# slot ("Learn More About Our Committee Members" under a "Join Our Effort"
+# headline) — the button then sends the reader somewhere the headline never
+# offered. Trim at the first function word that still leaves a usable verb
+# phrase, so "Learn More About Our Committee Members" → "Learn More" and any
+# already-tight label ("Join Our Community", 18 chars) is untouched.
+_CTA_LABEL_MAX_CHARS = 24
+_CTA_LABEL_MAX_WORDS = 4
+_CTA_LABEL_STOP_WORDS = frozenset({
+    "about", "our", "the", "your", "their", "with", "for", "from", "of", "on",
+    "in", "at", "by", "and", "or", "to", "into", "all",
+})
+
+
+def _heal_cta_label(value: object, default: str) -> object:
+    """Blank → `default`; an over-long label → its leading verb phrase.
+
+    Cuts at the first function word from position 2 on (so a two-word verb
+    phrase always survives), then drops any function word left dangling at the
+    end — a button reading "Register For" is worse than one reading "Register".
+    """
+    healed = _default_if_blank(value, default)
+    if not isinstance(healed, str) or len(healed) <= _CTA_LABEL_MAX_CHARS:
+        return healed
+    words = healed.split()
+    cut = next(
+        (i for i, w in enumerate(words) if i >= 2 and w.lower() in _CTA_LABEL_STOP_WORDS),
+        min(len(words), _CTA_LABEL_MAX_WORDS),
+    )
+    kept = words[:cut]
+    while len(kept) > 1 and kept[-1].lower() in _CTA_LABEL_STOP_WORDS:
+        kept.pop()
+    return " ".join(kept)
+
+
 def _heal_image_ref(value: object) -> int | None:
     """Coerce an LLM-emitted image_ref onto a non-negative int, else None.
 
@@ -235,7 +271,7 @@ class HeroBlock(BaseModel):
     @field_validator("primary_cta_label", mode="before")
     @classmethod
     def heal_cta_label(cls, v: object) -> object:
-        return _default_if_blank(v, "Get started")
+        return _heal_cta_label(v, "Get started")
 
     @field_validator("primary_cta_href", mode="before")
     @classmethod
@@ -465,7 +501,7 @@ class CtaBlock(BaseModel):
     @field_validator("cta_label", mode="before")
     @classmethod
     def heal_cta_label(cls, v: object) -> object:
-        return _default_if_blank(v, "Get started")
+        return _heal_cta_label(v, "Get started")
 
     @field_validator("image_ref", mode="before")
     @classmethod

@@ -86,6 +86,12 @@ Strongly prefer them over stock:
   backdrop, not a photo of the section's subject, and it will read as
   meaningless there. A "background"-role photo is only appropriate for a
   hero whose `layout` is "background".
+- NEVER bind a photo whose `role` is "portrait" (a staff/committee headshot)
+  to anything but a team member or a testimonial author. A headshot on a
+  services or features card shows a stranger's face where the card's SUBJECT
+  should be — the single most common way a generated page looks wrong. Those
+  cards want a photo of the work being done; leave `image_ref` unset and let
+  `image_query` fetch one.
 - Use only `ref` numbers from the list, each at most once across the page.
 - Still fill `image_query` (2-6 word stock phrase) as fallback.
 
@@ -146,6 +152,11 @@ PER PAGE
   conversion ask. The homepage hero may keep its primary CTA.
 - Preserve real proper nouns, prices and contact details verbatim.
 - CTAs use action verbs ("Book a call", "Get a quote") — never "Click here".
+- A `cta_label` is 2-4 words and must DELIVER what its headline promised: a
+  headline asking the reader to join takes "Become a member", not "Learn more
+  about our committee". Never paste a source navigation link into the slot —
+  the button and the headline must be the same journey, and a label that reads
+  like a sentence is always the wrong one.
 - SEO titles 50-60 chars, primary keyword near the start, unique per page.
   Interior pages: "[Primary benefit/service] | [Brand name]".
 - SEO descriptions 140-160 chars, include the primary keyword naturally,

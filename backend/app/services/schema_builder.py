@@ -98,6 +98,8 @@ from app.services.section_content import (
     apply_childcare_pastel_rhythm,
     apply_luminance_rhythm,
     apply_section_rhythm,
+    enforce_fill_contrast,
+    polish_inset_panels,
     assign_visual_policies,
     block_to_section,
     enforce_text_contrast,
@@ -2288,7 +2290,14 @@ async def _build_gallery(block: GalleryBlock, ctx: RenderContext) -> BuilderElem
 
     tiles: list[BuilderElement] = []
     for item in block.items:
-        photo = await ctx.resolver.resolve(item.image_query, intent="generic", alt_fallback=item.title or item.image_query)
+        # A gallery replays the source's own photos, so a scraped portrait is a
+        # legitimate tile here (unlike a services/features card).
+        photo = await ctx.resolver.resolve(
+            item.image_query,
+            intent="generic",
+            alt_fallback=item.title or item.image_query,
+            allow_portrait=True,
+        )
         tile = _image_from_photo(
             photo,
             name="Gallery item",
@@ -2891,6 +2900,13 @@ _DISPATCH = {
 # atmospheric Pexels imagery).
 _IMAGE_INTENT = {"hero": "hero", "about": "about", "cta": "cta_bg", "team": "avatar"}
 
+# Block kinds whose image slots may hold a scraped head-and-shoulders photo of a
+# person: the ones that are ABOUT people (team, testimonial authors) and the
+# gallery, whose job is replaying the source's own photos. Everywhere else a
+# headshot shows a stranger's face where the slot's subject belongs — the
+# services grid rendering the committee page. See image_match.rank_candidates.
+_PORTRAIT_SLOT_KINDS = frozenset({"team", "testimonials", "gallery"})
+
 # Photo sources that count as a "genuine" hero image. A `placeholder` result is
 # the resolver's last-resort on-brand gradient — it means no scraped/document
 # match AND no stock photo — so we render the brand gradient header instead of
@@ -3131,6 +3147,10 @@ async def block_to_element(
             if block.kind in {"hero", "about", "features", "services", "team", "gallery"}
             else "any"
         )
+        # Only sections that are ABOUT people, or that replay the source's own
+        # photos, may draw a scraped headshot; every other slot would render a
+        # committee member's face as its subject (see image_match).
+        allow_portrait = block.kind in _PORTRAIT_SLOT_KINDS
 
         # A block-level scraped photo the LLM bound via image_ref. Safe to pin
         # for the block's single featured/background slot (about, cta) — kinds
@@ -3153,6 +3173,7 @@ async def block_to_element(
                     prefer=ctx.page_images,
                     slot_usage=slot_usage,
                     pinned_url=block_pinned,
+                    allow_portrait=allow_portrait,
                 )
             )
             # Capture the FIRST resolved image's band as the section's featured
@@ -3568,6 +3589,14 @@ async def plan_to_site(
         # after modernize_sections (the lone mesh/grain accent is now present) and
         # before dividers so a shaped seam reads against the final solid colour.
         cap_gradient_textures(elements, theme)
+        # Brand-token gradient fills resolve to concrete, AA-checked hexes: a
+        # catalog template paints with var(--builder-color-*) and so cannot know
+        # whether the theme it lands in keeps its white ink readable.
+        enforce_fill_contrast(elements, theme)
+        # Panel polish (measure cap on the headline, hairline flipped to suit a
+        # dark fill). Runs AFTER the pass above, which is what turns the fill's
+        # tokens into the real hexes this one reads to judge the fill's darkness.
+        polish_inset_panels(elements)
         # Childcare: recolour flat sections through the cheerful pastel set
         # (cream/sky/mint/peach/lavender/butter) so the page reads multi-coloured
         # rather than one hue plus a dark band. Runs after the rhythm/modernize

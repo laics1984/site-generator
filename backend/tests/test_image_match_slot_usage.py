@@ -68,9 +68,11 @@ class BackgroundSlotTest(unittest.TestCase):
 
 
 class PortraitVetoTest(unittest.TestCase):
-    """A grid headshot (role=portrait) must never fill a hero/about slot or any
-    background — a face blown up behind hero text is the classic directory-page
-    scrape failure — while staying rankable for ordinary content slots."""
+    """A grid headshot (role=portrait) is opt-in: it must never fill a
+    hero/about slot or any background — a face blown up behind hero text is the
+    classic directory-page scrape failure — and an ordinary content slot
+    (services/features card) only gets one if it asked, since a headshot there
+    shows a stranger's face where the card's subject belongs."""
 
     def test_portrait_never_wins_a_background_slot_whatever_its_size(self):
         headshot = _img(
@@ -93,14 +95,45 @@ class PortraitVetoTest(unittest.TestCase):
             )
             self.assertIsNone(result.chosen, f"portrait won the {slot_intent} slot")
 
-    def test_portrait_still_ranks_for_generic_feature_slots(self):
+    def test_portrait_excluded_from_a_generic_feature_slot_by_default(self):
+        # The services/features grid: a committee headshot must not become the
+        # card's photo, however well its alt text matches.
         headshot = _img(
             "https://x/face.jpg", role="portrait",
             alt="smiling therapist", w=1600, h=1600,
         )
         result = rank_candidates("smiling therapist", "feature", [headshot])
+        self.assertIsNone(result.chosen)
+
+    def test_portrait_ranks_for_a_slot_that_opts_in(self):
+        headshot = _img(
+            "https://x/face.jpg", role="portrait",
+            alt="smiling therapist", w=1600, h=1600,
+        )
+        result = rank_candidates(
+            "smiling therapist", "generic", [headshot], allow_portrait=True
+        )
         self.assertIsNotNone(result.chosen)
         self.assertEqual(result.chosen.url, "https://x/face.jpg")
+
+    def test_vision_detected_portrait_is_vetoed_too(self):
+        # No role from the render pass, but the vision pass saw a single face.
+        headshot = _img(
+            "https://x/face.jpg", alt="smiling therapist", w=1600, h=1600,
+        )
+        headshot.vision_portrait = True
+        result = rank_candidates("smiling therapist", "feature", [headshot])
+        self.assertIsNone(result.chosen)
+
+    def test_an_opted_in_portrait_still_loses_a_background_slot(self):
+        headshot = _img(
+            "https://x/face.jpg", role="portrait", alt="clinic photo", w=1600, h=1600,
+        )
+        result = rank_candidates(
+            "clinic photo", "generic", [headshot],
+            slot_usage="background", allow_portrait=True,
+        )
+        self.assertIsNone(result.chosen)
 
     def test_gallery_role_excluded_from_hero_background(self):
         cell = _img(
