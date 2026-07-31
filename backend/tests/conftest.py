@@ -55,6 +55,26 @@ def _offline_photo_sampling():
 
 
 @pytest.fixture(autouse=True)
+def _offline_ocr():
+    """Disable the OCR text screen for every test.
+
+    ``text_detection.prefetch_text_flags`` downloads images and runs an ONNX
+    detector (~630ms each). Today it self-disables because the wheel isn't in
+    the test venv, but that is an accident of the environment, not a guarantee —
+    once ``rapidocr-onnxruntime`` is installed the suite would start doing
+    network I/O and burning seconds per test. Off, ``ocr_has_text`` simply stays
+    None, which is the pre-OCR behaviour every existing assertion was written
+    against. The text-detection tests flip it back on themselves.
+    """
+    original = settings.ocr_text_detection_enabled
+    settings.ocr_text_detection_enabled = False
+    try:
+        yield
+    finally:
+        settings.ocr_text_detection_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_diversity():
     """Disable the diversity engine's SQLite history for every test.
 

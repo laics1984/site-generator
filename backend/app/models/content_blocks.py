@@ -1237,6 +1237,10 @@ class ImageMetadata(BaseModel):
     # own headline would be laid over words that are already there; it stays
     # eligible for featured/inline slots, which draw nothing on top.
     vision_has_text: bool | None = None
+    # Same judgement from the OCR pass (services/text_detection.py), which is
+    # independent of the vision model and runs off the critical path. None until
+    # that pass runs / when it is disabled.
+    ocr_has_text: bool | None = None
     # Luminance-band inputs for the schema_builder pass (SECTION_VISUAL_POLICY_SPEC.md
     # §4.3). Dominant colour comes free from Pexels avg_color or a generated base —
     # NO pixel download. luminance/band stay None until set by media.py.

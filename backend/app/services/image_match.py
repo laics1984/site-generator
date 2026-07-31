@@ -233,9 +233,11 @@ def bears_text(meta: ImageMetadata | None) -> bool:
 
     Signals in order of how directly they observe the pixels:
 
-    1. the vision pass, when configured — `vision_has_text` is a judgement of the
-       image itself, and `vision_kind` covers the kinds that carry wording by
-       definition. Trusted above everything below it.
+    1. OCR (`ocr_has_text`, services/text_detection.py) and the vision pass
+       (`vision_has_text`) — both read the image itself. `vision_kind` covers
+       the kinds that carry wording by definition. Trusted above everything
+       below. Either saying yes is enough: they use different evidence, and a
+       missed banner costs more than one photo losing its background slot.
     2. the source's own rendering — `role == "background"` is assigned only when
        the scraper measured >=24 characters of live HTML text inside that
        element (image_evidence.classify_role). A designer laid a headline on
@@ -258,7 +260,7 @@ def bears_text(meta: ImageMetadata | None) -> bool:
     """
     if meta is None:
         return False
-    if meta.vision_has_text:
+    if meta.ocr_has_text or meta.vision_has_text:
         return True
     if meta.vision_kind in _TEXT_BEARING_VISION_KINDS:
         return True

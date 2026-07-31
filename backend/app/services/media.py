@@ -42,6 +42,7 @@ from app.services.image_match import (
     rank_candidates_with_llm_tiebreaker,
 )
 from app.services.image_sampling import sample_photo
+from app.services.text_detection import verify_one
 from app.services.image_styling import (
     band_for_luminance,
     color_distance,
@@ -235,6 +236,46 @@ class ImageResolver:
         self._primary_hex = primary_hex or "#64748b"
         self._secondary_hex = secondary_hex or "#1e293b"
 
+    async def _reject_text_backgrounds(
+        self,
+        picked: ImageMetadata | None,
+        query: str | None,
+        intent: str,
+        *,
+        prefer: list[ImageMetadata] | None,
+        slot_usage: SlotUsage,
+        min_long_edge: int,
+        allow_portrait: bool,
+    ) -> ImageMetadata | None:
+        """Re-rank past any winner that turns out to carry its own headline.
+
+        The prefetch screen (services/text_detection) covers a capped sample of
+        the pool, which on a multi-page scrape is a small fraction of it — a
+        newsletter scan sitting on page nine is exactly what slips through. So
+        the image that actually WINS a background slot is screened here, on
+        demand, whatever the sample covered.
+
+        Stamping the flag is what removes it: `bears_text` reads it, and
+        `rank_candidates` filters on that, so re-ranking simply returns the next
+        best candidate. Bounded by `ocr_verify_budget` — each miss costs a
+        download plus an inference, and a source whose every image is a text
+        graphic should fall through to stock rather than screen the whole pool.
+        """
+        if slot_usage != "background":
+            return picked
+        for _ in range(max(0, settings.ocr_verify_budget)):
+            if picked is None or not await verify_one(picked):
+                return picked
+            logger.info(
+                "Hero/background candidate %s carries its own text; re-ranking",
+                picked.url[:120],
+            )
+            picked = await self._take_best_scraped(
+                query, intent, prefer=prefer, slot_usage=slot_usage,
+                min_long_edge=min_long_edge, allow_portrait=allow_portrait,
+            )
+        return picked
+
     async def _sampled_fields(
         self, url: str, known_hex: str | None, slot_usage: SlotUsage
     ) -> tuple[float | None, Literal["light", "dark"] | None, float | None]:
@@ -334,6 +375,11 @@ class ImageResolver:
             # An LLM image_ref binds by topic and cannot see the picture, so a
             # promo banner captioned "our restaurant" is exactly the kind of
             # pin that arrives here and must not be honoured full-bleed.
+            # An LLM image_ref binds by topic and never sees the picture, so a
+            # pinned background is screened on demand too — the pin bypasses
+            # ranking, and with it every filter that reads the text flag.
+            if slot_usage == "background" and meta is not None:
+                await verify_one(meta)
             if (
                 not _below_hero_bg_min(meta, min_long_edge)
                 and not (slot_usage == "background" and _unfit_for_background(meta))
@@ -369,6 +415,11 @@ class ImageResolver:
         if intent in _SCRAPED_ELIGIBLE_INTENTS:
             picked = await self._take_best_scraped(
                 query, intent, prefer=prefer, slot_usage=slot_usage,
+                min_long_edge=min_long_edge, allow_portrait=allow_portrait,
+            )
+            picked = await self._reject_text_backgrounds(
+                picked, query, intent,
+                prefer=prefer, slot_usage=slot_usage,
                 min_long_edge=min_long_edge, allow_portrait=allow_portrait,
             )
             if picked is not None:

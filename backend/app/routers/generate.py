@@ -38,6 +38,7 @@ from app.models.content_blocks import (
 from app.models.industry import PageScaffold
 from app.services.industry_templates import get_template
 from app.services.design_brain import generate_design_language
+from app.services.text_detection import prefetch_text_flags
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
 from app.services.planner import (
@@ -251,6 +252,28 @@ def _profile_match_score(member_name: str, profile: ProfileCandidate) -> float:
     if same_tail and overlap >= 0.8:
         return 0.86
     return 0.0
+
+
+async def _screen_source_images_for_text(
+    metadata: list[ImageMetadata],
+    prefetched: dict[str, str] | None = None,
+) -> None:
+    """Flag SOURCE images that carry their own headline, so none of them fills a
+    slot we draw ours over (services/text_detection.py).
+
+    Stock photography is never screened — Pexels ships photographs, not posters,
+    and these are `ImageMetadata`, which stock results never become.
+
+    Like the vision pass, an enhancement: any failure leaves the flags unset,
+    which is exactly how the pipeline behaved before OCR existed.
+    """
+    try:
+        with stage("ocr_text_screen"):
+            await prefetch_text_flags(metadata, prefetched=prefetched)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — OCR must not 500 a generation
+        logger.exception("OCR text screening failed; continuing without it")
 
 
 async def _annotate_source_images(
@@ -873,6 +896,11 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     prefetch_task = asyncio.create_task(
         prefetch_image_pool(scraped_metadata, extra_urls=profile_urls)
     )
+    # OCR text screening rides the same window for the same reason: it is pure
+    # CPU, so it overlaps the GPU-bound content pass instead of adding to the
+    # wall clock. Unlike the vision judging below it does NOT contend for the
+    # GPU, which is why it can run here rather than after generation.
+    ocr_task = asyncio.create_task(_screen_source_images_for_text(scraped_metadata))
 
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
     # This is the heaviest LLM pass (it writes all page copy); time it so the
@@ -886,6 +914,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             )
     except LlmError as exc:
         prefetch_task.cancel()
+        ocr_task.cancel()
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
 
     # Build the SitePlan that schema_builder consumes.
@@ -924,6 +953,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         prefetched = await prefetch_task
     except Exception:  # noqa: BLE001 — prefetch is advisory, never load-bearing
         logger.exception("Vision image prefetch failed; continuing without it")
+    # Should already be done — it started with the prefetch and the content LLM
+    # ran meanwhile. Awaited here only so a slow scrape can't leave the flags
+    # half-written while sections resolve their backgrounds.
+    await ocr_task
     annotations = await _annotate_source_images(
         payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
     )

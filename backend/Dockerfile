@@ -17,8 +17,20 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # curl backs the docker-compose healthcheck (GET /health); slim has no curl.
+#
+# libgl1/libglib2.0-0/libxcb1 back opencv, which rapidocr-onnxruntime pulls in
+# for the OCR text screen (services/text_detection.py). PyPI's `opencv-python`
+# is the GUI build and links X libraries slim doesn't ship — without these,
+# `import cv2` dies on `libxcb.so.1` the first time an image is screened.
+# Playwright's `--with-deps` below happens to install most of them for Chromium,
+# but that is a coincidence of Chromium's dependency set, not a contract, so
+# they are declared here explicitly.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        libgl1 \
+        libglib2.0-0 \
+        libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
