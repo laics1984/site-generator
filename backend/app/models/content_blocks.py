@@ -1232,6 +1232,11 @@ class ImageMetadata(BaseModel):
     ] | None = None
     vision_people: int | None = None  # visible people count
     vision_portrait: bool | None = None  # single face/head-and-shoulders subject
+    # Readable words burned into the pixels (headline, tagline, price list, a
+    # legible sign). Bars the image from full-bleed BACKGROUND slots, where our
+    # own headline would be laid over words that are already there; it stays
+    # eligible for featured/inline slots, which draw nothing on top.
+    vision_has_text: bool | None = None
     # Luminance-band inputs for the schema_builder pass (SECTION_VISUAL_POLICY_SPEC.md
     # §4.3). Dominant colour comes free from Pexels avg_color or a generated base —
     # NO pixel download. luminance/band stay None until set by media.py.

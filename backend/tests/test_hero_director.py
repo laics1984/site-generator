@@ -13,7 +13,10 @@ from app.config import settings
 from app.models.content_blocks import PagePlan
 from app.services.hero_director import (
     IMAGELESS_HERO_IDS,
+    HeroComposition,
     HeroDirective,
+    hero_composition,
+    plan_site_compositions,
     plan_site_heroes,
 )
 
@@ -192,6 +195,77 @@ class DirectiveShapeTest(_LegacyRotationCase):
         with self.assertRaises(Exception):
             d.template_id = "x"  # type: ignore[misc]
         self.assertIn(d, {d})
+
+
+class HeroCompositionTest(unittest.TestCase):
+    """With every page on the same full-bleed template, composition is the only
+    axis of variety left — so it has to actually vary, and still be idempotent."""
+
+    def _pages(self):
+        return [
+            _page("home", "home", homepage=True),
+            _page("about", "about"),
+            _page("services", "services"),
+            _page("team", "team"),
+            _page("contact", "contact"),
+            _page("faq", "faq"),
+        ]
+
+    def test_homepage_always_leads_left_anchored(self):
+        comps = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        self.assertEqual(comps["home"].anchor, "left")
+
+    def test_consecutive_interiors_never_share_an_anchor(self):
+        """Per-page seeding alone clusters: three identical compositions in a row
+        is the exact convergence composition exists to prevent."""
+        for seed in ("Blue Fin Bistro", "Meridian Law", "Sunny Days Kindergarten"):
+            anchors = [
+                c.anchor
+                for slug, c in plan_site_compositions(self._pages(), seed=seed).items()
+                if slug != "home"
+            ]
+            for a, b in zip(anchors, anchors[1:]):
+                self.assertNotEqual(a, b, msg=f"{seed}: {anchors}")
+
+    def test_a_site_uses_more_than_one_composition(self):
+        for seed in ("Blue Fin Bistro", "Meridian Law", "Sunny Days Kindergarten"):
+            comps = plan_site_compositions(self._pages(), seed=seed)
+            self.assertGreater(len({c.anchor for c in comps.values()}), 1, msg=seed)
+
+    def test_regeneration_is_idempotent(self):
+        # md5-seeded, not hash()-seeded: the pick must survive a restart, or
+        # every regeneration silently reshuffles the whole site.
+        first = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        second = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        self.assertEqual(
+            {k: v.anchor for k, v in first.items()},
+            {k: v.anchor for k, v in second.items()},
+        )
+
+    def test_different_brands_compose_differently(self):
+        a = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        b = plan_site_compositions(self._pages(), seed="Meridian Law")
+        self.assertNotEqual(
+            [c.anchor for c in a.values()], [c.anchor for c in b.values()]
+        )
+
+    def test_banded_heroes_stay_centred_everywhere(self):
+        """460px has no vertical room for an anchor to read as composition — a
+        bottom-left copy block would just look like it fell out of the band."""
+        comps = plan_site_compositions(
+            self._pages(), seed="Blue Fin Bistro", hero_height="banded"
+        )
+        self.assertEqual({c.anchor for c in comps.values()}, {"center"})
+
+    def test_single_page_helper_agrees_with_the_site_planner_on_the_homepage(self):
+        solo = hero_composition(slug="home", seed="Blue Fin Bistro", is_homepage=True)
+        planned = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")["home"]
+        self.assertEqual(solo.anchor, planned.anchor)
+
+    def test_composition_is_frozen(self):
+        c = HeroComposition("left")
+        with self.assertRaises(Exception):
+            c.anchor = "center"  # type: ignore[misc]
 
 
 if __name__ == "__main__":

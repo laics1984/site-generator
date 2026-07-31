@@ -11,6 +11,7 @@ The decision keys off the resolver's real source; only scraped/pexels are genuin
 """
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 
 from app.models.builder_schema import BuilderElement
@@ -22,6 +23,7 @@ from app.services.schema_builder import (
     _abstract_theme_query,
     _apply_hero_photo_policy,
     _apply_hero_washed_background,
+    _has_composable_subject,
 )
 from app.services.theme import build_theme
 
@@ -285,6 +287,123 @@ class WashedBackgroundTest(unittest.TestCase):
         self.assertNotIn("background", el.styles)  # shorthand removed
         self.assertIn("url('https://x/abs.jpg')", el.styles["backgroundImage"])
         self.assertEqual(el.styles["backgroundSize"], "cover")
+
+
+class ComposableSubjectTest(unittest.TestCase):
+    """An anchored hero puts its copy to one side so the PHOTOGRAPH keeps the
+    other. Without a subject there is nothing on the open side, so anchored copy
+    reads as text shoved against an edge — those heroes centre."""
+
+    def test_a_real_photo_can_be_composed_around(self):
+        self.assertTrue(_has_composable_subject(_photo("scraped")))
+        self.assertTrue(_has_composable_subject(_photo("pexels")))
+
+    def test_the_abstract_wash_cannot(self):
+        """It is a genuine Pexels photo — `source` alone can't tell it apart —
+        but it is picked on colour distance and carries no subject."""
+        abstract = replace(_photo("pexels"), is_abstract=True)
+        self.assertIn(abstract.source, _GENUINE)  # would pass a source-only gate
+        self.assertFalse(_has_composable_subject(abstract))
+
+    def test_placeholder_and_missing_photos_cannot(self):
+        self.assertFalse(_has_composable_subject(_photo("placeholder")))
+        self.assertFalse(_has_composable_subject(None))
+
+    def test_resolve_abstract_bg_marks_what_it_returns(self):
+        """The flag has to be set where the abstract is produced, or the gate
+        above silently never fires."""
+        import asyncio
+
+        from app.services.media import ImageResolver
+
+        class FakePexels:
+            configured = True
+
+            async def search_many(self, query, *, orientation):
+                return [
+                    PhotoResult(
+                        url="https://img.example/tex.jpg", alt="texture",
+                        photographer=None, photographer_url=None,
+                        source="pexels", avg_color="#2563eb",
+                    )
+                ]
+
+        resolver = ImageResolver(scraped_images=[], pexels=FakePexels())
+        got = asyncio.run(
+            resolver.resolve_abstract_bg("soft gradient", color_target_hex="#2563eb")
+        )
+        self.assertIsNotNone(got)
+        self.assertTrue(got.is_abstract)
+
+    def test_a_normally_resolved_photo_is_not_marked_abstract(self):
+        self.assertFalse(_photo("pexels").is_abstract)
+
+
+class TextVetoScopeTest(unittest.TestCase):
+    """The baked-in-text veto is for SOURCE artwork only.
+
+    Pexels ships photographs, not posters, so paying to screen them (a vision
+    call or an OCR pass per image) buys nothing. The scope is enforced by type —
+    stock photos are PhotoResult and never become ImageMetadata — and these
+    tests pin that so a future refactor can't quietly widen it.
+    """
+
+    def test_the_veto_cannot_be_applied_to_a_stock_photo(self):
+        import inspect
+
+        from app.services.image_match import bears_text
+
+        params = list(inspect.signature(bears_text).parameters.values())
+        self.assertIn("ImageMetadata", str(params[0].annotation))
+        # PhotoResult carries none of the fields the veto reads.
+        stock = _photo("pexels")
+        for field in ("vision_has_text", "vision_kind", "role"):
+            self.assertFalse(hasattr(stock, field), msg=field)
+
+    def test_stock_wins_a_hero_background_despite_a_text_shaped_alt(self):
+        """An alt tripping every lexical hint must not cost a stock photo the
+        hero — the hints only ever apply to scraped artwork."""
+        import asyncio
+
+        from app.services.media import ImageResolver
+
+        class FakePexels:
+            configured = True
+
+            async def search_many(self, query, *, orientation):
+                return [
+                    PhotoResult(
+                        url="https://images.pexels.com/poster-flyer-billboard.jpg",
+                        alt="vintage poster flyer billboard advert infographic",
+                        photographer="X", photographer_url="u",
+                        source="pexels", avg_color="#8a7f6d",
+                    )
+                ]
+
+        resolver = ImageResolver(scraped_metadata=[], pexels=FakePexels())
+        got = asyncio.run(
+            resolver.resolve("anything", intent="hero", slot_usage="background")
+        )
+        self.assertEqual(got.source, "pexels")
+
+    def test_the_vision_pass_is_fed_the_scraped_pool_only(self):
+        """Every call site hands it `scraped_metadata`. Nothing resolved from
+        Pexels even exists yet when it runs, and it must stay that way — stock
+        photos would burn the vision_max_images budget for no benefit."""
+        import inspect
+        import re
+
+        from app.routers import generate
+
+        src = inspect.getsource(generate)
+        calls = re.findall(
+            r"_annotate_source_images\(\s*([^)]*?)\)", src, flags=re.S
+        )
+        # One definition-site match is the `async def`; the rest are real calls.
+        invocations = [c for c in calls if "metadata:" not in c]
+        self.assertTrue(invocations, "no call sites found — did the name change?")
+        for args in invocations:
+            self.assertIn("scraped_metadata", args)
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@ comparison pass starts from a known state:
 | Upstream change | Ported | Note |
 |---|---|---|
 | `htmlTag` on text nodes (`TextBlock.vue` renders `<component :is="htmlTag">`) | ✅ | The generator sets `html_tag="h1"` on hero headlines; before this the preview emitted a `<div>` where the live page has an `<h1>`. `BuilderElement.htmlTag` was also missing from `lib/types.ts`. |
-| `lib/motionRuntime.ts` + `useSchemaMotion` | ❌ | Not ported — sections render in their final state, no entrance motion. |
+| `lib/motionRuntime.ts` + `useSchemaMotion` | ❌ | Not ported — sections render in their final state, no entrance motion. Also hides the **hero background parallax**: the generator stamps `parallax-drift` on every photo hero (`schema_builder._apply_hero_motion`), and upstream scales `.wt-container-block__bg-photo` to 1.15 and scroll-drifts it. The live site has that depth; the preview shows a static crop, so a hero always looks slightly flatter here than it ships. Porting the gsap tier needs `gsap` as a frontend dependency (upstream lazy-loads it; this repo doesn't have it). |
 | `lib/webglBackdrop.ts` | ❌ | Not ported. |
 | `CmsArchiveHeaderBlock.vue` | ❌ | `cmsArchiveHeader` maps to `DynamicFieldBlock` here. The generator never emits that type, so nothing renders differently today. |
 

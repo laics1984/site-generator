@@ -2,6 +2,7 @@
 glass cards, and orphan-free card grids."""
 
 import asyncio
+import math
 import re
 import unittest
 
@@ -23,6 +24,7 @@ from app.models.content_blocks import (
 )
 from app.services.image_styling import (
     _TEXT_SCRIM_RATIO,
+    _split_layers,
     brand_overlay_gradient,
     color_distance,
     overlay_alpha,
@@ -279,17 +281,71 @@ class PhotoOverlayTest(unittest.TestCase):
             self.assertAlmostEqual(stops[1][3], round(alpha * 0.82, 2), places=2)
 
     def test_photo_background_layers_scrim_over_cast_over_photo(self):
-        css = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
-        layers, depth, start = [], 0, 0
-        for i, ch in enumerate(css):  # split on top-level commas only
-            depth += (ch == "(") - (ch == ")")
-            if ch == "," and depth == 0:
-                layers.append(css[start:i].strip())
-                start = i + 1
-        layers.append(css[start:].strip())
-        self.assertTrue(layers[0].startswith("radial-gradient("), layers[0][:24])
-        self.assertTrue(layers[1].startswith("linear-gradient("), layers[1][:24])
-        self.assertEqual(layers[2], "url('https://x/p.jpg')")
+        styles = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        layers = _split_layers(styles["backgroundImage"])
+        # Grain on top, photo at the bottom, cast directly above the photo.
+        self.assertTrue(layers[0].startswith("url(\"data:image/svg+xml"), layers[0][:32])
+        self.assertTrue(layers[-2].startswith("linear-gradient("), layers[-2][:24])
+        self.assertEqual(layers[-1], "url('https://x/p.jpg')")
+        # The scrim still sits above the cast.
+        scrim = next(i for i, l in enumerate(layers) if "115% 88%" in l)
+        cast = len(layers) - 2
+        self.assertLess(scrim, cast)
+
+    def test_photo_background_property_lists_line_up_with_the_layers(self):
+        """The grain tiles at a fixed size while every other layer covers. If the
+        four lists ever drift out of sync, CSS pairs a layer with the wrong size
+        and one grain cell is stretched across the whole hero."""
+        for anchor in ("center", "left", "bottom-left"):
+            styles = photo_background(
+                "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed",
+                anchor=anchor, focal_y=0.38, page_bg_hex="#ffffff",
+            )
+            n = len(_split_layers(styles["backgroundImage"]))
+            for prop in ("backgroundSize", "backgroundRepeat", "backgroundPosition"):
+                self.assertEqual(
+                    len(_split_layers(styles[prop])), n, f"{anchor}/{prop}"
+                )
+            self.assertTrue(styles["backgroundSize"].startswith("140px 140px,"))
+            self.assertTrue(styles["backgroundRepeat"].startswith("repeat,"))
+
+    def test_focal_point_frames_the_subject_and_biases_off_the_copy(self):
+        centred = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed", focal_y=0.3
+        )
+        # Vertical: sit on the measured subject band, not hard centre.
+        self.assertTrue(centred["backgroundPosition"].endswith("center 30%"))
+        # Horizontal: a left-anchored copy pushes the subject to the open side.
+        left = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed",
+            anchor="left", focal_y=0.3,
+        )
+        self.assertTrue(left["backgroundPosition"].endswith("68% 30%"))
+        # No measurement → unchanged behaviour.
+        plain = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        self.assertTrue(plain["backgroundPosition"].endswith("center center"))
+
+    def test_directional_scrim_keeps_the_open_side_of_the_frame_clear(self):
+        """The point of anchoring: darkness runs off the copy's edge, so the
+        photograph stays saturated where the subject is."""
+        left = text_scrim_gradient("#221d2b", 0.34, anchor="left")
+        self.assertTrue(left.startswith("linear-gradient(to right,"))
+        self.assertIn(",0)", left.replace(" ", ""))
+
+    def test_every_anchor_holds_the_legibility_sheet_behind_the_copy(self):
+        """Same invariant as the centred case, for the directional anchors: the
+        composite behind the copy must not fall below the legacy single sheet,
+        or every ink derived from _SCRIM_COMPOSITE_BG becomes a lie."""
+        for avg, legacy in (("#2b2b2b", 0.31), ("#808080", 0.37), ("#e0e0e0", 0.54)):
+            cast = overlay_alpha(avg)
+            scrim = round(cast * _TEXT_SCRIM_RATIO, 2)
+            # left: full scrim at the anchored edge, plus part of the vignette.
+            left = 1 - (1 - cast) * (1 - scrim)
+            self.assertGreaterEqual(left, legacy - 0.02, msg=f"left/{avg}")
+            # bottom-left: two half-strength axes compound back to `scrim`.
+            half = math.ceil((1 - (1 - scrim) ** 0.5) * 100) / 100
+            corner = 1 - (1 - cast) * (1 - half) ** 2
+            self.assertGreaterEqual(corner, legacy - 0.02, msg=f"bottom-left/{avg}")
 
     def test_scrim_fades_to_fully_transparent_before_the_edge(self):
         # The corners must show the photograph, not a wash — that is the whole

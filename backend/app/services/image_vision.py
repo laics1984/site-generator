@@ -50,15 +50,23 @@ class VisionAnnotation(BaseModel):
     kind: VisionKind = "other"
     people_count: int = Field(default=0, ge=0)
     is_portrait: bool = False
+    # Words burned into the pixels — a headline, a tagline, a paragraph, a price
+    # list. Such an image can never be a hero BACKGROUND: we lay our own
+    # headline over it and the two collide into unreadable mush. It is still
+    # perfectly good as a featured image or an untitled card, where nothing is
+    # drawn on top. Distinct from `kind`: a real photograph of a shopfront can
+    # carry a signboard full of text, and a plain illustration can carry none.
+    has_text: bool = False
 
 
 _JUDGE_SYSTEM = """You describe one website image for an image-matching system.
 Reply ONLY with a single JSON object:
-{"caption": "...", "kind": "photo|logo|banner|screenshot|graphic|map|other", "people_count": N, "is_portrait": true|false}
+{"caption": "...", "kind": "photo|logo|banner|screenshot|graphic|map|other", "people_count": N, "is_portrait": true|false, "has_text": true|false}
 - caption: one factual sentence describing subjects, setting and activity. No style commentary.
 - kind: photo = a real photograph; logo = a brand mark; banner = promotional graphic with overlaid text; screenshot = software UI capture; graphic = illustration/icon/pattern; map = a map.
 - people_count: number of visible people (0 if none).
 - is_portrait: true only when a single person's face or head-and-shoulders is the main subject.
+- has_text: true when READABLE words are part of the image — a headline, tagline, sentence, price or menu list, or a sign whose wording you can read. Judge the pixels, not the subject: a photo of a cafe whose menu board is legible is true; a photo of a cafe with no legible wording is false. Ignore tiny watermarks and photographer credits.
 Do not explain. Do not return anything except the JSON object."""
 
 # Vision input is downscaled to this box before base64 — classification and a
@@ -215,6 +223,7 @@ async def annotate_image_pool(
             item.vision_kind = annotation.kind
             item.vision_people = annotation.people_count
             item.vision_portrait = annotation.is_portrait
+            item.vision_has_text = annotation.has_text
 
     return annotations
 

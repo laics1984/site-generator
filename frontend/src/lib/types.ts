@@ -135,6 +135,9 @@ export type ColorSchemeChoice = 'auto' | ColorScheme
 /** Hero photo-background height, site-wide. 'full' = full-bleed full-screen hero;
  * 'banded' = bounded-height full-bleed photo hero (content sits closer to top). */
 export type HeroHeight = 'full' | 'banded'
+/** 'auto' is a UI-only choice → sent as null so the design-brain pass picks from
+ * the brand's mood and industry (backend: resolve_hero_height). */
+export type HeroHeightChoice = 'auto' | HeroHeight
 
 export interface BrandIdentity {
   name: string

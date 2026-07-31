@@ -113,6 +113,48 @@ HERO_BANDED_MIN_HEIGHT = "460px"
 # "banded" = bounded-height full-bleed photo hero.
 HeroBackgroundHeight = Literal["full", "banded"]
 
+# Deterministic hero-height fallback, used when the design-brain pass is off,
+# fails, or defers (see services/design_brain.DesignLanguage.hero_height). The
+# split is about what the visitor came to do: a full screen of photography sells
+# atmosphere, a shorter band gets content to the fold for someone who came to
+# read, compare or act.
+MOOD_HERO_HEIGHT: dict[BrandMood, HeroBackgroundHeight] = {
+    "luxury": "full",       # the imagery IS the pitch
+    "editorial": "full",    # storytelling opens on an image
+    "playful": "full",      # energy needs room
+    "friendly": "full",
+    "modern": "banded",     # SaaS/fintech: the value prop is the copy
+    "technical": "banded",  # precise, dense, get to the substance
+}
+
+# Industry overrides, applied ahead of the mood table (same precedence as
+# _INDUSTRY_SPECS in services/hero_director.py). Keys are IndustryCategory
+# values (see prompts.DETECT_BRAND_PROMPT); only industries with a clear lean
+# are listed, everything else falls through to MOOD_HERO_HEIGHT. Note most of
+# these read "friendly" via INDUSTRY_MOOD, so without this table a restaurant
+# and a healthcare practice would land on the same height.
+INDUSTRY_HERO_HEIGHT: dict[str, HeroBackgroundHeight] = {
+    "restaurant": "full",   # appetite is sold by the photograph
+    "nonprofit": "full",    # emotional connection before the ask
+    "childcare": "full",    # parents buy the room their child will be in
+    "personal": "full",     # portfolio: the work opens the page
+    "agency": "full",       # show, don't claim
+    "saas": "banded",       # the value prop is the copy, not the screenshot
+    "professional-services": "banded",
+    "consultancy": "banded",
+    "ecommerce": "banded",  # the product grid below the fold is the shop
+}
+
+
+def default_hero_height(
+    mood: BrandMood | None, industry: str | None
+) -> HeroBackgroundHeight:
+    """Deterministic hero height from industry, else mood, else full-screen."""
+    by_industry = INDUSTRY_HERO_HEIGHT.get((industry or "").strip().lower())
+    if by_industry is not None:
+        return by_industry
+    return MOOD_HERO_HEIGHT.get(mood, "full") if mood else "full"
+
 
 class ThemeTokens(BaseModel):
     """

@@ -6,7 +6,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.models.brand import BrandIdentity, BrandMood, HeroBackgroundHeight
+from app.models.brand import (
+    BrandIdentity,
+    BrandMood,
+    HeroBackgroundHeight,
+    default_hero_height,
+)
 from app.models.builder_schema import (
     BodySchema,
     GeneratedPage,
@@ -80,12 +85,31 @@ class GenerateRequest(BaseModel):
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
     color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
-    hero_height: HeroBackgroundHeight = "full"  # full-screen vs bounded photo hero, site-wide
+    # Full-screen vs bounded photo hero, site-wide. None = "Auto": defer to the
+    # design-brain pick, then the mood/industry default (see resolve_hero_height).
+    hero_height: HeroBackgroundHeight | None = None
     contact: dict[str, str] | None = None
     # Explicit chrome pins — win over the design director's fit/seed/diversity
     # pick (see design_director.compose_design_manifest). None → let it decide.
     header_archetype: HeaderArchetype | None = None
     footer_archetype: FooterArchetype | None = None
+
+
+def resolve_hero_height(
+    explicit: HeroBackgroundHeight | None,
+    chosen: HeroBackgroundHeight | None,
+    *,
+    mood: BrandMood | None,
+    industry: str | None,
+) -> HeroBackgroundHeight:
+    """Site-wide hero height, most-specific source first.
+
+    explicit (the user's own pick, "Auto" sends None) → the design-brain pick →
+    the deterministic industry/mood default. Mirrors how palette_choice and
+    font_choice defer to build_theme's pickers: a disabled or failed pass leaves
+    a fully-determined result, never an empty one.
+    """
+    return explicit or chosen or default_hero_height(mood, industry)
 
 
 def _market_cues_for(source: SourceContent) -> tuple[str, str]:
@@ -672,7 +696,12 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
             "palette", site_key=(brand.name if brand else plan.site_name)
         ),
     )
-    theme.hero_background_height = payload.hero_height
+    theme.hero_background_height = resolve_hero_height(
+        payload.hero_height,
+        language.hero_height,
+        mood=mood,
+        industry=plan.industry_category,
+    )
 
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
@@ -717,7 +746,9 @@ class GenerateWithPagesRequest(BaseModel):
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
     color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
-    hero_height: HeroBackgroundHeight = "full"  # full-screen vs bounded photo hero, site-wide
+    # Full-screen vs bounded photo hero, site-wide. None = "Auto": defer to the
+    # design-brain pick, then the mood/industry default (see resolve_hero_height).
+    hero_height: HeroBackgroundHeight | None = None
     contact: dict[str, str] | None = None
     jurisdiction: str | None = None
     legal_contact_email: str | None = None
@@ -817,7 +848,12 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         # (rotates within the fit group only; fail-open empty set).
         avoid_palettes=await recent_choices("palette", site_key=brand.name),
     )
-    theme.hero_background_height = payload.hero_height
+    theme.hero_background_height = resolve_hero_height(
+        payload.hero_height,
+        language.hero_height,
+        mood=mood,
+        industry=industry,
+    )
 
     # Announcement/quick-links strap: claim it BEFORE planning so its text is
     # out of raw_text (the LLM must not also narrate it into a paragraph);

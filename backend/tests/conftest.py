@@ -34,6 +34,27 @@ def _offline_pexels():
 
 
 @pytest.fixture(autouse=True)
+def _offline_photo_sampling():
+    """Disable pixel sampling of photos for every test.
+
+    ``ImageResolver.resolve`` samples a full-bleed slot's photo to read its
+    dominant colour and focal point (services/image_sampling.py). That is the
+    one place in the resolver that downloads bytes, so leaving it on makes the
+    suite hit the network for every fake ``https://cdn.example.com/...`` URL and
+    wait out the timeout. Off, resolution takes the metadata-only path it always
+    had. The sampling tests exercise the measurement functions directly, and any
+    test wanting the wired-up behaviour flips the flag back on with a stubbed
+    fetcher.
+    """
+    original = settings.photo_sampling_enabled
+    settings.photo_sampling_enabled = False
+    try:
+        yield
+    finally:
+        settings.photo_sampling_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_diversity():
     """Disable the diversity engine's SQLite history for every test.
 

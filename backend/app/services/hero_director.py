@@ -31,7 +31,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.config import settings
+from app.models.brand import HeroBackgroundHeight
 from app.models.content_blocks import BrandMood, PagePlan
+from app.services.image_styling import HeroAnchor
 
 # Hero templates that render no image slot (see app/templates/section_catalog.json).
 # For these the photo policy skips image resolution entirely so a scraped photo
@@ -160,6 +162,97 @@ def _rotation_index(seed: str, slug: str, size: int) -> int:
     survives interpreter restarts — regeneration must be idempotent."""
     digest = hashlib.md5(f"{seed}:{slug}".encode()).hexdigest()
     return int(digest[:8], 16) % size
+
+
+# --- per-page composition -------------------------------------------------------
+#
+# With the site-wide full-bleed policy on (settings.hero_fullbleed_all_pages)
+# every page opens with the SAME template at the SAME height, so the only axis
+# left for variety is how each hero is composed: where the copy sits, which way
+# the scrim runs off it, and which side of the frame the photograph keeps. That
+# is enough — a left-anchored hero and a centred one read as different pages
+# even on the same photo — and it costs nothing structural, unlike rotating
+# templates (which changes each page's height and breaks the transparent header).
+
+
+@dataclass(frozen=True)
+class HeroComposition:
+    """How one page's full-bleed hero is laid out within its frame."""
+
+    anchor: HeroAnchor
+
+
+# Rotation for interior pages. Centre is included but never leads: it is the
+# weakest composition on a photograph (symmetrical, and its scrim dims the
+# middle of the frame where the subject sits), so it earns its place as variety
+# rather than as the default it used to be.
+_ANCHOR_ROTATION: tuple[HeroAnchor, ...] = ("left", "bottom-left", "center")
+
+
+def hero_composition(
+    *,
+    slug: str,
+    seed: str,
+    is_homepage: bool,
+    hero_height: HeroBackgroundHeight = "full",
+) -> HeroComposition:
+    """One page's hero composition, seeded so regeneration is idempotent.
+
+    The homepage always leads left-anchored: it is the editorial default, it
+    gives the headline a column instead of a centred block, and it leaves the
+    open right side of the frame for the photograph.
+
+    A banded hero is forced back to centre — at 460px there is no vertical room
+    for an anchor to read as composition, and a bottom-left copy block would
+    simply look like it had fallen out of the band.
+
+    Note this decides a page in isolation. `plan_site_compositions` is the
+    entry point that also spreads the picks ACROSS pages, which is what actually
+    stops a site's interiors converging; use it whenever the whole page list is
+    in hand.
+    """
+    if hero_height == "banded":
+        return HeroComposition("center")
+    if is_homepage:
+        return HeroComposition("left")
+    return HeroComposition(
+        _ANCHOR_ROTATION[_rotation_index(seed, slug, len(_ANCHOR_ROTATION))]
+    )
+
+
+def plan_site_compositions(
+    pages: list[PagePlan],
+    *,
+    seed: str,
+    hero_height: HeroBackgroundHeight = "full",
+) -> dict[str, HeroComposition]:
+    """Assign every page a hero composition, keyed by slug.
+
+    Per-page seeding alone clusters: with three anchors and five interiors, a
+    run of three identical compositions is ordinary, and three consecutive pages
+    that open the same way is the exact problem composition exists to solve. So
+    the seeded pick is nudged off the previous interior's, the same way
+    `plan_site_heroes` spreads template choices. Still deterministic — the
+    nudge depends only on page order and the seed.
+    """
+    out: dict[str, HeroComposition] = {}
+    previous: HeroAnchor | None = None
+    for page in pages:
+        if page.is_homepage or page.page_type == "home":
+            out[page.slug] = hero_composition(
+                slug=page.slug, seed=seed, is_homepage=True, hero_height=hero_height
+            )
+            continue
+        if hero_height == "banded":
+            out[page.slug] = HeroComposition("center")
+            continue
+        start = _rotation_index(seed, page.slug, len(_ANCHOR_ROTATION))
+        anchor = _ANCHOR_ROTATION[start]
+        if anchor == previous:
+            anchor = _ANCHOR_ROTATION[(start + 1) % len(_ANCHOR_ROTATION)]
+        previous = anchor
+        out[page.slug] = HeroComposition(anchor)
+    return out
 
 
 def plan_site_heroes(

@@ -67,6 +67,89 @@ class BackgroundSlotTest(unittest.TestCase):
         self.assertEqual(result.chosen.url, "https://x/big.jpg")
 
 
+class TextBearingBackgroundVetoTest(unittest.TestCase):
+    """An image that already carries words can't take OUR headline on top of it.
+
+    The source's own hero graphic is the usual offender, and a scrape picks it up
+    precisely because the source used it full-bleed. It stays usable everywhere
+    nothing is drawn over it — that is the whole point of vetoing the slot rather
+    than the image.
+    """
+
+    def test_vision_flagged_text_loses_the_background_slot(self):
+        clean = _img("https://x/room.jpg", intent="hero", source_usage="inline",
+                     alt="dining room", w=1600, h=900)
+        clean.vision_kind, clean.vision_has_text = "photo", False
+        wordy = _img("https://x/hero.jpg", intent="hero", source_usage="css_background",
+                     alt="dining room", w=2000, h=1100)
+        wordy.vision_kind, wordy.vision_has_text = "photo", True
+
+        result = rank_candidates("dining room", "hero", [wordy, clean],
+                                 slot_usage="background")
+        self.assertEqual(result.chosen.url, "https://x/room.jpg")
+
+    def test_a_banner_kind_loses_the_background_slot(self):
+        banner = _img("https://x/b.jpg", intent="hero", source_usage="css_background",
+                      alt="promo", w=2000, h=1100)
+        banner.vision_kind = "banner"
+        result = rank_candidates("promo", "hero", [banner], slot_usage="background")
+        self.assertIsNone(result.chosen)
+
+    def test_named_artwork_is_caught_without_the_vision_pass(self):
+        # vision_* all None — the default config. The naming is the only signal.
+        for name in ("summer-poster", "menu-flyer", "price-list-2024", "infographic"):
+            art = _img(f"https://x/{name}.jpg", intent="hero",
+                       source_usage="css_background", w=2000, h=1100)
+            self.assertIsNone(art.vision_kind)
+            result = rank_candidates("anything", "hero", [art], slot_usage="background")
+            self.assertIsNone(result.chosen, msg=name)
+
+    def test_the_same_image_still_ranks_for_an_inline_slot(self):
+        """The requirement: demote it to a featured image / untitled card, don't
+        discard it."""
+        wordy = _img("https://x/promo.jpg", intent="generic", source_usage="inline",
+                     alt="summer promotion", w=1200, h=800)
+        wordy.vision_kind, wordy.vision_has_text = "photo", True
+        result = rank_candidates("summer promotion", "generic", [wordy],
+                                 slot_usage="inline")
+        self.assertEqual(result.chosen.url, "https://x/promo.jpg")
+
+    def test_a_clean_photo_is_untouched_by_the_veto(self):
+        clean = _img("https://x/kitchen.jpg", intent="hero", source_usage="css_background",
+                     alt="kitchen", w=2000, h=1100)
+        result = rank_candidates("kitchen", "hero", [clean], slot_usage="background")
+        self.assertEqual(result.chosen.url, "https://x/kitchen.jpg")
+
+    def test_a_measured_backdrop_clears_the_naming_signal(self):
+        """role="background" is assigned only when the scraper measured live
+        HTML text inside that element — a designer laid a headline on this
+        image, so it hasn't got one of its own. Nobody stacks two headlines."""
+        art = _img("https://x/summer-poster.jpg", intent="hero",
+                   source_usage="css_background", role="background", w=2000, h=1100)
+        result = rank_candidates("anything", "hero", [art], slot_usage="background")
+        self.assertIsNotNone(result.chosen)
+
+    def test_vision_still_overrules_a_measured_backdrop(self):
+        """The DOM measurement is an inference; the vision pass looked at the
+        pixels. When they disagree, the pixels win."""
+        art = _img("https://x/clean-name.jpg", intent="hero",
+                   source_usage="css_background", role="background", w=2000, h=1100)
+        art.vision_has_text = True
+        result = rank_candidates("anything", "hero", [art], slot_usage="background")
+        self.assertIsNone(result.chosen)
+
+    def test_hero_and_header_are_not_treated_as_text_hints(self):
+        """Guard against widening the hint list: these name clean photos far more
+        often than they name text artwork, and a false positive costs a real
+        photo its hero."""
+        for name in ("hero-image", "page-header", "cover-photo",
+                     "homepage-banner", "promo-shot"):
+            img = _img(f"https://x/{name}.jpg", intent="hero",
+                       source_usage="css_background", w=2000, h=1100)
+            result = rank_candidates("anything", "hero", [img], slot_usage="background")
+            self.assertIsNotNone(result.chosen, msg=name)
+
+
 class PortraitVetoTest(unittest.TestCase):
     """A grid headshot (role=portrait) is opt-in: it must never fill a
     hero/about slot or any background — a face blown up behind hero text is the

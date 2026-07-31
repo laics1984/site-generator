@@ -31,7 +31,7 @@ import logging
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.models.brand import BrandMood
+from app.models.brand import BrandMood, HeroBackgroundHeight
 from app.services.industry_personality import personality_for
 from app.services.llm import LlmError, LlmClient, get_reasoning_llm
 from app.services.section_content import mood_allows
@@ -200,13 +200,17 @@ async def generate_site_design_recipe(
 
 
 class DesignLanguage(BaseModel):
-    """The LLM's site-wide design-language picks. Both fields are curated-option
-    slugs; None (or a slug the theme lookups reject) defers that decision to
-    build_theme's deterministic pickers, so an empty DesignLanguage is always a
-    safe no-op."""
+    """The LLM's site-wide design-language picks. `palette`/`font_pairing` are
+    curated-option slugs; None (or a slug the theme lookups reject) defers that
+    decision to build_theme's deterministic pickers, so an empty DesignLanguage
+    is always a safe no-op.
+
+    `hero_height` follows the same defer-on-None contract, falling back to
+    brand.default_hero_height(mood, industry)."""
 
     palette: str | None = None
     font_pairing: str | None = None
+    hero_height: HeroBackgroundHeight | None = None
 
 
 DESIGN_LANGUAGE_PROMPT = """You are an art director choosing the design language for a website.
@@ -215,6 +219,7 @@ You are given the brand (name, mood, industry, design personality, and its own
 colour if one was extracted from the logo), a list of curated colour palettes
 and a list of curated font pairings. Pick the ONE palette and the ONE font
 pairing that best serve this specific brand — not the safest generic option.
+Then decide how tall the site's photo hero should be.
 
 Guidance:
 - If the brand colour is strong and distinctive, prefer the palette whose
@@ -222,11 +227,19 @@ Guidance:
   reason. With no brand colour (null), choose freely on brief fit.
 - Judge palettes by the feeling of the swatches against the industry and mood;
   judge font pairings by their tags and the personality of the faces.
+- hero_height: "full" gives every page a full-screen photographic opening;
+  "banded" gives a shorter photo band so page content starts near the fold.
+  Choose "full" when the brand sells atmosphere, place, craft or emotion and
+  the imagery IS the message. Choose "banded" when the visitor arrived to read,
+  compare, or act, and making them scroll past a screen of photography before
+  any substance would cost more than the image gains. Read the design
+  personality line — it usually tells you which of the two this brand is.
 - If you genuinely cannot improve on an automatic choice, answer null for that
   field to defer.
 
 Reply with ONE JSON object, no markdown, no commentary:
-{"palette": "<palette slug or null>", "font_pairing": "<font pairing slug or null>"}
+{"palette": "<palette slug or null>", "font_pairing": "<font pairing slug or null>",
+ "hero_height": "full" | "banded" | null}
 
 Only use slugs from the lists given."""
 
@@ -287,9 +300,10 @@ async def generate_design_language(
         )
         return DesignLanguage()
     logger.info(
-        "Design language picked: palette=%s font_pairing=%s (brand=%s)",
+        "Design language picked: palette=%s font_pairing=%s hero_height=%s (brand=%s)",
         language.palette,
         language.font_pairing,
+        language.hero_height,
         brand_name,
     )
     return language

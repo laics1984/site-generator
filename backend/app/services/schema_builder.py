@@ -77,7 +77,10 @@ from app.services.design_director import (
 )
 from app.services.hero_director import (
     IMAGELESS_HERO_IDS,
+    HeroComposition,
     HeroDirective,
+    hero_composition,
+    plan_site_compositions,
     plan_site_heroes,
 )
 from app.services.header_footer import build_footer, build_header
@@ -107,8 +110,8 @@ from app.services.section_content import (
     section_visual_input_for,
     style_whatsapp_links,
 )
-from app.services.template_filler import fill_template
-from app.services.image_styling import washed_photo_background
+from app.services.template_filler import PhotoComposition, fill_template
+from app.services.image_styling import photo_background, washed_photo_background
 from app.services.theme import (
     _adjust_lightness,
     _contrast,
@@ -1178,10 +1181,11 @@ _CHILDCARE_HERO_INKS: tuple[str, ...] = (
     "#DDD6FE",  # lavender
 )
 
-# A neutral (not theme-tinted) scrim for childcare photo heroes: the brief wants
-# the real photo colours, not a brand-colour wash. Light enough to keep the
-# photo vivid, dark enough that the light-but-vivid title inks stay legible.
-_CHILDCARE_HERO_SCRIM = "linear-gradient(rgba(15,23,42,0.28), rgba(15,23,42,0.48))"
+# A neutral (not theme-tinted) ink for childcare photo heroes: the brief wants
+# the real photo colours, not a brand-colour wash. Fed to photo_background as
+# BOTH ends of the cast, so the overlay darkens without tinting, and the layer
+# stack (grain, vignette, edge fade, framing) is identical to every other hero.
+_CHILDCARE_HERO_INK = "#0f172a"
 
 
 def _split_headline(headline: str, accent: str | None) -> tuple[str, str] | None:
@@ -1309,6 +1313,78 @@ def _find_text_by_inner(
             if found is not None:
                 return found
     return None
+
+
+# Copy-block width per anchor. Centred copy can afford the template's 760px
+# because it's symmetrical; an anchored column reads as a column only if it
+# stops well short of the frame's midline, leaving the photograph a real share
+# of the width rather than a margin.
+_ANCHORED_COPY_MAX_WIDTH = "620px"
+
+
+def _has_composable_subject(photo: PhotoResult | None) -> bool:
+    """Whether a hero background is a photo OF something, so copy can be
+    anchored off it.
+
+    Genuine provenance is necessary but not sufficient: the colour-matched
+    abstract wash is a real Pexels photo and passes `_GENUINE_PHOTO_SOURCES`,
+    but it is chosen purely on colour distance and is documented as on-brand
+    texture rather than a focal image (ImageResolver.resolve_abstract_bg).
+    """
+    return (
+        photo is not None
+        and photo.source in _GENUINE_PHOTO_SOURCES
+        and not photo.is_abstract
+    )
+
+
+def _apply_hero_composition(element: BuilderElement, comp: HeroComposition) -> None:
+    """Anchor a full-bleed hero's copy block (catalogue path).
+
+    The scrim was already built to run off this edge (image_styling), so the two
+    have to agree: an anchor here without the matching scrim would put the
+    headline on the bright side of the frame. `center` is the template's own
+    layout, so it's left untouched.
+
+    Mobile always reverts to centred. At 440px there is no open side for the
+    photograph to occupy — an anchored column just reads as text shoved against
+    the edge, and the responsive scrim covers the whole narrow frame anyway.
+    """
+    if comp.anchor == "center":
+        return
+    content = element.content[0] if isinstance(element.content, list) and element.content else None
+    if not isinstance(content, BuilderElement):
+        return
+
+    element.styles = {
+        **(element.styles or {}),
+        "alignItems": "flex-start",
+        "justifyContent": "flex-end" if comp.anchor == "bottom-left" else "center",
+    }
+    content.styles = {
+        **(content.styles or {}),
+        "textAlign": "left",
+        "alignItems": "flex-start",
+        "maxWidth": _ANCHORED_COPY_MAX_WIDTH,
+    }
+    _merge_mobile(element, {"alignItems": "center", "justifyContent": "center"})
+    _merge_mobile(
+        content, {"textAlign": "center", "alignItems": "center", "maxWidth": "100%"}
+    )
+
+
+def _merge_mobile(element: BuilderElement, mobile: dict[str, str]) -> None:
+    """Add mobile overrides in place, keeping the template's tablet rules.
+
+    `responsiveStyles` is a ResponsiveStyles model by the time it reaches here
+    (pydantic coerces the catalog's raw dict on construction), so this reads and
+    writes the `mobile` field rather than treating the whole thing as a mapping.
+    """
+    responsive = element.responsiveStyles
+    if responsive is None:
+        element.responsiveStyles = ResponsiveStyles(mobile=dict(mobile))
+        return
+    responsive.mobile = {**(responsive.mobile or {}), **mobile}
 
 
 def _apply_hero_typography(
@@ -3116,6 +3192,7 @@ async def block_to_element(
     hero_scroll_target_kind: str | None = None,
     explicit_template_id: str | None = None,
     hero_directive: HeroDirective | None = None,
+    hero_comp: HeroComposition | None = None,
 ) -> BuilderElement:
     # Heroes are art-directed per page (see hero_director.plan_site_heroes);
     # direct callers without a directive fall back to the legacy site-wide
@@ -3130,6 +3207,25 @@ async def block_to_element(
         )
         if hero_directive is not None:
             explicit_template_id = hero_directive.template_id
+        # With every page on the same full-bleed template, composition is the
+        # only axis of variety left (see hero_director). plan_to_site plans it
+        # site-wide so consecutive pages differ; a direct caller without one
+        # falls back to deciding this page in isolation.
+        if hero_comp is None:
+            hero_comp = hero_composition(
+                slug=ctx.current_page_slug or "",
+                seed=ctx.variety_seed or "",
+                is_homepage=is_homepage,
+                hero_height=ctx.theme.hero_background_height,
+            )
+        # An anchor only earns its keep when there is a SUBJECT for it to make
+        # room for: the copy sits to one side precisely so the photograph keeps
+        # the other. Against a colour-matched abstract wash (texture, no
+        # subject), a gradient, or a placeholder, there is nothing on the open
+        # side — so anchored copy just reads as text shoved against an edge with
+        # dead space beside it. Those centre.
+        if not _has_composable_subject(hero_photo):
+            hero_comp = HeroComposition("center")
 
     # Catalogue path: for section types that have shared builder templates, the
     # LLM-mapped content fills a chosen template (selection by feasibility +
@@ -3205,15 +3301,32 @@ async def block_to_element(
             theme={
                 "primary": ctx.theme.palette.primary,
                 "secondary": ctx.theme.palette.secondary,
+                # Lets a full-bleed photo dissolve into the page below it
+                # instead of ending on a ruled line.
+                "background": ctx.theme.palette.background,
             },
+            # Art-direct the photo treatment: which way the scrim runs off the
+            # copy, and where in the frame the subject is. Only for the
+            # full-bleed hero — a bento tile or a CTA band is not composed
+            # around a headline block.
+            composition=(
+                PhotoComposition(
+                    anchor=hero_comp.anchor,
+                    focal_y=hero_photo.focal_y if hero_photo else None,
+                )
+                if hero_comp is not None and template["id"] in _FULLBLEED_HERO_IDS
+                else None
+            ),
         )
         # Split hero: wash the whole section with the abstract theme background.
         if hero_washed_bg is not None:
             _apply_hero_washed_background(element, hero_washed_bg, ctx)
         # Childcare: drop the brand-colour tint over the hero photo — the brief
-        # wants the real image colours, not a theme wash. Swap the fill's
-        # brand-tinted overlay for a neutral, lighter scrim (still enough to keep
-        # the light multi-colour title legible).
+        # wants the real image colours, not a theme wash. Rebuild the stack with
+        # a neutral ink instead of the palette's, so the photo keeps its own
+        # colours while grain, vignette, edge fade and framing all survive.
+        # (Replacing backgroundImage outright would leave the other three layer
+        # lists describing layers that no longer exist.)
         if (
             block.kind == "hero"
             and ctx.industry == "childcare"
@@ -3222,8 +3335,18 @@ async def block_to_element(
         ):
             element.styles = {
                 **(element.styles or {}),
-                "backgroundImage": f"{_CHILDCARE_HERO_SCRIM}, url('{hero_photo.url}')",
+                **photo_background(
+                    hero_photo.avg_color, hero_photo.url,
+                    _CHILDCARE_HERO_INK, _CHILDCARE_HERO_INK,
+                    anchor=hero_comp.anchor if hero_comp else "center",
+                    focal_y=hero_photo.focal_y,
+                    page_bg_hex=ctx.theme.palette.background,
+                ),
             }
+        # Composition: anchor the copy block and let the scrim (built above)
+        # run off that edge. Same template, different photograph per page.
+        if block.kind == "hero" and hero_comp is not None and template["id"] in _FULLBLEED_HERO_IDS:
+            _apply_hero_composition(element, hero_comp)
         # Hero typography pass: accent headline line + photo-hero ink retint.
         if block.kind == "hero":
             _apply_hero_typography(element, block, ctx, template_id=template["id"])
@@ -3454,6 +3577,14 @@ async def plan_to_site(
         has_source_background=resolver.strongest_source_background() is not None,
         seed=effective_brand.name or plan.site_name,
     )
+    # With every page on the same full-bleed template, how each hero is COMPOSED
+    # is the only axis of variety left — planned site-wide so consecutive pages
+    # don't converge on the same one.
+    hero_compositions = plan_site_compositions(
+        plan.pages,
+        seed=effective_brand.name or plan.site_name,
+        hero_height=theme.hero_background_height,
+    )
 
     # Fold the remaining design decisions into the manifest so it is the ONE
     # complete audit record: theme language, per-page hero art direction, and
@@ -3561,6 +3692,11 @@ async def plan_to_site(
                 explicit_template_id=design_recipe.template_for(block_index),
                 hero_directive=(
                     hero_directives.get(page_plan.slug)
+                    if block.kind == "hero"
+                    else None
+                ),
+                hero_comp=(
+                    hero_compositions.get(page_plan.slug)
                     if block.kind == "hero"
                     else None
                 ),

@@ -192,6 +192,81 @@ _EXCLUDED_ROLES = frozenset({"decoration", "logo"})
 # is legitimate for a SaaS feature card) — this only vetoes the pin.
 _UNPINNABLE_VISION_KINDS = frozenset({"logo", "banner", "screenshot", "graphic", "map"})
 
+# --- words burned into the pixels ------------------------------------------------
+#
+# A full-bleed background has OUR headline drawn over it. If the image already
+# carries a headline, tagline or price list of its own, the two collide: two
+# sets of words at two sizes fighting for the same space, and no scrim can fix
+# it because the problem is the words, not the contrast. The source's own hero
+# graphic is the usual offender — a scrape faithfully picks it up precisely
+# because the source used it full-bleed.
+#
+# Such an image is NOT unusable. With nothing drawn over it, it reads fine as a
+# featured/side image or as an untitled card, so these signals bar the
+# BACKGROUND slot only and leave inline slots alone.
+
+# Kinds that carry wording by definition (see image_vision._JUDGE_SYSTEM):
+# a banner IS "promotional graphic with overlaid text", a screenshot is UI
+# chrome and labels, a logo is a wordmark, a map is place names. `graphic` is
+# excluded — an illustration or pattern often has no words at all.
+_TEXT_BEARING_VISION_KINDS = frozenset({"logo", "banner", "screenshot", "map"})
+
+# Filename/alt tokens naming an artwork whose whole purpose is to carry a
+# message. Deliberately high-precision, not exhaustive: this is the only signal
+# available when the vision pass is off (settings.llm_vision_model unset), and a
+# false positive costs a real photo its hero.
+#
+# Excluded on purpose, despite sounding right: "banner", "hero", "header",
+# "cover", "promo". In web filenames those describe a PLACEMENT — a wide image
+# at the top of a page — far more often than they describe text artwork, so
+# banner.jpg is usually just a photograph. Only words that name the artwork's
+# purpose belong here.
+_TEXT_IN_IMAGE_HINTS = (
+    "poster", "flyer", "leaflet", "infographic", "advert", "billboard",
+    "headline", "wordmark", "price-list", "pricelist", "menu-board",
+    "coupon", "voucher",
+)
+
+
+def bears_text(meta: ImageMetadata | None) -> bool:
+    """Whether an image likely has readable words baked into its pixels.
+
+    Signals in order of how directly they observe the pixels:
+
+    1. the vision pass, when configured — `vision_has_text` is a judgement of the
+       image itself, and `vision_kind` covers the kinds that carry wording by
+       definition. Trusted above everything below it.
+    2. the source's own rendering — `role == "background"` is assigned only when
+       the scraper measured >=24 characters of live HTML text inside that
+       element (image_evidence.classify_role). A designer laid a headline on
+       this image, which is strong evidence it hasn't got one of its own: nobody
+       stacks two headlines. That PROVES it works as a backdrop, so it clears
+       the naming signal below.
+    3. the URL/alt naming, which is weak but costs nothing.
+
+    Without vision, (3) catches only what the source happened to name honestly.
+    Detecting a headline burned into an otherwise ordinary photograph needs the
+    model, or OCR — pixel statistics alone do not separate that case from a
+    normal photo.
+
+    SCOPE: source images only. The parameter type enforces it — stock photos are
+    `pexels.PhotoResult` and never become `ImageMetadata`, so they cannot reach
+    this function. That is deliberate, not incidental: a baked-in headline is a
+    property of a site's own artwork, and Pexels ships photographs, not posters.
+    Keeping stock out also keeps the vision pass bounded (it annotates the
+    scraped pool only — see routers/generate._annotate_source_images).
+    """
+    if meta is None:
+        return False
+    if meta.vision_has_text:
+        return True
+    if meta.vision_kind in _TEXT_BEARING_VISION_KINDS:
+        return True
+    if meta.role == "background":
+        return False  # measured: the source put its own live text on this image
+    haystack = f"{meta.url or ''} {meta.alt or ''}".lower()
+    return any(hint in haystack for hint in _TEXT_IN_IMAGE_HINTS)
+
 # Slots where exactly one real image usually exists on the source and the
 # scraper has already identified it (the hero / lead about image). For these,
 # an exact intent match is decisive on its own — we prefer the site's authentic
@@ -265,6 +340,11 @@ def rank_candidates(
         # Gallery cells were cropped for a grid, never art-directed full-bleed;
         # keep them off the hero background specifically.
         candidates = [c for c in candidates if c.role != "gallery"]
+    if slot_usage == "background":
+        # An image that already carries a headline, tagline or price list can't
+        # take ours on top of it. It stays rankable for every inline slot — see
+        # bears_text — because nothing is drawn over those.
+        candidates = [c for c in candidates if not bears_text(c)]
     # Large featured slots (hero / about) must be real featured photographs. A
     # banner, UI screenshot, graphic (e.g. a QR code) or map blown up as the
     # hero/about image reads as a scrape failure, so exclude those here, not

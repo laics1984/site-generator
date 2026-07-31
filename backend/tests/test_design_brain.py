@@ -3,8 +3,16 @@ index namespacing so one page's pick never lands on another page's section."""
 
 import asyncio
 import unittest
+from typing import get_args
 
 from app.config import settings
+from app.models.brand import (
+    INDUSTRY_HERO_HEIGHT,
+    MOOD_HERO_HEIGHT,
+    BrandMood,
+)
+from app.models.content_blocks import INDUSTRY_MOOD
+from app.routers.generate import resolve_hero_height
 from app.services.design_brain import (
     DesignLanguage,
     SiteDesignRecipe,
@@ -184,6 +192,104 @@ class DesignLanguageTest(unittest.TestCase):
         finally:
             settings.design_language_enabled = original
         self.assertEqual(language, DesignLanguage())
+
+
+class HeroHeightDecisionTest(unittest.TestCase):
+    """Hero height is a design judgement, not a hardcoded default: the pass may
+    pick it, and everything downstream must still be fully determined when it
+    doesn't (resolve_hero_height)."""
+
+    def _language(self, llm):
+        original = settings.design_language_enabled
+        settings.design_language_enabled = True
+        try:
+            return asyncio.run(
+                generate_design_language(
+                    brand_name="Blue Fin Bistro",
+                    mood="friendly",
+                    industry="restaurant",
+                    seed_hex=None,
+                    llm=llm,
+                )
+            )
+        finally:
+            settings.design_language_enabled = original
+
+    def test_prompt_asks_for_a_hero_height(self):
+        calls: list[str] = []
+
+        class FakeLLM:
+            async def chat_json(self, *, system_prompt, user_prompt, schema, **_):
+                calls.append(system_prompt)
+                return schema(hero_height="full")
+
+        self._language(FakeLLM())
+        # Both options are named, and the design personality line the model is
+        # meant to read them against is already in the payload.
+        self.assertIn("hero_height", calls[0])
+        self.assertIn("banded", calls[0])
+
+    def test_pick_passes_through(self):
+        class FakeLLM:
+            async def chat_json(self, *, schema, **_):
+                return schema(palette=None, font_pairing=None, hero_height="banded")
+
+        self.assertEqual(self._language(FakeLLM()).hero_height, "banded")
+
+    def test_deferring_is_a_safe_no_op(self):
+        class FakeLLM:
+            async def chat_json(self, *, schema, **_):
+                return schema(hero_height=None)
+
+        self.assertIsNone(self._language(FakeLLM()).hero_height)
+
+
+class HeroHeightPrecedenceTest(unittest.TestCase):
+    """explicit user pick → LLM pick → industry default → mood default → full."""
+
+    def test_explicit_user_pick_beats_everything(self):
+        self.assertEqual(
+            resolve_hero_height("banded", "full", mood="luxury", industry="restaurant"),
+            "banded",
+        )
+
+    def test_llm_pick_wins_when_the_user_chose_auto(self):
+        self.assertEqual(
+            resolve_hero_height(None, "banded", mood="luxury", industry="restaurant"),
+            "banded",
+        )
+
+    def test_industry_default_beats_mood(self):
+        # A "modern" restaurant still leads with photography.
+        self.assertEqual(
+            resolve_hero_height(None, None, mood="modern", industry="restaurant"), "full"
+        )
+        # …and a "friendly" SaaS still gets to its copy.
+        self.assertEqual(
+            resolve_hero_height(None, None, mood="friendly", industry="saas"), "banded"
+        )
+
+    def test_mood_default_applies_when_the_industry_has_no_lean(self):
+        self.assertEqual(
+            resolve_hero_height(None, None, mood="technical", industry="other"), "banded"
+        )
+        self.assertEqual(
+            resolve_hero_height(None, None, mood="luxury", industry="other"), "full"
+        )
+
+    def test_result_is_always_determined_with_nothing_known(self):
+        # A disabled or failed pass must never leave the theme unset.
+        self.assertEqual(
+            resolve_hero_height(None, None, mood=None, industry=None), "full"
+        )
+
+    def test_industry_map_only_uses_real_categories(self):
+        # Keys are IndustryCategory values; a typo'd slug would silently never
+        # match and the industry would quietly fall through to its mood.
+        self.assertTrue(set(INDUSTRY_HERO_HEIGHT) <= set(INDUSTRY_MOOD))
+
+    def test_every_mood_has_a_default(self):
+        self.assertEqual(set(MOOD_HERO_HEIGHT), set(get_args(BrandMood)))
 
 
 if __name__ == "__main__":

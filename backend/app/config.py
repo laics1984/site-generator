@@ -299,6 +299,18 @@ class Settings(BaseSettings):
     vision_image_max_bytes: int = 4_000_000  # skip downloads larger than this
     vision_fetch_timeout_seconds: float = 8.0
 
+    # Pixel sampling for full-bleed photo slots (services/image_sampling.py):
+    # reads a scraped photo's dominant colour and focal point so the hero scrim
+    # adapts and the crop frames the subject. Off ⇒ scraped photos keep the
+    # metadata-only path (blind mid-cast, centred crop), exactly as before the
+    # pass existed. The backend test suite turns this off — it is the only thing
+    # in ImageResolver that touches the network.
+    photo_sampling_enabled: bool = True
+    # Deliberately tighter than the vision fetch: a hero's dressing is an
+    # enhancement, never worth stalling a build for. On timeout the photo just
+    # keeps the old defaults.
+    photo_sample_timeout_seconds: float = 4.0
+
     cms_api_base_url: str = "http://localhost:8000"
 
     # The webtree admin suite (a separate app on its own origin — the CMS API

@@ -6,6 +6,7 @@ structure) is spread across the industry-keyed registries. These tests pin
 each registry's childcare entry so the brief keeps flowing into generation.
 """
 
+import re
 import unittest
 
 from app.models.brand import BrandIdentity
@@ -17,6 +18,7 @@ from app.models.content_blocks import (
     industry_locked_mood,
 )
 from app.services.header_footer import build_header
+from app.services.image_styling import photo_background
 from app.services.hero_director import _CHILDCARE_SPEC, plan_site_heroes
 from app.services.industry_personality import personality_for
 from app.services.industry_templates import get_template
@@ -24,7 +26,7 @@ from app.services.landing_patterns import homepage_sections
 from app.services.media import _contextual_non_person_query, _INDUSTRY_CONTEXT_QUERIES
 from app.services.schema_builder import (
     _CHILDCARE_HERO_INKS,
-    _CHILDCARE_HERO_SCRIM,
+    _CHILDCARE_HERO_INK,
     _apply_hero_typography,
     _midpoint_word_split,
     apply_section_dividers,
@@ -493,10 +495,18 @@ class ChildcareHeroColorTest(unittest.TestCase):
         return out
 
     def test_scrim_constant_is_neutral_not_brand_tinted(self):
-        # No theme-colour filter: the childcare hero scrim is a plain slate
-        # gradient with no brand CSS variables or hues.
-        self.assertNotIn("var(--builder", _CHILDCARE_HERO_SCRIM)
-        self.assertIn("15,23,42", _CHILDCARE_HERO_SCRIM)  # neutral slate only
+        # The childcare hero darkens with a plain slate ink and no brand hue, so
+        # the photograph keeps its own colours. Fed as BOTH ends of the cast, the
+        # brand gradient collapses to that single neutral.
+        self.assertEqual(_CHILDCARE_HERO_INK, "#0f172a")
+        styles = photo_background(
+            "#808080", "https://x/p.jpg", _CHILDCARE_HERO_INK, _CHILDCARE_HERO_INK
+        )
+        css = styles["backgroundImage"]
+        self.assertNotIn("var(--builder", css)
+        # Every rgba() in the overlay stack is the neutral slate.
+        hues = set(re.findall(r"rgba\((\d+),(\d+),(\d+),", css.replace(" ", "")))
+        self.assertEqual(hues, {("15", "23", "42")})
 
     def test_title_uses_multiple_bright_inks(self):
         el = self._hero_el("Where little minds grow", eyebrow="Established 2004")

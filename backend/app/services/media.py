@@ -35,11 +35,13 @@ from app.config import settings
 from app.models.content_blocks import ImageMetadata
 from app.services.image_match import (
     _UNPINNABLE_VISION_KINDS,
+    bears_text,
     SlotUsage,
     _tokens,
     rank_candidates,
     rank_candidates_with_llm_tiebreaker,
 )
+from app.services.image_sampling import sample_photo
 from app.services.image_styling import (
     band_for_luminance,
     color_distance,
@@ -124,6 +126,23 @@ def _below_hero_bg_min(meta: ImageMetadata | None, min_long_edge: int) -> bool:
     ):
         return True
     return False
+
+
+def _unfit_for_background(meta: ImageMetadata | None) -> bool:
+    """True when a scraped image must not fill a full-bleed BACKGROUND slot
+    because it already carries words of its own.
+
+    A background has the section's headline drawn over it. An image that is
+    itself a headline — the source's own hero graphic, a promo banner, a price
+    list — puts two sets of words in the same space, and no scrim fixes that
+    because the problem is the wording, not the contrast.
+
+    Rejecting here is cheap: the resolver falls through to stock for the
+    background, and the image stays fully eligible for the inline/featured slots
+    that draw nothing on top of it (see `_unfit_for_featured_pin`, which gates
+    the opposite direction).
+    """
+    return bears_text(meta)
 
 
 def _unfit_for_featured_pin(
@@ -216,6 +235,30 @@ class ImageResolver:
         self._primary_hex = primary_hex or "#64748b"
         self._secondary_hex = secondary_hex or "#1e293b"
 
+    async def _sampled_fields(
+        self, url: str, known_hex: str | None, slot_usage: SlotUsage
+    ) -> tuple[float | None, Literal["light", "dark"] | None, float | None]:
+        """(luminance, band, focal_y) for a scraped photo, reading pixels only
+        when it's worth it.
+
+        Scraped images carry no `dominant_color`, so without this every one of
+        them lands on `photo_background`'s blind mid-cast and a dead-centre
+        crop. One download buys both the adaptive scrim and the framing — but
+        only for full-bleed slots, where the photo covers the viewport and both
+        actually show. Inline slots keep the metadata-only path.
+        """
+        lum, band = _band_fields(known_hex)
+        if slot_usage != "background":
+            return lum, band, None
+        sample = await sample_photo(url)
+        if sample is None:
+            return lum, band, None
+        # A colour the scraper already knew wins — it describes the source's own
+        # rendering; ours is a re-read of the same bytes.
+        if known_hex:
+            return lum, band, sample.focal_y
+        return sample.luminance, band_for_luminance(sample.luminance), sample.focal_y
+
     def mark_used(self, urls: set[str] | list[str]) -> None:
         """Reserve scraped URLs already placed by the ref-binding pass
         (services/image_refs.py), so slot resolution won't re-pick them and
@@ -284,15 +327,24 @@ class ImageResolver:
         if pinned_url:
             meta = next((c for c in self._pool if c.url == pinned_url), None)
             # Honour the bound photo unless it's unfit for a full-bleed
-            # background (too small, a headshot, or the wrong shape), or it's
-            # a decorative/background-style scrape being asked to fill an
-            # inline featured slot — then fall through so the resolver
-            # reaches Pexels for a real photo instead.
-            if not _below_hero_bg_min(meta, min_long_edge) and not _unfit_for_featured_pin(
-                meta, slot_usage, allow_portrait=allow_portrait
+            # background (too small, a headshot, the wrong shape, or already
+            # carrying words of its own), or it's a decorative/background-style
+            # scrape being asked to fill an inline featured slot — then fall
+            # through so the resolver reaches Pexels for a real photo instead.
+            # An LLM image_ref binds by topic and cannot see the picture, so a
+            # promo banner captioned "our restaurant" is exactly the kind of
+            # pin that arrives here and must not be honoured full-bleed.
+            if (
+                not _below_hero_bg_min(meta, min_long_edge)
+                and not (slot_usage == "background" and _unfit_for_background(meta))
+                and not _unfit_for_featured_pin(
+                    meta, slot_usage, allow_portrait=allow_portrait
+                )
             ):
                 self._used_urls.add(pinned_url)
-                lum, band = _band_fields(meta.dominant_color if meta else None)
+                lum, band, focal_y = await self._sampled_fields(
+                    pinned_url, meta.dominant_color if meta else None, slot_usage
+                )
                 return PhotoResult(
                     url=pinned_url,
                     alt=(meta.alt if meta and meta.alt else None)
@@ -303,6 +355,7 @@ class ImageResolver:
                     source="scraped",
                     luminance=lum,
                     band=band,
+                    focal_y=focal_y,
                 )
             logger.debug(
                 "Pinned %s photo %s unfit for slot_usage=%s (size/role/aspect/"
@@ -320,9 +373,12 @@ class ImageResolver:
             )
             if picked is not None:
                 self._used_urls.add(picked.url)
-                # Carry the band when the scraper supplied a colour hint; else
-                # None → luminance pass applies the §8.4 light default.
-                lum, band = _band_fields(picked.dominant_color)
+                # Carry the band from the scraper's colour hint when it has one,
+                # else read it off the pixels for a full-bleed slot; None for
+                # everything else → luminance pass applies the §8.4 light default.
+                lum, band, focal_y = await self._sampled_fields(
+                    picked.url, picked.dominant_color, slot_usage
+                )
                 return PhotoResult(
                     url=picked.url,
                     alt=picked.alt or alt_fallback or (query or "Source image"),
@@ -331,6 +387,7 @@ class ImageResolver:
                     source="scraped",
                     luminance=lum,
                     band=band,
+                    focal_y=focal_y,
                 )
 
         # 2. Pexels — locale-cued for people-likely slots, plain-query fallback.
@@ -511,7 +568,7 @@ class ImageResolver:
                 )
                 self._seen_pexels_urls.add(best.url)
                 lum, band = _band_fields(best.avg_color)
-                return replace(best, luminance=lum, band=band)
+                return replace(best, luminance=lum, band=band, is_abstract=True)
             reuse_pool.extend(colored)
 
         if reuse_pool:
@@ -528,7 +585,7 @@ class ImageResolver:
                 query, best.url,
             )
             lum, band = _band_fields(best.avg_color)
-            return replace(best, luminance=lum, band=band)
+            return replace(best, luminance=lum, band=band, is_abstract=True)
 
         return None
 
@@ -556,6 +613,9 @@ class ImageResolver:
             c for c in self._pool
             if c.url not in self._used_urls and _looks_like_image(c.url)
             and not _below_hero_bg_min(c, min_long_edge)
+            # Words already in the picture disqualify it from a slot that draws
+            # our headline over it — but only from that slot.
+            and not (slot_usage == "background" and _unfit_for_background(c))
         ]
         if not candidates:
             return None
@@ -648,11 +708,19 @@ class ImageResolver:
         Guards against pinning a tiny tiled texture full-screen: known
         dimensions must reach `min_dim` on the long edge; unknown dimensions
         are accepted only when render evidence shows near-viewport coverage.
+
+        Also refuses a background that carries its own wording. The source may
+        well have laid live HTML text over it, but we would be laying OUR
+        headline over a picture that already reads as one — and this is the
+        likeliest place to meet such an image, since a site's own hero graphic
+        is exactly what a CSS background scrape returns.
         """
         def _qualifies(c: ImageMetadata) -> bool:
             if c.source_usage != "css_background" or c.url in self._used_urls:
                 return False
             if not _looks_like_image(c.url):
+                return False
+            if _unfit_for_background(c):
                 return False
             if c.role not in {"hero", "background", "unknown"} and c.intent != "hero":
                 return False
@@ -709,14 +777,22 @@ def _placeholder_photo(
     secondary_hex: str = "#1e293b",
     nonce: int = 0,
 ) -> PhotoResult:
-    """Last-resort placeholder: a deterministic two-tone SVG gradient in the
-    theme's own brand colours, inlined as a data URI (no network call).
+    """Last-resort placeholder: a deterministic brand-coloured SVG, inlined as a
+    data URI (no network call).
 
     Replaces the old picsum.photos fallback — a random, unrelated stock photo
     that read as a bug rather than a design choice. This always looks
-    intentional, and a given (seed, nonce) always renders the same gradient
-    angle so repeat generations are stable. `nonce` distinguishes repeated uses
-    of the same seed on one page (nonce 0 == the original, byte-identical).
+    intentional, and a given (seed, nonce) always renders the same image so
+    repeat generations are stable. `nonce` distinguishes repeated uses of the
+    same seed on one page.
+
+    A flat two-stop ramp is what a "no image" fallback looks like; an aurora of
+    offset radial hotspots over that ramp, finished with a grain wash, is what a
+    designed background looks like — the same construction the theme's own
+    section backgrounds use (services/style_tokens.mesh_gradient / grain_data_uri),
+    rebuilt here in SVG because this slot needs a single self-contained image URL
+    rather than a stack of CSS layers. It carries the brand hue either way, so
+    nothing about slot matching or the luminance band changes.
     """
     key = seed if nonce == 0 else f"{seed}#{nonce}"
     digest = hashlib.md5(key.encode("utf-8")).hexdigest()
@@ -727,14 +803,42 @@ def _placeholder_photo(
     else:
         w, h = 1200, 800
     angle = int(digest[:2], 16) % 360
+    # Lighter sibling of the brand hue — the aurora needs a third tone to read
+    # as depth rather than as two flat washes meeting.
+    glow_hex = _blend_hex(primary_hex, "#ffffff")
+    # Hotspot placement is seeded too, so two placeholders on one page differ in
+    # composition and not just gradient angle.
+    spots = [
+        (int(digest[i : i + 2], 16) % 100, int(digest[i + 2 : i + 4], 16) % 100)
+        for i in (2, 6, 10, 14)
+    ]
+    tones = (primary_hex, glow_hex, secondary_hex, glow_hex)
+    alphas = (0.55, 0.40, 0.45, 0.30)
+    radii = (62, 54, 58, 48)
+    hotspots = "".join(
+        f'<radialGradient id="s{i}" cx="{cx}%" cy="{cy}%" r="{r}%">'
+        f'<stop offset="0%" stop-color="{tone}" stop-opacity="{a}"/>'
+        f'<stop offset="100%" stop-color="{tone}" stop-opacity="0"/>'
+        "</radialGradient>"
+        for i, ((cx, cy), tone, a, r) in enumerate(zip(spots, tones, alphas, radii))
+    )
+    layers = "".join(
+        f'<rect width="{w}" height="{h}" fill="url(#s{i})"/>' for i in range(len(spots))
+    )
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
         f'viewBox="0 0 {w} {h}">'
         f'<defs><linearGradient id="g" gradientTransform="rotate({angle} 0.5 0.5)">'
         f'<stop offset="0%" stop-color="{primary_hex}"/>'
         f'<stop offset="100%" stop-color="{secondary_hex}"/>'
-        f"</linearGradient></defs>"
+        f"</linearGradient>{hotspots}"
+        "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.8' "
+        "numOctaves='2' stitchTiles='stitch'/>"
+        "<feColorMatrix type='saturate' values='0'/></filter>"
+        f"</defs>"
         f'<rect width="{w}" height="{h}" fill="url(#g)"/>'
+        f"{layers}"
+        f'<rect width="{w}" height="{h}" filter="url(#n)" opacity="0.09"/>'
         f"</svg>"
     )
     avg_hex = _blend_hex(primary_hex, secondary_hex)
