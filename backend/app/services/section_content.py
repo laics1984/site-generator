@@ -217,8 +217,8 @@ def _contact_content(b: ContactBlock) -> dict[str, Any]:
 
 def _team_content(b: TeamBlock) -> dict[str, Any]:
     # A source that reuses one photo across members would otherwise repeat the
-    # same image down the grid; the second use falls back to a resolver query so
-    # each card gets a distinct image.
+    # same image down the grid; the second use falls back to a monogram so each
+    # card gets a distinct image.
     used_photo_urls: set[str] = set()
 
     def member_photo(member: Any) -> dict[str, str] | None:
@@ -229,7 +229,11 @@ def _team_content(b: TeamBlock) -> dict[str, Any]:
                 "src": url,
                 "alt": member.photo_alt or member.name,
             }
-        return _image(member.photo_query, member.name)
+        # No portrait of THIS person: show their initials, never a stock photo.
+        # These are real, named people, and a stranger's face under a real name
+        # is a misattribution. Resolved in template_filler, which has the theme
+        # colours this mapper does not.
+        return {"monogram": member.name, "alt": member.name}
 
     return {
         "eyebrow": "Team",

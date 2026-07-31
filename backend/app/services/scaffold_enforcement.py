@@ -36,6 +36,7 @@ from app.models.content_blocks import (
     TimelineBlock,
 )
 from app.models.industry import PageScaffold
+from app.services.profile_text import clean_team_bio, looks_like_team_role
 
 logger = logging.getLogger(__name__)
 
@@ -190,14 +191,43 @@ def looks_like_team_member_name(value: str | None) -> bool:
     return True
 
 
-def _sanitize_team_block(block: TeamBlock) -> TeamBlock | None:
+def _sanitize_team_block(
+    block: TeamBlock, source_text: str | None = None
+) -> TeamBlock | None:
+    """Drop non-people, then strip anything a member's card can't vouch for.
+
+    A bad name means the "member" isn't a person at all, so the entry goes. A
+    bad role or bio is just untrustworthy text attached to a real person — it is
+    BLANKED, and the card renders with the slots it can stand behind (both are
+    optional in the team-grid template).
+    """
     members = [
         member for member in block.members
         if looks_like_team_member_name(member.name)
     ]
     if not members:
         return None
-    return block.model_copy(update={"members": members})
+
+    haystack = _normalize_for_grounding(source_text) if source_text else None
+    names = tuple(m.name for m in members)
+    cleaned = []
+    for member in members:
+        others = tuple(n for n in names if n != member.name)
+        bio = clean_team_bio(member.bio, other_names=others, haystack=haystack)
+        cleaned.append(
+            member.model_copy(
+                update={
+                    "role": member.role if looks_like_team_role(member.role) else "",
+                    "bio": bio,
+                    # Kept in sync by TeamMember.sync_description_aliases on
+                    # construction; model_copy bypasses validators, so the
+                    # deprecated alias must be updated here too or it resurrects
+                    # the dirty text via _team_content's `bio or description`.
+                    "description": bio,
+                }
+            )
+        )
+    return block.model_copy(update={"members": cleaned})
 
 
 # Generic placeholder names the LLM reaches for when it has no real reviewer
@@ -244,6 +274,27 @@ def _longest_match_len(needle: str, haystack: str) -> int:
     return match.size
 
 
+def is_grounded_in_normalized(text: str | None, haystack: str) -> bool:
+    """``is_grounded_in_source`` against an ALREADY-normalized haystack.
+
+    Callers checking several items against one page should normalize the source
+    ONCE and use this: normalizing lowercases, splits and rejoins the entire
+    page text, and doing that per item (twice per item, for testimonials) is
+    pure repeated work.
+    """
+    if not text or not haystack:
+        return False
+    needle = _normalize_for_grounding(text)
+    if not needle:
+        return False
+    if needle in haystack:
+        return True
+    if len(needle) < 15:
+        return False  # too short for fuzzy matching to be meaningful
+    threshold = max(15, int(len(needle) * 0.6))
+    return _longest_match_len(needle, haystack) >= threshold
+
+
 def is_grounded_in_source(text: str | None, source_text: str | None) -> bool:
     """True when `text` plausibly came FROM `source_text`.
 
@@ -257,16 +308,7 @@ def is_grounded_in_source(text: str | None, source_text: str | None) -> bool:
     """
     if not text or not source_text:
         return False
-    needle = _normalize_for_grounding(text)
-    haystack = _normalize_for_grounding(source_text)
-    if not needle:
-        return False
-    if needle in haystack:
-        return True
-    if len(needle) < 15:
-        return False  # too short for fuzzy matching to be meaningful
-    threshold = max(15, int(len(needle) * 0.6))
-    return _longest_match_len(needle, haystack) >= threshold
+    return is_grounded_in_normalized(text, _normalize_for_grounding(source_text))
 
 
 def _sanitize_testimonials_block(
@@ -274,14 +316,15 @@ def _sanitize_testimonials_block(
 ) -> TestimonialsBlock | None:
     items: list[TestimonialItem] = []
     dropped_fabricated = 0
+    haystack = _normalize_for_grounding(source_text) if source_text else ""
     for item in block.items:
         if looks_like_placeholder_author(item.author):
             continue
         # No source text to check against (e.g. legacy callers / unit tests) →
         # fall back to the placeholder-name check only.
-        if source_text and not (
-            is_grounded_in_source(item.quote, source_text)
-            or is_grounded_in_source(item.author, source_text)
+        if haystack and not (
+            is_grounded_in_normalized(item.quote, haystack)
+            or is_grounded_in_normalized(item.author, haystack)
         ):
             dropped_fabricated += 1
             continue
@@ -336,10 +379,11 @@ def _sanitize_timeline_block(
     """
     items = block.items
     if source_text:
+        haystack = _normalize_for_grounding(source_text)
         items = [
             item for item in items
-            if is_grounded_in_source(item.year, source_text)
-            or is_grounded_in_source(item.title, source_text)
+            if is_grounded_in_normalized(item.year, haystack)
+            or is_grounded_in_normalized(item.title, haystack)
         ]
         if not items:
             return None
@@ -351,10 +395,11 @@ def _sanitize_awards_block(
 ) -> AwardsBlock | None:
     if not source_text:
         return block
+    haystack = _normalize_for_grounding(source_text)
     items = [
         item for item in block.items
-        if is_grounded_in_source(item.title, source_text)
-        or is_grounded_in_source(item.issuer, source_text)
+        if is_grounded_in_normalized(item.title, haystack)
+        or is_grounded_in_normalized(item.issuer, haystack)
     ]
     if not items:
         return None
@@ -366,7 +411,8 @@ def _sanitize_clients_block(
 ) -> ClientsBlock | None:
     if not source_text:
         return block
-    items = [item for item in block.items if is_grounded_in_source(item.name, source_text)]
+    haystack = _normalize_for_grounding(source_text)
+    items = [item for item in block.items if is_grounded_in_normalized(item.name, haystack)]
     if not items:
         return None
     return block.model_copy(update={"items": items})
@@ -377,10 +423,11 @@ def _sanitize_stats_block(
 ) -> StatsBlock | None:
     if not source_text:
         return block
+    haystack = _normalize_for_grounding(source_text)
     items = [
         item for item in block.items
-        if is_grounded_in_source(item.value, source_text)
-        or is_grounded_in_source(item.label, source_text)
+        if is_grounded_in_normalized(item.value, haystack)
+        or is_grounded_in_normalized(item.label, haystack)
     ]
     if not items:
         return None
@@ -448,8 +495,7 @@ def sanitize_blocks_against_source(
     which meant testimonials/awards/clients/stats fabrication checks never
     ran there at all. This applies the same kind-specific sanitizers directly
     to a page's block list, dropping any block that ends up with zero
-    surviving items. Team and structural kinds are left untouched here (team
-    keeps its existing placeholder-name check elsewhere; hero/about/cta/contact
+    surviving items. Structural kinds are left untouched (hero/about/cta/contact
     carry no invented facts).
     """
     sanitized: list[ContentBlock] = []
@@ -457,7 +503,7 @@ def sanitize_blocks_against_source(
         kind = _block_kind(block)
         result: ContentBlock | None = block
         if kind == "team" and isinstance(block, TeamBlock):
-            result = _sanitize_team_block(block)
+            result = _sanitize_team_block(block, source_text)
         elif kind == "testimonials" and isinstance(block, TestimonialsBlock):
             result = _sanitize_testimonials_block(block, source_text)
         elif kind == "timeline" and isinstance(block, TimelineBlock):
@@ -514,7 +560,7 @@ def align_page_to_scaffold(
         if bucket:
             block = bucket.pop(0)
             if kind == "team" and isinstance(block, TeamBlock):
-                sanitized = _sanitize_team_block(block)
+                sanitized = _sanitize_team_block(block, source_text)
                 if sanitized is None:
                     omitted.append(kind)
                     continue

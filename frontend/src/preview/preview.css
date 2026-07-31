@@ -844,6 +844,57 @@ body {
   text-decoration: none;
 }
 
+/* Social menus render brand glyphs (see lib/socialIcons.ts): a tight icon row
+   that inherits the surrounding ink, with a hit area bigger than the 20px
+   glyph so it stays tappable in the mobile viewports. */
+.wt-menu--social {
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.wt-social-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  color: inherit;
+  opacity: 0.85;
+  transition: opacity 120ms ease;
+}
+
+/* The hover wash is the surrounding ink at low alpha. It lives on a
+   pseudo-element because a currentColor background on the link itself would
+   swallow the glyph, which is drawn in that same color. */
+.wt-social-link::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-color: currentColor;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.wt-social-link:hover,
+.wt-social-link:focus-visible {
+  opacity: 1;
+}
+
+.wt-social-link:hover::before,
+.wt-social-link:focus-visible::before {
+  opacity: 0.12;
+}
+
+.wt-social-link__icon {
+  position: relative;
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
 /* Grouped footer navigation — CSS multi-column rather than a grid. A grid
    couples row heights across columns, so a tall multi-link group inflates its
    whole row and leaves big gaps below the single-link items beside it.

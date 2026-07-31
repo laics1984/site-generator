@@ -6,9 +6,10 @@
  * `/api/preview/layout` (the same builder the push uses), which is why the
  * header nav renders here at all.
  *
- * Three layouts, same as upstream:
+ * Four layouts:
  *   - header primary  → inline nav + hover dropdowns + mobile toggle/sheet
  *   - footer columns  → grouped multi-column nav (flat menus fall through)
+ *   - social          → brand glyphs instead of labels/URLs (preview-only)
  *   - everything else → plain inline nav
  */
 import { useEffect, useRef, useState } from 'react'
@@ -24,6 +25,7 @@ import {
 import { getNodeDomId } from '../lib/responsiveRuntime'
 import { getNodeChildren, normalizeBlockType, normalizeSchemaNodes } from '../lib/schema'
 import { getContrastRatio, pickAccessibleTextColor } from '../lib/menuColors'
+import { resolveSocialGlyph, socialItemLabel } from '../lib/socialIcons'
 import { useRuntimeHeaderOverlay, useRuntimeHeaderSchema, useRuntimeMenus } from '../context'
 
 type RuntimeMenuItem = {
@@ -136,6 +138,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
   const isHeaderPrimaryMenu = slot === 'primary' || variant === 'header-inline'
   const isHeaderUtilityMenu = slot === 'utility' || variant === 'utility-inline'
   const isFooterColumnsMenu = slot === 'footer' || variant === 'footer-columns'
+  const isSocialMenu = slot === 'social' || variant === 'social-inline'
 
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [openDropdownKey, setOpenDropdownKey] = useState<string | null>(null)
@@ -518,6 +521,68 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
                 </ul>
               )}
             </div>
+          )
+        })}
+      </nav>
+    )
+  }
+
+  // Social profiles read as icons everywhere on the real web — a row of
+  // platform names (or of raw profile URLs, when the source labelled its links
+  // that way) is the giveaway that a preview is unfinished.
+  if (isSocialMenu) {
+    return (
+      <nav
+        className={['wt-menu', 'wt-menu--social', nodeClasses].filter(Boolean).join(' ')}
+        style={resolvedStyles}
+        data-wt-node-id={nodeDomId}
+        aria-label={menuLabel}
+      >
+        {visibleItems.map((item, index) => {
+          const href = item.href || '#'
+          const glyph = resolveSocialGlyph(href, item.label || '')
+          const accessibleLabel = socialItemLabel(glyph, item.label || '')
+          return (
+            <a
+              key={`${glyph.key}:${index}`}
+              className="wt-menu-link wt-social-link wt-ui-link"
+              href={href}
+              target={item.target || undefined}
+              rel={item.rel || undefined}
+              title={accessibleLabel}
+              aria-label={accessibleLabel}
+              onClick={inert}
+            >
+              <svg
+                className="wt-social-link__icon"
+                viewBox="0 0 24 24"
+                width="20"
+                height="20"
+                fill="currentColor"
+                fillRule={glyph.fillRule}
+                aria-hidden="true"
+                focusable="false"
+              >
+                {glyph.monogram ? (
+                  <>
+                    <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                    <text
+                      x="12"
+                      y="12"
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fontSize="11"
+                      fontWeight="600"
+                      fill="currentColor"
+                    >
+                      {glyph.monogram}
+                    </text>
+                  </>
+                ) : (
+                  glyph.paths.map((path) => <path key={path} d={path} />)
+                )}
+              </svg>
+            </a>
           )
         })}
       </nav>

@@ -328,3 +328,73 @@ class CtaLabelHealingTest(unittest.TestCase):
             headline="H", primary_cta_label="Learn More About Our Committee Members"
         )
         self.assertEqual(hero.primary_cta_label, "Learn More")
+
+
+class TeamMemberPhotoFallbackTest(unittest.TestCase):
+    """A named real person never gets a stock stranger's face.
+
+    Pexels returns a photo of a DIFFERENT real person; captioning it with an
+    employee's name is a misattribution, so a member with no portrait of their
+    own falls back to an initials monogram instead.
+    """
+
+    def _photos(self, members):
+        from app.models.content_blocks import TeamBlock
+
+        _template, content = block_to_section(
+            TeamBlock(heading="Our team", members=members)
+        )
+        return [item["photo"] for item in content["items"]]
+
+    def test_member_without_photo_gets_a_monogram_not_a_query(self):
+        from app.models.content_blocks import TeamMember
+
+        photos = self._photos([
+            TeamMember(
+                name="Aisha Rahman",
+                role="Music therapist",
+                photo_query="smiling professional woman",
+            )
+        ])
+
+        self.assertEqual(photos[0].get("monogram"), "Aisha Rahman")
+        self.assertNotIn("query", photos[0])
+
+    def test_duplicate_photo_url_falls_back_to_a_monogram(self):
+        from app.models.content_blocks import TeamMember
+
+        shared = "https://x/one-photo.jpg"
+        photos = self._photos([
+            TeamMember(name="Aisha Rahman", role="Therapist", photo_url=shared),
+            TeamMember(name="Marcus Ong", role="Treasurer", photo_url=shared),
+        ])
+
+        self.assertEqual(photos[0]["src"], shared)
+        self.assertEqual(photos[1].get("monogram"), "Marcus Ong")
+
+
+class MonogramAvatarTest(unittest.TestCase):
+    def test_builds_a_themed_data_uri_with_initials(self):
+        from app.services.media import monogram_avatar_url
+
+        url = monogram_avatar_url(
+            "Aisha Rahman", primary_hex="#2563eb", secondary_hex="#0f172a"
+        )
+
+        self.assertTrue(url.startswith("data:image/svg+xml;utf8,"))
+        self.assertIn("AR", url)
+        self.assertIn("%232563eb", url)
+
+    def test_is_deterministic_per_name(self):
+        from app.services.media import monogram_avatar_url
+
+        self.assertEqual(
+            monogram_avatar_url("Aisha Rahman"), monogram_avatar_url("Aisha Rahman")
+        )
+        self.assertNotEqual(
+            monogram_avatar_url("Aisha Rahman"), monogram_avatar_url("Marcus Ong")
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

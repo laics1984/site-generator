@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from app.models.builder_schema import BuilderElement, BuilderElementContent
+from app.services.media import monogram_avatar_url
 
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "templates" / "section_catalog.json"
 
@@ -101,7 +102,9 @@ def _image_src(value: Any) -> str | None:
     return None
 
 
-async def _resolve_image(value: Any, resolve_image: ResolveImage) -> dict[str, str]:
+async def _resolve_image(
+    value: Any, resolve_image: ResolveImage, theme: ThemeColors | None = None
+) -> dict[str, str]:
     """Normalize an image slot value to ``{src, alt}``, resolving a query if needed."""
     if isinstance(value, str):
         return {"src": value, "alt": ""}
@@ -109,9 +112,23 @@ async def _resolve_image(value: Any, resolve_image: ResolveImage) -> dict[str, s
         return {"src": "", "alt": ""}
     src = value.get("src") or ""
     alt = value.get("alt") or ""
+    # {"monogram": name} — a named person with no portrait of their own. Built
+    # locally in the brand's colours; never resolved to a stock photo.
+    if not src and value.get("monogram"):
+        return {"src": _monogram_src(str(value["monogram"]), theme), "alt": alt}
     if not src and value.get("query"):
         src, _avg = await resolve_image(value["query"])
     return {"src": src or "", "alt": alt}
+
+
+def _monogram_src(name: str, theme: ThemeColors | None) -> str:
+    if not theme:
+        return monogram_avatar_url(name)
+    return monogram_avatar_url(
+        name,
+        primary_hex=theme.get("primary", "#64748b"),
+        secondary_hex=theme.get("secondary", "#1e293b"),
+    )
 
 
 async def _bind_slot(
@@ -119,6 +136,7 @@ async def _bind_slot(
     value: Any,
     base: dict[str, Any],
     resolve_image: ResolveImage,
+    theme: ThemeColors | None = None,
 ) -> BuilderElementContent:
     if node_type == "link":
         v = value if isinstance(value, dict) else {}
@@ -130,7 +148,7 @@ async def _bind_slot(
             }
         )
     if node_type == "image":
-        img = await _resolve_image(value, resolve_image)
+        img = await _resolve_image(value, resolve_image, theme)
         return BuilderElementContent(**{**base, "src": img["src"], "alt": img["alt"]})
     if node_type == "video":
         # Raw iframe embed (maps, players): value is {src} or a bare URL string.
@@ -227,7 +245,7 @@ async def _fill_node(
             return None
         node_content = node.get("content")
         slot_base = node_content if isinstance(node_content, dict) else {}
-        bound = await _bind_slot(node["type"], value, slot_base, resolve_image)
+        bound = await _bind_slot(node["type"], value, slot_base, resolve_image, theme)
         return BuilderElement(id=str(uuid4()), content=bound, **base)
 
     # Container: recurse children in the same scope.

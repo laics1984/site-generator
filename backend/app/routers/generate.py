@@ -49,6 +49,10 @@ from app.services.scaffold_enforcement import (
     looks_like_team_member_name,
     sanitize_blocks_against_source,
 )
+from app.services.profile_text import (
+    clean_team_bio,
+    looks_like_team_role,
+)
 from app.services.image_vision import (
     VisionAnnotation,
     annotate_image_pool,
@@ -310,6 +314,37 @@ def _enrich_plan_profile_photos(
                     used_urls.add(matched.photo_url)
 
 
+def _roster_members(accepted: list[ProfileCandidate]) -> list[TeamMember]:
+    """Build TeamMembers from vetted profiles, keeping only what each card
+    can vouch for.
+
+    These roster paths run from ``_ensure_scraped_team_blocks`` AFTER
+    ``align_page_to_scaffold`` and replace the block wholesale, so they never
+    pass through ``_sanitize_team_block`` — they must apply the same role/bio
+    cleaners themselves or the tightening is only half applied.
+
+    Grounding is deliberately skipped here: a ``ProfileCandidate`` bio is page
+    text by construction, so checking it against the page is guaranteed-true
+    work — and this is the up-to-24-member path.
+    """
+    names = tuple(p.name for p in accepted)
+    members: list[TeamMember] = []
+    for profile in accepted:
+        others = tuple(n for n in names if n != profile.name)
+        role = profile.role or ""
+        members.append(
+            TeamMember(
+                name=profile.name,
+                role=role if looks_like_team_role(role) else "",
+                bio=clean_team_bio(profile.bio, other_names=others),
+                photo_url=profile.photo_url,
+                photo_alt=profile.photo_alt or profile.name,
+                photo_query=None,
+            )
+        )
+    return members
+
+
 def _scraped_team_members(
     source: SourceContent,
     annotations: dict[str, VisionAnnotation] | None = None,
@@ -318,7 +353,7 @@ def _scraped_team_members(
     """Deterministic team members built from scraped profile candidates."""
     if profiles is None:
         profiles = _profile_pool_for(source)
-    members: list[TeamMember] = []
+    accepted: list[ProfileCandidate] = []
     for profile in profiles:
         if not looks_like_team_member_name(profile.name):
             continue
@@ -326,17 +361,8 @@ def _scraped_team_members(
             continue
         if not _profile_photo_vision_ok(profile.photo_url, annotations):
             continue
-        members.append(
-            TeamMember(
-                name=profile.name,
-                role=profile.role or "",
-                bio=profile.bio,
-                photo_url=profile.photo_url,
-                photo_alt=profile.photo_alt or profile.name,
-                photo_query=None,
-            )
-        )
-    return members[:24]
+        accepted.append(profile)
+    return _roster_members(accepted[:24])
 
 
 def _directory_roster_members(
@@ -352,7 +378,7 @@ def _directory_roster_members(
     """
     if page_source is None:
         return []
-    members: list[TeamMember] = []
+    accepted: list[ProfileCandidate] = []
     seen: set[str] = set()
     for profile in page_source.profile_candidates or []:
         norm = _normalized_person_name(profile.name)
@@ -365,17 +391,8 @@ def _directory_roster_members(
         if not _profile_photo_vision_ok(profile.photo_url, annotations):
             continue
         seen.add(norm)
-        members.append(
-            TeamMember(
-                name=profile.name,
-                role=profile.role or "",
-                bio=profile.bio,
-                photo_url=profile.photo_url,
-                photo_alt=profile.photo_alt or profile.name,
-                photo_query=None,
-            )
-        )
-    return members[:24]
+        accepted.append(profile)
+    return _roster_members(accepted[:24])
 
 
 def _ensure_scraped_team_blocks(

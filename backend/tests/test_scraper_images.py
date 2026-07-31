@@ -636,3 +636,148 @@ class ImageContextExtractionTest(unittest.TestCase):
         candidates = _extract_images(soup, "https://example.my/")
         lead = next(c for c in candidates if c.url.endswith("lead.jpg"))
         self.assertEqual(lead.context_heading, "")
+
+
+class ProfileCardScopingTest(unittest.TestCase):
+    """A profile card must contribute only its OWN person's details.
+
+    The bug these guard: the container fallback used to accept any ancestor
+    holding an h2-h5, so on a site without profile class names the whole
+    section became "the card" and every line in it became the person's bio.
+    """
+
+    def test_bio_drops_cta_and_contact_lines_from_the_card(self):
+        soup = BeautifulSoup(
+            """
+            <div class="member">
+              <h3>Aisha Rahman</h3>
+              <p class="role">Music Therapist</p>
+              <p>Twelve years working with paediatric palliative care teams.</p>
+              <p>Call us on +60 4-226 1234</p>
+              <p>hello@example.my</p>
+              <a href="/team/aisha">Read More</a>
+            </div>
+            """,
+            "lxml",
+        )
+
+        bio = scraper._extract_profile_bio(
+            soup.find("div"), "Aisha Rahman", "Music Therapist"
+        )
+
+        self.assertEqual(
+            bio.splitlines(),
+            ["Twelve years working with paediatric palliative care teams."],
+        )
+
+    def test_bio_keeps_short_factual_card_lines(self):
+        # Regression guard for the fix itself: the filter is by line KIND, not
+        # length. Directory cards pack credentials as short separate lines.
+        soup = BeautifulSoup(
+            """
+            <div class="member">
+              <h3>Aisha Rahman</h3>
+              <ul><li>Palliative care</li><li>Children with special needs</li></ul>
+            </div>
+            """,
+            "lxml",
+        )
+
+        bio = scraper._extract_profile_bio(soup.find("div"), "Aisha Rahman", None)
+
+        self.assertEqual(
+            bio.splitlines(), ["Palliative care", "Children with special needs"]
+        )
+
+    def test_role_rejects_cta_and_phone_fallbacks(self):
+        soup = BeautifulSoup(
+            """
+            <div class="member">
+              <h3>Aisha Rahman</h3>
+              <a href="/team/aisha">Read More</a>
+              <p>+60 4-226 1234</p>
+              <p>Senior music therapist</p>
+            </div>
+            """,
+            "lxml",
+        )
+
+        role = scraper._extract_profile_role(soup.find("div"), "Aisha Rahman")
+
+        self.assertEqual(role, "Senior music therapist")
+
+    def test_no_candidate_when_photo_has_no_card_boundary(self):
+        # No profile class names anywhere and no card-shaped wrapper: the old
+        # h2-h5 fallback returned this whole section.
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <section>
+                <h2>Rahman Wellness</h2>
+                <img src="/banner.jpg" />
+                <p>Rahman Wellness has served families across Penang since 1998,
+                   growing from a single consulting room into a network of
+                   community clinics staffed by therapists and social workers.</p>
+                <p>Our programmes reach children with special needs, adults in
+                   palliative care, and the carers who support them, and we work
+                   alongside three local hospitals on referral pathways.</p>
+                <p>We keep a sliding-scale fee structure so that cost is never
+                   the reason a family goes without care, and we run home visits
+                   throughout the island by arrangement.</p>
+              </section>
+            </body></html>
+            """,
+            "lxml",
+        )
+
+        self.assertEqual(
+            scraper._extract_profile_candidates(soup, "https://example.my"), []
+        )
+
+    def test_banner_and_logo_images_are_not_portraits(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <section class="team">
+                <article class="team-member">
+                  <img src="/wide-banner.jpg" width="1600" height="400" />
+                  <h3>Aisha Rahman</h3>
+                </article>
+                <article class="team-member">
+                  <img src="/assets/logo.png" width="200" height="200" />
+                  <h3>Marcus Ong</h3>
+                </article>
+              </section>
+            </body></html>
+            """,
+            "lxml",
+        )
+
+        self.assertEqual(
+            scraper._extract_profile_candidates(soup, "https://example.my"), []
+        )
+
+    def test_well_formed_card_still_extracts_all_three_fields(self):
+        # Guards against over-tightening.
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <section class="team">
+                <article class="team-member">
+                  <img src="/portraits/aisha.jpg" alt="Aisha Rahman" />
+                  <h3>Aisha Rahman</h3>
+                  <p class="role">Music Therapist</p>
+                  <p>Leads the paediatric programme.</p>
+                </article>
+              </section>
+            </body></html>
+            """,
+            "lxml",
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my")
+
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0].name, "Aisha Rahman")
+        self.assertEqual(profiles[0].role, "Music Therapist")
+        self.assertEqual(profiles[0].bio, "Leads the paediatric programme.")

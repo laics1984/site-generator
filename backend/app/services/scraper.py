@@ -47,6 +47,7 @@ from app.services.fast_fetch import (
     try_fast_fetch,
 )
 from app.services.image_evidence import ImageEvidence, classify_role, parse_evidence
+from app.services.profile_text import has_contact_token, is_boilerplate_line
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.nav_extraction import (
     extract_body_link_clusters,
@@ -432,6 +433,23 @@ _PROFILE_ROLE_HINTS = (
     "job",
     "office",
 )
+# Chrome tags a profile card never lives inside. The container walk stops here
+# rather than paying for a second parse of the document just to decompose them
+# (_structural_text already re-parses once; twice per page is not worth it).
+_PROFILE_CHROME_TAGS = {"nav", "footer", "header", "aside", "form"}
+
+# A CTA/nav link is short; a card wrapped entirely in an <a> is not, and its
+# text is real content that must not be discarded.
+_PROFILE_LINK_TEXT_MAX = 60
+_PROFILE_CARD_MAX_LINES = 12
+# A card holds a name, a title and a bio, and the bio itself is capped at 480
+# chars. A container carrying materially more prose than that is a section.
+_PROFILE_CARD_MAX_CHARS = 600
+# Headshots are square-ish or tall. Generous on both ends so a loosely cropped
+# card photo still passes; only measurably banner-shaped images are rejected.
+_PORTRAIT_MIN_ASPECT = 0.5
+_PORTRAIT_MAX_ASPECT = 1.6
+
 _GENERIC_PROFILE_NAMES = {
     "team",
     "our team",
@@ -443,8 +461,8 @@ _GENERIC_PROFILE_NAMES = {
     "leadership",
     "staff",
     # Name-shaped section headings (2+ capitalised tokens) that are never a
-    # person. _nearest_profile_container's fallback accepts any ancestor with
-    # an h2-h5, so ordinary content sections reach the name check.
+    # person. An inferred (unhinted) card no longer reads h2 at all, but a
+    # HINTED container still does, so these stay as the second line of defence.
     "our story",
     "our mission",
     "our values",
@@ -1037,21 +1055,69 @@ def _looks_like_person_name(value: str) -> bool:
     return True
 
 
-def _nearest_profile_container(img: Tag) -> Tag | None:
+def _cta_link_texts(container: Tag) -> set[str]:
+    """Text of the container's short <a>/<button> descendants, lowercased.
+
+    Short link text is a CTA or a nav label ("Read More", "View Profile"). A
+    card wrapped entirely in an <a> has *long* text, and that text is the real
+    content — hence the length bound rather than excluding all link text.
+    """
+    texts: set[str] = set()
+    for el in container.find_all(["a", "button"]):
+        if not isinstance(el, Tag):
+            continue
+        text = _clean_line(el.get_text(" ", strip=True))
+        if text and len(text) <= _PROFILE_LINK_TEXT_MAX:
+            texts.add(text.lower())
+    return texts
+
+
+def _looks_like_profile_card(tag: Tag) -> bool:
+    """True when a container is plausibly ONE person's card.
+
+    Replaces the old "any ancestor holding an h2-h5" fallback, which on a site
+    without profile class names resolved to the whole section — every line in it
+    then became that person's bio.
+    """
+    if len([i for i in tag.find_all("img") if isinstance(i, Tag)]) != 1:
+        return False
+    if tag.find("form") is not None:
+        return False
+    lines = _text_lines(tag)
+    if len(lines) > _PROFILE_CARD_MAX_LINES:
+        return False
+    return sum(len(line) for line in lines) <= _PROFILE_CARD_MAX_CHARS
+
+
+def _nearest_profile_container(img: Tag) -> tuple[Tag | None, bool]:
+    """Return (container, hinted) for a portrait.
+
+    ``hinted`` is True only when the container declared itself a profile card
+    via class/id (``_PROFILE_CONTAINER_HINTS``). An inferred card gets less
+    trust — see ``_extract_profile_name``.
+    """
     current = img.parent
     fallback: Tag | None = None
     depth = 0
     while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 7:
+        # Chrome is never a profile card. Walking past it would pull nav labels
+        # and footer copy into the bio.
+        if current.name in _PROFILE_CHROME_TAGS:
+            return None, False
         if _has_any_hint(current, _PROFILE_CONTAINER_HINTS):
             img_count = len([i for i in current.find_all("img") if isinstance(i, Tag)])
-            if img_count > 1 and fallback is not None:
-                return fallback
-            return current
-        if fallback is None and current.find(["h2", "h3", "h4", "h5"]):
+            if img_count > 1:
+                # A hinted container holding several portraits is the section,
+                # not the card. Without a card-shaped descendant we cannot say
+                # which text belongs to this person — emit nothing rather than
+                # attributing the whole section to them.
+                return fallback, False
+            return current, True
+        if fallback is None and _looks_like_profile_card(current):
             fallback = current
         current = current.parent
         depth += 1
-    return fallback
+    return fallback, False
 
 
 def _row_text_sibling_for_profile(img: Tag) -> Tag | None:
@@ -1100,18 +1166,29 @@ def _find_text_by_hints(container: Tag, hints: tuple[str, ...]) -> str | None:
     return None
 
 
-def _extract_profile_name(container: Tag) -> str | None:
+def _extract_profile_name(container: Tag, *, allow_h2: bool = True) -> str | None:
+    """Find the person's name in a profile container.
+
+    ``allow_h2=False`` for a container we merely *inferred* is a card (no
+    class/id hint). A card names its person in an h3-h5 or a hinted element; an
+    h2 is a SECTION heading, and accepting one is how an ordinary content
+    section whose heading is two capitalised words ("Rahman Wellness") used to
+    become a team member. The loose any-text-line scan is likewise hint-only.
+    """
     hinted = _find_text_by_hints(container, _PROFILE_NAME_HINTS)
     if hinted and _looks_like_person_name(hinted):
         return hinted
 
-    for heading in container.find_all(["h2", "h3", "h4", "h5"]):
+    levels = ["h2", "h3", "h4", "h5"] if allow_h2 else ["h3", "h4", "h5"]
+    for heading in container.find_all(levels):
         if not isinstance(heading, Tag):
             continue
         text = _clean_line(heading.get_text(" ", strip=True))
         if _looks_like_person_name(text):
             return text
 
+    if not allow_h2:
+        return None
     for line in _text_lines(container)[:5]:
         if _looks_like_person_name(line):
             return line
@@ -1124,6 +1201,7 @@ def _extract_profile_role(container: Tag, name: str) -> str | None:
         return hinted
 
     lines = _text_lines(container)
+    cta_texts = _cta_link_texts(container)
     try:
         name_index = next(i for i, line in enumerate(lines) if line == name)
     except StopIteration:
@@ -1131,17 +1209,38 @@ def _extract_profile_role(container: Tag, name: str) -> str | None:
     for line in lines[name_index + 1 : name_index + 4]:
         if line == name or _looks_like_person_name(line):
             continue
-        if len(line) <= 90:
-            return line
+        if len(line) > 90:
+            continue
+        # The positional fallback used to accept the next short line outright,
+        # which made "Read More" and phone numbers look like job titles.
+        if line.lower() in cta_texts or is_boilerplate_line(line):
+            continue
+        if has_contact_token(line):
+            continue
+        return line
     return None
 
 
 def _extract_profile_bio(container: Tag, name: str, role: str | None) -> str | None:
+    """Keep the card's own factual lines; drop chrome.
+
+    Filters by line *kind*, not length: a directory card packs credentials,
+    served populations and an address as short separate lines, and those are
+    the bio. What must not survive is CTA/nav text, contact details, and copy
+    belonging to the rest of the page.
+    """
+    cta_texts = _cta_link_texts(container)
     kept: list[str] = []
     for line in _text_lines(container):
         if line == name or (role and line == role):
             continue
         if len(line) <= 3:
+            continue
+        if line.lower() in cta_texts:
+            continue
+        if is_boilerplate_line(line):
+            continue
+        if has_contact_token(line):
             continue
         kept.append(line)
     if not kept:
@@ -1151,6 +1250,24 @@ def _extract_profile_bio(container: Tag, name: str, role: str | None) -> str | N
     # builder renders bios white-space: pre-line.
     bio = "\n".join(kept)
     return bio[:480]
+
+
+def _has_portrait_aspect(
+    width: int | None, height: int | None, evidence: ImageEvidence | None
+) -> bool:
+    """True unless the image is measurably too wide to be a headshot.
+
+    Portraits are square-ish or tall. Banners, logo lockups and hero strips are
+    wide. Unknown dimensions keep the benefit of the doubt — most real cards
+    declare no width/height and carry no render evidence.
+    """
+    if evidence is not None and evidence.height:
+        ratio = evidence.width / evidence.height
+    elif width and height:
+        ratio = width / height
+    else:
+        return True
+    return _PORTRAIT_MIN_ASPECT <= ratio <= _PORTRAIT_MAX_ASPECT
 
 
 def _extract_profile_candidates(
@@ -1179,13 +1296,20 @@ def _extract_profile_candidates(
         evidence = parse_evidence(img.get("data-webtree-evidence"))
         if evidence is not None and (evidence.width < 80 or evidence.height < 80):
             continue
+        # A logo or a wide banner sitting in a section whose heading happens to
+        # be name-shaped would otherwise be cropped into a circle and captioned
+        # with that heading.
+        if _looks_like_logo_url(photo_url):
+            continue
+        if not _has_portrait_aspect(width, height, evidence):
+            continue
 
-        container = _nearest_profile_container(img)
+        container, hinted = _nearest_profile_container(img)
         if container is None:
             container = _row_text_sibling_for_profile(img)
         if container is None:
             continue
-        name = _extract_profile_name(container)
+        name = _extract_profile_name(container, allow_h2=hinted)
         if not name:
             continue
         role = _extract_profile_role(container, name)

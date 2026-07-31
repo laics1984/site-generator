@@ -287,3 +287,83 @@ class PromptableImagesPortraitTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RosterMemberCleaningTest(unittest.TestCase):
+    """The roster paths replace the team block AFTER align_page_to_scaffold, so
+    they never pass through _sanitize_team_block and must clean role/bio
+    themselves."""
+
+    def test_cta_role_and_chrome_bio_lines_are_dropped(self):
+        page = SourceContent(
+            source_kind="url",
+            source_ref="https://x/team",
+            raw_text="team",
+            profile_candidates=[
+                ProfileCandidate(
+                    name="Aisha Rahman",
+                    role="Read More",
+                    bio=(
+                        "Palliative care\n"
+                        "Call us on +60 4-226 1234\n"
+                        "Book an appointment"
+                    ),
+                    photo_url="https://x/a.jpg",
+                    confidence=0.9,
+                )
+            ],
+        )
+
+        members = _directory_roster_members(page)
+
+        self.assertEqual(len(members), 1)
+        self.assertEqual(members[0].role, "")
+        self.assertEqual(members[0].bio, "Palliative care")
+
+    def test_short_factual_bio_lines_survive(self):
+        members = _directory_roster_members(
+            SourceContent(
+                source_kind="url",
+                source_ref="https://x/team",
+                raw_text="team",
+                profile_candidates=_profiles(2),
+            )
+        )
+
+        self.assertEqual(
+            [m.bio for m in members],
+            ["Children with special needs\nHome visits"] * 2,
+        )
+        self.assertEqual([m.role for m in members], ["Music Therapist"] * 2)
+
+    def test_bio_naming_another_roster_member_is_dropped(self):
+        page = SourceContent(
+            source_kind="url",
+            source_ref="https://x/team",
+            raw_text="team",
+            profile_candidates=[
+                ProfileCandidate(
+                    name="Aisha Rahman",
+                    role="Therapist",
+                    bio="Palliative care\nSee also Marcus Ong",
+                    photo_url="https://x/a.jpg",
+                    confidence=0.9,
+                ),
+                ProfileCandidate(
+                    name="Marcus Ong",
+                    role="Treasurer",
+                    bio="Keeps the accounts",
+                    photo_url="https://x/m.jpg",
+                    confidence=0.9,
+                ),
+            ],
+        )
+
+        members = _directory_roster_members(page)
+
+        self.assertEqual(members[0].bio, "Palliative care")
+        self.assertEqual(members[1].bio, "Keeps the accounts")
+
+
+if __name__ == "__main__":
+    unittest.main()

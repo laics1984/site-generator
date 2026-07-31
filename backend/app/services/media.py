@@ -669,6 +669,37 @@ class ImageResolver:
         return max(qualifying, key=lambda c: (c.width or 0) * (c.height or 0))
 
 
+def monogram_avatar_url(
+    name: str,
+    *,
+    primary_hex: str = "#64748b",
+    secondary_hex: str = "#1e293b",
+) -> str:
+    """A person's initials on the brand gradient, as a data URI.
+
+    Used instead of a stock portrait when a real, named team member has no
+    scraped photo. A Pexels stranger's face captioned with a real employee's
+    name is a misattribution — the worst failure mode this section has — so the
+    card says "no photo" in a way that still looks designed. No network call.
+    """
+    initials = "".join(word[0] for word in name.split()[:2] if word).upper() or "?"
+    angle = int(hashlib.md5(name.encode("utf-8")).hexdigest()[:2], 16) % 360
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" '
+        'viewBox="0 0 600 600">'
+        f'<defs><linearGradient id="g" gradientTransform="rotate({angle} 0.5 0.5)">'
+        f'<stop offset="0%" stop-color="{primary_hex}"/>'
+        f'<stop offset="100%" stop-color="{secondary_hex}"/>'
+        "</linearGradient></defs>"
+        '<rect width="600" height="600" fill="url(#g)"/>'
+        '<text x="50%" y="50%" dy="0.35em" text-anchor="middle" '
+        'font-family="Helvetica,Arial,sans-serif" font-size="240" '
+        f'font-weight="600" fill="#ffffff" fill-opacity="0.92">{initials}</text>'
+        "</svg>"
+    )
+    return "data:image/svg+xml;utf8," + quote(svg)
+
+
 def _placeholder_photo(
     seed: str,
     orientation: str,

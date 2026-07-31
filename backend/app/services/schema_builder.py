@@ -82,7 +82,7 @@ from app.services.hero_director import (
 )
 from app.services.header_footer import build_footer, build_header
 from app.services.image_match import SlotUsage
-from app.services.media import ImageIntent, ImageResolver
+from app.services.media import ImageIntent, ImageResolver, monogram_avatar_url
 from app.services.timing import log_elapsed, stage
 from app.services.pexels import PhotoResult
 from app.config import settings
@@ -2171,8 +2171,19 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                 source="scraped",
             )
         else:
-            photo = await ctx.resolver.resolve(
-                member.photo_query, intent="avatar", alt_fallback=member.name
+            # Initials, not a stock face — same rule as the catalog team-grid
+            # path in section_content._team_content: never caption a stranger's
+            # portrait with a real person's name.
+            photo = PhotoResult(
+                url=monogram_avatar_url(
+                    member.name,
+                    primary_hex=ctx.theme.palette.primary,
+                    secondary_hex=ctx.theme.palette.secondary,
+                ),
+                alt=member.photo_alt or member.name,
+                photographer=None,
+                photographer_url=None,
+                source="placeholder",
             )
         card: list[BuilderElement] = [
             _image_from_photo(
