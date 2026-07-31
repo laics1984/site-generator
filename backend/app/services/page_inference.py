@@ -427,11 +427,69 @@ def _humanize(slug_part: str) -> str:
     return " ".join(w.capitalize() for w in re.split(r"[-_]", slug_part) if w)
 
 
+def _ambiguous_page_labels(
+    pages: list[SourceContent],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Titles and headings that repeat across the crawled pages.
+
+    Templates routinely stamp one ``<title>`` on a whole family of detail pages
+    — MMTA's nine committee-member pages are all "About MMTA" — which would
+    leave the scaffold layer with nine identically named pages. A title or
+    heading carried by two or more pages names the template, not the page, so
+    the caller falls back to per-page evidence instead.
+    """
+    title_counts: dict[str, int] = {}
+    heading_counts: dict[str, int] = {}
+    for page in pages:
+        title = (page.title or "").strip().casefold()
+        if title:
+            title_counts[title] = title_counts.get(title, 0) + 1
+        for heading in {h.strip().casefold() for h in page.headings if h.strip()}:
+            heading_counts[heading] = heading_counts.get(heading, 0) + 1
+    return (
+        frozenset(t for t, n in title_counts.items() if n >= 2),
+        frozenset(h for h, n in heading_counts.items() if n >= 2),
+    )
+
+
+def _distinct_page_label(
+    page: SourceContent, ambiguous_headings: frozenset[str]
+) -> str | None:
+    """A name for a page whose ``<title>`` is shared with its siblings.
+
+    A detail page carrying exactly one profile card *is* that person's page
+    (/profile/ashley → "Ashley Jinivon"); otherwise the first heading the page
+    doesn't share with its siblings names it. None when neither applies — the
+    caller then falls back to the slug.
+    """
+    named = [p for p in (page.profile_candidates or []) if (p.name or "").strip()]
+    if len(named) == 1:
+        return named[0].name.strip()[:60]
+    for heading in page.headings:
+        text = heading.strip()
+        if text and len(text) <= 60 and text.casefold() not in ambiguous_headings:
+            return text
+    return None
+
+
 def _title_from_page(
-    page: SourceContent, fallback_slug: str, *, site_name: str | None = None
+    page: SourceContent,
+    fallback_slug: str,
+    *,
+    site_name: str | None = None,
+    ambiguous_titles: frozenset[str] = frozenset(),
+    ambiguous_headings: frozenset[str] = frozenset(),
 ) -> str:
     """Prefer the source's own title, strip brand prefix/suffix, fall back to slug."""
     raw = (page.title or "").strip()
+    if raw and raw.casefold() in ambiguous_titles:
+        # Template title shared with sibling pages — name the page by what makes
+        # it different instead, so a family of detail pages isn't nine rows of
+        # the same string in the page picker.
+        distinct = _distinct_page_label(page, ambiguous_headings)
+        if distinct:
+            return distinct
+        raw = ""
     if raw:
         # Strip leading "Brand: " / "Brand | " / "Brand - " prefixes (e.g.
         # "Sass: Install Sass" → "Install Sass") when we know the brand name.
@@ -715,6 +773,12 @@ def infer_page_scaffolds(
         if slug and slug not in by_slug:
             by_slug[slug] = page
 
+    # Titles/headings the source template repeats across pages — they can't
+    # name an individual page (see _ambiguous_page_labels).
+    ambiguous_titles, ambiguous_headings = _ambiguous_page_labels(
+        [source, *source.discovered_pages]
+    )
+
     scaffolds: list[PageScaffold] = []
     seen_slugs: set[str] = set()
 
@@ -739,7 +803,13 @@ def infer_page_scaffolds(
         title = (
             nav_label
             if 0 < len(nav_label) <= 40
-            else _title_from_page(page, slug, site_name=site_name)
+            else _title_from_page(
+                page,
+                slug,
+                site_name=site_name,
+                ambiguous_titles=ambiguous_titles,
+                ambiguous_headings=ambiguous_headings,
+            )
         )
 
         if len(segments) == 1:

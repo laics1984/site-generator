@@ -1766,6 +1766,73 @@ def _normalize_crawl_url(url: str) -> str | None:
     return f"{parsed.scheme}://{host}{path}{('?' + parsed.query) if parsed.query else ''}"
 
 
+# Language/locale directory prefixes. A translated mirror (/bm/committee,
+# /zh/about, /fr-fr/produits) duplicates the whole site under one segment. The
+# translations are real content the owner maintains, but they carry no NEW
+# structure, so on a bounded frontier they must not outrank pages we haven't
+# seen in any language — MMTA's nine committee-member pages lost all 20 slots
+# to /bm/* and /zh/* copies of pages already queued. Mirrors are crawled last
+# (see the `deferred` queue in _crawl_extra_pages), never dropped.
+_LOCALE_SEGMENTS = frozenset({
+    "af", "am", "ar", "az", "be", "bg", "bm", "bn", "bs", "ca", "cn", "cs",
+    "cy", "da", "de", "el", "en", "eo", "es", "et", "eu", "fa", "fi", "fil",
+    "fr", "ga", "gl", "gu", "he", "hi", "hr", "hu", "hy", "id", "is", "it",
+    "ja", "jp", "ka", "kk", "km", "kn", "ko", "kr", "lt", "lv", "mk", "ml",
+    "mn", "mr", "ms", "mt", "my", "nb", "ne", "nl", "nn", "no", "pa", "pl",
+    "pt", "ro", "ru", "si", "sk", "sl", "sq", "sr", "sv", "sw", "ta", "te",
+    "th", "tl", "tr", "tw", "uk", "ur", "uz", "vi", "zh",
+})
+
+# Codes that are also ordinary English path words — /it (IT services), /hr
+# (human resources), /no, /is. These never count as a mirror on the bare
+# segment alone; only a deeper path that demonstrably translates a page we
+# already know (/it/support beside /support) does.
+_AMBIGUOUS_LOCALE_SEGMENTS = frozenset({
+    "am", "be", "hr", "id", "is", "it", "ms", "my", "no", "pa",
+})
+
+
+def _locale_segment(path: str) -> str | None:
+    """First path segment when it looks like a language/locale directory."""
+    segment = path.strip("/").split("/", 1)[0].lower()
+    if not segment:
+        return None
+    if segment in _LOCALE_SEGMENTS:
+        return segment
+    # "fr-FR", "pt_BR", "zh-hans" — language code plus a region/script tag.
+    match = re.fullmatch(r"([a-z]{2})[-_][a-z]{2,4}", segment)
+    if match and match.group(1) in _LOCALE_SEGMENTS:
+        return segment
+    return None
+
+
+def _path_key(url: str) -> str:
+    """Lowercased path of a URL, without its trailing slash — the identity we
+    compare translated paths against."""
+    path = (urlparse(url).path or "/").lower()
+    return path[:-1] if len(path) > 1 and path.endswith("/") else path
+
+
+def _is_locale_mirror(path: str, *, entry_locale: str | None, known_paths: set[str]) -> bool:
+    """True when ``path`` is a translated copy of the site we're already crawling.
+
+    ``entry_locale`` is the entry URL's own locale segment, so scraping
+    https://site.com/bm keeps /bm/* and treats it as the source language.
+    """
+    segments = [s for s in path.split("/") if s]
+    if not segments:
+        return False
+    segment = _locale_segment(path)
+    if segment is None or segment == entry_locale:
+        return False
+    if len(segments) == 1:
+        # A bare /zh, /de — the language switcher's landing page.
+        return segment not in _AMBIGUOUS_LOCALE_SEGMENTS
+    # Deeper paths need evidence: /zh/about mirrors /about. Without a known
+    # counterpart, /it/support may well be a real IT section.
+    return "/" + "/".join(segments[1:]) in known_paths
+
+
 def _is_crawlable_link(url: str, entry_host: str) -> bool:
     parsed = urlparse(url)
     if parsed.netloc.lower() != entry_host.lower():
@@ -1807,6 +1874,9 @@ async def _crawl_extra_pages(
     sliding-window pool of ``_CRAWL_WORKERS`` workers (per-host politeness still
     gates the real request rate), so one slow page no longer stalls the rest.
 
+    Translated mirrors of the entry language (/zh/about beside /about) are
+    crawled only after every other queued page — see ``_is_locale_mirror``.
+
     The leftover frontier is what the BFS had queued but didn't process when
     the cap was hit. The router surfaces this so the frontend can offer
     "Crawl N more" without restarting from scratch.
@@ -1828,11 +1898,48 @@ async def _crawl_extra_pages(
     # against a single host trigger 429s within seconds on real WAF'd sites.
     politeness = await get_politeness(entry_host)
 
+    # The entry's own locale segment (None for an unprefixed site) — whatever
+    # language the user pointed us at is the source language; every *other*
+    # language's mirror is recognized against the paths we already know.
+    entry_locale = _locale_segment(urlparse(entry_final_url).path or "/")
+    known_paths: set[str] = set()
+
+    def _register_paths(urls) -> None:
+        """Record same-host paths as pages this site is known to have."""
+        for url in urls:
+            if urlparse(url).netloc.lower() == entry_host.lower():
+                known_paths.add(_path_key(url))
+
+    _register_paths([entry_final_url, *seen])
+
     # depth 1 frontier seeded from the entry's links + any explicit extra seeds.
     # Each entry carries a discovery index so results can be re-sorted into the
     # deterministic (depth, discovery) order the old lockstep batches produced.
+    #
+    # `deferred` holds translated mirrors of pages we're already crawling. They
+    # are real pages the owner maintains, so they stay in the queue — but they
+    # only get fetched once nothing untranslated is left, otherwise a mirrored
+    # site spends its whole budget saying the same things twice.
+    # Queue items carry a tier (0 = untranslated, 1 = mirror) so the tier drives
+    # the result order too, not just fetch order: downstream ranking reads
+    # earlier pages as closer to the entry, and a translation of /about must
+    # never outrank /about because the header happened to list it first.
     discovery_count = 0
-    frontier: deque[tuple[str, int, int]] = deque()
+    frontier: deque[tuple[str, int, int, int]] = deque()
+    deferred: deque[tuple[str, int, int, int]] = deque()
+
+    def _enqueue(norm: str, depth: int) -> None:
+        nonlocal discovery_count
+        is_mirror = _is_locale_mirror(
+            _path_key(norm), entry_locale=entry_locale, known_paths=known_paths
+        )
+        queue = deferred if is_mirror else frontier
+        queue.append((norm, depth, discovery_count, 1 if is_mirror else 0))
+        discovery_count += 1
+
+    # Register every candidate path before queueing: /about must be known when
+    # /bm/about is classified, whatever order the entry page lists them in.
+    _register_paths([*(extra_seed_urls or []), *seed_links])
     for link in [*(extra_seed_urls or []), *seed_links]:
         norm = _normalize_crawl_url(link)
         if not norm or norm in seen:
@@ -1840,9 +1947,8 @@ async def _crawl_extra_pages(
         if not _is_crawlable_link(norm, entry_host):
             continue
         seen.add(norm)
-        frontier.append((norm, 1, discovery_count))
-        discovery_count += 1
-        if len(frontier) >= max_pages * 3:  # cap how many we even queue
+        _enqueue(norm, 1)
+        if len(frontier) + len(deferred) >= max_pages * 3:  # cap how many we even queue
             break
 
     # Sliding-window worker pool instead of lockstep batches: with batches of 3,
@@ -1850,8 +1956,13 @@ async def _crawl_extra_pages(
     # pull from the shared frontier as they free up. Per-host politeness (slots
     # + min-delay) still bounds effective concurrency against a single host, and
     # a dedicated semaphore keeps Playwright tab pressure at the old level.
-    collected: list[tuple[int, int, _ParsedPage]] = []  # (depth, discovery, page)
+    # (tier, depth, discovery, page)
+    collected: list[tuple[int, int, int, _ParsedPage]] = []
     in_flight = 0
+    # Flips the first time nothing untranslated is queued *or* in flight. Until
+    # then workers idle rather than start a mirror, so a translation can never
+    # take a slot from a page no other language covers.
+    mirrors_unlocked = False
     new_work = asyncio.Event()
     pw_sem = asyncio.Semaphore(_CRAWL_PLAYWRIGHT_CONCURRENCY)
     stop_logged = False
@@ -1943,27 +2054,39 @@ async def _crawl_extra_pages(
             politeness.record_success()
             return depth, parsed
 
+    async def _wait_for_work() -> None:
+        """Park until another worker's fetch reports in (short timeout guards
+        the clear/set race without busy-spinning)."""
+        new_work.clear()
+        try:
+            await asyncio.wait_for(new_work.wait(), timeout=0.1)
+        except asyncio.TimeoutError:
+            # asyncio.TimeoutError is the builtin TimeoutError on the 3.11
+            # runtime here, but a distinct class on ≤3.10 — catch the asyncio
+            # one so this stays portable across both.
+            pass
+
     async def _worker() -> None:
-        nonlocal in_flight, discovery_count
+        nonlocal in_flight, mirrors_unlocked
         while True:
             if _should_stop():
                 return
             if not frontier:
-                if in_flight == 0:
-                    return  # no queued work and nobody can produce more
-                # Another worker's in-flight fetch may expand the frontier —
-                # wait for a completion signal (short timeout guards the
-                # clear/set race without busy-spinning).
-                new_work.clear()
-                try:
-                    await asyncio.wait_for(new_work.wait(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    # asyncio.TimeoutError is the builtin TimeoutError on the
-                    # 3.11 runtime here, but a distinct class on ≤3.10 — catch
-                    # the asyncio one so this stays portable across both.
-                    pass
-                continue
-            url, depth, _discovered = frontier.popleft()
+                if not mirrors_unlocked:
+                    if in_flight:
+                        # An in-flight fetch may still expand the frontier with
+                        # untranslated pages (a roster page's member links).
+                        # Idling here is what keeps a mirror from taking their
+                        # slot — an empty frontier is not an exhausted one.
+                        await _wait_for_work()
+                        continue
+                    mirrors_unlocked = True
+                if not deferred:
+                    if in_flight == 0:
+                        return  # no queued work and nobody can produce more
+                    await _wait_for_work()
+                    continue
+            url, depth, _discovered, _tier = (frontier or deferred).popleft()
             in_flight += 1
             try:
                 depth, parsed = await _fetch_one((url, depth))
@@ -1972,7 +2095,7 @@ async def _crawl_extra_pages(
                 new_work.set()
             if parsed is None or len(collected) >= max_pages:
                 continue
-            collected.append((depth, _discovered, parsed))
+            collected.append((_tier, depth, _discovered, parsed))
             if on_progress is not None:
                 try:
                     await on_progress(len(collected), parsed.final_url)
@@ -1983,6 +2106,7 @@ async def _crawl_extra_pages(
             # haven't hit the depth cap.
             if depth >= max_depth:
                 continue
+            _register_paths(parsed.source_content.links)
             for child in parsed.source_content.links:
                 norm = _normalize_crawl_url(child)
                 if not norm or norm in seen:
@@ -1990,23 +2114,24 @@ async def _crawl_extra_pages(
                 if not _is_crawlable_link(norm, entry_host):
                     continue
                 seen.add(norm)
-                frontier.append((norm, depth + 1, discovery_count))
-                discovery_count += 1
+                _enqueue(norm, depth + 1)
             new_work.set()
 
-    if frontier:
-        worker_count = min(_CRAWL_WORKERS, max(1, len(frontier)))
+    if frontier or deferred:
+        queued = len(frontier) + len(deferred)
+        worker_count = min(_CRAWL_WORKERS, max(1, queued))
         await asyncio.gather(*(_worker() for _ in range(min(worker_count, max_pages))))
 
     # Restore the deterministic (depth, discovery) order the old lockstep
     # batches produced — downstream ranking treats earlier pages as closer to
-    # the entry page.
-    collected.sort(key=lambda t: (t[0], t[1]))
-    parsed_pages = [p for _d, _i, p in collected]
+    # the entry page — with translated mirrors sorted behind their tier.
+    collected.sort(key=lambda t: (t[0], t[1], t[2]))
+    parsed_pages = [p for _t, _d, _i, p in collected]
 
-    # Whatever the frontier still holds when we stop is "unvisited" — surface
-    # it so callers can resume via /api/scrape/extend.
-    unvisited = [url for url, _depth, _i in frontier]
+    # Whatever the queues still hold when we stop is "unvisited" — surface it so
+    # callers can resume via /api/scrape/extend. Untranslated pages lead, so a
+    # "crawl N more" pass keeps picking up new content before translations.
+    unvisited = [url for url, _depth, _i, _tier in (*frontier, *deferred)]
     return parsed_pages, unvisited
 
 

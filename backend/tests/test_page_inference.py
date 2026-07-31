@@ -243,6 +243,96 @@ class PageInferenceTest(unittest.TestCase):
         self.assertEqual(about.title, "About Us")
         self.assertEqual(contact.title, "Contact Us")
 
+    def test_template_titled_detail_pages_are_named_by_their_profile(self):
+        # MMTA's nine committee-member pages all carry <title>About MMTA</title>
+        # and the same "The Committee" heading — without per-page evidence the
+        # picker shows nine identical rows (and types them all as about pages).
+        members = [("Sandra Cheah", "sandra"), ("Nathan Ng", "nathan")]
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            title="About MMTA",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref=f"https://example.my/profile/{slug}",
+                    title="About MMTA",
+                    headings=["The Committee"],
+                    raw_text=f"{name} is a music therapist.",
+                    url_path=f"/profile/{slug}",
+                    profile_candidates=[
+                        ProfileCandidate(
+                            name=name, role="Committee Member", confidence=0.9
+                        )
+                    ],
+                )
+                for name, slug in members
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+
+        for name, slug in members:
+            page = next(s for s in scaffolds if s.slug == f"profile/{slug}")
+            self.assertEqual(page.title, name)
+            # "About MMTA" used to drag these into the about page_type.
+            self.assertEqual(page.page_type, "landing")
+
+    def test_template_titled_pages_fall_back_to_their_distinct_heading(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref=f"https://example.my/services/{slug}",
+                    title="Our Services",
+                    headings=["What We Do", heading],
+                    raw_text=f"{heading} details.",
+                    url_path=f"/services/{slug}",
+                )
+                for heading, slug in (
+                    ("Group Sessions", "group-sessions"),
+                    ("Home Visits", "home-visits"),
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+
+        group = next(s for s in scaffolds if s.slug == "services/group-sessions")
+        visits = next(s for s in scaffolds if s.slug == "services/home-visits")
+        # "What We Do" is on both pages — template chrome, not a page name.
+        self.assertEqual(group.title, "Group Sessions")
+        self.assertEqual(visits.title, "Home Visits")
+
+    def test_unique_page_titles_are_still_used_verbatim(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/membership",
+                    title="Membership",
+                    headings=["Join Us"],
+                    raw_text="Membership details.",
+                    url_path="/membership",
+                    profile_candidates=[
+                        ProfileCandidate(name="Sandra Cheah", confidence=0.9)
+                    ],
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+
+        membership = next(s for s in scaffolds if s.slug == "membership")
+        self.assertEqual(membership.title, "Membership")
+
     def test_discovered_team_page_removes_full_team_section_from_about(self):
         source = SourceContent(
             source_kind="url",
