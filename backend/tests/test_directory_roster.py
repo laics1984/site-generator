@@ -221,7 +221,23 @@ class ProfileDetailPageTest(unittest.TestCase):
             ),
         )
 
-    def _run(self, page_source):
+    def _roster_page(self):
+        """The committee grid that links to the member pages."""
+        return [_source(
+            [
+                ProfileCandidate(
+                    name="Ashley Jinivon", role="Chairperson",
+                    photo_url="https://x/grid/ashley.jpg", confidence=0.9,
+                ),
+                ProfileCandidate(
+                    name="Marcus Ong", role="Treasurer",
+                    photo_url="https://x/grid/marcus.jpg", confidence=0.9,
+                ),
+            ],
+            url_path="/committee",
+        )]
+
+    def _run(self, page_source, *, discovered=None):
         page = _page(
             "committee/ashley",
             [HeroBlock(headline="Ashley Jinivon"), AboutBlock(body="Chairs …")],
@@ -230,7 +246,13 @@ class ProfileDetailPageTest(unittest.TestCase):
         plan = SitePlan(site_name="T", pages=[page])
         _ensure_scraped_team_blocks(
             plan,
-            _source([], discovered=[page_source]),
+            _source(
+                [],
+                discovered=[
+                    page_source,
+                    *(self._roster_page() if discovered is None else discovered),
+                ],
+            ),
             team_section_slugs=set(),
             source_map={"committee/ashley": page_source},
             directory_slugs=set(),
@@ -262,14 +284,31 @@ class ProfileDetailPageTest(unittest.TestCase):
             headings=("Ashley Jinivon",), profiles=_profiles(2)
         )
 
-        self.assertIsNone(_profile_page_member(page_source))
+        self.assertIsNone(
+            _profile_page_member(page_source, None, {"ashley jinivon"})
+        )
 
     def test_photoless_card_is_ignored(self):
         page_source = self._member_page_source(
             profiles=[ProfileCandidate(name="Ashley Jinivon", role="Chairperson")]
         )
 
-        self.assertIsNone(_profile_page_member(page_source))
+        self.assertIsNone(
+            _profile_page_member(page_source, None, {"ashley jinivon"})
+        )
+
+    def test_person_no_roster_lists_is_ignored(self):
+        # "Annual General Meeting" reads as a name and the page has one photo —
+        # only the roster tells a member page from an ordinary content page.
+        page_source = self._member_page_source()
+
+        self.assertIsNone(_profile_page_member(page_source, None, set()))
+
+    def test_roster_page_itself_supplies_the_names(self):
+        page = self._run(self._member_page_source(), discovered=[])
+
+        # No roster crawled → nothing structural to confirm the pairing.
+        self.assertEqual([b.kind for b in page.blocks], ["hero", "about"])
 
     def test_portrait_is_not_bound_twice_on_the_page(self):
         page_source = self._member_page_source()
@@ -311,7 +350,13 @@ class ProfileFaqStripTest(unittest.TestCase):
     def test_title_stripped_name_still_matches(self):
         # Scraped "Dr. Sandra Cheah" — the model drops the honorific.
         entry = _source(
-            [ProfileCandidate(name="Dr. Sandra Cheah", photo_url="https://x/s.jpg")]
+            [
+                ProfileCandidate(
+                    name="Dr. Sandra Cheah",
+                    photo_url="https://x/s.jpg",
+                    confidence=0.8,  # a structurally extracted card
+                )
+            ]
         )
         faq = FaqBlock(
             items=[
@@ -340,6 +385,29 @@ class ProfileFaqStripTest(unittest.TestCase):
         _strip_profile_faq_items(plan, entry)
 
         self.assertEqual(page.blocks, [])
+
+    def test_page_subject_candidate_never_strips_a_question(self):
+        # A page headed "Annual General Meeting" reads as name-shaped, so the
+        # positional fallback offers it as a person — it must not delete the
+        # site's genuine question about the AGM.
+        entry = _source(
+            [
+                ProfileCandidate(
+                    name="Annual General Meeting",
+                    photo_url="https://x/agm.jpg",
+                    confidence=0.75,
+                )
+            ]
+        )
+        faq = FaqBlock(
+            items=[FaqItem(question="When is the Annual General Meeting?", answer="May.")]
+        )
+        page = _page("faqs", [faq], page_type="faq")
+        plan = SitePlan(site_name="T", pages=[page])
+
+        _strip_profile_faq_items(plan, entry)
+
+        self.assertEqual(len(page.blocks[0].items), 1)
 
     def test_no_profiles_means_no_stripping(self):
         entry = _source([])

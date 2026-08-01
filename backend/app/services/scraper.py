@@ -1271,12 +1271,62 @@ def _has_portrait_aspect(
     return _PORTRAIT_MIN_ASPECT <= ratio <= _PORTRAIT_MAX_ASPECT
 
 
+def _page_subject_profile(
+    soup: BeautifulSoup, base_url: str, portraits: list[tuple[str, str]]
+) -> ProfileCandidate | None:
+    """One candidate for a page that IS a person's profile, not a card grid.
+
+    A committee member's own page doesn't card its person: the name is the
+    page's h1 and the portrait sits loose in the content column, so the card
+    walk finds no container — and would not read the name anyway, since a card
+    names its person in an h3-h5. Named by the h1, photographed by the image
+    whose alt echoes that name, or by the page's only portrait-shaped photo (a
+    member page carries exactly one). Consulted only when no card matched, so a
+    directory page is unaffected.
+
+    The h1 is the whole claim: this page is ABOUT that person. A name-shaped h2
+    is a section heading inside a page about something else ("Rahman Wellness"
+    over a clinic's story), which is why the card walk distrusts h2 as well.
+    """
+    name = None
+    for heading in soup.find_all("h1"):
+        if not isinstance(heading, Tag):
+            continue
+        text = _clean_line(heading.get_text(" ", strip=True))
+        if _looks_like_person_name(text):
+            name = text
+            break
+    if name is None:
+        return None
+
+    matched = next((p for p in portraits if name.lower() in p[1].lower()), None)
+    if matched is None and len(portraits) == 1:
+        matched = portraits[0]
+    if matched is None:
+        return None
+
+    photo_url, alt = matched
+    return ProfileCandidate(
+        name=name,
+        role=None,
+        # The page's prose is its own about section's material, not a card bio.
+        bio=None,
+        photo_url=photo_url,
+        photo_alt=alt or f"{name} portrait",
+        source_url=base_url,
+        # Below a real card's 0.8: the pairing is positional, not structural.
+        confidence=0.75,
+    )
+
+
 def _extract_profile_candidates(
     soup: BeautifulSoup, base_url: str
 ) -> list[ProfileCandidate]:
     """Extract likely profile cards where a portrait and nearby person text agree."""
     profiles: list[ProfileCandidate] = []
     seen: set[tuple[str, str | None]] = set()
+    # Photos that cleared every image-level gate, for the page-subject fallback.
+    portraits: list[tuple[str, str]] = []
 
     for img in soup.find_all("img"):
         if not isinstance(img, Tag):
@@ -1304,6 +1354,12 @@ def _extract_profile_candidates(
             continue
         if not _has_portrait_aspect(width, height, evidence):
             continue
+        # For the page-subject fallback only, the shape has to be MEASURED —
+        # `_has_portrait_aspect` passes unknown dimensions on benefit of the
+        # doubt, which a card's structure earns and a loose photo does not (a
+        # dimensionless banner under a name-shaped h1 would become a portrait).
+        if (evidence is not None and evidence.height) or (width and height):
+            portraits.append((photo_url, alt))
 
         container, hinted = _nearest_profile_container(img)
         if container is None:
@@ -1330,6 +1386,10 @@ def _extract_profile_candidates(
             )
         )
 
+    if not profiles:
+        subject = _page_subject_profile(soup, base_url, portraits)
+        if subject is not None:
+            return [subject]
     return profiles[:24]
 
 

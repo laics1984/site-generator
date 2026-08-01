@@ -330,6 +330,81 @@ class ScraperImageExtractionTest(unittest.TestCase):
 
         self.assertEqual(profiles, [])
 
+    def test_member_detail_page_yields_its_subject(self):
+        # A committee member's own page cards nobody: the name is the h1 and
+        # the portrait sits loose in the content column, so the card walk finds
+        # no container — and never reads an h1 anyway.
+        soup = BeautifulSoup(
+            """
+            <html>
+              <body>
+                <main>
+                  <h1>Dr Aisha Rahman</h1>
+                  <div class="entry-content">
+                    <img src="/aisha.jpg" alt="" width="400" height="400" />
+                    <p>Aisha has served on the committee since 2018 and chairs
+                    the education subcommittee. She holds a Masters in Music
+                    Therapy and works with children with special needs across
+                    the northern region, running weekly group sessions.</p>
+                  </div>
+                </main>
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my/committee/aisha")
+
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0].name, "Dr Aisha Rahman")
+        self.assertEqual(profiles[0].photo_url, "https://example.my/aisha.jpg")
+        # Positional pairing, so it ranks below a real card's 0.8.
+        self.assertEqual(profiles[0].confidence, 0.75)
+
+    def test_member_detail_page_picks_the_photo_named_after_her(self):
+        soup = BeautifulSoup(
+            """
+            <html>
+              <body>
+                <main>
+                  <h1>Dr Aisha Rahman</h1>
+                  <img src="/workshop.jpg" alt="workshop" width="400" height="400" />
+                  <img src="/aisha.jpg" alt="Dr Aisha Rahman" width="400" height="400" />
+                  <p>Chairs the education subcommittee since 2018.</p>
+                </main>
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my/committee/aisha")
+
+        self.assertEqual([p.photo_url for p in profiles], ["https://example.my/aisha.jpg"])
+
+    def test_person_page_with_ambiguous_photos_yields_nothing(self):
+        # Several photos and no alt naming her: which one is her is a guess.
+        soup = BeautifulSoup(
+            """
+            <html>
+              <body>
+                <main>
+                  <h1>Dr Aisha Rahman</h1>
+                  <img src="/workshop.jpg" alt="workshop" width="400" height="400" />
+                  <img src="/concert.jpg" alt="concert" width="400" height="400" />
+                  <p>Chairs the education subcommittee since 2018.</p>
+                </main>
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        self.assertEqual(
+            scraper._extract_profile_candidates(soup, "https://example.my/committee/aisha"), []
+        )
+
     def test_logo_url_heuristic_matches_filenames_only(self):
         self.assertTrue(scraper._looks_like_logo_url("https://x/assets/logo.png?v=4"))
         self.assertTrue(scraper._looks_like_logo_url("https://x/site-logo.svg"))

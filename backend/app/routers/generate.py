@@ -454,16 +454,38 @@ def _directory_roster_members(
     return _roster_members(accepted[:24])
 
 
+def _rostered_names(source: SourceContent) -> set[str]:
+    """Normalized names carried by some page's profile ROSTER (2+ cards).
+
+    The roster is what links to the detail pages, so a name appearing in one is
+    structural evidence that a page titled with that name is that person's
+    page. Scraping a lone card off a detail page is positional evidence only
+    (scraper._page_subject_profile), and on its own would read a photo under an
+    "Annual General Meeting" heading as a person. A 2+ page is always real card
+    extraction — the positional fallback never emits more than one.
+    """
+    names: set[str] = set()
+    for page in (source, *source.discovered_pages):
+        candidates = page.profile_candidates or []
+        if len(candidates) < 2:
+            continue
+        names |= {_normalized_person_name(p.name) for p in candidates}
+    names.discard("")
+    return names
+
+
 def _profile_page_member(
     page_source: SourceContent | None,
     annotations: dict[str, VisionAnnotation] | None = None,
+    rostered_names: set[str] | None = None,
 ) -> TeamMember | None:
     """The one person a detail page is about, when the page is their profile.
 
-    A committee-member page carries exactly one vetted profile card and names
-    that person in its own title or headings — which is also precisely why the
-    site-wide ``_profile_pool_for`` drops them, so the card has to be read
-    page-scoped (same vetting as ``_directory_roster_members``, one card).
+    Three things have to agree: the page carries exactly one vetted profile
+    card, its own title or headings name that person, and a roster elsewhere on
+    the site lists them. The first two are read page-scoped — the site-wide
+    ``_profile_pool_for`` deliberately drops a person whose name titles their
+    own page — and the third is what makes the pairing structural.
 
     The bio is dropped: the page's own about section already narrates it, and
     both come from the same source text.
@@ -474,7 +496,10 @@ def _profile_page_member(
     if len(roster) != 1:
         return None
     member = roster[0]
-    if _normalized_person_name(member.name) not in _page_name_labels(page_source):
+    normalized = _normalized_person_name(member.name)
+    if normalized not in _page_name_labels(page_source):
+        return None
+    if normalized not in (rostered_names or set()):
         return None
     return member.model_copy(update={"bio": None, "description": None})
 
@@ -506,6 +531,7 @@ def _ensure_scraped_team_blocks(
     (see ``_profile_page_member``) — the detail pages a directory links to.
     """
     scraped_members = _scraped_team_members(source, annotations, profiles)
+    rostered_names = _rostered_names(source)
     requested_team_slugs = team_section_slugs or set()
     directory_pages = directory_slugs or set()
     sources_by_slug = source_map or {}
@@ -559,7 +585,9 @@ def _ensure_scraped_team_blocks(
         # right under the hero, above the about section that tells their story.
         # Home is exempt: its rhythm is designed, not inferred from one card.
         if not team_indexes and page.page_type != "home":
-            member = _profile_page_member(sources_by_slug.get(page.slug), annotations)
+            member = _profile_page_member(
+                sources_by_slug.get(page.slug), annotations, rostered_names
+            )
             if member is not None:
                 page.blocks.insert(
                     1 if page.blocks and getattr(page.blocks[0], "kind", None) == "hero" else 0,
@@ -619,6 +647,12 @@ def _profile_name_patterns(names: list[str]) -> set[str]:
     return patterns
 
 
+# The scraper's floor for a card it extracted STRUCTURALLY (0.8 without a role,
+# 0.9 with one). Below it sits the page-subject fallback's 0.75 — a real person,
+# but paired with their photo positionally rather than by card boundaries.
+_CARD_CONFIDENCE = 0.8
+
+
 def _strip_profile_faq_items(plan: SitePlan, source: SourceContent) -> None:
     """Drop FAQ items manufactured from profile listings ("Who is Ivy Tan…?").
 
@@ -629,10 +663,17 @@ def _strip_profile_faq_items(plan: SitePlan, source: SourceContent) -> None:
     FAQs survive untouched. Names come from the RAW profile_candidates, not
     ``_profile_pool_for`` — the pool blocks names that appear as headings,
     which on a directory page is every card title.
+
+    Real cards only (0.8+). A page-subject candidate is a positional pairing of
+    an h1 with a photo (scraper._page_subject_profile), and deleting a genuine
+    question because a page is headed "Annual General Meeting" is a worse
+    failure than leaving one manufactured Q&A in place.
     """
-    names = [p.name for p in source.profile_candidates or []]
+    names = [p.name for p in source.profile_candidates or [] if p.confidence >= _CARD_CONFIDENCE]
     for page_src in source.discovered_pages:
-        names.extend(p.name for p in page_src.profile_candidates or [])
+        names.extend(
+            p.name for p in page_src.profile_candidates or [] if p.confidence >= _CARD_CONFIDENCE
+        )
     patterns = _profile_name_patterns(names)
     if not patterns:
         return
