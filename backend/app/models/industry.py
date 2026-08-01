@@ -49,6 +49,12 @@ class PageScaffold(BaseModel):
     source_url: str | None = None   # URL the sub-page was discovered/crawled at
     nav_rank: int | None = None     # source-nav position (0-based); None ⇒ not in the source header nav
     from_source: bool = False       # page evidenced by the source (crawled / nav / strip) vs template-injected
+    # Translated mirrors (/bm/committee): the language directory this page lives
+    # under, and the slug it is a translation of ("" for the homepage). Both
+    # None on a source-language page. A translated page is never planned from
+    # scratch — it clones its counterpart's design and swaps the text.
+    locale: str | None = None
+    translation_of: str | None = None
 
 
 class IndustryTemplate(BaseModel):

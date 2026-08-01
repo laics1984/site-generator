@@ -47,6 +47,7 @@ from app.services.fast_fetch import (
     try_fast_fetch,
 )
 from app.services.image_evidence import ImageEvidence, classify_role, parse_evidence
+from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
 from app.services.profile_text import has_contact_token, is_boilerplate_line
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.nav_extraction import (
@@ -1766,44 +1767,14 @@ def _normalize_crawl_url(url: str) -> str | None:
     return f"{parsed.scheme}://{host}{path}{('?' + parsed.query) if parsed.query else ''}"
 
 
-# Language/locale directory prefixes. A translated mirror (/bm/committee,
-# /zh/about, /fr-fr/produits) duplicates the whole site under one segment. The
-# translations are real content the owner maintains, but they carry no NEW
-# structure, so on a bounded frontier they must not outrank pages we haven't
-# seen in any language — MMTA's nine committee-member pages lost all 20 slots
-# to /bm/* and /zh/* copies of pages already queued. Mirrors are crawled last
-# (see the `deferred` queue in _crawl_extra_pages), never dropped.
-_LOCALE_SEGMENTS = frozenset({
-    "af", "am", "ar", "az", "be", "bg", "bm", "bn", "bs", "ca", "cn", "cs",
-    "cy", "da", "de", "el", "en", "eo", "es", "et", "eu", "fa", "fi", "fil",
-    "fr", "ga", "gl", "gu", "he", "hi", "hr", "hu", "hy", "id", "is", "it",
-    "ja", "jp", "ka", "kk", "km", "kn", "ko", "kr", "lt", "lv", "mk", "ml",
-    "mn", "mr", "ms", "mt", "my", "nb", "ne", "nl", "nn", "no", "pa", "pl",
-    "pt", "ro", "ru", "si", "sk", "sl", "sq", "sr", "sv", "sw", "ta", "te",
-    "th", "tl", "tr", "tw", "uk", "ur", "uz", "vi", "zh",
-})
-
-# Codes that are also ordinary English path words — /it (IT services), /hr
-# (human resources), /no, /is. These never count as a mirror on the bare
-# segment alone; only a deeper path that demonstrably translates a page we
-# already know (/it/support beside /support) does.
-_AMBIGUOUS_LOCALE_SEGMENTS = frozenset({
-    "am", "be", "hr", "id", "is", "it", "ms", "my", "no", "pa",
-})
-
-
-def _locale_segment(path: str) -> str | None:
-    """First path segment when it looks like a language/locale directory."""
-    segment = path.strip("/").split("/", 1)[0].lower()
-    if not segment:
-        return None
-    if segment in _LOCALE_SEGMENTS:
-        return segment
-    # "fr-FR", "pt_BR", "zh-hans" — language code plus a region/script tag.
-    match = re.fullmatch(r"([a-z]{2})[-_][a-z]{2,4}", segment)
-    if match and match.group(1) in _LOCALE_SEGMENTS:
-        return segment
-    return None
+# A translated mirror (/bm/committee, /zh/about, /fr-fr/produits) duplicates the
+# whole site under one language segment. The translations are real content the
+# owner maintains, but they carry no NEW structure, so on a bounded frontier
+# they must not outrank pages we haven't seen in any language — MMTA's nine
+# committee-member pages lost all 20 slots to /bm/* and /zh/* copies of pages
+# already queued. Mirrors are crawled last (the `deferred` queue in
+# _crawl_extra_pages), never dropped; page_inference then pairs each one with
+# the page it translates.
 
 
 def _path_key(url: str) -> str:
@@ -1822,12 +1793,12 @@ def _is_locale_mirror(path: str, *, entry_locale: str | None, known_paths: set[s
     segments = [s for s in path.split("/") if s]
     if not segments:
         return False
-    segment = _locale_segment(path)
+    segment = locale_segment(path)
     if segment is None or segment == entry_locale:
         return False
     if len(segments) == 1:
         # A bare /zh, /de — the language switcher's landing page.
-        return segment not in _AMBIGUOUS_LOCALE_SEGMENTS
+        return segment not in AMBIGUOUS_LOCALE_SEGMENTS
     # Deeper paths need evidence: /zh/about mirrors /about. Without a known
     # counterpart, /it/support may well be a real IT section.
     return "/" + "/".join(segments[1:]) in known_paths
@@ -1901,7 +1872,7 @@ async def _crawl_extra_pages(
     # The entry's own locale segment (None for an unprefixed site) — whatever
     # language the user pointed us at is the source language; every *other*
     # language's mirror is recognized against the paths we already know.
-    entry_locale = _locale_segment(urlparse(entry_final_url).path or "/")
+    entry_locale = locale_segment(urlparse(entry_final_url).path or "/")
     known_paths: set[str] = set()
 
     def _register_paths(urls) -> None:

@@ -245,6 +245,11 @@ class PageNode(BaseModel):
     is_homepage: bool = False
     nav_rank: int | None = None  # source-nav position; menu_builder uses it to order + cap the primary menu
     from_source: bool = False    # page evidenced by the source site; gates Contact in the heuristic menu
+    # Set on translated pages (/bm/committee). They belong in the language
+    # switcher, never in the primary or footer menus — a reader shouldn't meet
+    # the same page twice in two languages in one menu.
+    locale: str | None = None
+    translation_of: str | None = None
     children: list["PageNode"] = Field(default_factory=list)
 
 

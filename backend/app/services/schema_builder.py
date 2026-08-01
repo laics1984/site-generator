@@ -3956,6 +3956,8 @@ def _build_page_tree(pages: list[GeneratedPage]) -> list[PageNode]:
             is_homepage=p.is_homepage,
             nav_rank=p.nav_rank,
             from_source=p.from_source,
+            locale=getattr(p, "locale", None),
+            translation_of=getattr(p, "translation_of", None),
         )
 
     roots: list[PageNode] = []

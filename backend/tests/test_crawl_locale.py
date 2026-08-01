@@ -22,6 +22,7 @@ from unittest import mock
 
 from app.services import scraper
 from app.services.fast_fetch import FastFetchResult
+from app.services.locale import locale_segment
 
 
 class _FakeSlot:
@@ -85,14 +86,14 @@ async def _crawl(entry, seeds, *, max_pages=20, max_depth=3):
 
 class LocaleSegmentTest(unittest.TestCase):
     def test_language_directories_are_recognized(self):
-        self.assertEqual(scraper._locale_segment("/zh/about"), "zh")
-        self.assertEqual(scraper._locale_segment("/BM/committee"), "bm")
-        self.assertEqual(scraper._locale_segment("/fr-FR/produits"), "fr-fr")
-        self.assertEqual(scraper._locale_segment("/zh-hans"), "zh-hans")
+        self.assertEqual(locale_segment("/zh/about"), "zh")
+        self.assertEqual(locale_segment("/BM/committee"), "bm")
+        self.assertEqual(locale_segment("/fr-FR/produits"), "fr-fr")
+        self.assertEqual(locale_segment("/zh-hans"), "zh-hans")
 
     def test_ordinary_paths_are_not_locales(self):
         for path in ("/", "/about", "/committee", "/services/web-design", "/team-nl"):
-            self.assertIsNone(scraper._locale_segment(path), path)
+            self.assertIsNone(locale_segment(path), path)
 
 
 class LocaleMirrorOrderingTest(unittest.IsolatedAsyncioTestCase):

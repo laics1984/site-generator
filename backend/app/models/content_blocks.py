@@ -913,6 +913,11 @@ class PagePlan(BaseModel):
     parent_slug: str | None = None
     nav_rank: int | None = None  # source-nav position from the scaffold; never set by the LLM
     from_source: bool = False    # page evidenced by the source site; never set by the LLM
+    # Carried through from the scaffold; never set by the LLM. A page with
+    # `locale` set is a translation of `translation_of` — same blocks, same
+    # images, same templates, text in another language.
+    locale: str | None = None
+    translation_of: str | None = None
 
     @field_validator("page_type", mode="before")
     @classmethod

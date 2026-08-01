@@ -197,9 +197,55 @@ class DirectiveShapeTest(_LegacyRotationCase):
         self.assertIn(d, {d})
 
 
+class CentredByDefaultTest(unittest.TestCase):
+    """Hero copy is centred unless `hero_anchored_copy` is explicitly turned on.
+
+    An anchored column only works when the photograph has a genuinely open side
+    to give it; across arbitrary scraped and stock imagery that's the exception,
+    so the anchor more often lands copy over a busy half of the frame than
+    beside a clean one. Centre is the reliable default.
+    """
+
+    def _pages(self):
+        return [
+            _page("home", "home", homepage=True),
+            _page("about", "about"),
+            _page("contact", "contact"),
+        ]
+
+    def test_the_switch_is_off_by_default(self):
+        self.assertFalse(settings.hero_anchored_copy)
+
+    def test_every_page_including_the_homepage_is_centred(self):
+        comps = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        self.assertEqual({c.anchor for c in comps.values()}, {"center"})
+
+    def test_the_single_page_helper_agrees(self):
+        for homepage in (True, False):
+            comp = hero_composition(slug="about", seed="s", is_homepage=homepage)
+            self.assertEqual(comp.anchor, "center")
+
+    def test_turning_it_on_restores_anchoring(self):
+        """The machinery stays intact and reversible — the switch is the whole
+        difference, so the scrim and focal crop keep following the anchor."""
+        with mock.patch.object(settings, "hero_anchored_copy", True):
+            comps = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        self.assertEqual(comps["home"].anchor, "left")
+        self.assertGreater(len({c.anchor for c in comps.values()}), 1)
+
+
 class HeroCompositionTest(unittest.TestCase):
     """With every page on the same full-bleed template, composition is the only
-    axis of variety left — so it has to actually vary, and still be idempotent."""
+    axis of variety left — so it has to actually vary, and still be idempotent.
+
+    Covers the opt-in anchored mode (`hero_anchored_copy`); the default centred
+    behaviour is CentredByDefaultTest above.
+    """
+
+    def setUp(self):
+        patcher = mock.patch.object(settings, "hero_anchored_copy", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _pages(self):
         return [

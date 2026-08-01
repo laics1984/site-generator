@@ -8,6 +8,11 @@ place names. Returns a `MarketContext` whose `demonym` is fed into image queries
 whose country/region feeds `place_query_cue` for scenery queries
 (e.g. "office skyline Malaysia").
 
+Also home to ``locale_segment`` — the language-directory test shared by the
+crawler (which defers translated mirrors) and page inference (which pairs each
+mirror with the page it translates). Both need the same answer for
+``/bm/committee``, and neither should import the other.
+
 Deterministic + dependency-light on purpose — no LLM call, unit-testable alone.
 """
 
@@ -15,6 +20,61 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+# --- language directories ---------------------------------------------------------
+
+# Language/locale path prefixes: /bm/committee, /zh/about, /fr-fr/produits.
+LOCALE_SEGMENTS = frozenset({
+    "af", "am", "ar", "az", "be", "bg", "bm", "bn", "bs", "ca", "cn", "cs",
+    "cy", "da", "de", "el", "en", "eo", "es", "et", "eu", "fa", "fi", "fil",
+    "fr", "ga", "gl", "gu", "he", "hi", "hr", "hu", "hy", "id", "is", "it",
+    "ja", "jp", "ka", "kk", "km", "kn", "ko", "kr", "lt", "lv", "mk", "ml",
+    "mn", "mr", "ms", "mt", "my", "nb", "ne", "nl", "nn", "no", "pa", "pl",
+    "pt", "ro", "ru", "si", "sk", "sl", "sq", "sr", "sv", "sw", "ta", "te",
+    "th", "tl", "tr", "tw", "uk", "ur", "uz", "vi", "zh",
+})
+
+# Codes that are also ordinary English path words — /it (IT services), /hr
+# (human resources), /no, /is. Callers treat these as a language only with
+# corroborating evidence (a translated subtree), never on the segment alone.
+AMBIGUOUS_LOCALE_SEGMENTS = frozenset({
+    "am", "be", "hr", "id", "is", "it", "ms", "my", "no", "pa",
+})
+
+# Display names for the language switcher. Falls back to the uppercased code.
+LOCALE_LABELS: dict[str, str] = {
+    "ar": "العربية", "bm": "Bahasa Malaysia", "cn": "中文", "de": "Deutsch",
+    "en": "English", "es": "Español", "fr": "Français", "hi": "हिन्दी",
+    "id": "Bahasa Indonesia", "it": "Italiano", "ja": "日本語", "ko": "한국어",
+    "ms": "Bahasa Melayu", "nl": "Nederlands", "pt": "Português",
+    "ru": "Русский", "ta": "தமிழ்", "th": "ไทย", "tw": "繁體中文",
+    "vi": "Tiếng Việt", "zh": "中文",
+}
+
+
+def locale_segment(path: str) -> str | None:
+    """First path segment when it looks like a language/locale directory."""
+    segment = path.strip("/").split("/", 1)[0].lower()
+    if not segment:
+        return None
+    if segment in LOCALE_SEGMENTS:
+        return segment
+    # "fr-FR", "pt_BR", "zh-hans" — language code plus a region/script tag.
+    match = re.fullmatch(r"([a-z]{2})[-_][a-z]{2,4}", segment)
+    if match and match.group(1) in LOCALE_SEGMENTS:
+        return segment
+    return None
+
+
+def locale_label(code: str) -> str:
+    """Human-readable name for a locale code, for the language switcher."""
+    normalized = code.strip().lower()
+    if normalized in LOCALE_LABELS:
+        return LOCALE_LABELS[normalized]
+    base = re.split(r"[-_]", normalized)[0]
+    if base in LOCALE_LABELS:
+        return LOCALE_LABELS[base]
+    return normalized.upper()
 
 
 @dataclass(frozen=True)

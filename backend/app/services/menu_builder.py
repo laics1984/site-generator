@@ -27,6 +27,7 @@ from uuid import uuid4
 from app.config import settings
 from app.models.builder_schema import BuilderElement, GeneratedSite, PageNode
 from app.models.design_manifest import SELF_CHROME_HEADERS
+from app.services.locale import locale_label
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,9 @@ UTILITY_MENU_ID = "menu-utility"
 FOOTER_MENU_ID = "menu-footer"
 LEGAL_MENU_ID = "menu-legal"
 SOCIAL_MENU_ID = "menu-social"
+
+# Label for the source-language entry in the language switcher.
+SOURCE_LANGUAGE_LABEL = "English"
 
 # Primary nav cap, including Home and Contact. Standard UX guidance is 5–7
 # top-level items; pages that don't make the cut stay reachable via the
@@ -117,6 +121,11 @@ def build_menus(
         — desktop dropdown flyouts, indented mobile-drawer entries.
     """
     legal_pages = legal_pages or []
+    # Translated pages are reachable through the language switcher, never
+    # through the primary or footer menus: a reader should not meet
+    # "Committee" and "Committee (Bahasa Malaysia)" side by side in one menu.
+    translated_nodes = [n for n in (page_tree or []) if n.locale]
+    page_tree = [n for n in (page_tree or []) if not n.locale] or None
     primary_items: list[dict[str, Any]] = []
     if page_tree:
         candidates = [
@@ -211,6 +220,26 @@ def build_menus(
                 [_menu_item(label, href) for label, href in legal_pages],
             )
         )
+
+    # Language switcher: one entry per language the source publishes, pointing
+    # at that language's home. It goes in the utility menu, which header
+    # archetypes render separately from the primary nav (a top bar, a corner
+    # link) — the same job the source's own "BM | 中文" strip does. The
+    # source-language entry leads so the reader can always get back.
+    if translated_nodes:
+        by_locale: dict[str, PageNode] = {}
+        for node in translated_nodes:
+            # The locale's own homepage is the switcher target; failing that
+            # (only inner pages were selected) its first page will do.
+            preferred = by_locale.get(node.locale or "")
+            if preferred is None or (node.translation_of == "" and preferred.translation_of != ""):
+                by_locale[node.locale or ""] = node
+        switcher = [_menu_item(SOURCE_LANGUAGE_LABEL, "/")]
+        switcher.extend(
+            _menu_item(locale_label(code), f"/{by_locale[code].slug}")
+            for code in sorted(by_locale)
+        )
+        menus.append(_menu(UTILITY_MENU_ID, "Language", "utility", switcher))
 
     # Social menu: profile links scraped from the source — external, so they
     # open in a new tab.

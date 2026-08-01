@@ -231,6 +231,18 @@ class Settings(BaseSettings):
     # hero rotation (compact splits/centered).
     hero_fullbleed_all_pages: bool = True
 
+    # Anchor a full-bleed hero's copy to one side (left / bottom-left) instead of
+    # centring it, with the scrim and focal crop following that edge — the
+    # editorial composition from services/hero_director.hero_composition.
+    #
+    # Off by default: centred copy is what reads as deliberate on this
+    # generator's output. An anchored column only works when the photograph has
+    # a genuinely open side to give it, and across arbitrary scraped and stock
+    # imagery that is the exception, not the rule — so the anchor more often
+    # lands copy over a busy half of the frame than beside a clean one.
+    # On → homepage leads left and interiors rotate left / bottom-left / centre.
+    hero_anchored_copy: bool = False
+
     # Minimum long-edge (px) a SCRAPED image must have to fill a full-bleed hero
     # background. Heroes stretch their photo edge-to-edge (background-size:
     # cover), so a small source image visibly softens/pixelates when upscaled.

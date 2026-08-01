@@ -38,6 +38,7 @@ from app.models.content_blocks import (
 from app.models.industry import PageScaffold
 from app.services.industry_templates import get_template
 from app.services.design_brain import generate_design_language
+from app.services.translations import build_translated_pages
 from app.services.text_detection import prefetch_text_flags
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
@@ -207,20 +208,31 @@ def _normalized_person_name(value: str | None) -> str:
     return " ".join(_person_name_tokens(value))
 
 
+def _page_name_labels(page: SourceContent) -> set[str]:
+    """Normalized names the page carries as its OWN title or headings.
+
+    Two readings of one piece of evidence. In ``_profile_pool_for`` these names
+    are blocked — a card echoing the page's own title is chrome, not a person.
+    In ``_profile_page_member`` a match is the opposite signal: the page is
+    titled after the person it carries, so it IS that person's profile page.
+    """
+    return {
+        norm
+        for norm in (
+            _normalized_person_name(page.title),
+            *(_normalized_person_name(h) for h in page.headings),
+        )
+        if norm
+    }
+
+
 def _profile_pool_for(source: SourceContent) -> list[ProfileCandidate]:
     """Flatten entry + crawled profile candidates without duplicates."""
     profiles: list[ProfileCandidate] = []
     seen: set[tuple[str, str | None]] = set()
 
     def add_page(page: SourceContent) -> None:
-        blocked_names = {
-            norm
-            for norm in (
-                _normalized_person_name(page.title),
-                *(_normalized_person_name(h) for h in page.headings),
-            )
-            if norm
-        }
+        blocked_names = _page_name_labels(page)
         for profile in page.profile_candidates:
             key = (_normalized_person_name(profile.name), profile.photo_url)
             if not key[0] or key[0] in blocked_names or key in seen:
@@ -442,6 +454,31 @@ def _directory_roster_members(
     return _roster_members(accepted[:24])
 
 
+def _profile_page_member(
+    page_source: SourceContent | None,
+    annotations: dict[str, VisionAnnotation] | None = None,
+) -> TeamMember | None:
+    """The one person a detail page is about, when the page is their profile.
+
+    A committee-member page carries exactly one vetted profile card and names
+    that person in its own title or headings — which is also precisely why the
+    site-wide ``_profile_pool_for`` drops them, so the card has to be read
+    page-scoped (same vetting as ``_directory_roster_members``, one card).
+
+    The bio is dropped: the page's own about section already narrates it, and
+    both come from the same source text.
+    """
+    if page_source is None:
+        return None
+    roster = _directory_roster_members(page_source, annotations)
+    if len(roster) != 1:
+        return None
+    member = roster[0]
+    if _normalized_person_name(member.name) not in _page_name_labels(page_source):
+        return None
+    return member.model_copy(update={"bio": None, "description": None})
+
+
 def _ensure_scraped_team_blocks(
     plan: SitePlan,
     source: SourceContent,
@@ -464,6 +501,9 @@ def _ensure_scraped_team_blocks(
     page's own full roster: the LLM keeps only a subset of a long listing, and
     ``_enrich_plan_profile_photos`` can only attach photos to the members the
     LLM kept, so a partially photo-bearing block must not short-circuit here.
+
+    A page carrying a single profile card instead gets that one person's card
+    (see ``_profile_page_member``) — the detail pages a directory links to.
     """
     scraped_members = _scraped_team_members(source, annotations, profiles)
     requested_team_slugs = team_section_slugs or set()
@@ -512,6 +552,21 @@ def _ensure_scraped_team_blocks(
                 )
                 continue
             # Page-scoped roster came up empty — fall through to the generic path.
+
+        # A detail page carrying exactly one profile card is that person's own
+        # page, and a one-member team block is the only slot on the site allowed
+        # to render a scraped portrait (image_match.rank_candidates). Placed
+        # right under the hero, above the about section that tells their story.
+        # Home is exempt: its rhythm is designed, not inferred from one card.
+        if not team_indexes and page.page_type != "home":
+            member = _profile_page_member(sources_by_slug.get(page.slug), annotations)
+            if member is not None:
+                page.blocks.insert(
+                    1 if page.blocks and getattr(page.blocks[0], "kind", None) == "hero" else 0,
+                    TeamBlock(heading="Profile", subheading=None, members=[member]),
+                )
+                logger.info("Profile page: attached %s to /%s", member.name, page.slug)
+                continue
 
         if not scraped_members:
             continue
@@ -784,8 +839,17 @@ class GenerateWithPagesRequest(BaseModel):
 
 @router.post("/with-pages", response_model=GeneratedSite)
 async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
-    # Split scaffolds: LLM-generated content pages vs. boilerplate legal pages
-    content_scaffolds = [s for s in payload.selected_pages if not s.is_legal]
+    # Split scaffolds: LLM-generated content pages vs. boilerplate legal pages.
+    # Translated mirrors are held out of the content pass entirely — they're
+    # cloned from their counterpart's finished plan further down, so paying the
+    # planner to write them again would cost a full generation per language AND
+    # let the two versions drift apart visually.
+    content_scaffolds = [
+        s for s in payload.selected_pages if not s.is_legal and not s.locale
+    ]
+    translation_scaffolds = [
+        s for s in payload.selected_pages if not s.is_legal and s.locale
+    ]
     legal_scaffolds = [s for s in payload.selected_pages if s.is_legal]
 
     if not content_scaffolds:
@@ -986,6 +1050,20 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # the same per-page photo lists the planner prompt showed the model.
     bound_image_urls = bind_image_refs(plan.pages, source_map)
 
+    # Translated mirrors clone their counterpart HERE — after image refs are
+    # bound and the roster/team passes have run — so a clone inherits the exact
+    # photos and blocks the source-language page ended up with, not the ones it
+    # was planned with.
+    if translation_scaffolds:
+        with stage("translations"):
+            plan.pages.extend(
+                await build_translated_pages(
+                    plan.pages,
+                    translation_scaffolds,
+                    _translation_sources(payload.source),
+                )
+            )
+
     market_cue, place_cue = _market_cues_for(payload.source)
     collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
     site = await plan_to_site(
@@ -1090,6 +1168,17 @@ def _align_pages_to_scaffolds(
         )
         aligned.append(match)
     return aligned
+
+
+def _translation_sources(source: SourceContent) -> dict[str, SourceContent]:
+    """slug → crawled page, so a clone can be filled with the owner's own words
+    in that language rather than a re-translation of our copy."""
+    out: dict[str, SourceContent] = {}
+    for page in source.discovered_pages:
+        slug = (page.url_path or "").strip("/").lower()
+        if slug:
+            out[slug] = page
+    return out
 
 
 def _social_links_for(source: SourceContent) -> list[tuple[str, str]]:

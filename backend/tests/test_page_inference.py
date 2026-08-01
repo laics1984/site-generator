@@ -1,6 +1,11 @@
 import unittest
 
-from app.models.content_blocks import ImageMetadata, ProfileCandidate, SourceContent
+from app.models.content_blocks import (
+    ImageMetadata,
+    NavLink,
+    ProfileCandidate,
+    SourceContent,
+)
 from app.services.page_inference import (
     _MAX_PAGE_SECTIONS,
     DIRECTORY_MIN_PROFILES,
@@ -464,6 +469,101 @@ class PageInferenceTest(unittest.TestCase):
         self.assertIsNone(next((s for s in scaffolds if s.slug == "team"), None))
         about = next(s for s in scaffolds if s.slug == "about")
         self.assertIn("team", about.sections)
+
+
+class TranslatedMirrorTest(unittest.TestCase):
+    """Multilingual sources (mmta.org.my ships /bm and /zh copies of everything).
+
+    A mirror is a translation of a page we already have, not a new page: it must
+    not invent a "/bm" section, must not take a primary-nav slot, and must point
+    at the counterpart whose design it will clone.
+    """
+
+    @staticmethod
+    def _source(*paths: str, nav: list[NavLink] | None = None) -> SourceContent:
+        return SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            nav_links=nav or [],
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref=f"https://example.my{path}",
+                    title=path.strip("/").replace("/", " ").title(),
+                    raw_text=f"Content of {path}.",
+                    url_path=path,
+                )
+                for path in paths
+            ],
+        )
+
+    def test_mirror_is_paired_with_the_page_it_translates(self):
+        scaffolds = infer_page_scaffolds(
+            self._source("/committee", "/bm/committee"), industry="other"
+        )
+
+        committee = next(s for s in scaffolds if s.slug == "committee")
+        translated = next(s for s in scaffolds if s.slug == "bm/committee")
+
+        self.assertIsNone(committee.locale)
+        self.assertEqual(translated.locale, "bm")
+        self.assertEqual(translated.translation_of, "committee")
+        # It clones the counterpart's design, so it inherits its shape.
+        self.assertEqual(translated.page_type, committee.page_type)
+        self.assertEqual(translated.sections, committee.sections)
+
+    def test_language_root_translates_the_homepage(self):
+        scaffolds = infer_page_scaffolds(self._source("/bm"), industry="other")
+
+        translated = next(s for s in scaffolds if s.slug == "bm")
+        self.assertEqual(translated.locale, "bm")
+        self.assertEqual(translated.translation_of, "")
+
+    def test_mirror_does_not_invent_a_language_section(self):
+        scaffolds = infer_page_scaffolds(
+            self._source("/committee", "/bm/committee"), industry="other"
+        )
+        # Without the pairing, /bm/committee synthesizes a "bm" parent page.
+        parent = next((s for s in scaffolds if s.slug == "bm"), None)
+        self.assertIsNone(parent)
+        self.assertIsNone(
+            next(s for s in scaffolds if s.slug == "bm/committee").parent_slug
+        )
+
+    def test_translations_take_no_primary_nav_slot(self):
+        nav = [
+            NavLink(label="Committee", href="/committee"),
+            NavLink(label="Bahasa Malaysia", href="/bm"),
+        ]
+        scaffolds = infer_page_scaffolds(
+            self._source("/committee", "/bm", nav=nav), industry="other"
+        )
+
+        translated = next(s for s in scaffolds if s.slug == "bm")
+        self.assertIsNone(translated.nav_rank)
+        # The source page it came from keeps its own rank.
+        self.assertIsNotNone(next(s for s in scaffolds if s.slug == "committee").nav_rank)
+
+    def test_uncrawled_language_link_does_not_become_an_empty_page(self):
+        nav = [
+            NavLink(label="Committee", href="/committee"),
+            NavLink(label="中文", href="/zh"),
+        ]
+        scaffolds = infer_page_scaffolds(
+            self._source("/committee", nav=nav), industry="other"
+        )
+        # /zh was never crawled — scaffolding it from the nav link alone would
+        # ship a blank "中文" page in the generated site.
+        self.assertIsNone(next((s for s in scaffolds if s.slug == "zh"), None))
+
+    def test_locale_looking_section_without_a_counterpart_is_a_normal_page(self):
+        scaffolds = infer_page_scaffolds(
+            self._source("/it/support", "/about"), industry="other"
+        )
+        support = next(s for s in scaffolds if s.slug == "it/support")
+        self.assertIsNone(support.locale)
+        self.assertEqual(support.parent_slug, "it")  # ordinary IT section
 
 
 class StoryPageRhythmTest(unittest.TestCase):

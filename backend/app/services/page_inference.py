@@ -23,6 +23,11 @@ from app.models.content_blocks import NavLink, PageType, SectionType, SourceCont
 from app.models.industry import IndustryCategory, PageScaffold
 from app.services.industry_templates import get_template
 from app.services.landing_patterns import homepage_sections
+from app.services.locale import (
+    AMBIGUOUS_LOCALE_SEGMENTS,
+    locale_label,
+    locale_segment,
+)
 from app.services.nav_extraction import find_repeated_cluster_keys
 
 logger = logging.getLogger(__name__)
@@ -427,6 +432,33 @@ def _humanize(slug_part: str) -> str:
     return " ".join(w.capitalize() for w in re.split(r"[-_]", slug_part) if w)
 
 
+def translation_pairing(slugs: set[str]) -> dict[str, tuple[str, str]]:
+    """Map each translated mirror slug → (locale, the slug it translates).
+
+    ``bm/committee`` translates ``committee``; the bare language root ``bm``
+    translates the homepage (``""``). The pairing needs evidence — a mirror only
+    counts when its untranslated counterpart is also in the crawl — so a real
+    section that happens to look like a language code (``it/support`` on a site
+    with no ``/support``) stays an ordinary page. Same rule the crawler uses to
+    defer mirrors, applied here to the slugs that actually came back.
+    """
+    pairs: dict[str, tuple[str, str]] = {}
+    for slug in slugs:
+        segment = locale_segment(slug)
+        if segment is None:
+            continue
+        remainder = slug[len(segment):].strip("/")
+        if not remainder:
+            # A bare /bm is the translated homepage — but only for codes that
+            # aren't ordinary English words, since there's no subtree to prove it.
+            if segment not in AMBIGUOUS_LOCALE_SEGMENTS:
+                pairs[slug] = (segment, "")
+            continue
+        if remainder in slugs:
+            pairs[slug] = (segment, remainder)
+    return pairs
+
+
 def _ambiguous_page_labels(
     pages: list[SourceContent],
 ) -> tuple[frozenset[str], frozenset[str]]:
@@ -779,6 +811,12 @@ def infer_page_scaffolds(
         [source, *source.discovered_pages]
     )
 
+    # Translated mirrors are held back from the structural walk entirely: they
+    # must not synthesize a "/bm" parent section, join the primary nav, or get
+    # their own recipe. They're attached at the end, each pointing at the page
+    # it translates.
+    translations = translation_pairing(set(by_slug))
+
     scaffolds: list[PageScaffold] = []
     seen_slugs: set[str] = set()
 
@@ -788,7 +826,7 @@ def infer_page_scaffolds(
 
     # 2. Walk slugs in path-depth order so parents always exist before children
     sorted_slugs = sorted(
-        (s for s in by_slug if s),
+        (s for s in by_slug if s and s not in translations),
         key=lambda s: (s.count("/"), s),
     )
 
@@ -915,6 +953,14 @@ def infer_page_scaffolds(
     for nav_slug, _rank in sorted(evidence.rank.items(), key=lambda kv: kv[1]):
         if nav_slug in seen_slugs or "/" in nav_slug:
             continue
+        if nav_slug in translations or (
+            locale_segment(nav_slug) == nav_slug
+            and nav_slug not in AMBIGUOUS_LOCALE_SEGMENTS
+        ):
+            # "Bahasa Malaysia" / "中文" in the header are language switches, not
+            # sections. Crawled ones are attached as translations below; ones the
+            # crawl never reached must not become empty pages.
+            continue
         label = evidence.labels.get(nav_slug) or _humanize(nav_slug)
         nav_type = _infer_page_type(nav_slug, label)
         if nav_type in ("privacy", "terms"):
@@ -969,6 +1015,35 @@ def infer_page_scaffolds(
                 home.sections.insert(home.sections.index("cta"), "team")
             else:
                 home.sections.append("team")
+
+    # 2e. Attach translated mirrors to the pages they translate. They inherit
+    #     the counterpart's type and section rhythm because they will be built
+    #     by cloning its finished page, not planned independently — so they
+    #     cost no design decisions and carry no nav_rank of their own.
+    by_scaffold_slug = {s.slug: s for s in scaffolds}
+    for slug in sorted(translations, key=lambda s: (s.count("/"), s)):
+        locale, counterpart_slug = translations[slug]
+        counterpart = by_scaffold_slug.get(counterpart_slug)
+        if counterpart is None or counterpart.locale:
+            continue  # nothing to translate, or a mirror of a mirror
+        scaffolds.append(
+            PageScaffold(
+                page_type=counterpart.page_type,
+                slug=slug,
+                title=f"{counterpart.title} ({locale_label(locale)})",
+                sections=list(counterpart.sections),
+                rationale=(
+                    f"{locale_label(locale)} translation of "
+                    f"/{counterpart_slug} on the source site."
+                ),
+                parent_slug=counterpart.parent_slug,
+                source_url=by_slug[slug].source_ref,
+                from_source=True,
+                locale=locale,
+                translation_of=counterpart_slug,
+            )
+        )
+        seen_slugs.add(slug)
 
     # 3. Ensure About / Contact are present — they often live in the footer
     #    rather than the nav, so the crawler misses them on small sites.

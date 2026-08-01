@@ -211,6 +211,8 @@ def hero_composition(
     stops a site's interiors converging; use it whenever the whole page list is
     in hand.
     """
+    if not settings.hero_anchored_copy:
+        return HeroComposition("center")
     if hero_height == "banded":
         return HeroComposition("center")
     if is_homepage:
@@ -235,6 +237,8 @@ def plan_site_compositions(
     `plan_site_heroes` spreads template choices. Still deterministic — the
     nudge depends only on page order and the seed.
     """
+    if not settings.hero_anchored_copy:
+        return {page.slug: HeroComposition("center") for page in pages}
     out: dict[str, HeroComposition] = {}
     previous: HeroAnchor | None = None
     for page in pages:

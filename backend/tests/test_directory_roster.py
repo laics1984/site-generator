@@ -8,8 +8,10 @@ never as FAQ items manufactured from the profile names.
 import unittest
 
 from app.models.content_blocks import (
+    AboutBlock,
     FaqBlock,
     FaqItem,
+    HeroBlock,
     ImageMetadata,
     PagePlan,
     ProfileCandidate,
@@ -21,8 +23,10 @@ from app.models.content_blocks import (
 from app.routers.generate import (
     _directory_roster_members,
     _ensure_scraped_team_blocks,
+    _profile_page_member,
     _strip_profile_faq_items,
 )
+from app.services.image_refs import bind_image_refs
 from app.services.source_router import promptable_images
 
 _FIRST_NAMES = [
@@ -183,6 +187,104 @@ class DirectoryRosterFillTest(unittest.TestCase):
         ]
         members = _directory_roster_members(_source(profiles))
         self.assertEqual(len(members), 3)
+
+
+class ProfileDetailPageTest(unittest.TestCase):
+    """A committee member's own page shows that member's portrait.
+
+    The site-wide pool blocks a person whose name titles their own page, and
+    a detail page's section rhythm has no team slot — so the portrait had
+    nowhere to land and the page shipped photoless.
+    """
+
+    def _member_page_source(self, *, headings=("Ashley Jinivon",), profiles=None):
+        return SourceContent(
+            source_kind="url",
+            source_ref="https://x/committee/ashley",
+            title="About MMTA",  # the template title all nine members share
+            raw_text="Ashley chairs the committee.",
+            headings=list(headings),
+            url_path="/committee/ashley",
+            profile_candidates=list(
+                profiles
+                if profiles is not None
+                else [
+                    ProfileCandidate(
+                        name="Ashley Jinivon",
+                        role="Chairperson",
+                        bio="Chairs the committee",
+                        photo_url="https://x/ashley.jpg",
+                        photo_alt="Ashley Jinivon",
+                        confidence=0.9,
+                    )
+                ]
+            ),
+        )
+
+    def _run(self, page_source):
+        page = _page(
+            "committee/ashley",
+            [HeroBlock(headline="Ashley Jinivon"), AboutBlock(body="Chairs …")],
+            page_type="landing",
+        )
+        plan = SitePlan(site_name="T", pages=[page])
+        _ensure_scraped_team_blocks(
+            plan,
+            _source([], discovered=[page_source]),
+            team_section_slugs=set(),
+            source_map={"committee/ashley": page_source},
+            directory_slugs=set(),
+        )
+        return page
+
+    def test_single_profile_card_renders_under_the_hero(self):
+        page = self._run(self._member_page_source())
+
+        self.assertEqual([b.kind for b in page.blocks], ["hero", "team", "about"])
+        member = page.blocks[1].members[0]
+        self.assertEqual(member.photo_url, "https://x/ashley.jpg")
+        self.assertEqual(member.role, "Chairperson")
+        # The about section already narrates the bio — don't print it twice.
+        self.assertIsNone(member.bio)
+        self.assertIsNone(member.description)
+
+    def test_card_the_page_is_not_named_after_is_ignored(self):
+        # An inline author/contact card on an ordinary page names someone the
+        # page isn't about — no profile block.
+        page_source = self._member_page_source(headings=("Our Services",))
+
+        page = self._run(page_source)
+
+        self.assertEqual([b.kind for b in page.blocks], ["hero", "about"])
+
+    def test_two_cards_are_not_a_profile_page(self):
+        page_source = self._member_page_source(
+            headings=("Ashley Jinivon",), profiles=_profiles(2)
+        )
+
+        self.assertIsNone(_profile_page_member(page_source))
+
+    def test_photoless_card_is_ignored(self):
+        page_source = self._member_page_source(
+            profiles=[ProfileCandidate(name="Ashley Jinivon", role="Chairperson")]
+        )
+
+        self.assertIsNone(_profile_page_member(page_source))
+
+    def test_portrait_is_not_bound_twice_on_the_page(self):
+        page_source = self._member_page_source()
+        page_source.image_metadata = [
+            ImageMetadata(url="https://x/ashley.jpg", alt="Ashley", width=600, height=600)
+        ]
+        page = self._run(page_source)
+        # The page's only photo is the portrait; the LLM bound it to the about
+        # section too, which would render the same face twice.
+        page.blocks[2].image_ref = 0
+
+        bind_image_refs([page], {"committee/ashley": page_source})
+
+        self.assertIsNone(page.blocks[2].image_url)
+        self.assertIsNone(page.blocks[2].image_ref)
 
 
 class ProfileFaqStripTest(unittest.TestCase):

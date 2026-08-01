@@ -214,3 +214,97 @@ class HeuristicPrimaryMenuTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LanguageSwitcherTest(unittest.TestCase):
+    """Translated pages belong in the switcher, not in the content menus."""
+
+    @staticmethod
+    def _multilingual() -> list[PageNode]:
+        return _tree(
+            PageNode(slug="committee", title="Committee", nav_rank=0, from_source=True),
+            PageNode(
+                slug="bm",
+                title="Home (Bahasa Malaysia)",
+                locale="bm",
+                translation_of="",
+                from_source=True,
+            ),
+            PageNode(
+                slug="bm/committee",
+                title="Committee (Bahasa Malaysia)",
+                locale="bm",
+                translation_of="committee",
+                from_source=True,
+            ),
+            PageNode(
+                slug="zh",
+                title="Home (中文)",
+                locale="zh",
+                translation_of="",
+                from_source=True,
+            ),
+        )
+
+    def _utility(self, menus):
+        return next((m for m in menus if m["id"] == "menu-utility"), None)
+
+    def test_translations_stay_out_of_the_primary_menu(self):
+        menus = build_menus(self._multilingual())
+        labels = [i["label"] for i in _primary(menus)["items"]]
+
+        self.assertEqual(labels, ["Committee"])
+
+    def test_translations_stay_out_of_the_footer(self):
+        menus = build_menus(self._multilingual())
+        footer = _footer(menus)
+        labels = [i["label"] for i in (footer["items"] if footer else [])]
+
+        self.assertNotIn("Committee (Bahasa Malaysia)", labels)
+        self.assertNotIn("Home (中文)", labels)
+
+    def test_switcher_lists_one_entry_per_language(self):
+        menus = build_menus(self._multilingual())
+        utility = self._utility(menus)
+
+        self.assertIsNotNone(utility)
+        self.assertEqual(
+            [(i["label"], i["href"]) for i in utility["items"]],
+            [("English", "/"), ("Bahasa Malaysia", "/bm"), ("中文", "/zh")],
+        )
+
+    def test_switcher_points_at_the_language_home_not_an_inner_page(self):
+        # /bm/committee comes first in the tree; the switcher must still land
+        # the reader on the Malay homepage.
+        tree = _tree(
+            PageNode(
+                slug="bm/committee",
+                title="Committee (BM)",
+                locale="bm",
+                translation_of="committee",
+            ),
+            PageNode(slug="bm", title="Home (BM)", locale="bm", translation_of=""),
+        )
+        utility = self._utility(build_menus(tree))
+
+        self.assertEqual([i["href"] for i in utility["items"]], ["/", "/bm"])
+
+    def test_a_language_with_only_inner_pages_still_gets_an_entry(self):
+        tree = _tree(
+            PageNode(
+                slug="bm/committee",
+                title="Committee (BM)",
+                locale="bm",
+                translation_of="committee",
+            ),
+        )
+        utility = self._utility(build_menus(tree))
+
+        self.assertEqual([i["href"] for i in utility["items"]], ["/", "/bm/committee"])
+
+    def test_a_monolingual_site_gets_no_switcher(self):
+        menus = build_menus(
+            _tree(PageNode(slug="committee", title="Committee", from_source=True))
+        )
+
+        self.assertIsNone(self._utility(menus))
