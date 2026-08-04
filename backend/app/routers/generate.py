@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -27,7 +28,9 @@ from app.models.content_blocks import (
     LinkBarLink,
     LinkCluster,
     PagePlan,
+    ProfileBlock,
     ProfileCandidate,
+    ProfileContact,
     ServiceItem,
     ServicesBlock,
     SitePlan,
@@ -226,6 +229,78 @@ def _page_name_labels(page: SourceContent) -> set[str]:
     }
 
 
+def _url_slug_letters(url_path: str | None) -> str:
+    """The page's own path segment, punctuation stripped ("/profile/kevin-leong"
+    → "kevinleong"). Hand-written people slugs split names inconsistently, so
+    the separators carry no meaning worth keeping."""
+    if not url_path:
+        return ""
+    segment = url_path.rstrip("/").rsplit("/", 1)[-1]
+    return "".join(re.findall(r"[a-z0-9]+", segment.lower()))
+
+
+# Shortest slug that may stand for a whole given name ("ivy"), and shortest
+# multi-token run allowed to match inside a longer slug ("ivytan"). Below these
+# a coincidence is likelier than a naming.
+_MIN_NAME_SLUG = 3
+_MIN_NAME_RUN = 6
+
+
+def _url_path_names_person(url_path: str | None, name: str) -> bool:
+    """True when the page's own URL segment is built out of this person's name.
+
+    A detail page routinely carries a TEMPLATE title and a section heading
+    rather than the person's name — all nine MMTA committee pages are
+    ``<title>About MMTA</title>`` under an ``<h1>The Committee</h1>``, with the
+    name sitting in a plain ``div.name`` inside the card. The URL is then the
+    only part of the page that says who it is about.
+
+    Three shapes, because these slugs are written by hand: the whole name run
+    together (/profile/kueksersheentse), one given or family name
+    (/profile/ashley), or a run of the name surviving a misspelling elsewhere
+    in the slug (/profile/lohmingyuan for "Low Ming Yuan").
+    """
+    slug = _url_slug_letters(url_path)
+    tokens = _person_name_tokens(name)
+    if not slug or not tokens:
+        return False
+    if slug == "".join(tokens):
+        return True
+    if len(slug) >= _MIN_NAME_SLUG and slug in tokens:
+        return True
+    return any(
+        len(run) >= _MIN_NAME_RUN and run in slug
+        for start in range(len(tokens) - 1)
+        for run in ("".join(tokens[start:end]) for end in range(start + 2, len(tokens) + 1))
+    )
+
+
+def _page_is_about(page: SourceContent, name: str) -> bool:
+    """True when the page itself says it is this person's page.
+
+    Three independent readings, any one of which is enough — a site only has to
+    say it once, and each of the three is the only one that works somewhere:
+
+    1. Its ``<title>`` or a heading names them. The plainest case, and the one
+       template-driven CMS pages break: MMTA's nine committee pages all carry
+       ``<title>About MMTA</title>`` under an ``<h1>The Committee</h1>``.
+    2. Its URL names them (/profile/ashley) — usually the last thing left when
+       the markup is templated, and hand-written, so spelled loosely.
+    3. Its body LEADS with them: the first designated name element below the
+       chrome, by DOM hierarchy, is theirs (``scraper._leading_person_name``).
+       This is what reads MMTA's ``<div class="name">Ashley Jinivon</div>``, and
+       it is the reading that still works when a page is at /member/4417.
+    """
+    normalized = _normalized_person_name(name)
+    if not normalized:
+        return False
+    return (
+        normalized in _page_name_labels(page)
+        or _url_path_names_person(page.url_path, name)
+        or normalized == _normalized_person_name(page.subject_name)
+    )
+
+
 def _profile_pool_for(source: SourceContent) -> list[ProfileCandidate]:
     """Flatten entry + crawled profile candidates without duplicates."""
     profiles: list[ProfileCandidate] = []
@@ -339,6 +414,13 @@ def _enrich_plan_profile_photos(
     Mutates the plan in place. Only concrete URLs from scraper-produced
     ProfileCandidate objects are applied, so older payloads and LLM-only plans
     keep using the existing photo_query fallback.
+
+    "Already used" is scoped to ONE PAGE. The rule it enforces is that a grid
+    must not show the same face twice — a page-level concern. Applied across the
+    plan it did the opposite of what it was for: the committee roster claimed
+    all nine portraits, and each member's own page, rendered later, found none
+    left and fell back to a monogram. A person's portrait belongs on their card
+    AND on their page.
     """
     if profiles is None:
         profiles = _profile_pool_for(source)
@@ -349,12 +431,16 @@ def _enrich_plan_profile_photos(
     if not profiles:
         return
 
-    used_urls: set[str] = set()
     for page in plan.pages:
+        used_urls: set[str] = set()
         for block in page.blocks:
-            if block.kind != "team":
+            if block.kind not in ("team", "profile"):
                 continue
-            for member in block.members:
+            # A profile block is one person; a team block is a list of them.
+            # Both want the same thing: this person's real portrait, matched by
+            # name, never a stock face.
+            people = [block] if block.kind == "profile" else block.members
+            for member in people:
                 scored = sorted(
                     (
                         (_profile_match_score(member.name, profile), profile)
@@ -373,6 +459,37 @@ def _enrich_plan_profile_photos(
                     used_urls.add(matched.photo_url)
 
 
+def _detail_page_href(profile_url: str | None) -> str | None:
+    """A roster card's link as a site-relative href, or None.
+
+    The source's path IS the generated slug (page_inference keys scaffolds off
+    ``url_path``), so the source URL's path is the link — no re-derivation, no
+    second spelling of a name the site already spelled.
+    """
+    if not profile_url:
+        return None
+    slug = urlparse(profile_url).path.strip("/").lower()
+    return f"/{slug}" if slug else None
+
+
+def _prune_dead_profile_links(plan: SitePlan) -> None:
+    """Drop member links to pages this site doesn't have.
+
+    The roster is the source's, the page list is the user's: they pick which
+    pages to generate, and a card pointing at a member page they left out would
+    be a 404 in the middle of the team grid. The card still renders — it just
+    stops being a link.
+    """
+    known = {f"/{page.slug}" for page in plan.pages}
+    for page in plan.pages:
+        for block in page.blocks:
+            if getattr(block, "kind", None) != "team":
+                continue
+            for member in block.members:
+                if member.profile_href and member.profile_href not in known:
+                    member.profile_href = None
+
+
 def _roster_members(accepted: list[ProfileCandidate]) -> list[TeamMember]:
     """Build TeamMembers from vetted profiles, keeping only what each card
     can vouch for.
@@ -387,6 +504,11 @@ def _roster_members(accepted: list[ProfileCandidate]) -> list[TeamMember]:
     work — and this is the up-to-24-member path.
     """
     names = tuple(p.name for p in accepted)
+    # Only a ROSTER indexes people's pages. The lone card on a person's own page
+    # links BACK to the roster (MMTA's members carry a "Back" arrow), and reading
+    # that as this person's page would point their card at the committee grid.
+    # Same threshold, same reasoning as page_inference.ROSTER_MIN_PROFILES.
+    links_to_details = len(accepted) >= 2
     members: list[TeamMember] = []
     for profile in accepted:
         others = tuple(n for n in names if n != profile.name)
@@ -399,6 +521,9 @@ def _roster_members(accepted: list[ProfileCandidate]) -> list[TeamMember]:
                 photo_url=profile.photo_url,
                 photo_alt=profile.photo_alt or profile.name,
                 photo_query=None,
+                profile_href=(
+                    _detail_page_href(profile.profile_url) if links_to_details else None
+                ),
             )
         )
     return members
@@ -474,21 +599,23 @@ def _rostered_names(source: SourceContent) -> set[str]:
     return names
 
 
-def _profile_page_member(
+def _profile_page_block(
     page_source: SourceContent | None,
     annotations: dict[str, VisionAnnotation] | None = None,
     rostered_names: set[str] | None = None,
-) -> TeamMember | None:
-    """The one person a detail page is about, when the page is their profile.
+) -> ProfileBlock | None:
+    """The one person a detail page is about, as that page's profile block.
 
     Three things have to agree: the page carries exactly one vetted profile
-    card, its own title or headings name that person, and a roster elsewhere on
-    the site lists them. The first two are read page-scoped — the site-wide
+    card, the page names that person as its own subject, and a roster elsewhere
+    on the site lists them. The first two are read page-scoped — the site-wide
     ``_profile_pool_for`` deliberately drops a person whose name titles their
     own page — and the third is what makes the pairing structural.
 
-    The bio is dropped: the page's own about section already narrates it, and
-    both come from the same source text.
+    The bio stays. It used to be dropped because a separate about section
+    narrated it; a profile page's recipe has no about section now
+    (``page_inference._PROFILE_PAGE_SECTIONS``), so this block carries the
+    story next to the face — which is where a profile page tells it.
     """
     if page_source is None:
         return None
@@ -497,11 +624,43 @@ def _profile_page_member(
         return None
     member = roster[0]
     normalized = _normalized_person_name(member.name)
-    if normalized not in _page_name_labels(page_source):
+    if not _page_is_about(page_source, member.name):
         return None
     if normalized not in (rostered_names or set()):
         return None
-    return member.model_copy(update={"bio": None, "description": None})
+
+    candidate = next(
+        (
+            p
+            for p in page_source.profile_candidates or []
+            if _normalized_person_name(p.name) == normalized
+        ),
+        None,
+    )
+    return ProfileBlock(
+        name=member.name,
+        role=member.role or "",
+        bio=member.bio or member.description,
+        photo_url=member.photo_url,
+        photo_alt=member.photo_alt or member.name,
+        contacts=_profile_contacts(candidate),
+    )
+
+
+def _profile_contacts(candidate: ProfileCandidate | None) -> list[ProfileContact]:
+    """The person's own contact affordances, as their card states them."""
+    if candidate is None:
+        return []
+    contacts: list[ProfileContact] = []
+    if candidate.email:
+        contacts.append(ProfileContact(label=candidate.email, href=f"mailto:{candidate.email}"))
+    if candidate.phone:
+        contacts.append(ProfileContact(label=candidate.phone, href=f"tel:{candidate.phone}"))
+    for label, href in candidate.social_links:
+        if len(contacts) >= 4:  # ProfileBlock.contacts cap
+            break
+        contacts.append(ProfileContact(label=label, href=href))
+    return contacts
 
 
 def _ensure_scraped_team_blocks(
@@ -580,20 +739,51 @@ def _ensure_scraped_team_blocks(
             # Page-scoped roster came up empty — fall through to the generic path.
 
         # A detail page carrying exactly one profile card is that person's own
-        # page, and a one-member team block is the only slot on the site allowed
-        # to render a scraped portrait (image_match.rank_candidates). Placed
-        # right under the hero, above the about section that tells their story.
+        # page, and it gets a profile block — portrait, name, role, story,
+        # contact — right under the hero. The LLM is asked for one too (the
+        # scaffold requests `profile`); this is the fallback for when it omits
+        # the block or renames the person out of recognition.
         # Home is exempt: its rhythm is designed, not inferred from one card.
+        profile_indexes = [
+            idx for idx, block in enumerate(page.blocks)
+            if getattr(block, "kind", None) == "profile"
+        ]
         if not team_indexes and page.page_type != "home":
-            member = _profile_page_member(
+            profile = _profile_page_block(
                 sources_by_slug.get(page.slug), annotations, rostered_names
             )
-            if member is not None:
+            if profile is not None and not profile_indexes:
                 page.blocks.insert(
                     1 if page.blocks and getattr(page.blocks[0], "kind", None) == "hero" else 0,
-                    TeamBlock(heading="Profile", subheading=None, members=[member]),
+                    profile,
                 )
-                logger.info("Profile page: attached %s to /%s", member.name, page.slug)
+                logger.info("Profile page: attached %s to /%s", profile.name, page.slug)
+                continue
+            if profile is not None and (profile.photo_url or profile.contacts):
+                # The LLM wrote the block itself; the page's own scraped card is
+                # the authority on this person's portrait AND contacts, so each
+                # backfills independently — `_enrich_plan_profile_photos` (run
+                # just before this) already fills photo_url on most matched
+                # profiles, and gating the contacts refill on a missing photo
+                # left it almost never firing.
+                for idx in profile_indexes:
+                    existing = page.blocks[idx]
+                    updates: dict[str, object] = {}
+                    if not existing.photo_url and profile.photo_url:
+                        updates["photo_url"] = profile.photo_url
+                        updates["photo_alt"] = profile.photo_alt
+                    if not existing.contacts and profile.contacts:
+                        updates["contacts"] = profile.contacts
+                    if not updates:
+                        continue
+                    page.blocks[idx] = existing.model_copy(update=updates)
+                    logger.info(
+                        "Profile page: refilled %s's %s on /%s",
+                        profile.name,
+                        "/".join(updates),
+                        page.slug,
+                    )
+            if profile_indexes:
                 continue
 
         if not scraped_members:
@@ -1086,6 +1276,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         directory_slugs=directory_slugs,
     )
     _drop_hollow_team_pages(plan)
+    # After the last pass that can remove a page, so a member's link is checked
+    # against the pages the site actually ships.
+    _prune_dead_profile_links(plan)
 
     # Resolve LLM-bound image refs (block.image_ref → block.image_url) against
     # the same per-page photo lists the planner prompt showed the model.
@@ -1185,6 +1378,7 @@ def _align_pages_to_scaffolds(
                 seo_title=f"{s.title} — {brand_name}",
                 seo_description=s.description or "",
                 parent_slug=s.parent_slug,
+                menu_hidden=s.menu_hidden,
             )
 
         # Force scaffold identity (including hierarchy + nav priority)
@@ -1196,6 +1390,7 @@ def _align_pages_to_scaffolds(
                 "parent_slug": s.parent_slug,
                 "nav_rank": s.nav_rank,
                 "from_source": s.from_source,
+                "menu_hidden": s.menu_hidden,
             }
         )
         # Enforce section structure (+ fact-grounding for fact-bearing kinds

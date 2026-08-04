@@ -212,6 +212,34 @@ _SOCIAL_DOMAINS: list[tuple[str, str]] = [
 _SOCIAL_SHARE_HINTS = ("/sharer", "/share", "/intent", "/plugins/", "shareArticle")
 
 
+def _social_link_for_href(href: str, base_url: str) -> NavLink | None:
+    """The social profile an anchor's href points at, if any.
+
+    Shared by the page-wide and card-scoped extractors below so the platform
+    list and share-link exclusions live in one place.
+    """
+    raw = href.strip()
+    if not raw or raw.lower().startswith(_SKIP_HREF_PREFIXES):
+        return None
+    try:
+        absolute = urljoin(base_url, raw)
+        parsed = urlparse(absolute)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path or "/"
+    if any(hint in absolute for hint in _SOCIAL_SHARE_HINTS):
+        return None
+    for domain, label in _SOCIAL_DOMAINS:
+        if host == domain or host.endswith(f".{domain}"):
+            if path in ("", "/") and domain not in ("wa.me", "t.me"):
+                return None  # bare platform homepage, not a profile
+            return NavLink(label=label, href=absolute)
+    return None
+
+
 def extract_social_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
     """Social profile links anywhere on the page — one per platform, max 6.
 
@@ -223,27 +251,29 @@ def extract_social_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
     for a in soup.find_all("a", href=True):
         if not isinstance(a, Tag):
             continue
-        raw = str(a.get("href") or "").strip()
-        if not raw or raw.lower().startswith(_SKIP_HREF_PREFIXES):
-            continue
-        try:
-            absolute = urljoin(base_url, raw)
-            parsed = urlparse(absolute)
-        except ValueError:
-            continue
-        if parsed.scheme not in ("http", "https"):
-            continue
-        host = parsed.netloc.lower().removeprefix("www.")
-        path = parsed.path or "/"
-        if any(hint in absolute for hint in _SOCIAL_SHARE_HINTS):
-            continue
-        for domain, label in _SOCIAL_DOMAINS:
-            if (host == domain or host.endswith(f".{domain}")) and label not in found:
-                if path in ("", "/") and domain not in ("wa.me", "t.me"):
-                    break  # bare platform homepage, not a profile
-                found[label] = NavLink(label=label, href=absolute)
-                break
+        link = _social_link_for_href(str(a.get("href") or ""), base_url)
+        if link is not None and link.label not in found:
+            found[link.label] = link
         if len(found) >= 6:
+            break
+    return list(found.values())
+
+
+def social_links_from_anchors(anchors: list[Tag], base_url: str) -> list[NavLink]:
+    """Social profile links among a specific set of anchors — one per platform, max 4.
+
+    Used to scope social-link discovery to one person's card/page rather than
+    the whole document, e.g. a team member's own LinkedIn/Instagram link.
+    """
+    found: dict[str, NavLink] = {}
+    for a in anchors:
+        href = a.get("href")
+        if not isinstance(href, str):
+            continue
+        link = _social_link_for_href(href, base_url)
+        if link is not None and link.label not in found:
+            found[link.label] = link
+        if len(found) >= 4:
             break
     return list(found.values())
 

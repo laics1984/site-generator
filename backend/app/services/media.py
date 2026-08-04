@@ -42,7 +42,7 @@ from app.services.image_match import (
     rank_candidates_with_llm_tiebreaker,
 )
 from app.services.image_sampling import sample_photo
-from app.services.text_detection import verify_one
+from app.services.text_detection import verify_one, verify_url
 from app.services.image_styling import (
     band_for_luminance,
     color_distance,
@@ -442,8 +442,13 @@ class ImageResolver:
                 )
 
         # 2. Pexels — locale-cued for people-likely slots, plain-query fallback.
+        # Full-bleed slots additionally screen out photographs OF text: the
+        # scraped pool is guarded by _reject_text_backgrounds above, and a hero
+        # that falls through to stock must not lose that guarantee.
         if query and self._pexels.configured:
-            photo = await self._search_pexels(query, orientation, intent)
+            photo = await self._search_pexels(
+                query, orientation, intent, screen_text=(slot_usage == "background")
+            )
             if photo is not None:
                 self._seen_pexels_urls.add(photo.url)
                 # avg_color comes free from Pexels → derive the band, no download.
@@ -522,10 +527,50 @@ class ImageResolver:
                 *(_warm(q, orientation, client) for (q, orientation) in wanted)
             )
 
+    async def _first_text_free(
+        self, ranked: list[PhotoResult], budget: int
+    ) -> tuple[PhotoResult | None, int]:
+        """Best candidate that isn't a photograph OF text. Returns (photo, budget).
+
+        `ranked` is already in preference order (relevance, or colour distance
+        for the abstract wash); this walks it and returns the first one the OCR
+        screen clears, so rejecting a candidate costs a step down the SAME
+        batch rather than another Pexels round-trip.
+
+        The budget bounds how much OCR one slot may spend, not whether the slot
+        gets an image: when it runs out we return the next candidate unscreened
+        — unjudged, but never one already known to carry text. None means every
+        candidate in the batch was screened and every one failed, which says the
+        query itself resolves to text ("sheet music", "conference slides"); the
+        caller walks on to the next chain query rather than settling.
+
+        A no-op costing nothing when `budget` is 0 — which is every non-
+        background slot, and every slot at all when the OCR pass is off.
+        """
+        for photo in ranked:
+            if budget <= 0:
+                return photo, budget
+            budget -= 1
+            if not await verify_url(photo.url):
+                return photo, budget
+            logger.info(
+                "Stock candidate %s is a photograph of text; skipping for background slot",
+                photo.url[:120],
+            )
+        return None, budget
+
     async def _search_pexels(
-        self, query: str, orientation: str, intent: str
+        self, query: str, orientation: str, intent: str, *, screen_text: bool = False
     ) -> PhotoResult | None:
         """Search Pexels, preferring a market-cued query for people-likely slots.
+
+        `screen_text` runs each batch's picks through the OCR screen and keeps
+        walking past any photograph OF text — set for full-bleed background
+        slots only, where our own headline is drawn over the result. It is not
+        a stock-quality problem: "sheet music" and "therapist speaking at a
+        conference" are on-topic queries that legitimately return printed
+        notation and slide walls. See text_detection.verify_url.
+
 
         Each chain query fetches a batch and we keep the result whose own alt
         text best matches the slot (Pexels' first hit is often a tangent).
@@ -556,6 +601,7 @@ class ImageResolver:
         chain = _stock_query_chain(
             query, intent, self._market_cue, self._industry_category, self._place_cue
         )
+        budget = settings.ocr_verify_budget if screen_text else 0
         for i, candidate in enumerate(chain):
             photos = await self._pexels.search_many(candidate, orientation=orientation)
             fresh = [p for p in photos if p.url not in self._seen_pexels_urls]
@@ -563,7 +609,16 @@ class ImageResolver:
                 continue
             upbeat = [p for p in fresh if not _has_negative_vibe(p.alt)]
             pool = upbeat or fresh
-            best = max(pool, key=lambda p: _stock_relevance(p, query, self._market_cue))
+            # sorted(reverse=True) is stable, so with screening off this picks
+            # exactly what max() picked, ties included.
+            ranked = sorted(
+                pool,
+                key=lambda p: _stock_relevance(p, query, self._market_cue),
+                reverse=True,
+            )
+            best, budget = await self._first_text_free(ranked, budget)
+            if best is None:
+                continue  # whole batch was text; try the next chain query
             relevant = (
                 _stock_relevance(best, query, self._market_cue) > 0
                 or _stock_relevance(best, candidate, self._market_cue) > 0
@@ -608,18 +663,24 @@ class ImageResolver:
         chain = _stock_query_chain(
             query, intent, self._market_cue, self._industry_category, self._place_cue
         )
+        # Every caller of this renders the result full-bleed with text over it,
+        # so the OCR screen applies unconditionally here — an "abstract" query
+        # returns typographic poster art often enough to matter.
+        budget = settings.ocr_verify_budget
         reuse_pool: list[PhotoResult] = []
         for candidate in chain:
             photos = await self._pexels.search_many(candidate, orientation=orientation)
             colored = [p for p in photos if p.avg_color]
             fresh = [p for p in colored if p.url not in self._seen_pexels_urls]
             if fresh:
-                best = min(
+                ranked = sorted(
                     fresh, key=lambda p: color_distance(p.avg_color, color_target_hex)
                 )
-                self._seen_pexels_urls.add(best.url)
-                lum, band = _band_fields(best.avg_color)
-                return replace(best, luminance=lum, band=band, is_abstract=True)
+                best, budget = await self._first_text_free(ranked, budget)
+                if best is not None:
+                    self._seen_pexels_urls.add(best.url)
+                    lum, band = _band_fields(best.avg_color)
+                    return replace(best, luminance=lum, band=band, is_abstract=True)
             reuse_pool.extend(colored)
 
         if reuse_pool:
@@ -627,9 +688,14 @@ class ImageResolver:
             # weren't, it would have been in `fresh` above and returned
             # already — so this is purely a dedup-exhaustion fallback, not a
             # first use. No need to re-add it to _seen_pexels_urls.
-            best = min(
+            # Screened like the fresh path: mostly free, since the verdict for
+            # anything already judged above is in the URL cache.
+            ranked = sorted(
                 reuse_pool, key=lambda p: color_distance(p.avg_color, color_target_hex)
             )
+            best, budget = await self._first_text_free(ranked, budget)
+            if best is None:
+                return None
             logger.debug(
                 "resolve_abstract_bg: fresh Pexels pool exhausted for '%s' (dedup) "
                 "— reusing already-seen colour-matched candidate %s",

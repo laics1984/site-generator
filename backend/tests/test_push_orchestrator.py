@@ -538,3 +538,68 @@ def test_wrap_request_passes_cms_api_error_through():
     with pytest.raises(CmsApiError) as exc_info:
         asyncio.run(_run())
     assert exc_info.value.status == 422  # not re-wrapped to 502
+
+
+# --- slug normalization ---------------------------------------------------------
+
+from app.models.builder_schema import PageNode  # noqa: E402
+from app.services.push_orchestrator import _normalize_site_slugs  # noqa: E402
+
+
+def _hierarchical_site() -> GeneratedSite:
+    """A migrated site whose slugs are the source's own paths."""
+    def _page(slug: str, *, parent: str | None = None, home: bool = False) -> GeneratedPage:
+        return GeneratedPage(
+            slug=slug,
+            title=slug or "Home",
+            is_homepage=home,
+            body_schema=BodySchema(elements=[]),
+            seo=PageSeo(),
+            parent_slug=parent,
+        )
+
+    return GeneratedSite(
+        site_name="MMTA",
+        pages=[
+            _page("", home=True),
+            _page("committee"),
+            _page("profile/ashley", parent="committee"),
+        ],
+        page_tree=[
+            PageNode(
+                slug="committee",
+                title="Committee",
+                children=[PageNode(slug="profile/ashley", title="Ashley Jinivon")],
+            )
+        ],
+    )
+
+
+def test_greenfield_push_keeps_the_source_url():
+    # The whole point of the migration: mmta.org.my/profile/ashley still
+    # resolves after the switchover, so its search ranking survives.
+    site = _hierarchical_site()
+
+    _normalize_site_slugs(site, keep_paths=True)
+
+    assert [p.slug for p in site.pages] == ["", "committee", "profile/ashley"]
+    assert site.pages[2].parent_slug == "committee"
+    assert site.page_tree[0].children[0].slug == "profile/ashley"
+
+
+def test_repush_over_a_live_site_still_flattens():
+    # Renaming pages that are already published is the breakage this avoids.
+    site = _hierarchical_site()
+
+    _normalize_site_slugs(site, keep_paths=False)
+
+    assert [p.slug for p in site.pages] == ["", "committee", "profile-ashley"]
+
+
+def test_segments_are_still_sanitized_inside_a_kept_path():
+    site = _hierarchical_site()
+    site.pages[2].slug = "Profile/Kuek Ser Sheen Tse"
+
+    _normalize_site_slugs(site, keep_paths=True)
+
+    assert site.pages[2].slug == "profile/kuek-ser-sheen-tse"

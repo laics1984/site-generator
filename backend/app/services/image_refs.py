@@ -117,15 +117,18 @@ def bind_image_refs(
         images = promptable_images(source)
         if not images:
             continue
-        # Portraits already rendering as team-member photos on this page are
+        # Portraits already rendering as a person's photo on this page are
         # spoken for — a ref landing on one shows the same face twice (a
         # person's own profile page, where it's the only photo there is).
         page_used: set[str] = {
-            member.photo_url
+            person.photo_url
             for block in page.blocks
-            if getattr(block, "kind", None) == "team"
-            for member in block.members
-            if member.photo_url
+            if getattr(block, "kind", None) in ("team", "profile")
+            # A profile block IS the person; a team block lists them.
+            for person in (
+                [block] if getattr(block, "kind", None) == "profile" else block.members
+            )
+            if person.photo_url
         }
         for block in page.blocks:
             kind = getattr(block, "kind", "") or ""

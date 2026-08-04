@@ -38,7 +38,7 @@ _APPROVED_NONPROFIT_IDS = {
 }
 
 
-def _page(slug, page_type="landing", *, homepage=False):
+def _page(slug, page_type="landing", *, homepage=False, parent_slug=None, menu_hidden=False):
     return PagePlan(
         page_type=page_type,
         slug=slug,
@@ -47,6 +47,8 @@ def _page(slug, page_type="landing", *, homepage=False):
         blocks=[],
         seo_title=slug,
         seo_description=slug,
+        parent_slug=parent_slug,
+        menu_hidden=menu_hidden,
     )
 
 
@@ -232,6 +234,64 @@ class CentredByDefaultTest(unittest.TestCase):
             comps = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
         self.assertEqual(comps["home"].anchor, "left")
         self.assertGreater(len({c.anchor for c in comps.values()}), 1)
+
+
+class ProfilePageInheritsParentHeroTest(_LegacyRotationCase):
+    """A profile page reached from a roster's own link (``menu_hidden`` +
+    ``parent_slug``) reads as a continuation of that roster page, not a new
+    place — it must share the roster's exact directive/composition, not draw
+    an independent rotation pick."""
+
+    def _pages(self):
+        return [
+            _page("home", "home", homepage=True),
+            _page("team", "team"),  # nonprofit by_page_type -> _EDITORIAL
+            _page("team/ashley", "landing", parent_slug="team", menu_hidden=True),
+            _page("team/dana", "landing", parent_slug="team", menu_hidden=True),
+            # Same parent_slug, but NOT reached via the roster's link — must
+            # keep its own explicit page-type directive, not inherit team's.
+            _page("team/contact", "contact", parent_slug="team", menu_hidden=False),
+        ]
+
+    def _directives(self):
+        return plan_site_heroes(
+            self._pages(), mood="friendly", industry="nonprofit",
+            has_source_background=False, seed="Hope Foundation",
+        )
+
+    def test_profile_pages_copy_the_parent_roster_directive(self):
+        directives = self._directives()
+        self.assertEqual(directives["team/ashley"], directives["team"])
+        self.assertEqual(directives["team/dana"], directives["team"])
+
+    def test_a_menu_visible_sub_page_keeps_its_own_directive(self):
+        directives = self._directives()
+        self.assertEqual(directives["team/contact"].template_id, "hero-centered-minimal")
+        self.assertNotEqual(directives["team/contact"], directives["team"])
+
+    def test_dangling_parent_slug_falls_back_safely(self):
+        pages = self._pages() + [
+            _page("orphan", "landing", parent_slug="nonexistent", menu_hidden=True)
+        ]
+        directives = plan_site_heroes(
+            pages, mood="friendly", industry="nonprofit",
+            has_source_background=False, seed="Hope Foundation",
+        )
+        self.assertIn("orphan", directives)
+
+    def test_composition_also_inherits(self):
+        with mock.patch.object(settings, "hero_anchored_copy", True):
+            comps = plan_site_compositions(self._pages(), seed="Hope Foundation")
+        self.assertEqual(comps["team/ashley"], comps["team"])
+        self.assertEqual(comps["team/dana"], comps["team"])
+
+    def test_composition_dangling_parent_slug_falls_back_safely(self):
+        pages = self._pages() + [
+            _page("orphan", "landing", parent_slug="nonexistent", menu_hidden=True)
+        ]
+        with mock.patch.object(settings, "hero_anchored_copy", True):
+            comps = plan_site_compositions(pages, seed="Hope Foundation")
+        self.assertIn("orphan", comps)
 
 
 class HeroCompositionTest(unittest.TestCase):

@@ -818,3 +818,93 @@ class PhotoSectionWeavingTest(unittest.TestCase):
         prevention = next(s for s in scaffolds if s.slug == "prevention")
 
         self.assertNotEqual(prevention.page_type, "events")
+
+
+class RosterLinkedDetailPageTest(unittest.TestCase):
+    """Where a detail page belongs, and whether a parent gets invented.
+
+    MMTA has nine /profile/<name> pages and no /profile page. The URL suggests a
+    section that doesn't exist; the committee grid's own links say where those
+    pages actually belong.
+    """
+
+    def _source(self, *, roster_links: bool, roster_path="/committee"):
+        members = [("Ashley Jinivon", "ashley"), ("Sandra Cheah", "sandra")]
+        roster = SourceContent(
+            source_kind="url",
+            source_ref=f"https://example.my{roster_path}",
+            title="The Committee",
+            raw_text="The committee members.",
+            url_path=roster_path,
+            profile_candidates=[
+                ProfileCandidate(
+                    name=name,
+                    role="Committee Member",
+                    photo_url=f"https://example.my/photos/{slug}.jpg",
+                    profile_url=(
+                        f"https://example.my/profile/{slug}" if roster_links else None
+                    ),
+                    confidence=0.9,
+                )
+                for name, slug in members
+            ],
+        )
+        details = [
+            SourceContent(
+                source_kind="url",
+                source_ref=f"https://example.my/profile/{slug}",
+                title="About Us",
+                headings=["The Committee"],
+                raw_text=f"{name} is a music therapist with years of experience.",
+                url_path=f"/profile/{slug}",
+                profile_candidates=[
+                    ProfileCandidate(
+                        name=name,
+                        role="Committee Member",
+                        photo_url=f"https://example.my/photos/{slug}.jpg",
+                        # A member page's own card links BACK to the roster.
+                        profile_url=f"https://example.my{roster_path}",
+                        confidence=0.9,
+                    )
+                ],
+            )
+            for name, slug in members
+        ]
+        return SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            title="MMTA",
+            raw_text="Home page text.",
+            discovered_pages=[roster, *details],
+        )
+
+    def test_roster_link_replaces_the_invented_parent(self):
+        scaffolds = infer_page_scaffolds(self._source(roster_links=True), industry="other")
+        slugs = {s.slug for s in scaffolds}
+
+        self.assertNotIn("profile", slugs)
+        for slug in ("profile/ashley", "profile/sandra"):
+            page = next(s for s in scaffolds if s.slug == slug)
+            # The slug is the source's own path, untouched.
+            self.assertEqual(page.parent_slug, "committee")
+            self.assertTrue(page.menu_hidden)
+
+    def test_the_roster_itself_is_not_filed_under_a_member(self):
+        # Every member page links back to /committee. Read naively that would
+        # make the committee page a child of whichever member came first.
+        scaffolds = infer_page_scaffolds(self._source(roster_links=True), industry="other")
+
+        committee = next(s for s in scaffolds if s.slug == "committee")
+        self.assertIsNone(committee.parent_slug)
+        self.assertFalse(committee.menu_hidden)
+
+    def test_without_a_linking_roster_the_parent_is_still_synthesized(self):
+        # Children nothing links to still need a home — this is what keeps
+        # /services/web-design working on a site with no /services page.
+        scaffolds = infer_page_scaffolds(self._source(roster_links=False), industry="other")
+        slugs = {s.slug for s in scaffolds}
+
+        self.assertIn("profile", slugs)
+        page = next(s for s in scaffolds if s.slug == "profile/ashley")
+        self.assertEqual(page.parent_slug, "profile")
+        self.assertFalse(page.menu_hidden)

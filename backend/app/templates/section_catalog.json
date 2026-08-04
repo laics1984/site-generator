@@ -5205,6 +5205,11 @@
               "id": "bio",
               "kind": "text",
               "optional": true
+            },
+            {
+              "id": "profile_link",
+              "kind": "link",
+              "optional": true
             }
           ]
         }
@@ -5221,7 +5226,11 @@
             },
             "name": "Alicia Tan",
             "role": "Founder",
-            "bio": "Leads strategy and partnerships."
+            "bio": "Leads strategy and partnerships.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
           },
           {
             "photo": {
@@ -5230,7 +5239,11 @@
             },
             "name": "Marcus Ong",
             "role": "Design",
-            "bio": "Owns the design system and templates."
+            "bio": "Owns the design system and templates.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
           },
           {
             "photo": {
@@ -5239,7 +5252,11 @@
             },
             "name": "Nadia Rahman",
             "role": "Engineering",
-            "bio": "Builds the rendering pipeline."
+            "bio": "Builds the rendering pipeline.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
           }
         ]
       },
@@ -5554,6 +5571,1073 @@
                       "WebkitBoxOrient": "vertical",
                       "overflow": "hidden"
                     }
+                  },
+                  {
+                    "name": "Member Profile Link",
+                    "type": "link",
+                    "$slot": "profile_link",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "14px",
+                      "lineHeight": "1.4",
+                      "fontWeight": 700,
+                      "marginTop": "12px",
+                      "textDecoration": "none"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "profile-portrait-split",
+      "sectionType": "profile",
+      "layoutVariant": "split",
+      "styleVariant": "editorial",
+      "label": "Profile - Portrait Split",
+      "description": "One person's page: a large portrait beside their name, role, credentials, story and contact links. The default for a committee or practitioner detail page.",
+      "tags": [
+        "Profile",
+        "People",
+        "Bio"
+      ],
+      "thumbnail": "profile-portrait-split",
+      "slots": [
+        {
+          "id": "photo",
+          "kind": "image"
+        },
+        {
+          "id": "role",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "name",
+          "kind": "text"
+        },
+        {
+          "id": "credentials",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "bio",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contacts",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "cta",
+              "kind": "link"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "photo": {
+          "src": "",
+          "alt": "Ashley Jinivon"
+        },
+        "role": "Treasurer",
+        "name": "Ashley Jinivon",
+        "credentials": "MT-BC · Saint Mary-of-the-Woods College",
+        "bio": "Ashley completed her internship at the Mount Sinai Hospital Louis Armstrong Department of Music Therapy, where she earned a certificate in the Rhythm, Breath and Lullaby method for the neonatal intensive care unit.",
+        "contacts": [
+          {
+            "cta": {
+              "innerText": "Email Ashley",
+              "href": "#"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Profile - Portrait Split",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "36px"
+          }
+        },
+        "content": [
+          {
+            "name": "Profile Columns",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "56px",
+              "minHeight": "180px",
+              "alignItems": "center"
+            },
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.12
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "28px",
+                "minHeight": "0px"
+              },
+              "tablet": {
+                "gap": "36px",
+                "minHeight": "0px"
+              }
+            },
+            "content": [
+              {
+                "name": "Portrait Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "minHeight": "160px",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "justifyContent": "center"
+                },
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "responsiveStyles": {
+                  "mobile": {
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "minHeight": "0px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Portrait",
+                    "type": "image",
+                    "$slot": "photo",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "height": "auto",
+                      "backgroundColor": "rgba(148,163,184,0.12)",
+                      "aspectRatio": "4 / 5",
+                      "borderRadius": "28px",
+                      "maxWidth": "360px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "aspectRatio": "1 / 1",
+                        "maxWidth": "100%"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "Identity Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "14px",
+                  "justifyContent": "center"
+                },
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "content": [
+                  {
+                    "name": "Name",
+                    "type": "text",
+                    "$slot": "name",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "40px",
+                      "lineHeight": "1.12",
+                      "fontWeight": 800,
+                      "letterSpacing": "-0.02em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "28px"
+                      },
+                      "tablet": {
+                        "fontSize": "34px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Role",
+                    "type": "text",
+                    "$slot": "role",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "16px",
+                      "lineHeight": "1.45",
+                      "fontWeight": 700,
+                      "letterSpacing": "0.01em"
+                    }
+                  },
+                  {
+                    "name": "Credentials",
+                    "type": "text",
+                    "$slot": "credentials",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.72)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    }
+                  },
+                  {
+                    "name": "Bio",
+                    "type": "text",
+                    "$slot": "bio",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.68)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "17px",
+                      "lineHeight": "1.75",
+                      "whiteSpace": "pre-line",
+                      "marginTop": "6px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "15px",
+                        "lineHeight": "1.65"
+                      },
+                      "tablet": {
+                        "fontSize": "16px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Contact Links",
+                    "type": "container",
+                    "$repeat": "contacts",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "display": "flex",
+                      "flexDirection": "row",
+                      "flexWrap": "wrap",
+                      "alignItems": "center",
+                      "justifyContent": "flex-start",
+                      "gap": "20px",
+                      "marginTop": "8px"
+                    },
+                    "content": [
+                      {
+                        "name": "Contact Cell",
+                        "type": "container",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "auto"
+                        },
+                        "classes": "builder-column-cell min-w-0",
+                        "content": [
+                          {
+                            "name": "Contact",
+                            "type": "link",
+                            "$slot": "cta",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "left",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-primary, #2563eb)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "width": "auto",
+                              "fontSize": "14px",
+                              "lineHeight": "1.4",
+                              "fontWeight": 700,
+                              "textDecoration": "none"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "profile-centered",
+      "sectionType": "profile",
+      "layoutVariant": "centered",
+      "styleVariant": "formal",
+      "label": "Profile - Centered",
+      "description": "One person, centred under a circular portrait. The formal, institutional reading of a committee or board member's page; the circle also crops away a low-resolution photo's edges.",
+      "tags": [
+        "Profile",
+        "People",
+        "Formal"
+      ],
+      "thumbnail": "profile-centered",
+      "moods": [
+        "classic",
+        "elegant",
+        "trustworthy",
+        "calm"
+      ],
+      "slots": [
+        {
+          "id": "photo",
+          "kind": "image"
+        },
+        {
+          "id": "role",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "name",
+          "kind": "text"
+        },
+        {
+          "id": "credentials",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "bio",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contacts",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "cta",
+              "kind": "link"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "photo": {
+          "src": "",
+          "alt": "Ashley Jinivon"
+        },
+        "role": "Treasurer",
+        "name": "Ashley Jinivon",
+        "credentials": "MT-BC · Saint Mary-of-the-Woods College",
+        "bio": "Ashley completed her internship at the Mount Sinai Hospital Louis Armstrong Department of Music Therapy, where she earned a certificate in the Rhythm, Breath and Lullaby method for the neonatal intensive care unit.",
+        "contacts": [
+          {
+            "cta": {
+              "innerText": "Email Ashley",
+              "href": "#"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Profile - Centered",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "36px"
+          }
+        },
+        "content": [
+          {
+            "name": "Profile Stack",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "16px",
+              "maxWidth": "680px",
+              "marginLeft": "auto",
+              "marginRight": "auto"
+            },
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.1
+            },
+            "content": [
+              {
+                "name": "Portrait",
+                "type": "image",
+                "$slot": "photo",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "200px",
+                  "height": "auto",
+                  "backgroundColor": "rgba(148,163,184,0.12)",
+                  "aspectRatio": "1 / 1",
+                  "borderRadius": "9999px",
+                  "maxWidth": "200px",
+                  "alignSelf": "center",
+                  "border": "4px solid rgba(255,255,255,0.96)",
+                  "boxShadow": "0 18px 44px rgba(15,23,42,0.18)"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "width": "148px",
+                    "maxWidth": "148px"
+                  }
+                }
+              },
+              {
+                "name": "Name",
+                "type": "text",
+                "$slot": "name",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.12",
+                  "fontWeight": 800,
+                  "letterSpacing": "-0.02em"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Role",
+                "type": "text",
+                "$slot": "role",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "16px",
+                  "lineHeight": "1.45",
+                  "fontWeight": 700,
+                  "letterSpacing": "0.01em"
+                }
+              },
+              {
+                "name": "Credentials",
+                "type": "text",
+                "$slot": "credentials",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.72)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "15px",
+                  "lineHeight": "1.5",
+                  "fontWeight": 600
+                }
+              },
+              {
+                "name": "Bio",
+                "type": "text",
+                "$slot": "bio",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.75",
+                  "whiteSpace": "pre-line",
+                  "marginTop": "6px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px",
+                    "lineHeight": "1.65"
+                  },
+                  "tablet": {
+                    "fontSize": "16px"
+                  }
+                }
+              },
+              {
+                "name": "Contact Links",
+                "type": "container",
+                "$repeat": "contacts",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "alignItems": "center",
+                  "justifyContent": "center",
+                  "gap": "20px",
+                  "marginTop": "8px"
+                },
+                "content": [
+                  {
+                    "name": "Contact Cell",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "auto"
+                    },
+                    "classes": "builder-column-cell min-w-0",
+                    "content": [
+                      {
+                        "name": "Contact",
+                        "type": "link",
+                        "$slot": "cta",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-primary, #2563eb)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "auto",
+                          "fontSize": "14px",
+                          "lineHeight": "1.4",
+                          "fontWeight": 700,
+                          "textDecoration": "none"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "profile-banner",
+      "sectionType": "profile",
+      "layoutVariant": "banner",
+      "styleVariant": "bold",
+      "label": "Profile - Banner",
+      "description": "A brand-coloured band with the portrait overlapping its lower edge, name and story beneath. The modern founder or lead practitioner look — carries a page whose bio is short.",
+      "tags": [
+        "Profile",
+        "People",
+        "Bold"
+      ],
+      "thumbnail": "profile-banner",
+      "moods": [
+        "bold",
+        "modern",
+        "playful",
+        "vibrant"
+      ],
+      "slots": [
+        {
+          "id": "photo",
+          "kind": "image"
+        },
+        {
+          "id": "role",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "name",
+          "kind": "text"
+        },
+        {
+          "id": "credentials",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "bio",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contacts",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "cta",
+              "kind": "link"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "photo": {
+          "src": "",
+          "alt": "Ashley Jinivon"
+        },
+        "role": "Treasurer",
+        "name": "Ashley Jinivon",
+        "credentials": "MT-BC · Saint Mary-of-the-Woods College",
+        "bio": "Ashley completed her internship at the Mount Sinai Hospital Louis Armstrong Department of Music Therapy, where she earned a certificate in the Rhythm, Breath and Lullaby method for the neonatal intensive care unit.",
+        "contacts": [
+          {
+            "cta": {
+              "innerText": "Email Ashley",
+              "href": "#"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Profile - Banner",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "0px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "36px"
+          }
+        },
+        "content": [
+          {
+            "name": "Brand Band",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "height": "200px",
+              "borderRadius": "28px",
+              "backgroundImage": "linear-gradient(135deg, var(--builder-color-secondary, #0f172a) 0%, var(--builder-color-primary, #2563eb) 100%)"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "height": "132px"
+              },
+              "tablet": {
+                "height": "168px"
+              }
+            },
+            "content": []
+          },
+          {
+            "name": "Profile Stack",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "16px",
+              "maxWidth": "720px",
+              "marginLeft": "auto",
+              "marginRight": "auto"
+            },
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.1
+            },
+            "content": [
+              {
+                "name": "Portrait",
+                "type": "image",
+                "$slot": "photo",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "180px",
+                  "height": "auto",
+                  "backgroundColor": "rgba(148,163,184,0.12)",
+                  "aspectRatio": "1 / 1",
+                  "borderRadius": "9999px",
+                  "maxWidth": "180px",
+                  "alignSelf": "center",
+                  "marginTop": "-114px",
+                  "border": "6px solid var(--builder-page-background, #ffffff)",
+                  "boxShadow": "0 18px 44px rgba(15,23,42,0.22)"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "width": "124px",
+                    "maxWidth": "124px",
+                    "marginTop": "-78px"
+                  },
+                  "tablet": {
+                    "width": "156px",
+                    "maxWidth": "156px",
+                    "marginTop": "-98px"
+                  }
+                }
+              },
+              {
+                "name": "Name",
+                "type": "text",
+                "$slot": "name",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.12",
+                  "fontWeight": 800,
+                  "letterSpacing": "-0.02em"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Role",
+                "type": "text",
+                "$slot": "role",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "16px",
+                  "lineHeight": "1.45",
+                  "fontWeight": 700,
+                  "letterSpacing": "0.01em"
+                }
+              },
+              {
+                "name": "Credentials",
+                "type": "text",
+                "$slot": "credentials",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.72)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "15px",
+                  "lineHeight": "1.5",
+                  "fontWeight": 600
+                }
+              },
+              {
+                "name": "Bio",
+                "type": "text",
+                "$slot": "bio",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.75",
+                  "whiteSpace": "pre-line",
+                  "marginTop": "6px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px",
+                    "lineHeight": "1.65"
+                  },
+                  "tablet": {
+                    "fontSize": "16px"
+                  }
+                }
+              },
+              {
+                "name": "Contact Links",
+                "type": "container",
+                "$repeat": "contacts",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "alignItems": "center",
+                  "justifyContent": "center",
+                  "gap": "20px",
+                  "marginTop": "8px"
+                },
+                "content": [
+                  {
+                    "name": "Contact Cell",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "auto"
+                    },
+                    "classes": "builder-column-cell min-w-0",
+                    "content": [
+                      {
+                        "name": "Contact",
+                        "type": "link",
+                        "$slot": "cta",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-primary, #2563eb)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "auto",
+                          "fontSize": "14px",
+                          "lineHeight": "1.4",
+                          "fontWeight": 700,
+                          "textDecoration": "none"
+                        }
+                      }
+                    ]
                   }
                 ]
               }
@@ -15777,7 +16861,8 @@
                       "flexDirection": "row",
                       "alignItems": "center",
                       "justifyContent": "flex-end",
-                      "flex": "1 1 0%"
+                      "flex": "1 1 0%",
+                      "gap": "24px"
                     },
                     "content": [
                       {

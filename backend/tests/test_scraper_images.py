@@ -856,3 +856,273 @@ class ProfileCardScopingTest(unittest.TestCase):
         self.assertEqual(profiles[0].name, "Aisha Rahman")
         self.assertEqual(profiles[0].role, "Music Therapist")
         self.assertEqual(profiles[0].bio, "Leads the paediatric programme.")
+
+
+class LeadingPersonNameTest(unittest.TestCase):
+    """Who the page's BODY says it is about, read off the DOM hierarchy.
+
+    A detail page on a template-driven CMS gives its <title> and its h1 to the
+    section, not the person — the name is a designated element further down.
+    """
+
+    def test_name_below_a_banner_heading_is_the_subject(self):
+        # MMTA's committee pages verbatim: the h1 is the section banner and the
+        # person is named in a div the markup labels as the name.
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <section class="title_div"><div><h1 class="h_ttl">The Committee</h1></div></section>
+              <section>
+                <div class="container"><p>The committee members consist of
+                   clinicians with diverse backgrounds.</p></div>
+                <div class="committee_profile_box row">
+                  <div class="col-md-3">
+                    <figure class="circle"><img src="/assets/profilephoto/ashley2.jpg" /></figure>
+                    <div class="desc_dv">
+                      <div class="name">Ashley Jinivon</div>
+                      <div class="designation">Treasurer</div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </body></html>
+            """,
+            "lxml",
+        )
+
+        self.assertEqual(scraper._leading_person_name(soup), "Ashley Jinivon")
+
+    def test_heading_named_subject_still_wins_when_it_comes_first(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <article>
+                <h1>Aisha Rahman</h1>
+                <div class="name">Marcus Ong</div>
+              </article>
+            </body></html>
+            """,
+            "lxml",
+        )
+
+        self.assertEqual(scraper._leading_person_name(soup), "Aisha Rahman")
+
+    def test_names_in_chrome_are_not_the_subject(self):
+        # A footer byline and a nav account label name someone on every page of
+        # the site — neither says anything about this one.
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <nav><span class="name">Sandra Cheah</span></nav>
+              <header><h2>Aisha Rahman</h2></header>
+              <section><h1>Our Services</h1><p>What we do.</p></section>
+              <footer><div class="name">Marcus Ong</div></footer>
+            </body></html>
+            """,
+            "lxml",
+        )
+
+        self.assertIsNone(scraper._leading_person_name(soup))
+
+    def test_a_wrapper_holding_the_whole_card_does_not_swallow_the_name(self):
+        # The outer element is examined first and reads as a paragraph, not a
+        # name; the walk continues inward rather than giving up.
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <div class="member-name-card">
+                <div class="name">Aisha Rahman</div>
+                <p>Aisha leads the paediatric programme and has worked across
+                   three hospitals in Penang since 2009.</p>
+              </div>
+            </body></html>
+            """,
+            "lxml",
+        )
+
+        self.assertEqual(scraper._leading_person_name(soup), "Aisha Rahman")
+
+    def test_page_naming_no_one_has_no_subject(self):
+        soup = BeautifulSoup(
+            """
+            <html><body>
+              <section><h1>Membership</h1><p>Join the association.</p></section>
+            </body></html>
+            """,
+            "lxml",
+        )
+
+        self.assertIsNone(scraper._leading_person_name(soup))
+
+
+class ProfileCardLinkTest(unittest.TestCase):
+    """The page a roster card points at — the source's own index of who has a
+    profile page, and the evidence both the page hierarchy and the rendered
+    card's link are built from."""
+
+    ROSTER = """
+    <html><body>
+      <section class="committee_profile_dv">
+        <div class="committee_box">
+          <figure class="circle"><img src="/assets/profilephoto/ashley2.jpg" /></figure>
+          <div class="desc_dv">
+            <div class="name">Ashley Jinivon</div>
+            <div class="designation">Treasurer</div>
+          </div>
+          <div class="badge_dv">
+            <a href="https://example.my/profile/ashley" class="badge">badge</a>
+            <a href="mailto: ashley@example.my" class="email">email</a>
+          </div>
+        </div>
+      </section>
+    </body></html>
+    """
+
+    def _one(self, html, url="https://example.my/committee"):
+        profiles = scraper._extract_profile_candidates(BeautifulSoup(html, "lxml"), url)
+        self.assertEqual(len(profiles), 1)
+        return profiles[0]
+
+    def test_card_link_is_captured_and_mail_is_not(self):
+        profile = self._one(self.ROSTER)
+
+        self.assertEqual(profile.name, "Ashley Jinivon")
+        self.assertEqual(profile.profile_url, "https://example.my/profile/ashley")
+
+    def test_card_with_only_an_email_links_nowhere(self):
+        # A directory whose people have no pages of their own — the cards must
+        # not become links to something.
+        html = self.ROSTER.replace(
+            '<a href="https://example.my/profile/ashley" class="badge">badge</a>', ""
+        )
+
+        self.assertIsNone(self._one(html).profile_url)
+
+    def test_a_portrait_wrapped_in_its_link_is_read(self):
+        html = """
+        <html><body>
+          <section class="team">
+            <article class="team-member">
+              <a href="/team/aisha"><img src="/portraits/aisha.jpg" alt="Aisha Rahman" /></a>
+              <h3>Aisha Rahman</h3>
+            </article>
+          </section>
+        </body></html>
+        """
+
+        self.assertEqual(
+            self._one(html, "https://example.my/team").profile_url,
+            "https://example.my/team/aisha",
+        )
+
+    def test_a_link_back_to_this_page_is_not_a_detail_link(self):
+        # The "Back" control on a member's own page points at the roster; it
+        # says nothing about where this person's page is.
+        html = self.ROSTER.replace(
+            'href="https://example.my/profile/ashley"', 'href="/committee"'
+        )
+
+        self.assertIsNone(self._one(html).profile_url)
+
+    def test_offsite_and_asset_links_are_not_pages(self):
+        for href in ("https://elsewhere.example/ashley", "/files/ashley-cv.pdf"):
+            with self.subTest(href=href):
+                html = self.ROSTER.replace(
+                    'href="https://example.my/profile/ashley"', f'href="{href}"'
+                )
+
+                self.assertIsNone(self._one(html).profile_url)
+
+
+class ProfileCardContactsTest(unittest.TestCase):
+    """A card's own email, phone and social links — not just its detail link."""
+
+    def test_card_email_and_social_links_are_captured(self):
+        html = """
+        <html><body>
+          <section class="committee_profile_dv">
+            <div class="committee_box">
+              <figure class="circle"><img src="/assets/profilephoto/ashley2.jpg" /></figure>
+              <div class="desc_dv">
+                <div class="name">Ashley Jinivon</div>
+                <div class="designation">Treasurer</div>
+              </div>
+              <div class="badge_dv">
+                <a href="mailto: ashley@example.my" class="email">email</a>
+                <a href="https://www.linkedin.com/in/ashleyj">LinkedIn</a>
+                <a href="https://instagram.com/ashleyj">Instagram</a>
+              </div>
+            </div>
+          </section>
+        </body></html>
+        """
+        profiles = scraper._extract_profile_candidates(
+            BeautifulSoup(html, "lxml"), "https://example.my/committee"
+        )
+
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile.email, "ashley@example.my")
+        self.assertEqual(
+            profile.social_links,
+            [
+                ("LinkedIn", "https://www.linkedin.com/in/ashleyj"),
+                ("Instagram", "https://instagram.com/ashleyj"),
+            ],
+        )
+
+    def test_social_share_and_homepage_links_are_not_a_profile(self):
+        html = """
+        <html><body>
+          <section class="committee_profile_dv">
+            <div class="committee_box">
+              <figure class="circle"><img src="/assets/profilephoto/ashley2.jpg" /></figure>
+              <div class="desc_dv">
+                <div class="name">Ashley Jinivon</div>
+                <div class="designation">Treasurer</div>
+              </div>
+              <div class="badge_dv">
+                <a href="https://facebook.com/sharer/sharer.php?u=x">Share</a>
+                <a href="https://twitter.com/">Twitter home</a>
+              </div>
+            </div>
+          </section>
+        </body></html>
+        """
+        profiles = scraper._extract_profile_candidates(
+            BeautifulSoup(html, "lxml"), "https://example.my/committee"
+        )
+
+        self.assertEqual(profiles[0].social_links, [])
+
+
+class PageSubjectProfileContactsTest(unittest.TestCase):
+    """A solo member page (no card, no grid) still states its own contacts."""
+
+    def test_lone_detail_page_email_and_social_are_attributed_to_the_subject(self):
+        html = """
+        <html><body>
+          <header><a href="mailto:info@example.my">Contact us</a></header>
+          <main>
+            <h1>Ashley Jinivon</h1>
+            <img src="/portraits/ashley.jpg" width="400" height="500" alt="Ashley" />
+            <p>Chairs the committee.</p>
+            <a href="mailto:ashley@example.my">Email Ashley</a>
+            <a href="https://www.linkedin.com/in/ashleyj">LinkedIn</a>
+          </main>
+          <footer><a href="https://facebook.com/examplemy">Facebook</a></footer>
+        </body></html>
+        """
+        profiles = scraper._extract_profile_candidates(
+            BeautifulSoup(html, "lxml"), "https://example.my/member/ashley"
+        )
+
+        self.assertEqual(len(profiles), 1)
+        profile = profiles[0]
+        self.assertEqual(profile.name, "Ashley Jinivon")
+        # The header's site-wide mailto and the footer's Facebook are chrome —
+        # only the body's own links are this person's.
+        self.assertEqual(profile.email, "ashley@example.my")
+        self.assertEqual(
+            profile.social_links, [("LinkedIn", "https://www.linkedin.com/in/ashleyj")]
+        )

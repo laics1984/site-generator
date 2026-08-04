@@ -117,23 +117,41 @@ class PushRequest:
 _SLUG_SEP_RE = re.compile(r"[^a-z0-9]+")
 
 
-def _cms_safe_slug(raw: str) -> str:
-    """Coerce any string into the CMS slug format ^[a-z0-9]+(?:-[a-z0-9]+)*$.
+def _cms_safe_slug(raw: str, *, keep_path: bool = False) -> str:
+    """Coerce any string into a CMS-safe slug.
 
-    Lowercase, collapse every run of non-alphanumerics to a single hyphen,
-    trim hyphens, cap at the CMS's 160-char limit. "services/web-design" →
-    "services-web-design"; "" / junk → "".
+    Lowercase, collapse every run of non-alphanumerics to a single hyphen, trim
+    hyphens, cap at the CMS's 160-char limit. "" / junk → "".
+
+    ``keep_path`` preserves ``/`` as a segment separator and sanitizes each
+    segment on its own, so "services/web-design" survives as itself instead of
+    becoming "services-web-design" — see ``_normalize_site_slugs``.
     """
+    if keep_path and "/" in (raw or ""):
+        segments = [_cms_safe_slug(part) for part in raw.split("/")]
+        return "/".join(part for part in segments if part)[:160].strip("-/")
     s = _SLUG_SEP_RE.sub("-", (raw or "").strip().lower()).strip("-")
     return s[:160].strip("-")
 
 
-def _normalize_site_slugs(site: GeneratedSite) -> dict[str, str]:
-    """Flatten every slug to the CMS's flat kebab-case format, keeping
-    parent_slug, page_tree, and all baked nav hrefs consistent.
+def _normalize_site_slugs(site: GeneratedSite, *, keep_paths: bool = False) -> dict[str, str]:
+    """Normalize every slug to a CMS-safe format, keeping parent_slug,
+    page_tree, and all baked nav hrefs consistent.
 
     Returns the {old_slug: new_slug} map of slugs that actually changed.
     Mutates `site` in place.
+
+    ``keep_paths`` preserves hierarchical slugs (``profile/ashley``) instead of
+    flattening them to ``profile-ashley``. This is what lets a migrated site
+    keep the URLs it already ranks for: the generator's slugs come from the
+    source's own paths, so preserving them means mmta.org.my/profile/ashley
+    still resolves after the switchover. The resolver has always supported it —
+    ``PublishedPageQuery::find`` matches ``ltrim(path,'/')`` against the slug
+    with no segment-count check — so only this flattening stood in the way.
+
+    Callers pass it only for a greenfield push. Re-pushing into a site that is
+    already live would otherwise rename its published pages, which is the very
+    breakage this exists to avoid.
     """
     slug_map: dict[str, str] = {}
     used: set[str] = set()
@@ -142,7 +160,11 @@ def _normalize_site_slugs(site: GeneratedSite) -> dict[str, str]:
         if page.is_homepage:
             new = ""
         else:
-            new = _cms_safe_slug(old) or _cms_safe_slug(page.title) or "page"
+            new = (
+                _cms_safe_slug(old, keep_path=keep_paths)
+                or _cms_safe_slug(page.title)
+                or "page"
+            )
             base, n = new, 2
             while new in used:
                 new = f"{base}-{n}"
@@ -156,14 +178,19 @@ def _normalize_site_slugs(site: GeneratedSite) -> dict[str, str]:
         if page.parent_slug:
             page.parent_slug = (
                 slug_map.get(page.parent_slug)
-                or _cms_safe_slug(page.parent_slug)
+                or _cms_safe_slug(page.parent_slug, keep_path=keep_paths)
                 or None
             )
 
     # page_tree mirrors `pages` — keep node slugs in lock-step.
     def _fix_node(node) -> None:
         node.slug = (
-            "" if node.is_homepage else (slug_map.get(node.slug) or _cms_safe_slug(node.slug))
+            ""
+            if node.is_homepage
+            else (
+                slug_map.get(node.slug)
+                or _cms_safe_slug(node.slug, keep_path=keep_paths)
+            )
         )
         for child in node.children:
             _fix_node(child)
@@ -235,21 +262,6 @@ def _raise_first_error(results: list) -> None:
 
 
 async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> PushReport:
-    # 0. Normalize slugs to the CMS's flat kebab-case format. The generator
-    #    emits hierarchical slugs (e.g. "services/web-design"); the CMS slug
-    #    rule is ^[a-z0-9]+(?:-[a-z0-9]+)*$ — no slashes — so we flatten every
-    #    slug + rewrite parent_slug, page_tree, and baked nav hrefs to match.
-    changed = _normalize_site_slugs(req.site)
-    if changed:
-        report.record(
-            PushStep(
-                name="normalize_slugs",
-                ok=True,
-                detail=f"Flattened {len(changed)} slug(s) to CMS format",
-                data={"renamed": changed},
-            )
-        )
-
     # 1. Auth
     try:
         await client.login(req.cms_email, req.cms_password)
@@ -306,6 +318,32 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     report.record(
         PushStep(name="guard", ok=True, detail=f"Entity has {len(existing)} existing pages")
     )
+
+    # 2b. Normalize slugs to a CMS-safe format, rewriting parent_slug, page_tree
+    #     and baked nav hrefs to match.
+    #
+    #     A greenfield entity keeps hierarchical slugs, so a migrated site is
+    #     published at the URLs the source already ranks for (/profile/ashley,
+    #     not /profile-ashley). An entity that already holds pages is being
+    #     re-pushed over a live site: flattening stays, because renaming
+    #     published pages is exactly the SEO damage this is meant to prevent.
+    #     It runs here, after the guard, because only the guard's page list can
+    #     tell the two apart.
+    greenfield = req.create_entity or not existing
+    changed = _normalize_site_slugs(req.site, keep_paths=greenfield)
+    if changed:
+        report.record(
+            PushStep(
+                name="normalize_slugs",
+                ok=True,
+                detail=(
+                    f"Normalized {len(changed)} slug(s), keeping source paths"
+                    if greenfield
+                    else f"Flattened {len(changed)} slug(s) to CMS format"
+                ),
+                data={"renamed": changed, "greenfield": greenfield},
+            )
+        )
 
     # 3. Media upload — collect unique image srcs, upload, build a rewrite map.
     #    Individual failures are non-fatal: the image is stripped from the schema

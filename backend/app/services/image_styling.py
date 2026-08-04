@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import colorsys
 import math
+import re
 from typing import Literal
 
 
@@ -208,18 +209,48 @@ def vignette_gradient(secondary_hex: str, alpha: float) -> str:
     )
 
 
+# (alpha, stop%) of the bottom dissolve, as the literal strings the CSS carries.
+# Shared by the writer and the matcher below so the two can never drift: if the
+# ramp is retuned, `is_edge_fade_layer` keeps recognising it.
+_EDGE_FADE_STOPS: tuple[tuple[str, int], ...] = (("0", 72), ("0.55", 90), ("1", 100))
+
+
 def edge_fade_gradient(page_bg_hex: str) -> str:
     """A short dissolve from the photo into the page background at the bottom.
 
     Without it a full-bleed hero ends on a ruled horizontal line where the
     photograph stops and the next section's flat colour starts — the single
     most common tell that a page was assembled from bands rather than designed.
+
+    The caller passes the THEME page background, because at build time the
+    section below this one does not exist yet. Once the page is assembled,
+    schema_builder.retune_photo_edge_fades re-points (or drops) the layer using
+    the surface that actually follows — see `is_edge_fade_layer`.
     """
     r, g, b = _hex_to_rgb(page_bg_hex)
-    return (
-        f"linear-gradient(to bottom, rgba({r},{g},{b},0) 72%, "
-        f"rgba({r},{g},{b},0.55) 90%, rgba({r},{g},{b},1) 100%)"
+    stops = ", ".join(f"rgba({r},{g},{b},{a}) {pos}%" for a, pos in _EDGE_FADE_STOPS)
+    return f"linear-gradient(to bottom, {stops})"
+
+
+_EDGE_FADE_RE = re.compile(
+    r"^linear-gradient\(\s*to bottom\s*,\s*"
+    + r"\s*,\s*".join(
+        rf"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*{re.escape(alpha)}\s*\)\s*{pos}%"
+        for alpha, pos in _EDGE_FADE_STOPS
     )
+    + r"\s*\)$"
+)
+
+
+def is_edge_fade_layer(layer: str) -> bool:
+    """True if one background layer is an `edge_fade_gradient` output, whatever
+    colour it fades to.
+
+    The composite's other layers are all radial, or `to bottom` ramps that stop
+    short of full opacity, so this shape is unambiguous — nothing else in
+    `photo_background` fades a solid colour all the way in at 100%.
+    """
+    return bool(_EDGE_FADE_RE.match(layer.strip()))
 
 
 # Grain sits over everything. Faint enough to be felt rather than seen: its job

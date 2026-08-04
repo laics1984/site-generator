@@ -46,6 +46,7 @@ SectionType = Literal[
     "contact",
     "pricing",
     "team",
+    "profile",
     "gallery",
     "menu",
     "process",
@@ -575,6 +576,14 @@ class TeamMember(BaseModel):
         default=None,
         description="Pexels-search phrase for portrait photo, e.g. 'smiling professional woman'.",
     )
+    profile_href: str | None = Field(
+        default=None,
+        description=(
+            "Site-relative link to this person's own page, when the source's "
+            "roster card carried one and that page was generated. Filled by code "
+            "after planning; leave null in LLM output."
+        ),
+    )
 
     @model_validator(mode="after")
     def sync_description_aliases(self) -> "TeamMember":
@@ -597,6 +606,75 @@ class TeamBlock(BaseModel):
     @classmethod
     def heal_heading(cls, v: object) -> object:
         return _default_if_blank(v, "Meet the team")
+
+
+class ProfileContact(BaseModel):
+    """One way to reach the person a profile block is about.
+
+    Its own model rather than a ``NavLink``: these are the person's contact
+    affordances as their page states them (an email, a phone number, a
+    professional profile), not site navigation — and the union below is built
+    before ``NavLink`` exists.
+    """
+
+    label: str
+    href: str
+
+
+class ProfileBlock(BaseModel):
+    """One person, on the page that is about them.
+
+    A team block introduces people to each other; this introduces ONE person to
+    the reader. It exists because a roster grid rendering a single card gets
+    everything slightly wrong — the portrait is thumbnail-sized on a page that
+    is entirely about that face, the name is restated under a hero that already
+    said it, and there is nowhere for the contact details a directory carries.
+
+    The bio lives here rather than in a separate about section: a profile page
+    tells the story next to the face, and both came from the same source text
+    anyway (see routers/generate._profile_page_member).
+    """
+
+    kind: Literal["profile"] = "profile"
+    name: str
+    role: str = ""
+    credentials: str | None = Field(
+        default=None,
+        description=(
+            "Qualifications line under the name, e.g. 'MT-BC, Saint "
+            "Mary-of-the-Woods College'. Only what the source states."
+        ),
+    )
+    bio: str | None = None
+    photo_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped portrait of this real person. Filled by code "
+            "after planning; leave null in LLM output."
+        ),
+    )
+    photo_alt: str | None = None
+    photo_query: str | None = Field(
+        default=None,
+        description=(
+            "Ignored for real people — a stranger's stock face under a real "
+            "name is a misattribution, so an unmatched profile renders a "
+            "monogram instead (same rule as team cards)."
+        ),
+    )
+    contacts: list[ProfileContact] = Field(
+        default_factory=list,
+        max_length=4,
+        description=(
+            "The person's own contact affordances as the source gives them: "
+            "an email link, a phone number, a professional profile."
+        ),
+    )
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def blank_role(cls, v: object) -> object:
+        return "" if v is None else v
 
 
 class GalleryItem(BaseModel):
@@ -830,6 +908,7 @@ ContentBlock = Annotated[
     | ContactBlock
     | PricingBlock
     | TeamBlock
+    | ProfileBlock
     | GalleryBlock
     | MenuBlock
     | ProcessBlock
@@ -913,6 +992,7 @@ class PagePlan(BaseModel):
     parent_slug: str | None = None
     nav_rank: int | None = None  # source-nav position from the scaffold; never set by the LLM
     from_source: bool = False    # page evidenced by the source site; never set by the LLM
+    menu_hidden: bool = False    # reached from a listing, not a menu; never set by the LLM
     # Carried through from the scaffold; never set by the LLM. A page with
     # `locale` set is a translation of `translation_of` — same blocks, same
     # images, same templates, text in another language.
@@ -1199,6 +1279,16 @@ class SourceContent(BaseModel):
             "URLs excluded. Feeds the generated site's menu-social."
         ),
     )
+    subject_name: str | None = Field(
+        default=None,
+        description=(
+            "The person the page's BODY leads with: the first designated name "
+            "element (a heading, or an element classed name/member-name) below "
+            "the chrome whose text reads as a person's name. Evidence that the "
+            "page is that person's own, for detail pages whose <title> is a "
+            "shared template and whose h1 is a section banner."
+        ),
+    )
 
 
 class ImageMetadata(BaseModel):
@@ -1263,6 +1353,27 @@ class ProfileCandidate(BaseModel):
     photo_url: str | None = None
     photo_alt: str | None = None
     source_url: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    social_links: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "(label, href) social profile links found on this person's own card "
+            "or page, e.g. ('LinkedIn', 'https://linkedin.com/in/...'). Distinct "
+            "from the site-wide SourceContent.social_links: these are scoped to "
+            "this one person, not the header/footer."
+        ),
+    )
+    profile_url: str | None = Field(
+        default=None,
+        description=(
+            "The page this card LINKS to — the person's own detail page, when the "
+            "roster gives them one. The source site's own answer to two questions "
+            "code would otherwise have to guess: which page a detail page belongs "
+            "under, and where a rendered team card should point. Null when the card "
+            "links nowhere (a directory whose cards carry only an email)."
+        ),
+    )
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 

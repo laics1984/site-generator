@@ -230,6 +230,7 @@ class GeneratedPage(BaseModel):
     parent_slug: str | None = None  # set on sub-pages for breadcrumbs + nav grouping
     nav_rank: int | None = None     # source-nav position carried from the scaffold; None ⇒ not in source nav
     from_source: bool = False       # page evidenced by the source site vs template-injected
+    menu_hidden: bool = False       # reached from a listing (a roster grid), not from a menu
 
 
 class PageNode(BaseModel):
@@ -244,6 +245,11 @@ class PageNode(BaseModel):
     title: str
     is_homepage: bool = False
     nav_rank: int | None = None  # source-nav position; menu_builder uses it to order + cap the primary menu
+    # A page the source reaches from a listing rather than a menu (a committee
+    # member's own page). It keeps its place in the tree — breadcrumbs and the
+    # hierarchy are real — but menu_builder skips it in the header dropdown and
+    # the footer column, the same carve-out `locale` gets below.
+    menu_hidden: bool = False
     from_source: bool = False    # page evidenced by the source site; gates Contact in the heuristic menu
     # Set on translated pages (/bm/committee). They belong in the language
     # switcher, never in the primary or footer menus — a reader shouldn't meet

@@ -231,5 +231,108 @@ class OverlayDefaultIntegrationTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(site.header_overlay)
 
 
+class ProfilePageSharesRosterHeroTest(unittest.IsolatedAsyncioTestCase):
+    """A profile page reached from a roster link (menu_hidden + parent_slug)
+    must render the exact SAME hero background as its parent roster page —
+    not just a similar mood — even when its OWN scraped page_images differ."""
+
+    def _plan(self):
+        return SitePlan(
+            site_name="Hope Foundation",
+            brand_mood="friendly",
+            industry_category="nonprofit",
+            pages=[
+                _page("home", "home", "Home", homepage=True),
+                _page("committee", "team", "Committee"),
+                PagePlan(
+                    page_type="landing",
+                    slug="committee/ashley",
+                    title="Ashley",
+                    is_homepage=False,
+                    parent_slug="committee",
+                    menu_hidden=True,
+                    blocks=[_hero("Ashley headline")],
+                    seo_title="Ashley",
+                    seo_description="Ashley",
+                ),
+                PagePlan(
+                    page_type="landing",
+                    slug="committee/dana",
+                    title="Dana",
+                    is_homepage=False,
+                    parent_slug="committee",
+                    menu_hidden=True,
+                    blocks=[_hero("Dana headline")],
+                    seo_title="Dana",
+                    seo_description="Dana",
+                ),
+            ],
+        )
+
+    _URLS = {
+        # The homepage gets its own distinct photo too, so it doesn't consume
+        # committee's preferred image from the shared pool first (images are
+        # used once site-wide) before committee gets a turn.
+        "home": "https://source.example/home.jpg",
+        "committee": "https://source.example/committee.jpg",
+        "committee/ashley": "https://source.example/ashley.jpg",
+        "committee/dana": "https://source.example/dana.jpg",
+    }
+
+    def _metadata(self):
+        # The resolver's pool is seeded from scraped_metadata (site-wide); each
+        # page's own page_images entry only RE-RANKS candidates already in
+        # that pool, so every photo must be listed here too.
+        return [
+            ImageMetadata(
+                url=url, intent="hero", role="background",
+                source_usage="css_background", width=2400, height=1400,
+            )
+            for url in self._URLS.values()
+        ]
+
+    def _page_images(self):
+        # Each page has its OWN distinct scraped photo pool — if resolution
+        # were independent per page, the roster and its two profile pages
+        # would each end up with a DIFFERENT background image.
+        return {
+            slug: [
+                ImageMetadata(
+                    url=url, intent="hero", role="background",
+                    source_usage="css_background", width=2400, height=1400,
+                )
+            ]
+            for slug, url in self._URLS.items()
+        }
+
+    async def test_profile_pages_reuse_the_roster_background_image(self):
+        original = settings.design_brain_enabled
+        settings.design_brain_enabled = False
+        try:
+            site = await plan_to_site(
+                self._plan(),
+                brand=BrandIdentity(
+                    name="Hope Foundation", mood="friendly",
+                    extracted_palette=["#0e7490"],
+                ),
+                scraped_metadata=self._metadata(),
+                page_images=self._page_images(),
+            )
+        finally:
+            settings.design_brain_enabled = original
+
+        by_slug = {p.slug: p for p in site.pages}
+        roster_bg = _first_section(by_slug["committee"]).styles.get("backgroundImage")
+        ashley_bg = _first_section(by_slug["committee/ashley"]).styles.get("backgroundImage")
+        dana_bg = _first_section(by_slug["committee/dana"]).styles.get("backgroundImage")
+
+        self.assertIsInstance(roster_bg, str)
+        self.assertIn("committee.jpg", roster_bg)
+        # Without the shared-hero fix these would carry ashley.jpg / dana.jpg
+        # instead of the roster's own photo.
+        self.assertEqual(ashley_bg, roster_bg)
+        self.assertEqual(dana_bg, roster_bg)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,7 @@ from app.models.content_blocks import (
     MenuBlock,
     PricingBlock,
     ProcessBlock,
+    ProfileBlock,
     ServicesBlock,
     TeamBlock,
     TestimonialsBlock,
@@ -215,6 +216,45 @@ def _contact_content(b: ContactBlock) -> dict[str, Any]:
     }
 
 
+def _profile_content(b: ProfileBlock) -> dict[str, Any]:
+    """One person's own page — portrait, identity, story, contact.
+
+    The photo slot is always filled: with this person's real portrait, or with
+    their monogram. Never a stock face (same rule as team cards — a stranger's
+    portrait under a real name is a misattribution), and never nothing, because
+    every profile variant declares `photo` required and an empty slot would
+    make all three infeasible.
+    """
+    photo = (
+        {"src": b.photo_url, "alt": b.photo_alt or b.name}
+        if b.photo_url
+        else {"monogram": b.name, "alt": b.name}
+    )
+    return {
+        "photo": photo,
+        "name": b.name,
+        # The designation sits UNDER the name, as profile pages have always
+        # written it — not as an eyebrow above it.
+        "role": b.role or None,
+        "credentials": b.credentials,
+        "bio": b.bio,
+        "contacts": [
+            {"cta": _link(contact.label, contact.href)} for contact in b.contacts
+        ],
+    }
+
+
+def _profile_preference(content: dict[str, Any], b: ProfileBlock) -> list[str]:
+    """Mood-specific variants first; the split is the universal fallback.
+
+    Ordering, not gating — `mood_allows` has already removed whichever of the
+    two mood-scoped variants doesn't suit the brand (banner is bold/modern,
+    centered is classic/elegant). The split declares no moods, so it always
+    survives to catch a brand that is neither.
+    """
+    return ["profile-banner", "profile-centered", "profile-portrait-split"]
+
+
 def _team_content(b: TeamBlock) -> dict[str, Any]:
     # A source that reuses one photo across members would otherwise repeat the
     # same image down the grid; the second use falls back to a monogram so each
@@ -245,6 +285,15 @@ def _team_content(b: TeamBlock) -> dict[str, Any]:
                 "name": m.name,
                 "role": m.role,
                 "bio": getattr(m, "bio", None) or getattr(m, "description", None),
+                # The card links to the person's own page where the source's
+                # roster did. Members without one resolve to None, which
+                # template_filler drops — the card renders exactly as before.
+                "profile_link": _link(
+                    f"View {m.name.split()[0]}'s profile" if m.name else "View profile",
+                    getattr(m, "profile_href", None),
+                )
+                if getattr(m, "profile_href", None)
+                else None,
             }
             for m in b.members
         ],
@@ -393,6 +442,7 @@ _MAPPERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "cta": _cta_content,
     "faq": _faq_content,
     "contact": _contact_content,
+    "profile": _profile_content,
     "team": _team_content,
     "gallery": _gallery_content,
     "process": _process_content,
@@ -473,6 +523,7 @@ _PREFERENCE: dict[str, Callable[[dict[str, Any], Any], list[str]]] = {
     "features": _features_preference,
     "services": _services_preference,
     "testimonials": _testimonials_preference,
+    "profile": _profile_preference,
 }
 
 

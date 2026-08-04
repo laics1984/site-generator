@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeVar
 
 from app.config import settings
 from app.models.brand import HeroBackgroundHeight
@@ -164,6 +164,21 @@ def _rotation_index(seed: str, slug: str, size: int) -> int:
     return int(digest[:8], 16) % size
 
 
+_T = TypeVar("_T")
+
+
+def _inherit_from_parent(pages: list[PagePlan], picks: dict[str, _T]) -> None:
+    """A profile page reached from a roster's own link (``menu_hidden``) reads
+    as a continuation of that roster, not a new place — so it copies its
+    parent's hero pick (directive or composition) wholesale instead of
+    drawing its own from the rotation. Mutates ``picks`` in place; ``picks``
+    is already fully populated for every page, so this is independent of
+    page order."""
+    for page in pages:
+        if page.menu_hidden and page.parent_slug and page.parent_slug in picks:
+            picks[page.slug] = picks[page.parent_slug]
+
+
 # --- per-page composition -------------------------------------------------------
 #
 # With the site-wide full-bleed policy on (settings.hero_fullbleed_all_pages)
@@ -256,6 +271,7 @@ def plan_site_compositions(
             anchor = _ANCHOR_ROTATION[(start + 1) % len(_ANCHOR_ROTATION)]
         previous = anchor
         out[page.slug] = HeroComposition(anchor)
+    _inherit_from_parent(pages, out)
     return out
 
 
@@ -286,7 +302,7 @@ def plan_site_heroes(
     # are handled downstream by _apply_hero_directive; that degrade also keeps
     # the header solid on such a page, so readability never regresses.
     if settings.hero_fullbleed_all_pages:
-        return {
+        directives = {
             page.slug: (
                 HeroDirective(
                     "hero-background-bold", "background", pin_source_background=True
@@ -296,6 +312,8 @@ def plan_site_heroes(
             )
             for page in pages
         }
+        _inherit_from_parent(pages, directives)
+        return directives
 
     directives: dict[str, HeroDirective] = {}
     interior_seen: list[str] = []
@@ -319,4 +337,5 @@ def plan_site_heroes(
                 directive = spec.rotation[(start + 1) % len(spec.rotation)]
             interior_seen.append(directive.template_id)
         directives[page.slug] = directive
+    _inherit_from_parent(pages, directives)
     return directives

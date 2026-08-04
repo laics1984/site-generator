@@ -1,5 +1,5 @@
 """
-Optional OCR pass: which scraped images have words baked into their pixels.
+Optional OCR pass: which images have words baked into their pixels.
 
 A full-bleed background has the section's headline drawn over it. An image that
 is ITSELF a headline — the source's own hero graphic, a promo banner, a price
@@ -194,10 +194,11 @@ async def prefetch_text_flags(
 ) -> dict[str, bool]:
     """Stamp `ocr_has_text` on up to `max_images` scraped images.
 
-    SOURCE IMAGES ONLY. Stock photography is not screened: Pexels ships
-    photographs, not posters, and a baked-in headline is a property of a site's
-    own artwork. The parameter type carries that — stock results are
-    `PhotoResult`, never `ImageMetadata`.
+    SOURCE IMAGES ONLY — this is the scraped pool's warm-up, and its whole
+    point is riding the prefetch window for free. Stock candidates aren't known
+    yet at this point (their queries come out of content generation, which is
+    the thing this runs alongside), so they are screened on demand at pick time
+    instead: media.ImageResolver._first_text_free → verify_url.
 
     `prefetched`: {url: base64_jpeg} already downloaded by
     image_vision.prefetch_image_pool. Reused when present, so with the vision
@@ -247,27 +248,49 @@ async def verify_one(meta: ImageMetadata) -> bool:
         return False
     if meta.ocr_has_text is not None:
         return meta.ocr_has_text
-    cached = _TEXT_CACHE.get(meta.url)
+    has_text = await verify_url(meta.url)
+    meta.ocr_has_text = has_text
+    return has_text
+
+
+async def verify_url(url: str) -> bool:
+    """Screen a bare URL — the same check as `verify_one`, minus the metadata.
+
+    STOCK PHOTOGRAPHY GOES THROUGH HERE. The module originally screened source
+    images only, on the reasoning that "Pexels ships photographs, not posters".
+    That held for the artwork-shaped failure (a promo banner, a price list) but
+    not for the one that actually reaches production: photographs OF text.
+    A stock query resolves "sheet music" to printed notation, "conference talk"
+    to a slide wall, "documents on a laptop" to a screenful of words — genuine
+    photographs, every one, and every one unusable behind a headline. Nothing
+    upstream can catch these either, because the query that produced them is
+    perfectly on-topic; only the pixels give it away.
+
+    Stock photos have no `ImageMetadata` to stamp (they are `pexels.PhotoResult`)
+    so the URL cache is the whole memo — which is enough, since a rejected
+    candidate is simply not chosen rather than annotated.
+
+    Returns False whenever the pass can't judge (off, no wheel, undecodable):
+    never block a slot on a screen that didn't run.
+    """
+    if not url:
+        return False
+    cached = _TEXT_CACHE.get(url)
     if cached is not None:
-        meta.ocr_has_text = cached
         return cached
     if not ocr_enabled() or _engine() is None:
         return False
-    payloads = await _payloads([meta], {})
+    payloads = await _payloads_for_urls([url])
     if not payloads:
         return False
     flags = await asyncio.to_thread(_judge_batch, payloads)
-    has_text = flags.get(meta.url, False)
-    meta.ocr_has_text = has_text
-    return has_text
+    return flags.get(url, False)
 
 
 async def _payloads(
     targets: list[ImageMetadata], prefetched: dict[str, str]
 ) -> list[tuple[str, bytes | str]]:
     """(url, image payload) for each target, reusing prefetched downloads."""
-    from app.services.image_vision import _fetch_image_bytes  # lazy: import chain
-
     out: list[tuple[str, bytes | str]] = []
     missing: list[str] = []
     for item in targets:
@@ -276,21 +299,29 @@ async def _payloads(
             out.append((item.url, payload))
         else:
             missing.append(item.url)
-    if missing:
-        import httpx
-
-        sem = asyncio.Semaphore(settings.ocr_fetch_concurrency)
-
-        async def one(url: str, client: httpx.AsyncClient):
-            async with sem:
-                return url, await _fetch_image_bytes(url, client=client)
-
-        async with httpx.AsyncClient(
-            timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
-        ) as client:
-            fetched = await asyncio.gather(*(one(url, client) for url in missing))
-        out.extend((url, raw) for url, raw in fetched if raw is not None)
+    out.extend(await _payloads_for_urls(missing))
     return out
+
+
+async def _payloads_for_urls(urls: list[str]) -> list[tuple[str, bytes | str]]:
+    """(url, downloaded bytes) for each URL, dropping the ones that don't fetch."""
+    if not urls:
+        return []
+    import httpx
+
+    from app.services.image_vision import _fetch_image_bytes  # lazy: import chain
+
+    sem = asyncio.Semaphore(settings.ocr_fetch_concurrency)
+
+    async def one(url: str, client: httpx.AsyncClient):
+        async with sem:
+            return url, await _fetch_image_bytes(url, client=client)
+
+    async with httpx.AsyncClient(
+        timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
+    ) as client:
+        fetched = await asyncio.gather(*(one(url, client) for url in urls))
+    return [(url, raw) for url, raw in fetched if raw is not None]
 
 
 def _judge_batch(payloads: list[tuple[str, bytes | str]]) -> dict[str, bool]:

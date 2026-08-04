@@ -253,10 +253,11 @@ def bears_text(meta: ImageMetadata | None) -> bool:
 
     SCOPE: source images only. The parameter type enforces it — stock photos are
     `pexels.PhotoResult` and never become `ImageMetadata`, so they cannot reach
-    this function. That is deliberate, not incidental: a baked-in headline is a
-    property of a site's own artwork, and Pexels ships photographs, not posters.
-    Keeping stock out also keeps the vision pass bounded (it annotates the
-    scraped pool only — see routers/generate._annotate_source_images).
+    this function. That keeps the vision pass bounded (it annotates the scraped
+    pool only — see routers/generate._annotate_source_images). Stock is NOT
+    unscreened, though: it gets the OCR half of this judgement at pick time, in
+    media.ImageResolver._first_text_free, because a query like "sheet music"
+    returns a genuine photograph that is nonetheless covered in glyphs.
     """
     if meta is None:
         return False

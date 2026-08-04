@@ -27,8 +27,12 @@ class NavCuratedPrimaryMenuTest(unittest.TestCase):
                 PageNode(slug="contact", title="Contact", nav_rank=2, from_source=True),
             )
         )
+        # Contact is left out even when the owner ranked it — the header's own
+        # "Get in touch" CTA already routes there.
         labels = [i["label"] for i in _primary(menus)["items"]]
-        self.assertEqual(labels, ["Services", "About", "Contact"])
+        self.assertEqual(labels, ["Services", "About"])
+        footer_labels = {i["label"] for i in _footer(menus)["items"]}
+        self.assertIn("Contact", footer_labels)
 
     def test_home_is_never_a_menu_item(self):
         menus = build_menus(
@@ -109,7 +113,7 @@ class NavCuratedPrimaryMenuTest(unittest.TestCase):
 
 
 class HeuristicPrimaryMenuTest(unittest.TestCase):
-    """No nav evidence — fall back to type weights, Contact gated on source."""
+    """No nav evidence — fall back to type weights; Contact always excluded."""
 
     def test_unranked_pages_fall_back_to_type_weight(self):
         menus = build_menus(
@@ -122,7 +126,9 @@ class HeuristicPrimaryMenuTest(unittest.TestCase):
         labels = [i["label"] for i in _primary(menus)["items"]]
         self.assertEqual(labels, ["Services", "About", "Testimonials"])
 
-    def test_contact_from_source_is_included_last(self):
+    def test_contact_from_source_is_excluded_from_primary(self):
+        # Even a source-evidenced Contact page stays out of the header — the
+        # "Get in touch" CTA already routes there. It still gets a footer column.
         menus = build_menus(
             _tree(
                 PageNode(slug="services", title="Services", from_source=True),
@@ -131,11 +137,13 @@ class HeuristicPrimaryMenuTest(unittest.TestCase):
             )
         )
         labels = [i["label"] for i in _primary(menus)["items"]]
-        self.assertEqual(labels[-1], "Contact")
+        self.assertNotIn("Contact", labels)
+        footer_labels = {i["label"] for i in _footer(menus)["items"]}
+        self.assertIn("Contact", footer_labels)
 
-    def test_template_injected_contact_is_hidden_when_source_lacks_one(self):
+    def test_template_injected_contact_is_also_hidden(self):
         # Source evidence exists (crawled pages) but no contact page among it —
-        # the template-injected Contact stays out of the header.
+        # the template-injected Contact stays out of the header too.
         menus = build_menus(
             _tree(
                 PageNode(slug="services", title="Services", from_source=True),
@@ -148,8 +156,9 @@ class HeuristicPrimaryMenuTest(unittest.TestCase):
         footer_labels = {i["label"] for i in _footer(menus)["items"]}
         self.assertIn("Contact", footer_labels)
 
-    def test_contact_shown_when_there_is_no_source_evidence_at_all(self):
-        # Doc uploads / thin crawls: no evidence either way — convention wins.
+    def test_contact_excluded_when_there_is_no_source_evidence_at_all(self):
+        # Doc uploads / thin crawls: no evidence either way — Contact still
+        # stays out of the header, the CTA covers it.
         menus = build_menus(
             [
                 PageNode(slug="", title="Home", is_homepage=True),
@@ -158,7 +167,7 @@ class HeuristicPrimaryMenuTest(unittest.TestCase):
             ]
         )
         labels = [i["label"] for i in _primary(menus)["items"]]
-        self.assertEqual(labels[-1], "Contact")
+        self.assertNotIn("Contact", labels)
 
     def test_heuristic_primary_is_capped(self):
         nodes = [
@@ -308,3 +317,67 @@ class LanguageSwitcherTest(unittest.TestCase):
         )
 
         self.assertIsNone(self._utility(menus))
+
+
+class ListingReachedPagesTest(unittest.TestCase):
+    """Pages the source reaches from a grid, not from a menu.
+
+    MMTA's nine committee members each have a page, linked from the committee
+    grid. They belong in the tree — breadcrumbs are real — but the source has
+    no nine-item Committee dropdown and no nine-row footer column, so neither
+    should the generated site.
+    """
+
+    def _committee(self, *, hidden: bool) -> PageNode:
+        return PageNode(
+            slug="committee",
+            title="Committee",
+            nav_rank=0,
+            from_source=True,
+            children=[
+                PageNode(
+                    slug=f"profile/{slug}",
+                    title=name,
+                    from_source=True,
+                    menu_hidden=hidden,
+                )
+                for name, slug in (("Ashley Jinivon", "ashley"), ("Sandra Cheah", "sandra"))
+            ],
+        )
+
+    def test_hidden_children_are_in_neither_menu(self):
+        menus = build_menus(_tree(self._committee(hidden=True)))
+
+        committee = next(
+            i for i in _primary(menus)["items"] if i["label"] == "Committee"
+        )
+        self.assertIsNone(committee.get("children"))
+
+        footer_committee = next(
+            i for i in _footer(menus)["items"] if i["label"] == "Committee"
+        )
+        self.assertIsNone(footer_committee.get("children"))
+
+    def test_ordinary_children_still_nest(self):
+        # The carve-out is opt-in: a normal section keeps its dropdown.
+        menus = build_menus(_tree(self._committee(hidden=False)))
+
+        committee = next(
+            i for i in _primary(menus)["items"] if i["label"] == "Committee"
+        )
+        self.assertEqual(
+            [c["label"] for c in committee["children"]],
+            ["Ashley Jinivon", "Sandra Cheah"],
+        )
+
+    def test_a_hidden_page_left_at_top_level_stays_reachable(self):
+        # Its roster wasn't generated, so the footer is the only way in.
+        orphan = PageNode(
+            slug="profile/ashley", title="Ashley Jinivon", from_source=True, menu_hidden=True
+        )
+
+        menus = build_menus(_tree(orphan))
+
+        self.assertIn(
+            "Ashley Jinivon", [i["label"] for i in _footer(menus)["items"]]
+        )

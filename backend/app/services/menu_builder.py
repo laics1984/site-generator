@@ -84,6 +84,22 @@ def _is_contact(node: PageNode) -> bool:
     return _infer_page_type(node.slug, node.title) == "contact"
 
 
+def _menu_children(node: PageNode) -> list[PageNode]:
+    """A node's children that belong in a menu.
+
+    Pages the source reaches from a listing are left out: MMTA's nine committee
+    members each have a page, and the source puts them on the committee grid,
+    not in the header. Nesting them would invent a nine-item dropdown and a
+    nine-row footer column the site never had.
+
+    They keep their place in the tree either way — this is a menu decision, not
+    a hierarchy one, so breadcrumbs still read Home > Committee > the person.
+    A hidden page that ends up at the TOP level (its roster wasn't generated)
+    is not filtered: the footer is then the only way to reach it.
+    """
+    return [child for child in node.children if not child.menu_hidden]
+
+
 def _uid() -> str:
     return str(uuid4())
 
@@ -107,14 +123,15 @@ def build_menus(
 
     Primary-menu policy (header is *curated*, footer is *complete*):
       * Home never appears — the header logo links to the homepage.
+      * Contact never appears — the header's own "Get in touch" CTA already
+        routes there, so a duplicate nav entry would be redundant. Contact
+        still gets its column in the footer, which is complete rather than
+        curated.
       * If the source nav was captured (any node carries ``nav_rank``), the
-        owner's curation is authoritative: their items, their order, nothing
-        added. "Get Involved" may well matter more than Contact — we don't
-        re-rank what the owner already ranked.
-      * Without nav evidence, fall back to page-type weights with Contact
-        last — but Contact only when the source actually had a contact page
-        (``from_source``), or when there's no source evidence at all (doc
-        uploads / thin crawls, where convention is the best guess).
+        owner's curation is otherwise authoritative: their items, their
+        order, nothing added. "Get Involved" may well matter more than
+        Contact — we don't re-rank what the owner already ranked.
+      * Without nav evidence, fall back to page-type weights.
       * Hard cap at ``MAX_PRIMARY_ITEMS``; overflow pages stay in the footer
         menu only.
       * Parents carry one level of children (capped at ``MAX_DROPDOWN_ITEMS``)
@@ -131,13 +148,16 @@ def build_menus(
         candidates = [
             n
             for n in page_tree
-            if not n.is_homepage and n.slug.lower() not in ("privacy", "terms")
+            if not n.is_homepage
+            and n.slug.lower() not in ("privacy", "terms")
+            and not _is_contact(n)
         ]
         nav_curated = any(n.nav_rank is not None for n in candidates)
 
         if nav_curated:
-            # The owner's header nav, verbatim. Pages the owner left out of
-            # their nav stay out of ours (footer carries them).
+            # The owner's header nav, verbatim (minus Contact — see policy
+            # note above). Pages the owner left out of their nav stay out of
+            # ours (footer carries them).
             ranked = sorted(
                 (n for n in candidates if n.nav_rank is not None),
                 key=lambda n: n.nav_rank,  # type: ignore[arg-type, return-value]
@@ -145,18 +165,9 @@ def build_menus(
             selected = ranked[:MAX_PRIMARY_ITEMS]
             demoted = ranked[MAX_PRIMARY_ITEMS:]
         else:
-            has_source_evidence = any(n.from_source for n in page_tree)
-            contact_nodes = [n for n in candidates if _is_contact(n)]
-            include_contact = [
-                n
-                for n in contact_nodes[:1]
-                if not has_source_evidence or n.from_source
-            ]
-            others = [n for n in candidates if not _is_contact(n)]
-            others.sort(key=lambda n: (_fallback_weight(n), n.slug))
-            budget = MAX_PRIMARY_ITEMS - len(include_contact)
-            selected = [*others[:budget], *include_contact]
-            demoted = others[budget:]
+            others = sorted(candidates, key=lambda n: (_fallback_weight(n), n.slug))
+            selected = others[:MAX_PRIMARY_ITEMS]
+            demoted = others[MAX_PRIMARY_ITEMS:]
 
         if demoted:
             logger.info(
@@ -168,7 +179,7 @@ def build_menus(
         for node in selected:
             dropdown = [
                 _menu_item(child.title, f"/{child.slug}")
-                for child in node.children[:MAX_DROPDOWN_ITEMS]
+                for child in _menu_children(node)[:MAX_DROPDOWN_ITEMS]
             ]
             primary_items.append(
                 _menu_item(node.title, f"/{node.slug}", children=dropdown or None)
@@ -189,14 +200,15 @@ def build_menus(
             if slug in ("privacy", "terms") or node.is_homepage:
                 continue
             href = f"/{node.slug}"
-            if node.children:
+            children = _menu_children(node)
+            if children:
                 footer_items.append(
                     _menu_item(
                         node.title,
                         href,
                         children=[
                             _menu_item(child.title, f"/{child.slug}")
-                            for child in node.children
+                            for child in children
                         ],
                     )
                 )

@@ -117,6 +117,43 @@ def _infer_page_type(slug: str, title: str = "") -> PageType:
 # fill uses the same threshold as the classification.
 DIRECTORY_MIN_PROFILES = 6
 
+# Cards on ONE page before its links count as a roster index. Two is enough to
+# be a listing; one is not, and the difference matters: the lone card on a
+# person's own page links BACK to the roster, and reading that as a roster edge
+# would file the committee page under Ashley Jinivon. Same threshold, same
+# reasoning as ``_rostered_names`` in routers/generate.py.
+ROSTER_MIN_PROFILES = 2
+
+
+def roster_detail_links(source: SourceContent) -> dict[str, str]:
+    """``{detail-page slug: the roster page's slug}`` across the whole source.
+
+    The site's own index of which pages are somebody's profile and where they
+    belong, read off the links its roster cards carry
+    (``scraper._profile_card_link``). Two things downstream need exactly this:
+    a detail page's real parent (this module), and where a rendered team card
+    should point (routers/generate.py).
+
+    Nothing is inferred from URL shape. A site whose members live at /profile/*
+    while the roster is /committee is the normal case, not the exception, and
+    only the link says so.
+    """
+    links: dict[str, str] = {}
+    for page in (source, *source.discovered_pages):
+        candidates = page.profile_candidates or []
+        if len(candidates) < ROSTER_MIN_PROFILES:
+            continue
+        roster_slug = _path_to_slug(page.url_path)
+        for candidate in candidates:
+            if not candidate.profile_url:
+                continue
+            detail_slug = _path_to_slug(urlparse(candidate.profile_url).path)
+            # A roster linking to itself is a paginator, not a profile.
+            if not detail_slug or detail_slug == roster_slug:
+                continue
+            links.setdefault(detail_slug, roster_slug)
+    return links
+
 
 def _looks_like_directory_page(page: SourceContent | None) -> bool:
     """True when the page body is a repeated profile-card roster.
@@ -181,6 +218,11 @@ _SUBPAGE_SECTIONS: list[SectionType] = ["hero", "features", "process", "testimon
 _WORK_SUBPAGE_SECTIONS: list[SectionType] = ["hero", "about", "gallery", "testimonials", "cta"]
 # Sub-pages of team show a single person's bio + linked services/work.
 _TEAM_SUBPAGE_SECTIONS: list[SectionType] = ["hero", "about", "testimonials", "cta"]
+# A page a roster LINKS to is that one person's page, and the profile block is
+# the whole of it: portrait, name, role, story, contact. No `about` — the story
+# belongs beside the face, and a separate about section would tell it twice
+# from the same source text.
+_PROFILE_PAGE_SECTIONS: list[SectionType] = ["hero", "profile", "cta"]
 
 
 # Page types whose fixed rhythm always wins — conversion pages (home), pages
@@ -824,6 +866,11 @@ def infer_page_scaffolds(
     scaffolds.append(_home_scaffold(by_slug.get("", source), industry, seed=site_name))
     seen_slugs.add("")
 
+    # Where the source's own rosters say their people's pages live. Read before
+    # the walk so a detail page can be filed under the page that links to it
+    # instead of under a section invented from its URL.
+    detail_links = roster_detail_links(source)
+
     # 2. Walk slugs in path-depth order so parents always exist before children
     sorted_slugs = sorted(
         (s for s in by_slug if s and s not in translations),
@@ -869,10 +916,27 @@ def infer_page_scaffolds(
             )
             seen_slugs.add(slug)
         else:
-            # Sub-page: ensure its parent scaffold exists
-            parent_slug = "/".join(segments[:-1])
+            # Sub-page: ensure its parent scaffold exists.
+            #
+            # A page some roster links to already HAS a home — the page holding
+            # that roster (/profile/ashley belongs to /committee, which is what
+            # links to it). Inventing /profile there would ship a page the source
+            # doesn't have, and strand the members under it instead of on the
+            # grid the reader actually arrives from.
+            #
+            # The roster has to be a page in its own right: depth ordering means
+            # it is already scaffolded, and ``seen_slugs`` excludes the homepage,
+            # so a roster on the front page falls through to the URL's parent
+            # rather than trying to nest pages under home.
+            linked_parent = detail_links.get(slug)
+            parent_slug = (
+                linked_parent
+                if linked_parent and linked_parent in seen_slugs
+                else "/".join(segments[:-1])
+            )
             if parent_slug not in seen_slugs:
-                # Parent wasn't in the crawl — synthesize it from the top segment.
+                # Parent wasn't in the crawl and nothing links to this page —
+                # synthesize a section from the top segment so it has a home.
                 parent_title = _humanize(segments[0])
                 parent_type = _infer_page_type(parent_slug, parent_title)
                 if parent_type in ("privacy", "terms"):
@@ -905,16 +969,28 @@ def infer_page_scaffolds(
             if sub_type == parent_type:
                 sub_type = "landing"
             sub_type = _coerce_directory_type(sub_type, page)
+            linked_from_roster = parent_slug == linked_parent
             scaffolds.append(
                 PageScaffold(
                     page_type=sub_type,
                     slug=slug,
                     title=title,
-                    sections=_sections_for(sub_type, parent_type=parent_type, page=page),
-                    rationale=f"Sub-page of /{parent_slug} discovered in the source.",
+                    sections=(
+                        _augment_sections(list(_PROFILE_PAGE_SECTIONS), sub_type, page)
+                        if linked_from_roster
+                        else _sections_for(sub_type, parent_type=parent_type, page=page)
+                    ),
+                    rationale=(
+                        f"Linked from the profile roster on /{parent_slug}."
+                        if linked_from_roster
+                        else f"Sub-page of /{parent_slug} discovered in the source."
+                    ),
                     parent_slug=parent_slug,
                     source_url=page.source_ref,
                     from_source=True,
+                    # The roster grid is how the source reaches this page, so
+                    # that is how the generated site should reach it too.
+                    menu_hidden=linked_from_roster,
                 )
             )
             seen_slugs.add(slug)

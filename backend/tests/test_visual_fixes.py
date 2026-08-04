@@ -27,6 +27,8 @@ from app.services.image_styling import (
     _split_layers,
     brand_overlay_gradient,
     color_distance,
+    edge_fade_gradient,
+    is_edge_fade_layer,
     overlay_alpha,
     photo_background,
     text_scrim_gradient,
@@ -45,6 +47,7 @@ from app.services.schema_builder import (
     make_style_tokens,
     mesh_gradient,
     modernize_sections,
+    retune_photo_edge_fades,
 )
 from app.services.style_tokens import emphasis_ink, meta_ink
 from app.services.template_filler import fill_template
@@ -219,6 +222,190 @@ class DividerMeshTest(unittest.TestCase):
         apply_section_dividers([hero, revealed], "modern")
 
         self.assertIsNone(hero.divider.bottom.texture)
+
+
+class DividerPictureSeamTest(unittest.TestCase):
+    """The divider is a flat-filled SVG pinned inside its carrier's edge, so it
+    only reads as a seam when the section it reveals is a solid colour. The
+    picture section carries the edge; a boundary with a picture on both sides
+    gets none, because no single colour could match either neighbour."""
+
+    @staticmethod
+    def _flat(name, bg="#f8fafc"):
+        return BuilderElement(
+            name=name, type="section",
+            styles={"backgroundColor": bg, "width": "100%"}, content=[],
+        )
+
+    @staticmethod
+    def _photo(name):
+        # Mirrors the catalog's hero-background-bold / cta-background roots: a
+        # real photo AND a solid colour underneath it.
+        return BuilderElement(
+            name=name, type="section",
+            styles={
+                "backgroundImage": (
+                    "linear-gradient(rgba(15,23,42,0.55), rgba(15,23,42,0.55)), "
+                    "url('https://images.pexels.com/p.jpg')"
+                ),
+                "backgroundColor": "#0f172a",
+                "width": "100%",
+            },
+            content=[],
+        )
+
+    def test_photo_hero_reveals_the_flat_band_below_it(self):
+        hero, band = self._photo("Hero"), self._flat("Features", "#111827")
+        apply_section_dividers([hero, band], "modern")
+
+        # Carrier is the picture; the fill is the band's exact colour, NOT the
+        # page background the old fallback would have painted over a dark band.
+        self.assertIsNotNone(hero.divider)
+        self.assertEqual(hero.divider.bottom.color, "#111827")
+        self.assertIsNone(band.divider)
+
+    def test_no_divider_when_both_sides_paint_a_picture(self):
+        hero, cta = self._photo("Hero"), self._photo("CTA")
+        apply_section_dividers([hero, cta], "modern")
+
+        self.assertIsNone(hero.divider)
+        self.assertIsNone(cta.divider)
+
+    def test_gradient_band_counts_as_a_picture_side(self):
+        hero = self._flat("Hero")
+        gradient = BuilderElement(
+            name="CTA", type="section",
+            styles={"background": "linear-gradient(135deg, #0f172a, #2563eb)"},
+            content=[],
+        )
+        apply_section_dividers([hero, gradient], "modern")
+
+        # The gradient carries the edge even though it sits second, and reveals
+        # the flat hero above it.
+        self.assertIsNone(hero.divider)
+        self.assertEqual(gradient.divider.top.color, "#f8fafc")
+
+    def test_carrier_flips_to_the_picture_side_at_the_cta_seam(self):
+        # A photo section between two FLAT bands: the edge belongs on the photo
+        # at BOTH seams, so it becomes a bottom edge there instead of the CTA's
+        # usual top edge — and the two must merge onto the one carrier rather
+        # than the second overwriting the first.
+        hero = self._flat("Hero")
+        about = self._photo("About")
+        cta = self._flat("CTA", "#111827")
+        apply_section_dividers([hero, about, cta], "modern")
+
+        self.assertIsNone(hero.divider)
+        self.assertIsNone(cta.divider)
+        self.assertEqual(about.divider.top.color, "#f8fafc")     # reveals the hero
+        self.assertEqual(about.divider.bottom.color, "#111827")  # reveals the CTA
+
+    def test_photo_cta_keeps_its_top_edge(self):
+        hero, band, cta = self._flat("Hero"), self._flat("About"), self._photo("CTA")
+        apply_section_dividers([hero, band, cta], "modern")
+
+        self.assertEqual(cta.divider.top.color, "#f8fafc")
+
+    def test_hero_seam_is_skipped_without_disabling_the_cta_seam(self):
+        # Photo hero next to a photo band → that boundary is unusable, but the
+        # page still gets its CTA seam.
+        hero, band, cta = self._photo("Hero"), self._photo("About"), self._flat("CTA")
+        apply_section_dividers([hero, band, cta], "modern")
+
+        self.assertIsNone(hero.divider)
+        self.assertEqual(band.divider.bottom.color, "#f8fafc")
+
+
+class PhotoEdgeFadeTest(unittest.TestCase):
+    """`photo_background` fades a hero into the THEME page background because the
+    section below it doesn't exist yet. `retune_photo_edge_fades` corrects that
+    once the page is assembled."""
+
+    def setUp(self):
+        self.theme = build_theme("#2563eb")
+
+    def _hero(self):
+        styles = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed",
+            page_bg_hex=self.theme.page.background,
+        )
+        return BuilderElement(
+            name="Hero", type="section", styles={**styles, "width": "100%"}, content=[],
+        )
+
+    @staticmethod
+    def _flat(name, bg):
+        return BuilderElement(
+            name=name, type="section",
+            styles={"backgroundColor": bg, "width": "100%"}, content=[],
+        )
+
+    @staticmethod
+    def _fade_of(section):
+        layers = _split_layers(section.styles["backgroundImage"])
+        return next((l for l in layers if is_edge_fade_layer(l)), None)
+
+    def test_the_writer_and_the_matcher_agree(self):
+        self.assertTrue(is_edge_fade_layer(edge_fade_gradient("#0f172a")))
+        self.assertFalse(is_edge_fade_layer("linear-gradient(to right, #fff, #000)"))
+
+    def test_fade_repoints_at_a_dark_band_below(self):
+        hero = self._hero()
+        self.assertIsNotNone(self._fade_of(hero))  # written against the page bg
+
+        retune_photo_edge_fades([hero, self._flat("CTA", "#111827")], self.theme)
+
+        # Dissolves into the band that is actually there, not page-coloured haze.
+        self.assertIn("rgba(17,24,39,1) 100%", self._fade_of(hero))
+
+    def test_fade_is_dropped_when_a_shaped_edge_already_bridges_the_seam(self):
+        hero, band = self._hero(), self._flat("Features", "#111827")
+        apply_section_dividers([hero, band], "modern")
+        widths = len(_split_layers(hero.styles["backgroundImage"]))
+
+        retune_photo_edge_fades([hero, band], self.theme)
+
+        self.assertIsNone(self._fade_of(hero))
+        # Every parallel per-layer list loses the same index, or the grain tile
+        # would slide onto a layer that expects `cover`.
+        layers = _split_layers(hero.styles["backgroundImage"])
+        self.assertEqual(len(layers), widths - 1)
+        for prop in ("backgroundSize", "backgroundRepeat", "backgroundPosition"):
+            self.assertEqual(len(_split_layers(hero.styles[prop])), len(layers), prop)
+        self.assertTrue(hero.styles["backgroundSize"].startswith("140px 140px,"))
+        self.assertTrue(hero.styles["backgroundPosition"].startswith("0 0,"))
+
+    def test_fade_is_dropped_when_the_next_section_paints_its_own_picture(self):
+        below = BuilderElement(
+            name="CTA", type="section",
+            styles={"backgroundImage": "url('https://x/q.jpg')", "backgroundColor": "#0f172a"},
+            content=[],
+        )
+        hero = self._hero()
+        retune_photo_edge_fades([hero, below], self.theme)
+
+        self.assertIsNone(self._fade_of(hero))
+
+    def test_fade_is_dropped_when_nothing_follows_on_the_page(self):
+        hero = self._hero()
+        retune_photo_edge_fades([hero], self.theme)
+
+        self.assertIsNone(self._fade_of(hero))
+
+    def test_builder_colour_tokens_resolve_against_the_theme(self):
+        hero = self._hero()
+        below = self._flat("CTA", "var(--builder-color-secondary, #0f172a)")
+        retune_photo_edge_fades([hero, below], self.theme)
+
+        r, g, b = _hex_to_rgb(self.theme.palette.secondary)
+        self.assertIn(f"rgba({r},{g},{b},1) 100%", self._fade_of(hero))
+
+    def test_a_page_background_neighbour_leaves_the_fade_alone(self):
+        hero = self._hero()
+        before = self._fade_of(hero)
+        retune_photo_edge_fades([hero, self._flat("About", self.theme.page.background)], self.theme)
+
+        self.assertEqual(self._fade_of(hero), before)
 
 
 class ColorDistanceTest(unittest.TestCase):

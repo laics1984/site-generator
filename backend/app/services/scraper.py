@@ -38,7 +38,12 @@ from playwright.async_api import async_playwright
 
 from app.config import settings
 from app.models.brand import BrandIdentity
-from app.models.content_blocks import ImageMetadata, ProfileCandidate, SourceContent
+from app.models.content_blocks import (
+    ImageMetadata,
+    NavLink,
+    ProfileCandidate,
+    SourceContent,
+)
 from app.services.url_guard import UnsafeUrlError, assert_public_url, is_public_url
 from app.services.timing import stage
 from app.services.fast_fetch import (
@@ -54,6 +59,7 @@ from app.services.nav_extraction import (
     extract_body_link_clusters,
     extract_nav_links,
     extract_social_links,
+    social_links_from_anchors,
     strip_chrome_lines,
 )
 from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
@@ -1271,6 +1277,45 @@ def _has_portrait_aspect(
     return _PORTRAIT_MIN_ASPECT <= ratio <= _PORTRAIT_MAX_ASPECT
 
 
+# Elements a page uses to NAME something, in the two ways markup expresses it:
+# by tag rank, or by a class/id that says "this is the name".
+_NAME_ELEMENT_TAGS = ("h1", "h2", "h3", "h4", "h5")
+
+
+def _leading_person_name(soup: BeautifulSoup) -> str | None:
+    """The person the page's BODY leads with, read off the DOM hierarchy.
+
+    Walks the body in document order and stops at the first *designated* name
+    element — one ranked as a heading, or one a class/id marks as a name — whose
+    text reads as a person's. Chrome is skipped: a nav or footer names people on
+    every page of the site, so a match there says nothing about this page.
+
+    This is the third way a page can say whose page it is, beside its <title>
+    and its URL, and the only one that survives MMTA's committee pages: their
+    <title> is the template "About MMTA", their h1 is the section banner "The
+    Committee", and the person is named a level down in <div class="name"> —
+    invisible to any title-or-heading reading.
+
+    Elements are examined outermost-first, so a wrapper holding the whole card
+    is seen before the name inside it; it fails the person-name test on length
+    and the walk continues inward.
+    """
+    body = soup.body or soup
+    chrome = list(_PROFILE_CHROME_TAGS)
+    for el in body.find_all(True):
+        if not isinstance(el, Tag):
+            continue
+        if el.name not in _NAME_ELEMENT_TAGS and not _has_any_hint(el, _PROFILE_NAME_HINTS):
+            continue
+        text = _clean_line(el.get_text(" ", strip=True))
+        if not _looks_like_person_name(text):
+            continue
+        if el.find_parent(chrome) is not None:
+            continue
+        return text
+    return None
+
+
 def _page_subject_profile(
     soup: BeautifulSoup, base_url: str, portraits: list[tuple[str, str]]
 ) -> ProfileCandidate | None:
@@ -1305,6 +1350,19 @@ def _page_subject_profile(
     if matched is None:
         return None
 
+    # The page IS this person — any mailto:/tel:/social link in its body
+    # (outside chrome shared by every page) is fair to attribute to them, the
+    # same way a card's own anchors are attributed to it above.
+    body = soup.body or soup
+    chrome = list(_PROFILE_CHROME_TAGS)
+    anchors = [
+        a
+        for a in body.find_all("a", href=True)
+        if isinstance(a, Tag) and a.find_parent(chrome) is None
+    ]
+    email, phone = _contacts_from_anchors(anchors)
+    social = social_links_from_anchors(anchors, base_url)
+
     photo_url, alt = matched
     return ProfileCandidate(
         name=name,
@@ -1314,9 +1372,109 @@ def _page_subject_profile(
         photo_url=photo_url,
         photo_alt=alt or f"{name} portrait",
         source_url=base_url,
+        email=email,
+        phone=phone,
+        social_links=[(link.label, link.href) for link in social],
         # Below a real card's 0.8: the pairing is positional, not structural.
         confidence=0.75,
     )
+
+
+def _card_anchors(img: Tag, container: Tag) -> list[Tag]:
+    """Links belonging to THIS card, portrait-first.
+
+    The portrait's own ancestor link can only be this person's; the container's
+    links are next. Nothing wider — on a grid the row above a card holds its
+    neighbours' links too.
+    """
+    anchors: list[Tag] = []
+    ancestor = img.find_parent("a")
+    if isinstance(ancestor, Tag):
+        anchors.append(ancestor)
+    anchors.extend(a for a in container.find_all("a") if isinstance(a, Tag))
+    return anchors
+
+
+def _contacts_from_anchors(anchors: list[Tag]) -> tuple[str | None, str | None]:
+    """(email, phone) from mailto:/tel: hrefs among the given anchors.
+
+    Shared by the card-scoped and whole-page extractors below — a directory
+    card's and a solo profile page's own contact links are read the same way,
+    just over a different anchor set.
+    """
+    email: str | None = None
+    phone: str | None = None
+    for anchor in anchors:
+        href = anchor.get("href")
+        if not isinstance(href, str):
+            continue
+        value = href.strip()
+        low = value.lower()
+        if email is None and low.startswith("mailto:"):
+            # "mailto: a@b.my" — the space after the scheme is common enough.
+            address = value.split(":", 1)[1].strip()
+            if "@" in address:
+                email = address
+        elif phone is None and low.startswith("tel:"):
+            number = value.split(":", 1)[1].strip()
+            if number:
+                phone = number
+    return email, phone
+
+
+def _profile_card_contacts(
+    img: Tag, container: Tag, base_url: str
+) -> tuple[str | None, str | None, list[NavLink]]:
+    """(email, phone, social_links) the card offers for this person.
+
+    A directory card's mailto:/tel:/social links are how the source says to
+    reach that person — the profile block renders them beside the portrait
+    rather than leaving them buried in a bio.
+    """
+    anchors = _card_anchors(img, container)
+    email, phone = _contacts_from_anchors(anchors)
+    social = social_links_from_anchors(anchors, base_url)
+    return email, phone, social
+
+
+def _profile_card_link(img: Tag, container: Tag, base_url: str) -> str | None:
+    """The detail page this roster card points at, if it has one.
+
+    A directory that gives its people their own pages says so in the card: the
+    portrait is wrapped in the link, or a "view profile" control carries it
+    (MMTA's committee grid puts it on a badge icon beside the email). That is
+    the source's own statement of where the person's page lives — worth more
+    than anything inferable from the URL or the name, and the only evidence
+    that survives a template whose slugs are hand-spelled.
+
+    The portrait's own ancestor link is preferred: it can only belong to this
+    card. The container is searched second, and nothing wider — on a grid the
+    row above a card holds its neighbours' links too.
+
+    Only real pages qualify. ``_is_crawlable_link`` drops off-site links (a
+    member's own practice) and asset URLs; mail/phone/anchor hrefs are not
+    pages; and a link back to the page the card is ON is chrome — the "Back"
+    arrow on a detail page's own card, not a link to a detail page.
+    """
+    here = _normalize_crawl_url(base_url)
+    entry_host = urlparse(base_url).netloc
+
+    for anchor in _card_anchors(img, container):
+        href = anchor.get("href")
+        if not isinstance(href, str) or not href.strip():
+            continue
+        if href.strip().lower().startswith(("mailto:", "tel:", "javascript:", "#")):
+            continue
+        absolute = _absolute_url(base_url, href.strip())
+        if not absolute:
+            continue
+        normalized = _normalize_crawl_url(absolute)
+        if not normalized or normalized == here:
+            continue
+        if not _is_crawlable_link(normalized, entry_host):
+            continue
+        return normalized
+    return None
 
 
 def _extract_profile_candidates(
@@ -1370,6 +1528,9 @@ def _extract_profile_candidates(
         if not name:
             continue
         role = _extract_profile_role(container, name)
+        card_email, card_phone, card_social = _profile_card_contacts(
+            img, container, base_url
+        )
         key = (name.lower(), photo_url)
         if key in seen:
             continue
@@ -1382,6 +1543,10 @@ def _extract_profile_candidates(
                 photo_url=photo_url,
                 photo_alt=alt or f"{name} portrait",
                 source_url=base_url,
+                profile_url=_profile_card_link(img, container, base_url),
+                email=card_email,
+                phone=card_phone,
+                social_links=[(link.label, link.href) for link in card_social],
                 confidence=0.9 if role else 0.8,
             )
         )
@@ -1764,6 +1929,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         body_link_clusters=body_link_clusters,
         social_links=social_links,
         url_path=urlparse(final_url).path or "/",
+        subject_name=_leading_person_name(soup),
         image_metadata=[
             ImageMetadata(
                 url=c.url,

@@ -109,8 +109,10 @@ class ScopeTest(unittest.TestCase):
         self.assertEqual(_candidates(pool, 0), [])
 
     def test_it_takes_scraped_metadata_not_stock_results(self):
-        """Stock photos are PhotoResult and never become ImageMetadata, so they
-        cannot be screened — Pexels ships photographs, not posters."""
+        """The PREFETCH is the scraped pool's warm-up only. Stock queries don't
+        exist yet when it runs (they come out of content generation, which it
+        runs alongside), so stock is screened at pick time instead — see
+        StockScreeningTest."""
         import inspect
 
         from app.services.pexels import PhotoResult
@@ -222,6 +224,183 @@ class OnDemandVerificationTest(unittest.TestCase):
     def test_the_reject_budget_is_bounded(self):
         self.assertGreaterEqual(settings.ocr_verify_budget, 1)
         self.assertLessEqual(settings.ocr_verify_budget, 8)
+
+
+class StockScreeningTest(unittest.TestCase):
+    """A hero that falls through to stock must keep the guarantee the scraped
+    path gives it. The old scope rule ("Pexels ships photographs, not posters")
+    covered the artwork-shaped failure but missed the one that actually reaches
+    production: a genuine photograph OF text. "sheet music" returns printed
+    notation, "therapist speaking at a conference" returns a slide wall — both
+    on-topic answers to the query we asked, both unusable behind a headline.
+    """
+
+    def _resolver(self, results):
+        from app.services.media import ImageResolver
+        from tests.test_media import FakePexels
+
+        return ImageResolver(pexels=FakePexels(results))
+
+    @staticmethod
+    def _stock(url, alt="sheet music", **kw):
+        from app.services.pexels import PhotoResult
+
+        return PhotoResult(url=url, alt=alt, photographer="T",
+                           photographer_url=None, source="pexels", **kw)
+
+    def test_a_background_slot_walks_past_a_photo_of_text(self):
+        wordy = self._stock("https://p/score.jpg")
+        clean = self._stock("https://p/piano.jpg")
+        resolver = self._resolver({"sheet music": [wordy, clean]})
+
+        async def screen(url):
+            return url == wordy.url
+
+        with mock.patch("app.services.media.verify_url", side_effect=screen):
+            got = asyncio.run(
+                resolver.resolve("sheet music", intent="hero", slot_usage="background")
+            )
+        self.assertEqual(got.url, clean.url)
+
+    def test_inline_stock_is_not_screened(self):
+        """Nothing is drawn over a featured image — screening it would only
+        spend a download and an inference to reject a usable photo."""
+        resolver = self._resolver({"sheet music": [self._stock("https://p/score.jpg")]})
+        calls = []
+
+        async def spy(url):
+            calls.append(url)
+            return False
+
+        with mock.patch("app.services.media.verify_url", side_effect=spy):
+            asyncio.run(
+                resolver.resolve("sheet music", intent="hero", slot_usage="inline")
+            )
+        self.assertEqual(calls, [])
+
+    def test_an_all_text_batch_walks_the_chain_instead_of_settling(self):
+        """Every result being text says the QUERY resolves to text, so the next
+        chain entry is a better bet than the least-bad candidate."""
+        from app.services.media import ImageResolver
+        from tests.test_media import FakePexels
+
+        # Market cue fixes the chain: "<cue> q", "Asian q", then plain "q".
+        pexels = FakePexels(
+            {
+                "Southeast Asian sheet music": [
+                    self._stock(f"https://p/score{i}.jpg") for i in range(2)
+                ],
+                "Asian sheet music": [self._stock("https://p/studio.jpg", alt="sheet music")],
+            }
+        )
+        resolver = ImageResolver(pexels=pexels, market_cue="Southeast Asian")
+
+        async def screen(url):
+            return "score" in url
+
+        with mock.patch("app.services.media.verify_url", side_effect=screen), \
+             mock.patch.object(settings, "ocr_verify_budget", 4):
+            got = asyncio.run(
+                resolver.resolve("sheet music", intent="hero", slot_usage="background")
+            )
+        self.assertEqual(got.url, "https://p/studio.jpg")
+
+    def test_the_budget_bounds_inferences_without_starving_the_slot(self):
+        """Budget exhausted ⇒ take the next UNSCREENED candidate. Bounding the
+        OCR spend must not cost the slot its image, and must never hand back
+        one already known to carry text."""
+        pool = [self._stock(f"https://p/score{i}.jpg") for i in range(10)]
+        resolver = self._resolver({"sheet music": pool})
+        seen = []
+
+        async def screen(url):
+            seen.append(url)
+            return True
+
+        with mock.patch("app.services.media.verify_url", side_effect=screen), \
+             mock.patch.object(settings, "ocr_verify_budget", 3):
+            got = asyncio.run(
+                resolver.resolve("sheet music", intent="hero", slot_usage="background")
+            )
+        self.assertEqual(len(seen), 3)
+        self.assertEqual(got.url, pool[3].url)  # first one never screened
+        self.assertNotIn(got.url, seen)
+
+    def test_the_abstract_wash_is_screened_unconditionally(self):
+        """resolve_abstract_bg has exactly one caller shape — full-bleed with
+        text over it — so there is no slot_usage to consult."""
+        wordy = self._stock("https://p/typographic.jpg", alt="poster", avg_color="#334455")
+        clean = self._stock("https://p/gradient.jpg", alt="wash", avg_color="#334455")
+        resolver = self._resolver({"warm abstract gradient": [wordy, clean]})
+
+        async def screen(url):
+            return url == wordy.url
+
+        with mock.patch("app.services.media.verify_url", side_effect=screen):
+            got = asyncio.run(
+                resolver.resolve_abstract_bg(
+                    "warm abstract gradient", color_target_hex="#334455"
+                )
+            )
+        self.assertIsNotNone(got)
+        self.assertEqual(got.url, clean.url)
+
+    def test_every_full_bleed_slot_declares_itself_a_background(self):
+        """slot_usage is what turns the screen on, so a slot that renders
+        `background_image` and asks for "any" is silently unguarded — which is
+        exactly what the CTA band was. Pins the wiring at the call site, since
+        nothing downstream can infer full-bleed from the resolve arguments.
+        """
+        import ast
+        import pathlib
+
+        src = pathlib.Path("app/services/schema_builder.py").read_text()
+        tree = ast.parse(src)
+        builders = {
+            node.name: node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        # Builders that assign background_image from a photo THEY resolve
+        # (as opposed to one handed in already-resolved, e.g. the hero).
+        for name, node in builders.items():
+            resolves = [
+                call
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "resolve"
+            ]
+            sets_background = any(
+                isinstance(kw, ast.keyword) and kw.arg == "background_image"
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call)
+                for kw in call.keywords
+            )
+            if not (resolves and sets_background):
+                continue
+            for call in resolves:
+                usage = next(
+                    (kw.value for kw in call.keywords if kw.arg == "slot_usage"), None
+                )
+                self.assertIsNotNone(
+                    usage, f"{name} resolves a full-bleed photo without slot_usage"
+                )
+                self.assertEqual(
+                    getattr(usage, "value", None), "background",
+                    f"{name} resolves a full-bleed photo with the wrong slot_usage",
+                )
+
+    def test_screening_off_picks_exactly_what_it_picked_before(self):
+        """The ordering swap (max -> sorted+reverse) must be a no-op when the
+        screen is off, ties included."""
+        first = self._stock("https://p/a.jpg", alt="music therapy session")
+        tie = self._stock("https://p/b.jpg", alt="music therapy session")
+        resolver = self._resolver({"music therapy session": [first, tie]})
+        got = asyncio.run(
+            resolver.resolve("music therapy session", intent="generic", slot_usage="inline")
+        )
+        self.assertEqual(got.url, first.url)
 
 
 class BudgetTest(unittest.TestCase):
