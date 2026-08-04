@@ -95,6 +95,7 @@ class HeroPhotoPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(img_slot, featured)  # fills the split column
         self.assertIs(washed, abstract)  # washes the section background
         self.assertEqual(ctx.resolver.calls[0]["intent"], "hero")
+        self.assertEqual(ctx.resolver.calls[0]["slot_usage"], "inline")
         self.assertEqual(ctx.resolver.calls[1]["method"], "resolve_abstract_bg")
         self.assertEqual(ctx.resolver.calls[1]["intent"], "cta_bg")
 
@@ -111,6 +112,9 @@ class HeroPhotoPolicyTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(washed)  # no abstract wash
         # No second resolve for an abstract background.
         self.assertEqual(len(ctx.resolver.calls), 1)
+        # A full-bleed slot must tell the resolver so its text-detection
+        # screen (OCR/vision) actually runs on the winning candidate.
+        self.assertEqual(ctx.resolver.calls[0]["slot_usage"], "background")
 
     async def test_split_mood_but_planner_forces_background_stays_full_bleed(self):
         # The split lean is soft: an explicit planner layout="background" wins.
@@ -123,6 +127,7 @@ class HeroPhotoPolicyTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(block.layout, "background")
         self.assertIsNone(washed)
+        self.assertEqual(ctx.resolver.calls[0]["slot_usage"], "background")
 
     async def test_split_drops_washed_bg_when_abstract_not_genuine(self):
         ctx = _ctx(_photo("pexels"), _photo("placeholder"), mood="technical")
@@ -132,6 +137,7 @@ class HeroPhotoPolicyTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(block.layout, "split")
         self.assertIsNone(washed)
+        self.assertEqual(ctx.resolver.calls[0]["slot_usage"], "inline")
 
     async def test_no_featured_falls_to_full_bleed_color_matched_abstract(self):
         featured = _photo("placeholder")
@@ -176,6 +182,55 @@ class HeroPhotoPolicyTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(block.layout, "split")
         self.assertEqual(block.image_query, "reach the team")
+
+    async def test_scraped_text_bearing_photo_never_wins_the_legacy_background_slot(self):
+        """Regression: before the fix, this no-directive path resolved the
+        hero photo BEFORE deciding it would render full-bleed, so the
+        resolver was never told slot_usage="background" and the
+        text-detection veto (image_match.bears_text) never ran — a scraped
+        graphic/newsletter with its own baked-in wording could win the slot
+        and collide with the site's real headline drawn on top of it.
+        Exercises the REAL ImageResolver (not FakeResolver) so the veto's
+        actual wiring is under test, not a mock of it."""
+        from app.models.content_blocks import ImageMetadata
+        from app.services.media import ImageResolver
+
+        clean_fallback = PhotoResult(
+            url="https://images.pexels.com/clean-crowd.jpg",
+            alt="volunteers at a community event",
+            photographer="X", photographer_url="u",
+            source="pexels", avg_color="#8a7f6d",
+        )
+
+        class FakePexels:
+            configured = True
+
+            async def search_many(self, query, *, orientation):
+                return [clean_fallback]
+
+        text_bearing = ImageMetadata(
+            url="https://x/newsletter.jpg",
+            alt="community activities newsletter update",
+            intent="hero",
+            width=1600,
+            height=1000,
+            vision_has_text=True,
+        )
+        resolver = ImageResolver(scraped_metadata=[text_bearing], pexels=FakePexels())
+        theme = build_theme("#2563eb", "friendly")  # not split-inclined
+        ctx = SimpleNamespace(theme=theme, resolver=resolver, page_images=[])
+        block = HeroBlock(
+            headline="Make a Difference in the Field",
+            image_query="community activities newsletter",
+        )
+
+        img_slot, _washed = await _apply_hero_photo_policy(block, ctx)
+
+        # confirms the gap is live: the scraped candidate was excluded from
+        # the background slot and a real substitute filled it instead.
+        self.assertEqual(block.layout, "background")
+        self.assertNotEqual(getattr(img_slot, "url", None), text_bearing.url)
+        self.assertEqual(getattr(img_slot, "url", None), clean_fallback.url)
 
 
 class HeroDirectiveTest(unittest.IsolatedAsyncioTestCase):

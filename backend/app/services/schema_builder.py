@@ -141,6 +141,7 @@ from app.services.style_tokens import (
     _hairline,
     _muted,
     apply_section_decoration,
+    brand_ink,
     emphasis_ink,
     glass_card_styles,
     grain_data_uri,
@@ -854,6 +855,13 @@ def _resolve_token_hex(value: str, theme: ThemeTokens) -> str | None:
     name, fallback = match.group(1), (match.group(2) or "").strip()
     if name == "--builder-page-background":
         return theme.page.background
+    # Derived, not a palette field: AA-corrected primary for text printed
+    # directly in the brand hue. Checked before the generic palette lookup
+    # below, which would otherwise miss it (no `primary_ink` attribute) and
+    # fall through to the token's static fallback hex. Keep in lockstep with
+    # section_content._token_hex.
+    if name == "--builder-color-primary-ink":
+        return brand_ink(theme)
     if name.startswith("--builder-color-"):
         token = name[len("--builder-color-") :].replace("-", "_")
         resolved = getattr(theme.palette, token, None)
@@ -1419,6 +1427,13 @@ _CHILDCARE_HERO_INKS: tuple[str, ...] = (
 # BOTH ends of the cast, so the overlay darkens without tinting, and the layer
 # stack (grain, vignette, edge fade, framing) is identical to every other hero.
 _CHILDCARE_HERO_INK = "#0f172a"
+
+# How much of the whole-frame brand cast + vignette survives on the homepage's
+# full-bleed hero (see the `is_homepage` block in block_to_element). The text
+# scrim is untouched — legibility doesn't depend on this layer — so this only
+# lets the resolved photo's own colours read through more clearly on the page
+# that matters most for a first impression.
+_HOMEPAGE_HERO_WASH_SCALE = 0.45
 
 
 def _split_headline(headline: str, accent: str | None) -> tuple[str, str] | None:
@@ -2255,7 +2270,7 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
                     primary=True,
                     extra={
                         "backgroundColor": "#ffffff",
-                        "color": ctx.theme.palette.primary,
+                        "color": brand_ink(ctx.theme, "#ffffff"),
                     },
                 )
             ],
@@ -2588,7 +2603,7 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                         "padding": "0",
                         "marginTop": "12px",
                         "alignSelf": "center",
-                        "color": ctx.theme.palette.primary,
+                        "color": brand_ink(ctx.theme),
                         "fontSize": "14px",
                         "fontWeight": 700,
                         "textDecoration": "none",
@@ -2680,7 +2695,7 @@ async def _build_profile(block: ProfileBlock, ctx: RenderContext) -> BuilderElem
                     **s.body,
                     "fontSize": "16px",
                     "lineHeight": "1.45",
-                    "color": ctx.theme.palette.primary,
+                    "color": brand_ink(ctx.theme),
                     "fontWeight": 700,
                 },
             )
@@ -2721,7 +2736,7 @@ async def _build_profile(block: ProfileBlock, ctx: RenderContext) -> BuilderElem
                     "boxShadow": "none",
                     "padding": "0",
                     "alignSelf": "flex-start",
-                    "color": ctx.theme.palette.primary,
+                    "color": brand_ink(ctx.theme),
                     "fontSize": "14px",
                     "fontWeight": 700,
                     "textDecoration": "none",
@@ -3516,12 +3531,24 @@ async def _apply_hero_photo_policy(
     """
     if directive is not None:
         return await _apply_hero_directive(block, ctx, directive)
+    # Split only for split-inclined moods, and only when the planner didn't
+    # explicitly ask for a full-bleed photo (default layout is "split").
+    # Decided BEFORE resolving: a full-bleed background slot must tell the
+    # resolver slot_usage="background" up front so the text-detection safety
+    # net (OCR/vision — see media._reject_text_backgrounds, image_match.
+    # bears_text) actually screens the candidate; deciding "background" only
+    # after the fact, as this used to, let a photo-of-text win the slot with
+    # zero screening. Mirrors _apply_hero_directive's existing split/inline
+    # split, which never had this gap.
+    mood = getattr(ctx.theme, "mood", None)
+    will_split = mood in SPLIT_INCLINED_MOODS and block.layout != "background"
     featured = await ctx.resolver.resolve(
         block.image_query,
         intent="hero",
         alt_fallback=block.image_alt or block.headline,
         prefer=ctx.page_images,
         pinned_url=block.image_url,
+        slot_usage=("inline" if will_split else "background"),
     )
     abstract_query = _abstract_theme_query(ctx)
     primary_hex = ctx.theme.palette.primary
@@ -3529,10 +3556,7 @@ async def _apply_hero_photo_policy(
     if featured.source in _GENUINE_PHOTO_SOURCES:
         if not (block.image_query or "").strip():
             block.image_query = block.image_alt or block.headline or "brand photo"
-        mood = getattr(ctx.theme, "mood", None)
-        # Split only for split-inclined moods, and only when the planner didn't
-        # explicitly ask for a full-bleed photo (default layout is "split").
-        if mood in SPLIT_INCLINED_MOODS and block.layout != "background":
+        if will_split:
             block.layout = "split"
             washed_bg = await ctx.resolver.resolve_abstract_bg(
                 abstract_query, color_target_hex=primary_hex, intent="cta_bg"
@@ -3744,6 +3768,30 @@ async def block_to_element(
                     anchor=hero_comp.anchor if hero_comp else "center",
                     focal_y=hero_photo.focal_y,
                     page_bg_hex=ctx.theme.palette.background,
+                ),
+            }
+        # Homepage: the first-impression hero deserves a vivid photo, not a
+        # slate-tinted one. The whole-frame brand cast + vignette get lightened
+        # (never the text scrim, which is what actually buys copy contrast) so
+        # a genuinely attractive resolved photo reads as a photo. Childcare
+        # already gets an even stronger treatment above, so it's excluded here.
+        if (
+            block.kind == "hero"
+            and is_homepage
+            and ctx.industry != "childcare"
+            and template["id"] in _FULLBLEED_HERO_IDS
+            and hero_photo is not None
+            and hero_photo.source in _GENUINE_PHOTO_SOURCES
+        ):
+            element.styles = {
+                **(element.styles or {}),
+                **photo_background(
+                    hero_photo.avg_color, hero_photo.url,
+                    ctx.theme.palette.secondary, ctx.theme.palette.primary,
+                    anchor=hero_comp.anchor if hero_comp else "center",
+                    focal_y=hero_photo.focal_y,
+                    page_bg_hex=ctx.theme.palette.background,
+                    wash_alpha_scale=_HOMEPAGE_HERO_WASH_SCALE,
                 ),
             }
         # Composition: anchor the copy block and let the scrim (built above)

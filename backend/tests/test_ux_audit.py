@@ -230,6 +230,80 @@ class TextContrastTest(unittest.TestCase):
         _, n = self._run(tree, theme)
         self.assertEqual(n, 0)
 
+    def test_color_mix_card_background_not_misread_as_opaque_primary(self):
+        # The process-enrollment-steps "Step Cell"/"Step Title" shape: a
+        # near-white color-mix() card (6% primary over white) used to be
+        # misread by _VAR_TOKEN as the token's raw, fully-opaque colour —
+        # judging the card "dark" and force-flipping the correct dark title
+        # to white, landing white-on-near-white.
+        theme = build_theme("#2563eb", color_scheme="light")
+        tree = _container(
+            "step-cell",
+            [_text("title", "Safeguard Standards", color="var(--builder-color-secondary, #0f172a)")],
+            backgroundColor="color-mix(in srgb, var(--builder-color-primary, #2563eb) 6%, #ffffff)",
+        )
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 0)
+        self.assertEqual(
+            tree.content[0].styles["color"], "var(--builder-color-secondary, #0f172a)"
+        )
+
+    def test_color_mix_background_does_not_force_recolor_its_own_brand_text(self):
+        # The services-programs-age "Age Badge" / hero-playful-split "Sticker
+        # Eyebrow" shape: a single text node carries BOTH a color-mix() fill
+        # and a primary-ink foreground. Misreading the fill as opaque primary
+        # risked stomping the badge's own intentionally brand-coloured label.
+        theme = build_theme("#2563eb", color_scheme="light")
+        el = _text(
+            "age-badge",
+            "0–2 yrs",
+            color="var(--builder-color-primary-ink, #2563eb)",
+            backgroundColor="color-mix(in srgb, var(--builder-color-primary, #2563eb) 12%, #ffffff)",
+        )
+        _, n = self._run(el, theme)
+        self.assertEqual(n, 0)
+
+
+class ColorMixParsingTest(unittest.TestCase):
+    """Direct unit coverage of _parse_color's color-mix() handling."""
+
+    def _parse(self, value, theme):
+        from app.services.section_content import _parse_color
+        return _parse_color(value, theme)
+
+    def test_literal_hex_mix(self):
+        theme = build_theme("#2563eb")
+        rgb, a = self._parse("color-mix(in srgb, #000000 50%, #ffffff)", theme)
+        self.assertEqual(rgb, (128, 128, 128))
+        self.assertEqual(a, 1.0)
+
+    def test_var_token_mix_matches_catalog_shape(self):
+        from app.services.theme import _hex_to_rgb
+
+        theme = build_theme("#2563eb", color_scheme="light")
+        rgb, a = self._parse(
+            "color-mix(in srgb, var(--builder-color-primary, #2563eb) 6%, #ffffff)", theme,
+        )
+        pr, pg, pb = _hex_to_rgb(theme.palette.primary)
+        self.assertEqual(
+            rgb,
+            (
+                round(0.06 * pr + 0.94 * 255),
+                round(0.06 * pg + 0.94 * 255),
+                round(0.06 * pb + 0.94 * 255),
+            ),
+        )
+        self.assertEqual(a, 1.0)
+
+    def test_gradient_wrapped_color_mix_still_bails(self):
+        theme = build_theme("#2563eb")
+        v = (
+            "linear-gradient(180deg, "
+            "color-mix(in srgb, var(--builder-color-primary, #2563eb) 7%, #ffffff), "
+            "#ffffff)"
+        )
+        self.assertIsNone(self._parse(v, theme))
+
 
 if __name__ == "__main__":
     unittest.main()

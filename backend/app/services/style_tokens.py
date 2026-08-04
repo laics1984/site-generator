@@ -57,6 +57,14 @@ class StyleTokens:
 def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
     palette = theme.palette
     typo = theme.typography
+    # Body/heading ink: `secondary` in the light scheme (a dark neutral tuned
+    # for white/surface backgrounds), but in the dark scheme `secondary` is
+    # itself one of the darkest tokens (the CTA-band colour) — using it as text
+    # ink there put near-black copy on a near-black card. `text` is the token
+    # every palette constructor WCAG-guards against `background` specifically
+    # for this job (see ColorPalette docstring), so the dark scheme reads from
+    # it instead.
+    ink = palette.text if getattr(theme, "color_scheme", "light") == "dark" else palette.secondary
 
     # Fluid type: ceilings scale with the mood's type-scale ratio (1.25 = the
     # previous fixed look), and every tier is a clamp() so it breathes across
@@ -70,7 +78,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "fontSize": _fluid_heading(56, boost),
         "fontWeight": 700,
         "lineHeight": "1.05",
-        "color": palette.secondary,
+        "color": ink,
         "margin": "0",
         "letterSpacing": "-0.02em",
     }
@@ -79,7 +87,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "fontSize": _fluid_heading(44, boost),
         "fontWeight": 700,
         "lineHeight": "1.1",
-        "color": palette.secondary,
+        "color": ink,
         "margin": "0",
         "letterSpacing": "-0.015em",
     }
@@ -88,7 +96,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "fontSize": _fluid_heading(32, boost),
         "fontWeight": 700,
         "lineHeight": "1.15",
-        "color": palette.secondary,
+        "color": ink,
         "margin": "0",
         "letterSpacing": "-0.01em",
     }
@@ -97,7 +105,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "fontFamily": typo.body_font,
         "fontSize": "19px",
         "lineHeight": "1.55",
-        "color": _muted(palette.secondary),
+        "color": _muted(ink),
         "margin": "0",
         "maxWidth": "640px",
     }
@@ -114,7 +122,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "fontFamily": typo.body_font,
         "fontSize": "16px",
         "lineHeight": "1.65",
-        "color": _muted(palette.secondary),
+        "color": _muted(ink),
         "margin": "0",
     }
     card = {
@@ -144,7 +152,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         "transition": "transform 120ms ease, opacity 120ms ease",
     }
     secondary_button = {
-        "color": palette.secondary,
+        "color": ink,
         "backgroundColor": "transparent",
         "paddingTop": "12px",
         "paddingBottom": "12px",
@@ -213,12 +221,30 @@ def emphasis_ink(theme: ThemeTokens, surface: str | None = None) -> str:
     return _accent_ink_for(surface or theme.palette.background, theme.palette.accent)
 
 
+def brand_ink(theme: ThemeTokens, surface: str | None = None) -> str:
+    """Colour for text that should read as the brand PRIMARY (quiet CTA links,
+    role/designation labels) — AA-corrected against `surface` (defaults to the
+    page background), the same guarantee `emphasis_ink` gives the accent.
+
+    `palette.primary` alone is not AA-safe as text: it is picked/curated for
+    button fills and washes, where a 3:1-ish contrast against white is normal
+    (large filled shape, not small text). Several curated palettes land as low
+    as ~2.1:1 there (e.g. the Coworking/Studio amber) — reading as a washed-out
+    near-invisible line when used as raw text, which `enforce_text_contrast`'s
+    safety net deliberately leaves alone (brand colour is assumed intentional).
+    Call sites that print `palette.primary` as a `color` must go through this
+    instead, exactly as accent call sites go through `emphasis_ink`."""
+    return _accent_ink_for(surface or theme.palette.background, theme.palette.primary)
+
+
 def meta_ink(theme: ThemeTokens) -> str:
     """Colour for de-emphasised informational/meta text (role labels, prices,
     dates) that shouldn't carry brand colour — the same muted-secondary tone
     already used for body copy, so meta text reads calmly instead of as a
     miniature CTA."""
-    return _muted(theme.palette.secondary)
+    palette = theme.palette
+    ink = palette.text if getattr(theme, "color_scheme", "light") == "dark" else palette.secondary
+    return _muted(ink)
 
 
 def _hairline(hex_color: str, alpha: float = 0.10) -> str:

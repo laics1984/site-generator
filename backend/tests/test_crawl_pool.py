@@ -107,6 +107,69 @@ class CrawlWorkerPoolTest(unittest.IsolatedAsyncioTestCase):
         # Whatever wasn't dequeued when the cap hit is resumable.
         self.assertGreaterEqual(len(unvisited), 1)
 
+    async def test_roster_member_links_win_the_budget_over_other_links(self):
+        """A committee page's own member links must not lose the page budget
+        to nav/footer/other same-host links just because they're discovered
+        later (after the roster page itself is fetched) — see the `priority`
+        deque in _crawl_extra_pages. Without it, this scenario fetches the
+        roster page plus 3 arbitrary distractor pages and zero committee
+        members, which is exactly the bug: cards for the un-crawled members
+        never get a generated page to link to.
+        """
+        committee_url = "https://site.test/committee"
+        member_urls = [f"https://site.test/member-{i}" for i in range(5)]
+        distractor_urls = [f"https://site.test/distractor-{i}" for i in range(8)]
+
+        def parse(html, final_url, require_text=False):
+            if final_url == committee_url:
+                candidates = [
+                    SimpleNamespace(profile_url=u) for u in member_urls
+                ]
+                links = list(member_urls)
+            else:
+                candidates = []
+                links = []
+            return SimpleNamespace(
+                final_url=final_url,
+                source_content=SimpleNamespace(
+                    links=links, profile_candidates=candidates
+                ),
+            )
+
+        async def fetch(url):
+            return FastFetchResult(html="<html></html>", final_url=url, http_status=200)
+
+        for patcher in (
+            mock.patch.object(scraper, "try_fast_fetch", fetch),
+            mock.patch.object(scraper, "_parse_rendered_html", parse),
+            mock.patch.object(scraper, "get_politeness", mock.AsyncMock(return_value=_FakePoliteness())),
+            # Force strictly sequential processing so the outcome only depends
+            # on queue order (priority vs. frontier), not worker-scheduling luck.
+            mock.patch.object(scraper, "_CRAWL_WORKERS", 1),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        pages, unvisited = await scraper._crawl_extra_pages(
+            None,
+            "https://site.test/",
+            [committee_url, *distractor_urls],
+            max_pages=4,
+            max_depth=2,
+            timeout_ms=1000,
+            respect_robots=False,
+        )
+
+        fetched_urls = [p.final_url for p in pages]
+        self.assertEqual(fetched_urls[0], committee_url)
+        self.assertEqual(len(fetched_urls), 4)
+        # The remaining 3 slots go to committee members, not distractors —
+        # discovered later, but prioritized ahead of them in the queue.
+        self.assertEqual(set(fetched_urls[1:]), set(member_urls[:3]))
+        self.assertFalse(set(fetched_urls) & set(distractor_urls))
+        # Leftover members precede leftover distractors in the resumable frontier.
+        self.assertEqual(unvisited[:2], member_urls[3:])
+
     async def test_cancellation_stops_the_pool(self):
         fetched: list[str] = []
 

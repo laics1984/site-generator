@@ -2061,6 +2061,7 @@ async def _crawl_extra_pages(
     respect_robots: bool,
     extra_seed_urls: list[str] | None = None,
     already_seen: set[str] | None = None,
+    priority_seed_urls: set[str] | None = None,
     on_progress: "Callable[[int, str], Awaitable[None]] | None" = None,
     is_cancelled: "Callable[[], bool] | None" = None,
 ) -> tuple[list[_ParsedPage], list[str]]:
@@ -2073,6 +2074,11 @@ async def _crawl_extra_pages(
 
     Translated mirrors of the entry language (/zh/about beside /about) are
     crawled only after every other queued page — see ``_is_locale_mirror``.
+    Roster/profile-card links (a committee page's links to its own members)
+    jump to the *front* instead: they're what a Team block on the generated
+    site actually needs, and a plain FIFO frontier lets them get crowded out
+    by nav/footer links when a site has more pages than the crawl budget —
+    see ``priority_seed_urls`` and the ``profile_candidates`` check below.
 
     The leftover frontier is what the BFS had queued but didn't process when
     the cap was hit. The router surfaces this so the frontend can offer
@@ -2080,7 +2086,10 @@ async def _crawl_extra_pages(
 
     ``extra_seed_urls`` lets a resume call (POST /api/scrape/extend) seed the
     BFS with the prior crawl's leftover frontier.  ``already_seen`` lets the
-    resume call avoid re-fetching URLs from the prior pass.
+    resume call avoid re-fetching URLs from the prior pass. ``priority_seed_urls``
+    lets the caller mark some of ``seed_links``/``extra_seed_urls`` (e.g. the
+    entry page's own profile-card links, when the entry page is itself a
+    roster) as high-priority up front.
     """
     entry_parsed = urlparse(entry_final_url)
     entry_host = entry_parsed.netloc
@@ -2121,16 +2130,28 @@ async def _crawl_extra_pages(
     # the result order too, not just fetch order: downstream ranking reads
     # earlier pages as closer to the entry, and a translation of /about must
     # never outrank /about because the header happened to list it first.
+    #
+    # `priority` holds roster/profile-card links — a committee page's links to
+    # its own members. They're drained before `frontier` so they win the page
+    # budget over nav/footer/unrelated links when the site has more pages than
+    # the crawl can afford, instead of losing out just because they happened
+    # to be discovered later or appear lower in the page's HTML.
     discovery_count = 0
+    priority: deque[tuple[str, int, int, int]] = deque()
     frontier: deque[tuple[str, int, int, int]] = deque()
     deferred: deque[tuple[str, int, int, int]] = deque()
 
-    def _enqueue(norm: str, depth: int) -> None:
+    def _enqueue(norm: str, depth: int, *, priority_link: bool = False) -> None:
         nonlocal discovery_count
         is_mirror = _is_locale_mirror(
             _path_key(norm), entry_locale=entry_locale, known_paths=known_paths
         )
-        queue = deferred if is_mirror else frontier
+        if is_mirror:
+            queue = deferred
+        elif priority_link:
+            queue = priority
+        else:
+            queue = frontier
         queue.append((norm, depth, discovery_count, 1 if is_mirror else 0))
         discovery_count += 1
 
@@ -2144,8 +2165,8 @@ async def _crawl_extra_pages(
         if not _is_crawlable_link(norm, entry_host):
             continue
         seen.add(norm)
-        _enqueue(norm, 1)
-        if len(frontier) + len(deferred) >= max_pages * 3:  # cap how many we even queue
+        _enqueue(norm, 1, priority_link=norm in (priority_seed_urls or ()))
+        if len(priority) + len(frontier) + len(deferred) >= max_pages * 3:  # cap how many we even queue
             break
 
     # Sliding-window worker pool instead of lockstep batches: with batches of 3,
@@ -2268,7 +2289,7 @@ async def _crawl_extra_pages(
         while True:
             if _should_stop():
                 return
-            if not frontier:
+            if not priority and not frontier:
                 if not mirrors_unlocked:
                     if in_flight:
                         # An in-flight fetch may still expand the frontier with
@@ -2283,7 +2304,7 @@ async def _crawl_extra_pages(
                         return  # no queued work and nobody can produce more
                     await _wait_for_work()
                     continue
-            url, depth, _discovered, _tier = (frontier or deferred).popleft()
+            url, depth, _discovered, _tier = (priority or frontier or deferred).popleft()
             in_flight += 1
             try:
                 depth, parsed = await _fetch_one((url, depth))
@@ -2304,6 +2325,21 @@ async def _crawl_extra_pages(
             if depth >= max_depth:
                 continue
             _register_paths(parsed.source_content.links)
+            # A page with a real roster (>= page_inference.ROSTER_MIN_PROFILES
+            # cards) names its own members' pages via each card's profile_url —
+            # the same signal page_inference.roster_detail_links reads after
+            # the crawl. Those links jump the queue (see `priority` above) so
+            # a Team block's member pages don't lose the page budget to nav
+            # or footer links just because this roster wasn't crawled first.
+            candidates = getattr(parsed.source_content, "profile_candidates", None) or []
+            priority_urls: set[str] = set()
+            if len(candidates) >= 2:
+                for candidate in candidates:
+                    if not candidate.profile_url:
+                        continue
+                    norm_p = _normalize_crawl_url(candidate.profile_url)
+                    if norm_p:
+                        priority_urls.add(norm_p)
             for child in parsed.source_content.links:
                 norm = _normalize_crawl_url(child)
                 if not norm or norm in seen:
@@ -2311,11 +2347,11 @@ async def _crawl_extra_pages(
                 if not _is_crawlable_link(norm, entry_host):
                     continue
                 seen.add(norm)
-                _enqueue(norm, depth + 1)
+                _enqueue(norm, depth + 1, priority_link=norm in priority_urls)
             new_work.set()
 
-    if frontier or deferred:
-        queued = len(frontier) + len(deferred)
+    if priority or frontier or deferred:
+        queued = len(priority) + len(frontier) + len(deferred)
         worker_count = min(_CRAWL_WORKERS, max(1, queued))
         await asyncio.gather(*(_worker() for _ in range(min(worker_count, max_pages))))
 
@@ -2328,7 +2364,7 @@ async def _crawl_extra_pages(
     # Whatever the queues still hold when we stop is "unvisited" — surface it so
     # callers can resume via /api/scrape/extend. Untranslated pages lead, so a
     # "crawl N more" pass keeps picking up new content before translations.
-    unvisited = [url for url, _depth, _i, _tier in (*frontier, *deferred)]
+    unvisited = [url for url, _depth, _i, _tier in (*priority, *frontier, *deferred)]
     return parsed_pages, unvisited
 
 
@@ -2413,6 +2449,20 @@ async def scrape_url(
 
             unvisited_urls: list[str] = []
             if crawl:
+                # If the entry page IS the roster (the user pasted the committee
+                # page directly), its member links deserve the same front-of-queue
+                # treatment a roster discovered mid-crawl gets — see `priority`
+                # in _crawl_extra_pages.
+                entry_candidates = getattr(entry.source_content, "profile_candidates", None) or []
+                priority_seed_urls: set[str] | None = None
+                if len(entry_candidates) >= 2:
+                    priority_seed_urls = {
+                        norm
+                        for c in entry_candidates
+                        if c.profile_url
+                        for norm in (_normalize_crawl_url(c.profile_url),)
+                        if norm
+                    }
                 logger.info("crawling up to %d extra pages from %s", crawl_max_pages, final_url)
                 with stage("crawl_extra_pages"):
                     discovered, unvisited_urls = await _crawl_extra_pages(
@@ -2423,6 +2473,7 @@ async def scrape_url(
                     max_depth=crawl_max_depth,
                     timeout_ms=12000,
                     respect_robots=respect_robots,
+                    priority_seed_urls=priority_seed_urls,
                     on_progress=on_progress,
                     is_cancelled=is_cancelled,
                 )

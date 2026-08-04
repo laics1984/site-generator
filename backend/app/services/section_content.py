@@ -46,6 +46,7 @@ from app.models.content_blocks import (
     TestimonialsBlock,
     VisualPolicy,
 )
+from app.services.style_tokens import brand_ink
 from app.services.template_filler import get_template, templates_for_type
 from app.services.theme import (
     _adjust_lightness,
@@ -1017,6 +1018,15 @@ _RGBA = _re.compile(
 )
 _HEX6 = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _VAR_TOKEN = _re.compile(r"var\(\s*(--builder-[a-z-]+)")
+# The catalog's only color-mix() shape: two colors (each independently a
+# var(--builder-*, #fallback) or a literal hex) blended in sRGB by a literal
+# percent. Must be checked before _VAR_TOKEN below — a bare .search() there
+# would otherwise grab the var() embedded inside this expression and treat
+# the whole mix as that token's raw, fully-opaque color.
+_COLOR_MIX = _re.compile(
+    r"color-mix\(\s*in\s+srgb\s*,\s*(.+?)\s+([\d.]+)%\s*,\s*(.+?)\s*\)\s*$",
+    _re.IGNORECASE,
+)
 
 
 def _token_hex(token: str, theme: ThemeTokens) -> str | None:
@@ -1026,6 +1036,7 @@ def _token_hex(token: str, theme: ThemeTokens) -> str | None:
     p = theme.palette
     return {
         "--builder-color-primary": p.primary,
+        "--builder-color-primary-ink": brand_ink(theme),
         "--builder-color-secondary": p.secondary,
         "--builder-color-accent": p.accent,
         "--builder-color-text": p.text,
@@ -1060,6 +1071,21 @@ def _parse_color(
         return None
     if v.lower() in ("transparent", "none", "currentcolor", "inherit"):
         return None
+    cm = _COLOR_MIX.match(v)
+    if cm:
+        c1 = _parse_color(cm.group(1).strip(), theme)
+        c2 = _parse_color(cm.group(3).strip(), theme)
+        if c1 is None or c2 is None:
+            return None
+        pct = max(0.0, min(100.0, float(cm.group(2)))) / 100.0
+        (r1, g1, b1), a1 = c1
+        (r2, g2, b2), a2 = c2
+        rgb = (
+            round(pct * r1 + (1 - pct) * r2),
+            round(pct * g1 + (1 - pct) * g2),
+            round(pct * b1 + (1 - pct) * b2),
+        )
+        return rgb, pct * a1 + (1 - pct) * a2
     m = _VAR_TOKEN.search(v)
     if m:
         hexv = _token_hex(m.group(1), theme)

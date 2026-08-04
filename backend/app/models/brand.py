@@ -231,8 +231,20 @@ class ThemeTokens(BaseModel):
 
     def to_builder_styles(self) -> dict[str, Any]:
         """Serialize as the exact `BuilderStyles` shape the webtree builder expects."""
+        # Lazy import: app.services.theme imports ColorPalette etc. from this
+        # module at load time, so a top-level import here would be circular.
+        from app.services.style_tokens import brand_ink
+
         colors = {
             "primary": self.palette.primary,
+            # AA-corrected primary, for catalog text printed directly in the
+            # brand hue (Eyebrow labels, role lines, badges) — `primary` alone
+            # is picked for button fills, where a lower ratio against white is
+            # normal for a large filled shape. Keep in lockstep with builder
+            # src/lib/builder-styles.ts (toBuilderCssVars) and webtree-public
+            # lib/styles.ts (buildCssVars), which also derive it on the fly if
+            # this key is ever missing from an older stored payload.
+            "primaryInk": brand_ink(self),
             "secondary": self.palette.secondary,
             "accent": self.palette.accent,
             "text": self.palette.text,

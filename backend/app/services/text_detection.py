@@ -96,12 +96,24 @@ def _engine() -> Any:
 
         _ENGINE = RapidOCR()
     except Exception:  # noqa: BLE001 — missing wheel, bad model, anything
-        logger.info(
+        # WARNING, not info: this silently disables the whole text-bearing-
+        # photo veto for the process. A missing wheel here is easy to ship by
+        # accident — e.g. requirements.txt gained the dependency but the
+        # Docker image wasn't rebuilt — and nothing else signals the gap.
+        logger.warning(
             "OCR text detection unavailable (rapidocr-onnxruntime not importable); "
-            "hero backgrounds fall back to vision/naming signals"
+            "hero backgrounds fall back to vision/naming signals only"
         )
         _ENGINE = None
     return _ENGINE
+
+
+def ocr_engine_available() -> bool:
+    """Whether the OCR pass can actually run right now (setting on, wheel
+    importable, model loaded). For observability (see /health/ocr) — callers
+    outside this module should use this instead of reaching into `_engine()`.
+    """
+    return ocr_enabled() and _engine() is not None
 
 
 def _decode(payload: bytes | str) -> Any:

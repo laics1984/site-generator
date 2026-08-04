@@ -553,6 +553,41 @@ class PhotoOverlayTest(unittest.TestCase):
             # …and outside the scrim the photo is roughly twice as visible.
             self.assertLess(cast, old_sheet * 0.62, msg=avg)
 
+    def test_wash_alpha_scale_lightens_cast_and_vignette_not_the_scrim(self):
+        """The homepage hero lever (schema_builder._HOMEPAGE_HERO_WASH_SCALE):
+        scaling down wash_alpha_scale must let more of the photo's own colour
+        through (cast, vignette) without touching the scrim, which is the only
+        layer legibility actually depends on."""
+        full = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        half = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed", wash_alpha_scale=0.5
+        )
+        full_layers = _split_layers(full["backgroundImage"])
+        half_layers = _split_layers(half["backgroundImage"])
+        self.assertEqual(len(full_layers), len(half_layers))
+        scrim_i = next(i for i, l in enumerate(full_layers) if "115% 88%" in l)
+        cast_i = len(full_layers) - 2
+        vignette_i = cast_i - 1
+
+        full_scrim_a = self._rgba(full_layers[scrim_i])[0][3]
+        half_scrim_a = self._rgba(half_layers[scrim_i])[0][3]
+        self.assertEqual(full_scrim_a, half_scrim_a)
+
+        full_vignette_a = self._rgba(full_layers[vignette_i])[-1][3]
+        half_vignette_a = self._rgba(half_layers[vignette_i])[-1][3]
+        self.assertAlmostEqual(half_vignette_a, round(full_vignette_a * 0.5, 2), places=2)
+
+        full_cast_a = self._rgba(full_layers[cast_i])[0][3]
+        half_cast_a = self._rgba(half_layers[cast_i])[0][3]
+        self.assertAlmostEqual(half_cast_a, round(full_cast_a * 0.5, 2), places=2)
+
+    def test_wash_alpha_scale_default_is_a_no_op(self):
+        default = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        explicit = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed", wash_alpha_scale=1.0
+        )
+        self.assertEqual(default, explicit)
+
 
 class CapGradientTexturesTest(unittest.TestCase):
     """At most one pure gradient/texture section survives per page; the rest are

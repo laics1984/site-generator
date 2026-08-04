@@ -283,6 +283,7 @@ def photo_background(
     anchor: HeroAnchor = "center",
     focal_y: float | None = None,
     page_bg_hex: str | None = None,
+    wash_alpha_scale: float = 1.0,
 ) -> dict[str, str]:
     """The full background style set for a photo hero, as CSS properties.
 
@@ -303,12 +304,19 @@ def photo_background(
 
     Falls back to a mid cast when the average colour is unknown, and to no edge
     fade when the page background is unknown.
+
+    ``wash_alpha_scale`` (default 1.0, a no-op) scales ONLY the vignette and
+    brand cast — the two layers whose job is binding the photo to the brand,
+    not legibility — so a caller can let a photo read as more vivid/true-to-
+    colour without touching the text scrim, which is what actually buys
+    contrast for the copy.
     """
     # Lazy: style_tokens pulls in the theme chain, and this module is otherwise
     # a dependency-free leaf that the rest of the package imports freely.
     from app.services.style_tokens import grain_data_uri
 
     alpha = overlay_alpha(avg_hex) if avg_hex else 0.26
+    wash_alpha = round(alpha * wash_alpha_scale, 2)
 
     layers = [grain_data_uri(_GRAIN_OPACITY)]
     sizes = [f"{_GRAIN_TILE_PX}px {_GRAIN_TILE_PX}px"]
@@ -327,8 +335,8 @@ def photo_background(
     # bottom-left anchor), so expand it rather than assuming one.
     for scrim_layer in _split_layers(text_scrim_gradient(secondary_hex, alpha, anchor=anchor)):
         cover(scrim_layer)
-    cover(vignette_gradient(secondary_hex, alpha))
-    cover(brand_overlay_gradient(secondary_hex, primary_hex, alpha))
+    cover(vignette_gradient(secondary_hex, wash_alpha))
+    cover(brand_overlay_gradient(secondary_hex, primary_hex, wash_alpha))
 
     layers.append(f"url('{url}')")
     sizes.append("cover")

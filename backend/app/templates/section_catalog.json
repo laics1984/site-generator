@@ -157,7 +157,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -575,7 +575,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -911,7 +911,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -1259,7 +1259,7 @@
                           "backgroundRepeat": "no-repeat",
                           "textAlign": "left",
                           "opacity": "100%",
-                          "color": "var(--builder-color-primary, #2563eb)",
+                          "color": "var(--builder-color-primary-ink, #2563eb)",
                           "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                           "width": "100%",
                           "fontSize": "13px",
@@ -1589,7 +1589,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -1954,7 +1954,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -2585,7 +2585,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -2973,7 +2973,7 @@
                           "backgroundRepeat": "no-repeat",
                           "textAlign": "left",
                           "opacity": "100%",
-                          "color": "var(--builder-color-primary, #2563eb)",
+                          "color": "var(--builder-color-primary-ink, #2563eb)",
                           "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                           "width": "100%",
                           "fontSize": "13px",
@@ -3666,7 +3666,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -3924,7 +3924,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -4187,7 +4187,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -4397,7 +4397,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -4747,7 +4747,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -5085,7 +5085,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -5337,7 +5337,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -5538,7 +5538,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "center",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "12px",
@@ -5582,7 +5582,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "center",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "14px",
@@ -5847,7 +5847,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "16px",
@@ -5949,7 +5949,7 @@
                               "backgroundRepeat": "no-repeat",
                               "textAlign": "left",
                               "opacity": "100%",
-                              "color": "var(--builder-color-primary, #2563eb)",
+                              "color": "var(--builder-color-primary-ink, #2563eb)",
                               "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                               "width": "auto",
                               "fontSize": "14px",
@@ -6171,7 +6171,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "16px",
@@ -6273,7 +6273,7 @@
                           "backgroundRepeat": "no-repeat",
                           "textAlign": "left",
                           "opacity": "100%",
-                          "color": "var(--builder-color-primary, #2563eb)",
+                          "color": "var(--builder-color-primary-ink, #2563eb)",
                           "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                           "width": "auto",
                           "fontSize": "14px",
@@ -6526,7 +6526,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "16px",
@@ -6628,7 +6628,7 @@
                           "backgroundRepeat": "no-repeat",
                           "textAlign": "left",
                           "opacity": "100%",
-                          "color": "var(--builder-color-primary, #2563eb)",
+                          "color": "var(--builder-color-primary-ink, #2563eb)",
                           "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                           "width": "auto",
                           "fontSize": "14px",
@@ -6787,7 +6787,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -7090,7 +7090,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -7235,7 +7235,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "14px",
@@ -7452,7 +7452,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -7692,7 +7692,7 @@
                               "backgroundRepeat": "no-repeat",
                               "textAlign": "left",
                               "opacity": "100%",
-                              "color": "var(--builder-color-primary, #2563eb)",
+                              "color": "var(--builder-color-primary-ink, #2563eb)",
                               "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                               "width": "auto",
                               "fontSize": "16px",
@@ -7902,7 +7902,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -8047,7 +8047,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "11px",
@@ -9366,7 +9366,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -9669,7 +9669,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -10084,7 +10084,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -10809,7 +10809,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -11135,7 +11135,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -11357,7 +11357,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -11708,7 +11708,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -12045,7 +12045,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -12325,7 +12325,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "120px",
@@ -13054,7 +13054,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -13471,7 +13471,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -13825,7 +13825,7 @@
             "styles": {
               "textAlign": "left",
               "opacity": "100%",
-              "color": "var(--builder-color-primary, #2563eb)",
+              "color": "var(--builder-color-primary-ink, #2563eb)",
               "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
               "fontSize": "13px",
               "letterSpacing": "0.16em",
@@ -14199,7 +14199,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "center",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "46px",
@@ -14677,7 +14677,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -14898,7 +14898,7 @@
                               "backgroundRepeat": "no-repeat",
                               "textAlign": "center",
                               "opacity": "100%",
-                              "color": "var(--builder-color-primary, #2563eb)",
+                              "color": "var(--builder-color-primary-ink, #2563eb)",
                               "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                               "width": "auto",
                               "display": "inline-flex",
@@ -15135,7 +15135,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -15545,7 +15545,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "center",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "auto",
                       "display": "inline-flex",
@@ -15984,7 +15984,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -16388,11 +16388,6 @@
           "id": "cta",
           "kind": "link",
           "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
-          "optional": true
         }
       ],
       "sampleContent": {
@@ -16456,22 +16451,6 @@
                 }
               },
               {
-                "name": "Menu",
-                "type": "menu",
-                "styles": {
-                  "width": "auto",
-                  "color": "{{header.fg}}"
-                },
-                "classes": "wt-header-ink",
-                "content": {
-                  "slot": "social",
-                  "variant": "social-inline",
-                  "menuLabel": "Social links",
-                  "colorMode": "manual"
-                },
-                "$if": "has_social"
-              },
-              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
@@ -16516,11 +16495,6 @@
         {
           "id": "cta",
           "kind": "link",
-          "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
           "optional": true
         }
       ],
@@ -16587,22 +16561,6 @@
                 }
               },
               {
-                "name": "Menu",
-                "type": "menu",
-                "styles": {
-                  "width": "auto",
-                  "color": "{{header.fg}}"
-                },
-                "classes": "wt-header-ink",
-                "content": {
-                  "slot": "social",
-                  "variant": "social-inline",
-                  "menuLabel": "Social links",
-                  "colorMode": "manual"
-                },
-                "$if": "has_social"
-              },
-              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
@@ -16647,11 +16605,6 @@
         {
           "id": "cta",
           "kind": "link",
-          "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
           "optional": true
         }
       ],
@@ -16725,21 +16678,6 @@
                 }
               },
               {
-                "name": "Menu",
-                "type": "menu",
-                "styles": {
-                  "width": "auto",
-                  "color": "{{header.fg}}"
-                },
-                "content": {
-                  "slot": "social",
-                  "variant": "social-inline",
-                  "menuLabel": "Social links",
-                  "colorMode": "manual"
-                },
-                "$if": "has_social"
-              },
-              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
@@ -16784,11 +16722,6 @@
         {
           "id": "cta",
           "kind": "link",
-          "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
           "optional": true
         }
       ],
@@ -16861,26 +16794,9 @@
                       "flexDirection": "row",
                       "alignItems": "center",
                       "justifyContent": "flex-end",
-                      "flex": "1 1 0%",
-                      "gap": "24px"
+                      "flex": "1 1 0%"
                     },
                     "content": [
-                      {
-                        "name": "Menu",
-                        "type": "menu",
-                        "styles": {
-                          "width": "auto",
-                          "color": "{{header.fg}}"
-                        },
-                        "classes": "wt-header-ink",
-                        "content": {
-                          "slot": "social",
-                          "variant": "social-inline",
-                          "menuLabel": "Social links",
-                          "colorMode": "manual"
-                        },
-                        "$if": "has_social"
-                      },
                       {
                         "name": "Header CTA",
                         "type": "link",
@@ -16969,11 +16885,6 @@
           "id": "cta",
           "kind": "link",
           "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
-          "optional": true
         }
       ],
       "sampleContent": {
@@ -17035,22 +16946,6 @@
                   "menuLabel": "Primary navigation",
                   "colorMode": "manual"
                 }
-              },
-              {
-                "name": "Menu",
-                "type": "menu",
-                "styles": {
-                  "width": "auto",
-                  "color": "{{header.fg}}"
-                },
-                "classes": "wt-header-ink",
-                "content": {
-                  "slot": "social",
-                  "variant": "social-inline",
-                  "menuLabel": "Social links",
-                  "colorMode": "manual"
-                },
-                "$if": "has_social"
               },
               {
                 "name": "Header CTA",
