@@ -21,6 +21,9 @@ from app.models.builder_schema import (
 )
 from app.models.design_manifest import FooterArchetype, HeaderArchetype
 from app.models.content_blocks import (
+    DownloadItem,
+    DownloadLink,
+    DownloadsBlock,
     ImageMetadata,
     IndustryCategoryLiteral,
     industry_locked_mood,
@@ -1235,6 +1238,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     _ensure_hub_child_links(plan.pages)
     if linkbar_cluster is not None:
         _inject_linkbar(plan.pages, linkbar_cluster)
+    _inject_downloads(plan.pages, payload.source)
 
     # Legal pages will be appended after plan_to_site, but they need to appear in
     # the footer nav. Pass their titles + slugs through.
@@ -1455,6 +1459,51 @@ def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:
     )
     insert_at = hero_index + 1 if hero_index is not None else 0
     home.blocks.insert(insert_at, block)
+
+
+def _page_by_url_path(pages: list[PagePlan]) -> dict[str, PagePlan]:
+    """Map each generated page's slug to its PagePlan, keyed the same way
+    ``site_relative_href``/``_path_to_slug`` normalize a source url_path
+    (strip surrounding slashes, lowercase; empty string = homepage)."""
+    return {p.slug.strip("/").lower(): p for p in pages}
+
+
+def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
+    """Recreate each page's scraped document cards (e.g. a brochure offered in
+    EN/ZH/MS, or a resource library) as ONE downloads section per page.
+
+    Every DocumentCardCandidate found on a page (scraper._extract_document_cards
+    → SourceContent.document_cards) becomes one item of a SINGLE DownloadsBlock
+    for that page — never split across multiple blocks — so a document's
+    title/thumbnail stay grouped with its own download links, matching how the
+    source page presented them.
+
+    Unlike ``_inject_linkbar``, hrefs here are SUPPOSED to point off the
+    generated site's own page set — a document doesn't get its own generated
+    page — so there's no generated-slug gate. image_url/href are already
+    absolute (resolved at extraction time), which push_orchestrator later
+    re-hosts onto the CMS.
+    """
+    pages_by_path = _page_by_url_path(pages)
+    for source_page in [source, *source.discovered_pages]:
+        if not source_page.document_cards:
+            continue
+        slug = (source_page.url_path or "").strip("/").lower()
+        page = pages_by_path.get(slug)
+        if page is None:
+            continue
+        items = [
+            DownloadItem(
+                title=card.title,
+                image_url=card.image_url,
+                links=[
+                    DownloadLink(label=link.label, href=link.href)
+                    for link in card.links
+                ],
+            )
+            for card in source_page.document_cards
+        ]
+        page.blocks.append(DownloadsBlock(items=items))
 
 
 def _ensure_hub_child_links(pages: list[PagePlan]) -> None:

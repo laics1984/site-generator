@@ -48,6 +48,7 @@ from app.models.content_blocks import (
     ContactBlock,
     ContentBlock,
     CtaBlock,
+    DownloadsBlock,
     FaqBlock,
     FeaturesBlock,
     GalleryBlock,
@@ -3112,6 +3113,101 @@ async def _build_linkbar(block: LinkBarBlock, ctx: RenderContext) -> BuilderElem
     )
 
 
+async def _build_downloads(block: DownloadsBlock, ctx: RenderContext) -> BuilderElement:
+    """One or more downloadable-document cards (title + optional thumbnail +
+    file links), scraped from the source page's document cards. Each item
+    stays its OWN card — image, title, and its links together — never
+    flattened into a single row of buttons across documents. Link buttons are
+    ordinary `link`-type elements (via `_link`) — no bespoke file element.
+    """
+    s = ctx.styles
+    head: list[BuilderElement] = []
+    if block.heading:
+        head.append(
+            _text(
+                block.heading,
+                name="Heading",
+                styles={**s.heading_md, "textAlign": "center"},
+                mobile=s.heading_mobile,
+            )
+        )
+
+    item_cards: list[list[BuilderElement]] = []
+    for item in block.items:
+        card: list[BuilderElement] = []
+        if item.image_url:
+            photo = PhotoResult(
+                url=item.image_url,
+                alt=item.title or "Document thumbnail",
+                photographer=None,
+                photographer_url=None,
+                source="scraped",
+            )
+            card.append(
+                _image_from_photo(
+                    photo,
+                    name="Document thumbnail",
+                    aspect_ratio="4 / 3",
+                    border_radius="16px",
+                )
+            )
+        if item.title:
+            card.append(
+                _text(
+                    item.title,
+                    name="Document title",
+                    styles={
+                        **s.body,
+                        "fontWeight": 700,
+                        "fontSize": "16px",
+                        "textAlign": "center",
+                    },
+                )
+            )
+        card.append(
+            _container(
+                [
+                    _link(link.label, link.href, ctx=ctx, primary=False)
+                    for link in item.links
+                ],
+                name="Download buttons",
+                styles={
+                    "flexDirection": "row",
+                    "flexWrap": "wrap",
+                    "alignItems": "center",
+                    "justifyContent": "center",
+                    "gap": "8px",
+                },
+            )
+        )
+        item_cards.append(card)
+
+    # Lay out 3 per row, same pattern as _build_team.
+    rows: list[BuilderElement] = []
+    triplet: list[list[BuilderElement]] = []
+    for card in item_cards:
+        triplet.append(card)
+        if len(triplet) == 3:
+            rows.append(_three_col(triplet, styles={"gap": "24px"}))
+            triplet = []
+    if triplet:
+        if len(triplet) == 2:
+            rows.append(_two_col(triplet[0], triplet[1], styles={"gap": "24px"}))
+        else:
+            rows.append(_container(triplet[0], name="Document card", styles=s.cards))
+
+    _apply_card_styles(
+        rows,
+        {
+            **s.cards,
+            "alignItems": "center",
+            "gap": "10px",
+            "padding": "24px 20px",
+        },
+    )
+    return _section(ctx, [*head, *rows], name="Downloads")
+
+
 async def _build_timeline(block: TimelineBlock, ctx: RenderContext) -> BuilderElement:
     s = ctx.styles
     head: list[BuilderElement] = [
@@ -3374,6 +3470,7 @@ _DISPATCH = {
     "menu": _build_menu,
     "process": _build_process,
     "linkbar": _build_linkbar,
+    "downloads": _build_downloads,
     "timeline": _build_timeline,
     "awards": _build_awards,
     "clients": _build_clients,

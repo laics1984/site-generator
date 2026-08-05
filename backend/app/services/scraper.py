@@ -39,6 +39,8 @@ from playwright.async_api import async_playwright
 from app.config import settings
 from app.models.brand import BrandIdentity
 from app.models.content_blocks import (
+    DocumentCardCandidate,
+    DocumentCardLink,
     ImageMetadata,
     NavLink,
     ProfileCandidate,
@@ -56,9 +58,11 @@ from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
 from app.services.profile_text import has_contact_token, is_boilerplate_line
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.nav_extraction import (
+    DOCUMENT_EXTENSIONS,
     extract_body_link_clusters,
     extract_nav_links,
     extract_social_links,
+    is_document_href,
     social_links_from_anchors,
     strip_chrome_lines,
 )
@@ -1558,6 +1562,180 @@ def _extract_profile_candidates(
     return profiles[:24]
 
 
+# --- document cards (downloadable PDFs/DOCs presented with a title/thumbnail) ---
+#
+# Same structural idea as _extract_profile_candidates, applied to a different
+# distinctive anchor: instead of a portrait, a document-extension <a href>.
+# Deliberately makes NO assumption about class names or markup conventions —
+# it must work on any site's resource/brochure listing, not just one that
+# happens to use a particular convention.
+
+# A document card holds a title and a short "Download" line, not prose — much
+# tighter than a profile card's bio allowance.
+_DOCUMENT_CARD_MAX_LINES = 8
+_DOCUMENT_CARD_MAX_CHARS = 400
+
+# Boilerplate lead words that must never be mistaken for a card's title (a
+# card with no separate title — just "Download <a>PDF</a>" — gets no title
+# rather than a misleading one).
+_DOCUMENT_CARD_TITLE_STOPWORDS = frozenset(
+    {"download", "downloads", "download now", "get file", "get the file"}
+)
+
+
+def _looks_like_document_card(tag: Tag) -> bool:
+    """True when a container is plausibly ONE document's card: at most one
+    thumbnail, no form, and text short enough to be a title plus a download
+    line — not a whole grid of several cards."""
+    if len([i for i in tag.find_all("img") if isinstance(i, Tag)]) > 1:
+        return False
+    if tag.find("form") is not None:
+        return False
+    lines = _text_lines(tag)
+    if len(lines) > _DOCUMENT_CARD_MAX_LINES:
+        return False
+    return sum(len(line) for line in lines) <= _DOCUMENT_CARD_MAX_CHARS
+
+
+def _document_anchors(tag: Tag, base_url: str) -> list[Tag] | None:
+    """Every ``<a href>`` inside ``tag``, or None when any of them is NOT a
+    document link — a card must not straddle a mix of document and nav/other
+    links, so one stray link disqualifies the whole container."""
+    anchors = [a for a in tag.find_all("a", href=True) if isinstance(a, Tag)]
+    if not anchors:
+        return None
+    for a in anchors:
+        href = _absolute_url(base_url, str(a.get("href")))
+        if not href or not is_document_href(href):
+            return None
+    return anchors
+
+
+def _nearest_document_card(a: Tag, base_url: str) -> Tag | None:
+    """Walk up from a document anchor to the LARGEST ancestor that still (a)
+    contains only document links and (b) looks like a single card. Growing
+    stops the moment either condition would break — e.g. a grid wrapper
+    holding several cards fails (b) via its multiple thumbnails, the same way
+    _nearest_profile_container stops at a container holding >1 portrait.
+    """
+    current = a.parent
+    best: Tag | None = None
+    depth = 0
+    while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 6:
+        if current.name in _PROFILE_CHROME_TAGS:
+            break
+        if _document_anchors(current, base_url) is None:
+            break
+        if not _looks_like_document_card(current):
+            break
+        best = current
+        current = current.parent
+        depth += 1
+    return best
+
+
+# A title is a heading, not a sentence — bounds it away from a prose fragment
+# ("...a report you can download here in passing") that happens to precede a
+# document link inline within the same paragraph.
+_DOCUMENT_CARD_TITLE_MAX_CHARS = 100
+
+
+def _document_card_title(container: Tag, anchors: list[Tag]) -> str | None:
+    """The card's title: text from a DIRECT CHILD of ``container`` that does
+    not itself hold any of the card's document anchors.
+
+    This is the key structural signal: a real card title lives in its own
+    sibling element ("<p>Title</p><div>Download <a>...</a></div>"), while a
+    PDF mentioned inline in running prose shares the SAME element as the
+    anchor ("<p>...you can <a>download here</a>...</p>") — that container's
+    only element child IS the anchor, so no sibling title text exists and
+    None is returned correctly.
+    """
+    anchor_ids = {id(a) for a in anchors}
+    for child in container.find_all(recursive=False):
+        if not isinstance(child, Tag):
+            continue
+        # find_all searches descendants only, so a bare <a> CHILD must also be
+        # checked against itself, not just its (nonexistent) sub-anchors.
+        if id(child) in anchor_ids or any(
+            id(a) in anchor_ids for a in child.find_all("a")
+        ):
+            continue
+        text = _clean_line(child.get_text(" ", strip=True))
+        if not text or len(text) > _DOCUMENT_CARD_TITLE_MAX_CHARS:
+            continue
+        if text.strip().rstrip(":").lower() in _DOCUMENT_CARD_TITLE_STOPWORDS:
+            continue
+        return text
+    return None
+
+
+def _extract_document_cards(
+    soup: BeautifulSoup, base_url: str
+) -> list["DocumentCardCandidate"]:
+    """Extract likely downloadable-document cards: a title, an optional
+    thumbnail, and one-or-more document-file links, grouped the way the
+    source page visually grouped them (one enclosing card), not flattened
+    into a single list of buttons."""
+    work = BeautifulSoup(str(soup), "lxml")
+    for tag in work.find_all(("header", "nav", "footer", "script", "style", "noscript")):
+        tag.decompose()
+
+    cards: list[DocumentCardCandidate] = []
+    seen_containers: set[int] = set()
+    seen_link_sets: set[frozenset[str]] = set()
+
+    for a in work.find_all("a", href=True):
+        if not isinstance(a, Tag):
+            continue
+        href = _absolute_url(base_url, str(a.get("href")))
+        if not href or not is_document_href(href):
+            continue
+        container = _nearest_document_card(a, base_url)
+        if container is None or id(container) in seen_containers:
+            continue
+        seen_containers.add(id(container))
+
+        anchors = _document_anchors(container, base_url) or []
+        links: list[DocumentCardLink] = []
+        for link_a in anchors:
+            label = _clean_line(link_a.get_text(" ", strip=True))
+            link_href = _absolute_url(base_url, str(link_a.get("href")))
+            if not label or not link_href:
+                continue
+            links.append(DocumentCardLink(label=label, href=link_href))
+        if not links:
+            continue
+        key = frozenset(link.href for link in links)
+        if key in seen_link_sets:
+            continue
+        seen_link_sets.add(key)
+
+        img = next((i for i in container.find_all("img") if isinstance(i, Tag)), None)
+        image_url = None
+        if img is not None:
+            src = _image_src_from_tag(img)
+            resolved = _absolute_url(base_url, src or "")
+            alt = (img.get("alt") or "").strip() if isinstance(img.get("alt"), str) else ""
+            if resolved and not _looks_like_icon(resolved, alt):
+                image_url = resolved
+
+        title = _document_card_title(container, anchors)
+        # Qualifying bar: a bare single link with no title and no thumbnail
+        # isn't a "card" — it's an ordinary link (a nav item that happens to
+        # point at a PDF, an inline mention in prose). Requiring at least one
+        # of {title, image, >1 link} keeps those out without relying on any
+        # site-specific markup convention.
+        if title is None and image_url is None and len(links) <= 1:
+            continue
+
+        cards.append(
+            DocumentCardCandidate(title=title, image_url=image_url, links=links)
+        )
+
+    return cards[:20]
+
+
 def _about_hint(img: Tag) -> bool:
     """True when the nearest section heading reads like an about/team section."""
     section = img.find_parent(["section", "article", "div"])
@@ -1894,6 +2072,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
     headings = _extract_headings(soup)
     image_candidates = _extract_images(soup, final_url)
     profile_candidates = _extract_profile_candidates(soup, final_url)
+    document_cards = _extract_document_cards(soup, final_url)
     # Fast-path role stamping: without render evidence every candidate is
     # role="unknown", which lets a nav logo or a grid headshot win the hero
     # background. The filename and the profile-card structure are evidence we
@@ -1945,6 +2124,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
             for c in image_candidates
         ],
         profile_candidates=profile_candidates,
+        document_cards=document_cards,
     )
     return _ParsedPage(
         final_url=final_url,
@@ -1958,9 +2138,11 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
 # --- bounded crawl --------------------------------------------------------------
 
 
-# Asset extensions to never crawl — these aren't pages.
+# Asset extensions to never crawl — these aren't pages. Document extensions
+# are sourced from nav_extraction.DOCUMENT_EXTENSIONS so the "is this a
+# document" test stays in lockstep with find_document_link_clusters.
 _NON_PAGE_EXTENSIONS = (
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    *DOCUMENT_EXTENSIONS,
     ".zip", ".gz", ".tar", ".7z", ".rar",
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif", ".ico",
     ".mp3", ".mp4", ".mov", ".webm", ".wav", ".m4a",

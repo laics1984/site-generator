@@ -43,6 +43,14 @@ _MAX_LABEL_LEN = 60
 # the ratio but the block is clearly a link strip, not prose.
 _MIN_LINK_TEXT_RATIO = 0.6
 
+# Downloadable document extensions — a cluster made entirely of these hrefs is
+# a download card (find_document_link_clusters), not a nav strip. Also
+# consumed by scraper.py as the document subset of its non-page extensions,
+# so the two stay in lockstep.
+DOCUMENT_EXTENSIONS = (
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+)
+
 _SKIP_HREF_PREFIXES = ("javascript:", "mailto:", "tel:", "data:")
 
 
@@ -430,6 +438,17 @@ def _looks_like_breadcrumb(cluster: LinkCluster) -> bool:
         if href_path == "" or (first.label or "").strip().lower() == "home":
             return True
     return (cluster.context_label or "").strip().rstrip(":").lower() == "home"
+
+
+def is_document_href(href: str) -> bool:
+    """True when href's path segment (pre-#/?) ends in DOCUMENT_EXTENSIONS.
+
+    Shared by scraper._extract_document_cards (card detection) and
+    push_orchestrator's document-rehosting pass — both need the same "is this
+    a document link" test.
+    """
+    path = href.split("#", 1)[0].split("?", 1)[0].lower()
+    return path.endswith(DOCUMENT_EXTENSIONS)
 
 
 def strip_linkbar_lines(source: SourceContent, cluster: LinkCluster) -> None:

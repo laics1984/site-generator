@@ -18121,6 +18121,340 @@
           }
         ]
       }
+    },
+    {
+      "id": "downloads-info-card",
+      "sectionType": "downloads",
+      "layoutVariant": "card",
+      "styleVariant": "default",
+      "label": "Downloads",
+      "description": "A grid of downloadable-document cards — each its own title, thumbnail, and file link(s) (e.g. a brochure offered in several languages). Attach a file to each button from the Link panel.",
+      "tags": [
+        "Downloads",
+        "Files",
+        "PDF"
+      ],
+      "thumbnail": "downloads-info-card",
+      "slots": [
+        {
+          "id": "heading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "image",
+              "kind": "image",
+              "optional": true
+            },
+            {
+              "id": "title",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "links",
+              "kind": "list",
+              "item": [
+                {
+                  "id": "cta",
+                  "kind": "link"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "heading": "Downloads",
+        "items": [
+          {
+            "title": "Music Therapy General Flyer",
+            "image": {
+              "src": "",
+              "alt": ""
+            },
+            "links": [
+              {
+                "cta": {
+                  "innerText": "Download Flyer",
+                  "href": "#"
+                }
+              }
+            ]
+          },
+          {
+            "title": "Music Therapy for Mental Health",
+            "image": {
+              "src": "",
+              "alt": ""
+            },
+            "links": [
+              {
+                "cta": {
+                  "innerText": "English",
+                  "href": "#"
+                }
+              },
+              {
+                "cta": {
+                  "innerText": "Bahasa Malaysia",
+                  "href": "#"
+                }
+              },
+              {
+                "cta": {
+                  "innerText": "中文",
+                  "href": "#"
+                }
+              }
+            ]
+          },
+          {
+            "title": "Music Therapy for Aged Care",
+            "image": {
+              "src": "",
+              "alt": ""
+            },
+            "links": [
+              {
+                "cta": {
+                  "innerText": "English",
+                  "href": "#"
+                }
+              },
+              {
+                "cta": {
+                  "innerText": "Bahasa Malaysia",
+                  "href": "#"
+                }
+              },
+              {
+                "cta": {
+                  "innerText": "中文",
+                  "href": "#"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "tree": {
+        "name": "Downloads",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "alignItems": "center",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "44px",
+            "paddingRight": "20px",
+            "paddingBottom": "48px",
+            "paddingLeft": "20px",
+            "gap": "24px"
+          },
+          "tablet": {
+            "paddingTop": "56px",
+            "paddingRight": "32px",
+            "paddingBottom": "56px",
+            "paddingLeft": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Heading",
+            "type": "text",
+            "$slot": "heading",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-secondary, #0f172a)",
+              "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+              "width": "100%",
+              "fontSize": "32px",
+              "lineHeight": "1.15",
+              "letterSpacing": "-0.02em",
+              "fontWeight": 800
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "fontSize": "22px"
+              },
+              "tablet": {
+                "fontSize": "26px"
+              }
+            }
+          },
+          {
+            "name": "Document Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "3Col",
+            "$repeat": "items",
+            "$gridFit": true,
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "28px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "18px"
+              },
+              "tablet": {
+                "gap": "22px"
+              }
+            },
+            "content": [
+              {
+                "name": "Document Card",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "gap": "10px",
+                  "padding": "24px 20px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "rgba(255,255,255,0.94)",
+                  "border": "1px solid rgba(148,163,184,0.18)",
+                  "boxShadow": "0 16px 40px rgba(15,23,42,0.08)"
+                },
+                "content": [
+                  {
+                    "name": "Document Thumbnail",
+                    "type": "image",
+                    "$slot": "image",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "height": "auto",
+                      "aspectRatio": "4 / 3",
+                      "borderRadius": "14px"
+                    },
+                    "content": {
+                      "caption": ""
+                    }
+                  },
+                  {
+                    "name": "Document Title",
+                    "type": "text",
+                    "$slot": "title",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "16px",
+                      "lineHeight": "1.4",
+                      "fontWeight": 700
+                    }
+                  },
+                  {
+                    "name": "Download buttons",
+                    "type": "container",
+                    "$repeat": "links",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "flexDirection": "row",
+                      "flexWrap": "wrap",
+                      "alignItems": "center",
+                      "justifyContent": "center",
+                      "gap": "8px"
+                    },
+                    "content": [
+                      {
+                        "name": "Download button",
+                        "type": "link",
+                        "$slot": "cta",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "center",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-primary-ink, var(--builder-color-primary, #2563eb))",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "backgroundColor": "color-mix(in srgb, var(--builder-color-primary, #2563eb) 6%, #ffffff)",
+                          "border": "1px solid color-mix(in srgb, var(--builder-color-primary, #2563eb) 30%, #ffffff)",
+                          "paddingTop": "10px",
+                          "paddingRight": "18px",
+                          "paddingBottom": "10px",
+                          "paddingLeft": "18px",
+                          "borderRadius": "var(--builder-button-radius, 14px)",
+                          "textDecoration": "none",
+                          "display": "inline-flex",
+                          "alignItems": "center",
+                          "justifyContent": "center",
+                          "fontWeight": 600,
+                          "fontSize": "14px"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }

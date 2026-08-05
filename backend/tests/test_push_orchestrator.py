@@ -603,3 +603,141 @@ def test_segments_are_still_sanitized_inside_a_kept_path():
     _normalize_site_slugs(site, keep_paths=True)
 
     assert site.pages[2].slug == "profile/kuek-ser-sheen-tse"
+
+
+# --- document (PDF/DOC/...) rehosting -------------------------------------------
+
+from app.services.push_orchestrator import (  # noqa: E402
+    _collect_document_hrefs,
+    _needs_upload_document,
+    _resolve_document_to_bytes,
+    _ResolveSkip,
+    _rewrite_srcs,
+    _upload_media,
+)
+
+
+def _link_el(href: str) -> BuilderElement:
+    return BuilderElement(
+        name="Link", type="link", styles={},
+        content=BuilderElementContent(innerText="Download", href=href),
+    )
+
+
+def test_collect_document_hrefs_only_picks_link_type_document_extensions():
+    out: dict[str, BuilderElement] = {}
+    tree = BuilderElement(
+        name="Card", type="container", styles={},
+        content=[
+            _link_el("https://mmta.org.my/files/brochure-en.pdf"),
+            _link_el("https://mmta.org.my/about"),  # link, but not a document
+            _img("https://mmta.org.my/photo.jpg"),  # image, not a link
+        ],
+    )
+    _collect_document_hrefs(tree, out)
+    assert list(out) == ["https://mmta.org.my/files/brochure-en.pdf"]
+
+
+def test_needs_upload_document_true_for_external_pdf():
+    assert _needs_upload_document("https://mmta.org.my/files/brochure-en.pdf")
+
+
+def test_needs_upload_document_false_for_already_hosted():
+    assert not _needs_upload_document("https://cms.example/storage/brochure.pdf")
+
+
+def test_needs_upload_document_false_for_non_document_link():
+    assert not _needs_upload_document("https://mmta.org.my/about")
+
+
+def test_needs_upload_document_false_for_non_http_scheme():
+    assert not _needs_upload_document("mailto:info@mmta.org.my")
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, content: bytes = b""):
+        self.status_code = status_code
+        self.content = content
+
+
+class _FakeClient:
+    def __init__(self, response: _FakeResponse):
+        self._response = response
+
+    async def get(self, _href: str) -> _FakeResponse:
+        return self._response
+
+
+def test_resolve_document_to_bytes_success():
+    client = _FakeClient(_FakeResponse(200, b"%PDF-1.4 fake"))
+    body, content_type, filename = asyncio.run(
+        _resolve_document_to_bytes("https://mmta.org.my/files/brochure-en.pdf", client)
+    )
+    assert body == b"%PDF-1.4 fake"
+    assert content_type == "application/pdf"
+    assert filename == "brochure-en.pdf"
+
+
+def test_resolve_document_to_bytes_skips_unsupported_extension():
+    import pytest
+
+    # .ppt/.pptx are detected as document links (nav_extraction.DOCUMENT_EXTENSIONS)
+    # but aren't in webtree-cms-api's upload mime whitelist — skip, don't upload.
+    client = _FakeClient(_FakeResponse(200, b"fake"))
+    with pytest.raises(_ResolveSkip):
+        asyncio.run(
+            _resolve_document_to_bytes("https://mmta.org.my/files/deck.pptx", client)
+        )
+
+
+def test_resolve_document_to_bytes_skips_404():
+    import pytest
+
+    client = _FakeClient(_FakeResponse(404))
+    with pytest.raises(_ResolveSkip):
+        asyncio.run(
+            _resolve_document_to_bytes("https://mmta.org.my/files/gone.pdf", client)
+        )
+
+
+def test_rewrite_srcs_rewrites_link_href():
+    old = "https://mmta.org.my/files/brochure-en.pdf"
+    new = "https://cms.example/storage/brochure-en.pdf"
+    node = _link_el(old)
+    _rewrite_srcs(node, {old: new})
+    assert node.content.href == new
+
+
+def test_upload_media_rehosts_document_links_alongside_images():
+    """End-to-end through _upload_media: a scraped document href gets
+    fetched, uploaded via the same client.upload_media as images, and comes
+    back in the rewrite map — without being counted in the image `failed` set."""
+    pdf_href = "https://mmta.org.my/files/brochure-en.pdf"
+    page = GeneratedPage(
+        slug="", title="Home", is_homepage=True,
+        body_schema=BodySchema(elements=[_link_el(pdf_href)]), seo=PageSeo(),
+    )
+    site = GeneratedSite(
+        site_name="S", pages=[page], page_tree=[], builder_styles={},
+        header_schema=BuilderElement(name="H", type="__header", content=[]),
+        footer_schema=BuilderElement(name="F", type="__footer", content=[]),
+    )
+    req = PushRequest(
+        site=site, cms_email="u@e.com", cms_password="pw", entity_token="tok",
+    )
+
+    async def _fake_get(_self, _url, **_kwargs):
+        return _FakeResponse(200, b"%PDF-1.4 fake")
+
+    with (
+        patch.object(httpx.AsyncClient, "get", new=_fake_get),
+        patch.object(
+            CmsClient, "upload_media",
+            new=AsyncMock(return_value="https://cms.example/storage/brochure-en.pdf"),
+        ),
+    ):
+        client = CmsClient(base_url="http://localhost:8000")
+        rewrites, failed = asyncio.run(_upload_media(client, req))
+
+    assert rewrites == {pdf_href: "https://cms.example/storage/brochure-en.pdf"}
+    assert failed == set()

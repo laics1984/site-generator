@@ -55,6 +55,7 @@ SectionType = Literal[
     "clients",
     "stats",
     "locations",
+    "downloads",
 ]
 
 
@@ -787,6 +788,39 @@ class LinkBarBlock(BaseModel):
     links: list[LinkBarLink] = Field(min_length=1, max_length=6)
 
 
+class DownloadLink(BaseModel):
+    label: str
+    href: str
+
+
+class DownloadItem(BaseModel):
+    """One document, as its source card presented it: a title, an optional
+    thumbnail, and one-or-more file links (e.g. per-language variants of the
+    same brochure). Mirrors DocumentCardCandidate 1:1 — the block-model
+    counterpart built once hrefs are resolved to absolute URLs."""
+
+    title: str | None = None
+    image_url: str | None = None
+    links: list[DownloadLink] = Field(min_length=1, max_length=6)
+
+
+class DownloadsBlock(BaseModel):
+    """One or more downloadable-document cards on a page (e.g. a resource
+    library, or a single card with per-language file links).
+
+    Never produced by the LLM: injected deterministically from the source
+    page's scraped document cards (scraper._extract_document_cards →
+    SourceContent.document_cards), same non-LLM pattern as LinkBarBlock. Every
+    document card found on a page becomes one item of a SINGLE block for that
+    page — never split across multiple blocks — so a document's title/image
+    stay grouped with its own download links.
+    """
+
+    kind: Literal["downloads"] = "downloads"
+    heading: str | None = None
+    items: list[DownloadItem] = Field(min_length=1, max_length=12)
+
+
 class TimelineItem(BaseModel):
     year: str
     title: str
@@ -917,7 +951,8 @@ ContentBlock = Annotated[
     | AwardsBlock
     | ClientsBlock
     | StatsBlock
-    | LocationsBlock,
+    | LocationsBlock
+    | DownloadsBlock,
     Field(discriminator="kind"),
 ]
 
@@ -1253,6 +1288,16 @@ class SourceContent(BaseModel):
             "continue to validate unchanged."
         ),
     )
+    document_cards: list["DocumentCardCandidate"] = Field(
+        default_factory=list,
+        description=(
+            "Likely downloadable-document cards extracted from THIS page (title + "
+            "optional thumbnail + one-or-more document links, e.g. a brochure "
+            "offered in several languages). Scoped per-page like image_metadata, "
+            "not just the primary page — routers.generate._inject_downloads groups "
+            "every card found on a page into one DownloadsBlock for that page."
+        ),
+    )
     nav_links: list["NavLink"] = Field(
         default_factory=list,
         description=(
@@ -1375,6 +1420,31 @@ class ProfileCandidate(BaseModel):
         ),
     )
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class DocumentCardLink(BaseModel):
+    """One file link on a document card, as scraped (href still page-relative
+    — resolved to absolute by the injector, mirroring how ProfileCandidate's
+    photo_url is resolved downstream of extraction)."""
+
+    label: str
+    href: str
+
+
+class DocumentCardCandidate(BaseModel):
+    """A likely downloadable-document card extracted near a cluster of
+    document-file links (scraper._extract_document_cards).
+
+    Mirrors ProfileCandidate's shape: a distinctive anchor (there, a portrait;
+    here, a document-extension href) plus nearby title/thumbnail text found by
+    walking up to the smallest enclosing card. No site-specific markup is
+    assumed — this must work on any site's resource/brochure listing, not just
+    one with a particular class-name convention.
+    """
+
+    title: str | None = None
+    image_url: str | None = None
+    links: list[DocumentCardLink] = Field(min_length=1)
 
 
 class NavLink(BaseModel):

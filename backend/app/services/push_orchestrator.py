@@ -8,8 +8,8 @@ Steps (in order):
   1. Auth — JWT login on the CMS API
   2. Empty-entity guard — list pages, refuse if non-empty
   3. Media upload — walk every page's BuilderElement tree, find image srcs
-     that are data:image/... or external URLs, upload to /api/file/add and
-     rewrite to CDN URLs in-place
+     that are data:image/... or external URLs (and document-link hrefs, e.g.
+     scraped PDFs), upload to /api/file/add and rewrite to CDN URLs in-place
   4. Create pages — POST /pages for each generated page, capture pageId +
      draftVersion. Homepage goes first.
   5. Read first page's builder payload — captures layout.versionId for the
@@ -627,22 +627,29 @@ async def _upload_media(
     client: CmsClient, req: PushRequest
 ) -> tuple[dict[str, str], set[str]]:
     """
-    Walk every page's BuilderElement tree, find srcs that aren't permanent
-    webtree URLs, upload them, and return ({old_src: new_src} rewrite map,
-    {srcs that failed to resolve}).
+    Walk every page's BuilderElement tree, find image srcs and document hrefs
+    that aren't permanent webtree URLs, upload them, and return
+    ({old_src_or_href: new_url} rewrite map, {IMAGE srcs that failed to
+    resolve}). Document upload failures are not included in the failed set —
+    unlike a broken <img>, a link whose upload failed simply stays hotlinked
+    to its original source, which still works.
     """
     rewrites: dict[str, str] = {}
     # Collect unique sources first to avoid uploading the same image twice
     # (e.g. a logo that appears on every page).
     sources: dict[str, BuilderElement] = {}  # src → first element using it (for alt)
+    documents: dict[str, BuilderElement] = {}  # href → first link element using it
     for page in req.site.pages:
         for el in page.body_schema.elements:
             _collect_image_srcs(el, sources)
+            _collect_document_hrefs(el, documents)
     # Also walk header/footer if present
     if req.site.header_schema:
         _collect_image_srcs(req.site.header_schema, sources)
+        _collect_document_hrefs(req.site.header_schema, documents)
     if req.site.footer_schema:
         _collect_image_srcs(req.site.footer_schema, sources)
+        _collect_document_hrefs(req.site.footer_schema, documents)
     # And the brand logo (it's pulled into the header but defensive doesn't hurt)
     if req.site.brand:
         logo_url = getattr(req.site.brand, "logo_url", None) or getattr(
@@ -652,12 +659,13 @@ async def _upload_media(
             sources.setdefault(logo_url, _placeholder_logo_element(logo_url))
 
     uploadable = [src for src in sources if _needs_upload(src)]
-    if not uploadable:
+    uploadable_docs = [href for href in documents if _needs_upload_document(href)]
+    if not uploadable and not uploadable_docs:
         return rewrites, set()
 
-    # Resolve + upload concurrently: each image is independent, and the wait is
-    # dominated by network (download + POST). One shared download client keeps
-    # connections pooled across images from the same host.
+    # Resolve + upload concurrently: each image/document is independent, and
+    # the wait is dominated by network (download + POST). One shared download
+    # client keeps connections pooled across items from the same host.
     sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as download_client:
 
@@ -706,10 +714,42 @@ async def _upload_media(
                         return None
             return None
 
+        async def _upload_one_document(href: str) -> tuple[str, str] | None:
+            async with sem:
+                try:
+                    file_bytes, content_type, filename = await _resolve_document_to_bytes(
+                        href, download_client
+                    )
+                except _ResolveSkip as exc:
+                    logger.info("Skipping unresolvable document %s: %s", href[:80], exc)
+                    return None
+                for attempt in range(2):
+                    try:
+                        cdn_url = await client.upload_media(
+                            req.entity_token,
+                            file_bytes=file_bytes,
+                            filename=filename,
+                            content_type=content_type,
+                        )
+                        return href, cdn_url
+                    except CmsApiError as exc:
+                        if attempt == 0 and exc.status in (502, 503, 504):
+                            logger.warning(
+                                "Upload retry for %s (%s)", filename, exc
+                            )
+                            continue
+                        logger.warning(
+                            "Upload failed for %s: %s", href[:80], exc
+                        )
+                        return None
+            return None
+
         results = await asyncio.gather(
-            *(_upload_one(src) for src in uploadable), return_exceptions=True
+            *(_upload_one(src) for src in uploadable),
+            *(_upload_one_document(href) for href in uploadable_docs),
+            return_exceptions=True,
         )
-    # Individual upload failures are handled per-image above (return None);
+    # Individual upload failures are handled per-item above (return None);
     # only truly unexpected exceptions propagate here.
     for res in results:
         if isinstance(res, BaseException):
@@ -717,9 +757,11 @@ async def _upload_media(
     for res in results:
         if res is not None:
             rewrites[res[0]] = res[1]
-    # Uploadable srcs with no rewrite couldn't be fetched/stored (404, hotlink
-    # block, un-decodable) — they're dead references the caller strips so the
-    # published site never renders a broken image.
+    # Uploadable IMAGE srcs with no rewrite couldn't be fetched/stored (404,
+    # hotlink block, un-decodable) — they're dead references the caller strips
+    # so the published site never renders a broken image. Documents are
+    # deliberately excluded: an un-rehosted document link still works (it
+    # points at the original source), so it's left as-is, not stripped.
     failed = {src for src in uploadable if src not in rewrites}
     return rewrites, failed
 
@@ -785,6 +827,52 @@ def _collect_image_srcs(node: BuilderElement, out: dict[str, BuilderElement]) ->
             _collect_image_srcs(child, out)
 
 
+# webtree-cms-api's MediaController validates uploads against
+# mimes:jpg,jpeg,png,webp,avif,gif,pdf,doc,docx,xls,xlsx,odt,ods — note ppt/pptx
+# are NOT accepted there, even though nav_extraction.DOCUMENT_EXTENSIONS treats
+# them as document links for detection purposes. A link whose extension isn't
+# in this map is simply left hotlinked (see _needs_upload_document) rather than
+# fetched and rejected.
+_DOCUMENT_MIME_MAP = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "odt": "application/vnd.oasis.opendocument.text",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet",
+}
+
+
+def _document_ext(href: str) -> str:
+    try:
+        path = urlparse(href).path.lower()
+    except ValueError:
+        return ""
+    return path.rsplit(".", 1)[-1] if "." in path else ""
+
+
+def _collect_document_hrefs(node: BuilderElement, out: dict[str, BuilderElement]) -> None:
+    """Walk a BuilderElement tree, recording every re-hostable document href.
+
+    Mirrors _collect_image_srcs but keys on ``type == "link"`` content.href —
+    a download-card button (schema_builder._build_downloads) or any other
+    link element that happens to point at a document.
+    """
+    content = node.content
+    if node.type == "link" and isinstance(content, BuilderElementContent):
+        href = content.href
+        if (
+            isinstance(href, str)
+            and _document_ext(href) in _DOCUMENT_MIME_MAP
+            and href not in out
+        ):
+            out[href] = node
+    if isinstance(content, list):
+        for child in content:
+            _collect_document_hrefs(child, out)
+
+
 def _placeholder_logo_element(src: str) -> BuilderElement:
     return BuilderElement(
         id="logo-src-placeholder",
@@ -823,6 +911,25 @@ def _needs_upload(src: str) -> bool:
     return True
 
 
+def _needs_upload_document(href: str) -> bool:
+    """True for an absolute http(s) document URL not already on the CMS."""
+    try:
+        parsed = urlparse(href)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    try:
+        cms_host = urlparse(settings.cms_api_base_url).hostname or ""
+    except ValueError:
+        cms_host = ""
+    if cms_host and parsed.hostname == cms_host:
+        return False
+    if "/storage/" in parsed.path or "/api/image/" in parsed.path:
+        return False
+    return _document_ext(href) in _DOCUMENT_MIME_MAP
+
+
 class _ResolveSkip(Exception):
     pass
 
@@ -851,6 +958,30 @@ async def _resolve_to_bytes(
         ext = path.rsplit(".", 1)[-1] if "." in path else ""
         content_type = _IMAGE_MIME_MAP.get(ext, content_type or "image/jpeg")
     filename = _filename_from_url(src) or ("image." + content_type.split("/")[-1])
+    return resp.content, content_type, filename
+
+
+async def _resolve_document_to_bytes(
+    href: str, client: httpx.AsyncClient
+) -> tuple[bytes, str, str]:
+    """Turn a document href into (bytes, content_type, filename) for /api/file/add.
+
+    Unlike _resolve_to_bytes there is no transcoding — documents are opaque
+    binary files. An extension outside _DOCUMENT_MIME_MAP is a _ResolveSkip so
+    the link stays hotlinked rather than uploaded as something the CMS
+    validator would reject.
+    """
+    try:
+        resp = await client.get(href)
+        if resp.status_code >= 400:
+            raise _ResolveSkip(f"http {resp.status_code}")
+    except httpx.HTTPError as exc:
+        raise _ResolveSkip(str(exc)) from exc
+    ext = _document_ext(href)
+    content_type = _DOCUMENT_MIME_MAP.get(ext)
+    if content_type is None:
+        raise _ResolveSkip(f"unsupported document extension: {ext!r}")
+    filename = _filename_from_url(href) or f"document.{ext}"
     return resp.content, content_type, filename
 
 
@@ -979,7 +1110,8 @@ def _filename_from_url(src: str) -> str | None:
 
 
 def _apply_src_rewrites(site: GeneratedSite, rewrites: dict[str, str]) -> None:
-    """Walk every BuilderElement tree on the site + rewrite image srcs in-place."""
+    """Walk every BuilderElement tree on the site + rewrite image srcs and
+    document link hrefs in-place."""
     if not rewrites:
         return
     for page in site.pages:
@@ -1057,6 +1189,10 @@ def _rewrite_srcs(node: BuilderElement, rewrites: dict[str, str]) -> None:
         src = content.src
         if isinstance(src, str) and src in rewrites:
             content.src = rewrites[src]
+    elif node.type == "link" and isinstance(content, BuilderElementContent):
+        href = content.href
+        if isinstance(href, str) and href in rewrites:
+            content.href = rewrites[href]
     # Rewrite photo URLs embedded in background styles, preserving the gradient
     # overlay + url() wrapper (substring replace of the exact collected URL).
     styles = node.styles or {}
