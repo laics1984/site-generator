@@ -46,6 +46,7 @@ from app.models.content_blocks import (
     TestimonialsBlock,
     VisualPolicy,
 )
+from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
 from app.services.style_tokens import brand_ink
 from app.services.template_filler import get_template, templates_for_type
 from app.services.theme import (
@@ -277,7 +278,7 @@ def _team_content(b: TeamBlock) -> dict[str, Any]:
         return {"monogram": member.name, "alt": member.name}
 
     return {
-        "eyebrow": "Team",
+        "eyebrow": "Founders" if _is_founders_band(b) else "Team",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
@@ -494,6 +495,19 @@ def _most_items_have_images(content: dict[str, Any]) -> bool:
     item carries an image value (bound scraped photo or stock query)."""
     items = content.get("items") or []
     return len(items) >= 2 and all(i.get("image") for i in items)
+
+
+def _is_founders_band(block: Any) -> bool:
+    """True for a short roster where EVERY member is a founder/owner.
+
+    "Every" is deliberate: a 3-person slice of a staff roster that happens to
+    include the founder is still a staff roster, and titling it "the founders"
+    would misdescribe the other two.
+    """
+    members = getattr(block, "members", None) or []
+    return 0 < len(members) <= FOUNDERS_BAND_MAX and all(
+        looks_like_founder_role(getattr(m, "role", None)) for m in members
+    )
 
 
 def _features_preference(content: dict[str, Any], b: FeaturesBlock) -> list[str]:
@@ -1722,6 +1736,12 @@ def block_to_section(
         # program cards instead — same photo-topped policy, warmer framing.
         if kind == "services" and mood in ("friendly", "playful"):
             explicit_id = "services-programs-age"
+    # Same shape of rule for people: a short, all-founder roster is a founders
+    # band, not a staff directory. Explicit rather than a _PREFERENCE entry so
+    # neither mood ordering nor the variety rotation below can demote it back to
+    # the generic grid — the block's content, not its styling, decides this.
+    if kind == "team" and _is_founders_band(block):
+        explicit_id = "team-founders"
     pref_fn = _PREFERENCE.get(kind)
     content_pref = pref_fn(content, block) if pref_fn else []
     # Content leads the layout choice so available imagery is actually used.

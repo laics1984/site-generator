@@ -63,7 +63,9 @@ from app.services.scaffold_enforcement import (
     sanitize_blocks_against_source,
 )
 from app.services.profile_text import (
+    FOUNDERS_BAND_MAX,
     clean_team_bio,
+    looks_like_founder_role,
     looks_like_team_role,
 )
 from app.services.image_vision import (
@@ -819,6 +821,82 @@ def _ensure_scraped_team_blocks(
                 members=scraped_members,
             ),
         )
+
+    _apply_homepage_team_policy(plan)
+
+
+# People a homepage team band shows before it stops reading as an introduction
+# and starts reading as a directory. Above this the roster belongs on its own
+# page and home links to it.
+_HOME_ROSTER_MAX = 4
+
+
+def _apply_homepage_team_policy(plan: SitePlan) -> None:
+    """Decide what people, if any, the homepage shows.
+
+    Runs after every other pass has filled the rosters, because both halves of
+    the decision need the REAL members — the count that survived portrait and
+    vision gating in ``_scraped_team_members``, and their job titles. Neither is
+    known at scaffold time, which is why ``page_inference._apply_team_placement``
+    deliberately leaves the homepage alone.
+
+    Three outcomes, in order:
+
+    * The roster lives on another page AND home's founders are a small group →
+      home shows just the founders. Two faces under "Meet the founders" is a
+      trust signal; the same 20-person grid on two pages is not.
+    * The roster lives on another page and there is no small founder group →
+      home drops the block entirely rather than restating the Team page.
+    * Nothing else carries the roster (the directory-entry weave, where home IS
+      the roster) → leave it alone. Narrowing here would silently delete people
+      the site has nowhere else to show.
+    """
+    home = next((p for p in plan.pages if p.page_type == "home"), None)
+    if home is None:
+        return
+    team_indexes = [
+        idx for idx, block in enumerate(home.blocks) if getattr(block, "kind", None) == "team"
+    ]
+    if not team_indexes:
+        return
+
+    roster_lives_elsewhere = any(
+        page is not home and any(getattr(b, "kind", None) == "team" for b in page.blocks)
+        for page in plan.pages
+    )
+    if not roster_lives_elsewhere:
+        return
+
+    first = team_indexes[0]
+    block = home.blocks[first]
+    founders = [m for m in block.members if looks_like_founder_role(m.role)]
+
+    if founders and len(founders) <= FOUNDERS_BAND_MAX:
+        # Keep an LLM-written heading; only the generic default is retitled,
+        # since "Meet the team" over two founders undersells what it shows.
+        heading = "Meet the founders" if block.heading == "Meet the team" else block.heading
+        home.blocks[first] = TeamBlock(
+            heading=heading,
+            subheading=block.subheading,
+            members=founders,
+        )
+        logger.info(
+            "Homepage team: narrowed to %d founder(s) — full roster lives on another page",
+            len(founders),
+        )
+        drop_from = 1
+    elif len(block.members) > _HOME_ROSTER_MAX:
+        logger.info(
+            "Homepage team: dropped a %d-member roster already shown on another page",
+            len(block.members),
+        )
+        drop_from = 0
+    else:
+        drop_from = 1
+
+    # One team band on the homepage at most, whichever branch ran.
+    for idx in reversed(team_indexes[drop_from:]):
+        del home.blocks[idx]
 
 
 def _profile_name_patterns(names: list[str]) -> set[str]:

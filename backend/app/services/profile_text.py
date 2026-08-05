@@ -51,6 +51,44 @@ _PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{5,}\d")
 _ROLE_MAX_LEN = 90
 _BIO_MAX_LEN = 480
 
+# Roles that mean "this person started or owns the business", used to decide
+# whether the homepage shows a small founders band instead of the full roster.
+# Deliberately narrow, because the heading it drives ("Meet the founders")
+# asserts a fact about real people. Excluded on purpose:
+#   - bare "Partner"/"Director" — a law firm has many partners and "Director of
+#     Nursing" is a department head; only the qualified forms name the person
+#     running the business.
+#   - "Principal" — in childcare/education that is the school head, not a
+#     founder, and childcare is a first-class industry here.
+_FOUNDER_ROLE_PHRASES = (
+    "founder",       # "founder", "co-founder", "cofounder"
+    "founding",      # "founding partner", "founding director"
+    "owner",         # "owner", "co-owner", "business owner"
+    "proprietor",
+    "managing director",
+    "managing partner",
+)
+
+# People a founders band introduces before it stops being "the two people who
+# started this" and becomes a leadership roster. One number, three consumers:
+# the scaffold weave (page_inference), the homepage roster policy (generate) and
+# the template choice (section_content) must agree, or a page asks for a band
+# and gets a staff grid.
+FOUNDERS_BAND_MAX = 3
+
+
+def looks_like_founder_role(value: str | None) -> bool:
+    """True when a job title names a founder/owner rather than a staff role.
+
+    Substring matching on a title that has already passed ``looks_like_team_role``
+    — these phrases don't occur inside unrelated titles, and the prefix forms
+    ("Co-Founder", "Founding Partner") all contain the bare stem.
+    """
+    if not looks_like_team_role(value):
+        return False
+    low = " ".join((value or "").split()).lower()
+    return any(phrase in low for phrase in _FOUNDER_ROLE_PHRASES)
+
 
 def has_contact_token(text: str) -> bool:
     """True when a line carries an email, URL or phone number.

@@ -5600,6 +5600,440 @@
       }
     },
     {
+      "id": "team-founders",
+      "sectionType": "team",
+      "layoutVariant": "portraits",
+      "styleVariant": "plain",
+      "label": "Founders",
+      "description": "One to three large portraits with name, role and a short bio, on an open background rather than cards. For introducing the owners or founders of a business — not a full staff roster, which the Team Grid handles.",
+      "tags": [
+        "Team",
+        "People",
+        "Founders",
+        "Trust"
+      ],
+      "thumbnail": "team-grid",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "photo",
+              "kind": "image",
+              "optional": true
+            },
+            {
+              "id": "name",
+              "kind": "text"
+            },
+            {
+              "id": "role",
+              "kind": "text"
+            },
+            {
+              "id": "bio",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "profile_link",
+              "kind": "link",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Founders",
+        "heading": "The people who started it.",
+        "subheading": "Two or three faces, a short bio each — who you would actually be working with.",
+        "items": [
+          {
+            "photo": {
+              "src": "",
+              "alt": ""
+            },
+            "name": "Alicia Tan",
+            "role": "Co-Founder",
+            "bio": "Leads strategy and partnerships, and has run the studio since 2014.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
+          },
+          {
+            "photo": {
+              "src": "",
+              "alt": ""
+            },
+            "name": "Marcus Lee",
+            "role": "Co-Founder",
+            "bio": "Heads delivery, and still writes most of the tricky code himself.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Team - Founders",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Founders Row",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "2Col",
+            "$repeat": "items",
+            "$gridFit": true,
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "56px",
+              "minHeight": "0px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "20px",
+                "minHeight": "0px"
+              },
+              "tablet": {
+                "gap": "36px",
+                "minHeight": "0px"
+              }
+            },
+            "content": [
+              {
+                "name": "Founder Cell",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "minHeight": "0px",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "gap": "10px",
+                  "padding": "0px",
+                  "borderRadius": "0px",
+                  "backgroundColor": "transparent",
+                  "border": "none",
+                  "boxShadow": "none",
+                  "maxWidth": "420px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "minHeight": "0px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Founder Photo",
+                    "type": "image",
+                    "$slot": "photo",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "200px",
+                      "height": "200px",
+                      "borderRadius": "9999px",
+                      "overflow": "hidden",
+                      "aspectRatio": "1 / 1",
+                      "marginBottom": "20px",
+                      "backgroundColor": "rgba(148,163,184,0.18)",
+                      "border": "3px solid rgba(255,255,255,0.96)",
+                      "boxShadow": "0 0 0 4px rgba(37,99,235,0.10), 0 14px 30px rgba(15,23,42,0.18)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "150px",
+                        "height": "150px"
+                      },
+                      "tablet": {
+                        "width": "136px",
+                        "height": "136px"
+                      }
+                    },
+                    "content": {
+                      "caption": ""
+                    }
+                  },
+                  {
+                    "name": "Founder Name",
+                    "type": "text",
+                    "$slot": "name",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "20px",
+                      "lineHeight": "1.25",
+                      "fontWeight": 800
+                    }
+                  },
+                  {
+                    "name": "Founder Role",
+                    "type": "text",
+                    "$slot": "role",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "12px",
+                      "lineHeight": "1.35",
+                      "fontWeight": 800,
+                      "letterSpacing": "0.08em",
+                      "textTransform": "uppercase"
+                    }
+                  },
+                  {
+                    "name": "Founder Bio",
+                    "type": "text",
+                    "$slot": "bio",
+                    "classes": "wt-clamp wt-clamp-4",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.66)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "16px",
+                      "lineHeight": "1.65",
+                      "marginTop": "8px",
+                      "maxWidth": "280px",
+                      "display": "-webkit-box",
+                      "WebkitLineClamp": "4",
+                      "WebkitBoxOrient": "vertical",
+                      "overflow": "hidden"
+                    }
+                  },
+                  {
+                    "name": "Founder Profile Link",
+                    "type": "link",
+                    "$slot": "profile_link",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "14px",
+                      "lineHeight": "1.4",
+                      "fontWeight": 700,
+                      "marginTop": "12px",
+                      "textDecoration": "none"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "profile-portrait-split",
       "sectionType": "profile",
       "layoutVariant": "split",

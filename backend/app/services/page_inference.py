@@ -29,6 +29,7 @@ from app.services.locale import (
     locale_segment,
 )
 from app.services.nav_extraction import find_repeated_cluster_keys
+from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,61 @@ def _looks_like_directory_page(page: SourceContent | None) -> bool:
     therapist").
     """
     return page is not None and len(page.profile_candidates or []) >= DIRECTORY_MIN_PROFILES
+
+
+def _homepage_founder_names(source: SourceContent | None) -> list[str]:
+    """Distinct founder/owner names visible anywhere in the crawl, or [].
+
+    Returns [] rather than a long list when more than ``FOUNDERS_BAND_MAX``
+    people carry a founder-ish title: that is a leadership page, not the two
+    people who started the business, and the caller's question is only ever
+    "is there a small founder group to introduce on the homepage?".
+    """
+    if source is None:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for page in (source, *(source.discovered_pages or [])):
+        for candidate in page.profile_candidates or []:
+            if not looks_like_founder_role(candidate.role):
+                continue
+            key = " ".join((candidate.name or "").split()).lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            names.append(candidate.name)
+            if len(names) > FOUNDERS_BAND_MAX:
+                return []
+    return names
+
+
+def _weave_founders_into_home(
+    scaffolds: list[PageScaffold], source: SourceContent | None
+) -> None:
+    """Give the homepage a people section when a small founder group is visible.
+
+    "Who runs this" is homepage material for an owner-operated business, and the
+    rule stays useful for a large firm with two founders — where a headcount
+    rule would show nothing.
+
+    Only the SECTION is placed here. WHICH people fill it is decided later, by
+    ``generate._apply_homepage_team_policy``, once portrait and vision gating
+    have settled who actually renders — so a homepage that also has a full Team
+    page ends up with the founders, not a second copy of the roster.
+    """
+    if not _homepage_founder_names(source):
+        return
+    home = next((s for s in scaffolds if s.is_homepage), None)
+    if home is None or "team" in home.sections:
+        return
+    # Keep the homepage inside the single-LLM-call ceiling — the same reason
+    # _augment_sections trims its extras.
+    if len(home.sections) >= _MAX_PAGE_SECTIONS:
+        return
+    if "cta" in home.sections:
+        home.sections.insert(home.sections.index("cta"), "team")
+    else:
+        home.sections.append("team")
 
 
 def _coerce_directory_type(page_type: PageType, page: SourceContent | None) -> PageType:
@@ -835,6 +891,9 @@ def infer_page_scaffolds(
                 fallback[existing_idx] = directory_scaffold
             else:
                 fallback.append(directory_scaffold)
+        # A 2-3 founder business is very often exactly this single-page site,
+        # so the founders weave has to run on the fallback path too.
+        _weave_founders_into_home(fallback, source)
         for scaffold in fallback:
             scaffold.nav_rank = evidence.rank.get(scaffold.slug)
         return _apply_team_placement(fallback)
@@ -1092,6 +1151,9 @@ def infer_page_scaffolds(
             else:
                 home.sections.append("team")
 
+    # 2d-2. A small founder/owner group earns a place on the homepage.
+    _weave_founders_into_home(scaffolds, source)
+
     # 2e. Attach translated mirrors to the pages they translate. They inherit
     #     the counterpart's type and section rhythm because they will be built
     #     by cloning its finished page, not planned independently — so they
@@ -1150,6 +1212,12 @@ def _apply_team_placement(scaffolds: list[PageScaffold]) -> list[PageScaffold]:
     belongs under About; a separate Team page is kept only when the crawl/nav/doc
     actually surfaced one (``from_source=True``). When a real Team page exists,
     remove the full team section from About to avoid duplicate rosters.
+
+    The HOMEPAGE is deliberately not handled here. Whether home repeats the
+    roster depends on how many people actually render and whether they are
+    founders — neither is knowable at scaffold time (portrait + vision gating
+    happens later, in ``_scraped_team_members``). That call lives in
+    ``routers.generate._apply_homepage_team_policy``, which has the real roster.
     """
     has_source_team_page = any(
         s.page_type == "team"
