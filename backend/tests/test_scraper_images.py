@@ -559,6 +559,214 @@ class ScraperImageExtractionTest(unittest.TestCase):
             ["https://example.my/aisha.jpg", "https://example.my/marcus.jpg"],
         )
 
+    # Portrait in one subtree, name and copy in a sibling — the split-column
+    # profile, in the markup families real sites actually ship it as. Matching
+    # on `row`/`col`/`grid` class names recognised only the page builders and
+    # silently dropped the rest, so the pairing is asserted structurally here:
+    # one <img>, one sibling holding the text, no shared card wrapper.
+    _SPLIT_COLUMN_LAYOUTS = {
+        # Divi: the portrait is buried under a text-less `et_pb_image_wrap`
+        # span, and the name sits in an unheaded text module.
+        "page_builder": """
+            <div class="et_pb_section"><div class="et_pb_row">
+              <div class="et_pb_column et_pb_column_2_5">
+                <div class="et_pb_module et_pb_image">
+                  <span class="et_pb_image_wrap">{img}</span>
+                </div>
+              </div>
+              <div class="et_pb_column et_pb_column_3_5">
+                <div class="et_pb_module et_pb_text">Dr Aisha Rahman</div>
+                <div class="et_pb_module et_pb_text">{bio}</div>
+              </div>
+            </div></div>
+        """,
+        "bootstrap": """
+            <div class="row">
+              <div class="col-md-4">{img}</div>
+              <div class="col-md-8"><h3>Dr Aisha Rahman</h3><p>{bio}</p></div>
+            </div>
+        """,
+        # Flex utilities: no layout words in the class names at all.
+        "utility_classes": """
+            <div class="flex gap-8">
+              <div>{img}</div>
+              <div><p>Dr Aisha Rahman</p><p>{bio}</p></div>
+            </div>
+        """,
+        # Hashed CSS-module class names carry no meaning whatsoever.
+        "css_modules": """
+            <div class="_wrap_1a2b3">
+              <div class="_media_9f8">{img}</div>
+              <div class="_body_4c1"><p>Dr Aisha Rahman</p><p>{bio}</p></div>
+            </div>
+        """,
+        "semantic_elements": """
+            <div class="about-split">
+              <figure>{img}</figure>
+              <div class="copy"><h3>Dr Aisha Rahman</h3><p>{bio}</p></div>
+            </div>
+        """,
+        "figcaption": "<figure>{img}<figcaption><b>Dr Aisha Rahman</b><p>{bio}</p></figcaption></figure>",
+        "table": "<table><tr><td>{img}</td><td><h4>Dr Aisha Rahman</h4><p>{bio}</p></td></tr></table>",
+        "definition_list": "<dl><dt>{img}</dt><dd><h4>Dr Aisha Rahman</h4><p>{bio}</p></dd></dl>",
+    }
+
+    def test_split_column_layouts_keep_portraits(self):
+        img = '<img src="/uploads/aisha.jpg" width="720" height="900" alt="" />'
+        bio = (
+            "Aisha spent two decades in clinical governance before founding "
+            "the community partnerships programme."
+        )
+        for label, template in self._SPLIT_COLUMN_LAYOUTS.items():
+            with self.subTest(layout=label):
+                soup = BeautifulSoup(
+                    f"<html><body><section>{template.format(img=img, bio=bio)}"
+                    "</section></body></html>",
+                    "lxml",
+                )
+
+                profiles = scraper._extract_profile_candidates(
+                    soup, "https://example.my/about"
+                )
+
+                self.assertEqual([p.name for p in profiles], ["Dr Aisha Rahman"])
+                self.assertEqual(
+                    profiles[0].photo_url, "https://example.my/uploads/aisha.jpg"
+                )
+                self.assertIn("clinical governance", profiles[0].bio or "")
+
+    def test_flat_grid_pairs_each_portrait_with_its_own_copy(self):
+        """No per-person wrapper: photo/text/photo/text as flat siblings.
+
+        The pairing has to come from position, and reading backwards would
+        caption Marcus's portrait with Aisha's name.
+        """
+        soup = BeautifulSoup(
+            """
+            <html><body><section class="team"><div class="grid">
+              <div><img src="/aisha.jpg" width="400" height="500" alt="" /></div>
+              <div><p>Aisha Rahman</p><p>Aisha chairs the clinical governance committee.</p></div>
+              <div><img src="/marcus.jpg" width="400" height="500" alt="" /></div>
+              <div><p>Marcus Ong</p><p>Marcus has led community programmes for two decades.</p></div>
+            </div></section></body></html>
+            """,
+            "lxml",
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my/team")
+
+        self.assertEqual(
+            [(p.name, p.photo_url) for p in profiles],
+            [
+                ("Aisha Rahman", "https://example.my/aisha.jpg"),
+                ("Marcus Ong", "https://example.my/marcus.jpg"),
+            ],
+        )
+
+    def test_split_section_with_own_heading_is_not_a_person(self):
+        """An about split is shaped exactly like a split-column profile.
+
+        What separates them is the h2: a card names one person, a section names
+        itself and then talks about something else.
+        """
+        soup = BeautifulSoup(
+            """
+            <html><body><section>
+              <div class="flex">
+                <div><img src="/office.jpg" width="600" height="700" alt="" /></div>
+                <div>
+                  <h2>Our Story</h2>
+                  <p>We have served the community since 1998 with care and dedication.</p>
+                </div>
+              </div>
+            </section></body></html>
+            """,
+            "lxml",
+        )
+
+        self.assertEqual(
+            scraper._extract_profile_candidates(soup, "https://example.my/about"), []
+        )
+
+    def test_bio_sentence_after_the_name_is_not_a_role(self):
+        """Most cards carry no role, and the line after the name is the bio.
+
+        Short, capitalised and contact-free, it clears every other filter and
+        would otherwise be printed as a job title under the person's name.
+        """
+        soup = BeautifulSoup(
+            """
+            <html><body><section>
+              <article class="team-member">
+                <img src="/claudia.jpg" width="720" height="900" alt="" />
+                <h3>Claudia Lee</h3>
+                <p>Her interests include music, reading and travelling.</p>
+              </article>
+            </section></body></html>
+            """,
+            "lxml",
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my/team")
+
+        self.assertEqual([p.name for p in profiles], ["Claudia Lee"])
+        self.assertIsNone(profiles[0].role)
+        self.assertIn("interests include music", profiles[0].bio or "")
+
+    def test_role_line_accepts_job_titles_and_rejects_prose(self):
+        for title in (
+            "Chairperson",
+            "Founder & Speaker",
+            "Pastor & Mentor",
+            "Head of Clinical Services",
+            "Senior Consultant, Cardiology",
+            "Ph.D.",
+        ):
+            with self.subTest(title=title):
+                self.assertTrue(scraper._looks_like_role_line(title))
+        for prose in (
+            "Her interests include music, reading and travelling.",
+            "He is married to his wife Fiona.",
+            "Aisha has led the programme since 1998 and continues to do so today.",
+        ):
+            with self.subTest(prose=prose):
+                self.assertFalse(scraper._looks_like_role_line(prose))
+
+    def test_page_builder_footer_image_is_not_a_person(self):
+        """A theme-builder footer is a <div>, so the chrome tag guard misses it.
+
+        Its link column reads exactly like a card's text column to the sibling
+        walk — without a class-level footer check the footer image plus the menu
+        labels beside it become a "person" named after a nav item.
+        """
+        soup = BeautifulSoup(
+            """
+            <html>
+              <body class="et-tb-has-footer">
+                <div class="et-l et-l--footer">
+                  <div class="et_pb_row">
+                    <div class="et_pb_column et_pb_column_1_4">
+                      <span class="et_pb_image_wrap">
+                        <img src="/uploads/promo.jpg" width="771" height="894" alt="" />
+                      </span>
+                    </div>
+                    <div class="et_pb_column et_pb_column_1_4_tb_footer">
+                      <div class="et_pb_text">Empowered Work Life</div>
+                      <div class="et_pb_text">Explore Life</div>
+                      <div class="et_pb_text">Alpha</div>
+                    </div>
+                  </div>
+                </div>
+              </body>
+            </html>
+            """,
+            "lxml",
+        )
+
+        self.assertEqual(
+            scraper._extract_profile_candidates(soup, "https://example.my"), []
+        )
+
 
 class SourceUsageProvenanceTest(unittest.TestCase):
     """An image's source usage (CSS background vs inline <img>) must survive

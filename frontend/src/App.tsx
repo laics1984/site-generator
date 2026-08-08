@@ -82,7 +82,7 @@ export default function App() {
     url: string
     probe: SitemapProbeResult
   } | null>(null)
-  // Wall-clock label for the inline "Crawl more" step.
+  // Wall-clock label fo189 "Crawl more" step.
   const [extendBusy, setExtendBusy] = useState(false)
   // Live job state during async crawls (queued/running). null once done/cancelled.
   const [activeJob, setActiveJob] = useState<CrawlJob | null>(null)

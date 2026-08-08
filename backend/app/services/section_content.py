@@ -61,9 +61,16 @@ from app.services.theme import (
 
 
 def _link(label: str | None, href: str | None) -> dict[str, str] | None:
-    if not label:
+    """Link slot value, or None when the button can't be rendered honestly.
+
+    A missing href is as disqualifying as a missing label: template_filler
+    drops a None slot's node, whereas a "#" href ships a button that looks
+    live and goes nowhere. schema_builder's CTA resolution pass blanks both
+    fields for exactly this reason (see `_resolve_block_cta_hrefs`).
+    """
+    if not label or not href:
         return None
-    return {"innerText": label, "href": href or "#"}
+    return {"innerText": label, "href": href}
 
 
 def _image(query: str | None, alt: str | None) -> dict[str, str] | None:
@@ -98,7 +105,7 @@ def _hero_content(b: HeroBlock) -> dict[str, Any]:
         "eyebrow": b.eyebrow,
         "headline": b.headline,
         "body": b.subheadline,
-        "primary_cta": {"innerText": b.primary_cta_label, "href": b.primary_cta_href},
+        "primary_cta": _link(b.primary_cta_label, b.primary_cta_href),
         "secondary_cta": _link(b.secondary_cta_label, b.secondary_cta_href),
         "image": _featured_image(b.image_query, b.image_url, b.image_alt or b.headline),
     }
@@ -185,7 +192,7 @@ def _cta_content(b: CtaBlock) -> dict[str, Any]:
         "eyebrow": None,
         "heading": b.headline,
         "body": b.subheadline,
-        "primary_cta": {"innerText": b.cta_label, "href": b.cta_href},
+        "primary_cta": _link(b.cta_label, b.cta_href),
         "secondary_cta": None,
         # A background photo (dark overlay applied by the template) when the LLM
         # supplied an atmospheric query or bound a real photo — else selection
@@ -240,8 +247,12 @@ def _profile_content(b: ProfileBlock) -> dict[str, Any]:
         "role": b.role or None,
         "credentials": b.credentials,
         "bio": b.bio,
+        # A contact with no href renders as an empty row rather than a link, so
+        # it is dropped here instead of downstream.
         "contacts": [
-            {"cta": _link(contact.label, contact.href)} for contact in b.contacts
+            {"cta": link}
+            for contact in b.contacts
+            if (link := _link(contact.label, contact.href))
         ],
     }
 
@@ -428,7 +439,7 @@ def _pricing_content(b: PricingBlock) -> dict[str, Any]:
                 "price": t.price,
                 "description": t.description,
                 "features": [{"feature": f"✓ {f}"} for f in t.features],
-                "cta": {"innerText": t.cta_label, "href": t.cta_href},
+                "cta": _link(t.cta_label, t.cta_href),
             }
             for t in b.tiers
         ],

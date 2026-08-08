@@ -436,6 +436,8 @@ _PROFILE_CONTAINER_HINTS = (
     "director",
 )
 _PROFILE_NAME_HINTS = ("name", "person-name", "member-name", "profile-name")
+# A column holding the portrait and nothing else. See `_is_media_only`.
+_PROFILE_MEDIA_COLUMN_MAX_CHARS = 24
 _PROFILE_ROLE_HINTS = (
     "role",
     "title",
@@ -444,10 +446,25 @@ _PROFILE_ROLE_HINTS = (
     "job",
     "office",
 )
+# Job titles are short. "Deputy Director of Community Partnerships" is 5.
+_ROLE_MAX_WORDS = 8
+# Words that open a sentence about a person, never a job title.
+_PROSE_LEAD_TOKENS = frozenset(
+    {
+        "he", "she", "they", "him", "her", "his", "their", "them",
+        "we", "our", "us", "i", "my", "you", "your",
+        "it", "its", "this", "that", "these", "those",
+    }
+)
 # Chrome tags a profile card never lives inside. The container walk stops here
 # rather than paying for a second parse of the document just to decompose them
 # (_structural_text already re-parses once; twice per page is not worth it).
 _PROFILE_CHROME_TAGS = {"nav", "footer", "header", "aside", "form"}
+# A page builder emits its footer as a plain <div> (Divi: `et-l--footer`,
+# `et_pb_column_1_tb_footer`), which the tag set above cannot catch. Only
+# "footer" is safe to match on class: "header"/"nav" would also hit the
+# legitimate `section-header` / `card-header` wrappers real cards sit in.
+_PROFILE_CHROME_HINTS = ("footer",)
 
 # A CTA/nav link is short; a card wrapped entirely in an <a> is not, and its
 # text is real content that must not be discarded.
@@ -1095,6 +1112,15 @@ def _looks_like_profile_card(tag: Tag) -> bool:
     if tag.find("form") is not None:
         return False
     lines = _text_lines(tag)
+    # A card names its person. A bare image wrapper (Divi's
+    # `span.et_pb_image_wrap`, and every builder's equivalent) carries no text
+    # at all, and would otherwise clear the size ceilings *trivially* — zero
+    # lines is under any maximum. Claiming it as the card is worse than
+    # claiming nothing: it is the innermost ancestor, so it wins the fallback
+    # immediately, and returning it non-None suppresses the sibling-column
+    # fallback that layouts like these actually need.
+    if not lines:
+        return False
     if len(lines) > _PROFILE_CARD_MAX_LINES:
         return False
     return sum(len(line) for line in lines) <= _PROFILE_CARD_MAX_CHARS
@@ -1131,35 +1157,118 @@ def _nearest_profile_container(img: Tag) -> tuple[Tag | None, bool]:
     return fallback, False
 
 
+def _in_profile_chrome(img: Tag) -> bool:
+    """True when a portrait sits in site chrome rather than page content.
+
+    ``_nearest_profile_container`` stops at ``_PROFILE_CHROME_TAGS`` on the way
+    up; the sibling walk below has no such stop, and a footer's link column
+    reads exactly like a card's text column to it — an image in a theme-builder
+    footer plus the nav labels beside it would become a "person" named after a
+    menu item.
+    """
+    if img.find_parent(list(_PROFILE_CHROME_TAGS)) is not None:
+        return True
+    # Stop below <body>: WordPress stamps page-level state onto the body class
+    # ("et-tb-has-footer" says the theme HAS a footer template, not that this
+    # element is in it), and matching there condemns every image on the page.
+    for parent in img.parents:
+        if not isinstance(parent, Tag) or parent.name in {"body", "html"}:
+            break
+        if _has_any_hint(parent, _PROFILE_CHROME_HINTS):
+            return True
+    return False
+
+
+def _is_media_only(tag: Tag) -> bool:
+    """True when this subtree holds the portrait and essentially nothing else.
+
+    Not *zero* text — a caption, a photo credit or a stray nbsp shouldn't
+    disqualify a column — but far below a name plus a line of copy.
+    """
+    return (
+        len(_clean_line(tag.get_text(" ", strip=True))) <= _PROFILE_MEDIA_COLUMN_MAX_CHARS
+    )
+
+
+def _profile_text_sibling(children: list[Tag], owner_index: int) -> Tag | None:
+    """The closest sibling that names a person — nearest first, never one with
+    an image of its own.
+
+    Both rules exist for flat grids. Laid out as
+    ``[photoA][textA][photoB][textB]``, a document-order scan from photoB would
+    walk back to textA and caption one person's portrait with another's name;
+    nearest-first pairs each photo with its own copy. Equidistant neighbours
+    break towards the FOLLOWING one, because a caption follows its photo — in
+    that same grid photoB sits one step from both textA and textB, and only
+    reading forwards gets it right. A two-column split that puts the copy
+    first is unaffected: there the text column is the sole candidate.
+
+    A sibling carrying its own <img> is another person's cell, never this
+    one's text column.
+    """
+    ranked = sorted(
+        (i for i in range(len(children)) if i != owner_index),
+        key=lambda i: (abs(i - owner_index), 0 if i > owner_index else 1),
+    )
+    for index in ranked:
+        sibling = children[index]
+        if sibling.find("img") is not None:
+            continue
+        # A card names one person; a *section* names itself in an h1/h2 and
+        # then talks about something else. Without this, an about split —
+        # image one side, "Our Story" and prose the other — reads as a person,
+        # because the loose any-text-line scan below accepts any two
+        # capitalised words. The scan has to stay available: page builders
+        # routinely put the name in an unheaded text module.
+        if sibling.find(["h1", "h2"]) is not None:
+            continue
+        if not _extract_profile_name(sibling):
+            continue
+        if len(_clean_line(sibling.get_text(" ", strip=True))) < 24:
+            continue
+        return sibling
+    return None
+
+
 def _row_text_sibling_for_profile(img: Tag) -> Tag | None:
-    """Fallback for layouts where portrait and profile copy live in sibling columns."""
+    """Find a portrait's copy when it lives in a SIBLING subtree.
+
+    The split-column profile: portrait on one side, name and bio on the other,
+    with no ancestor holding both and only them. ``_nearest_profile_container``
+    walks *up* and meets nothing but text-less wrappers, so the copy has to be
+    found by walking *across*.
+
+    Structural, deliberately not name-based. Requiring ``row``/``col``/``grid``
+    class names read the layout through one family of page builders (Divi,
+    Bootstrap, WPBakery) and gave up silently on every site built with flex
+    utilities, semantic element names, hashed CSS-module classes, or a table.
+    The signal that holds everywhere is the one that sends us sideways to begin
+    with: the portrait's own subtree carries no text, and a sibling's does.
+    """
+    if _in_profile_chrome(img):
+        return None
     current = img.parent
     depth = 0
     while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 6:
-        children = [child for child in current.find_all(recursive=False) if isinstance(child, Tag)]
-        if len(children) >= 2:
-            row_hints = _has_any_hint(current, ("row", "columns", "grid")) or any(
-                _has_any_hint(child, ("column", "col", "cell")) for child in children
-            )
-            if row_hints:
-                owner = next(
-                    (
-                        child
-                        for child in children
-                        if child is img or child.find(lambda t: t is img) is not None
-                    ),
-                    None,
-                )
-                if owner is not None:
-                    for sibling in children:
-                        if sibling is owner:
-                            continue
-                        if not _extract_profile_name(sibling):
-                            continue
-                        text = _clean_line(sibling.get_text(" ", strip=True))
-                        if len(text) < 24:
-                            continue
-                        return sibling
+        children = [c for c in current.find_all(recursive=False) if isinstance(c, Tag)]
+        owner_index = next(
+            (
+                i
+                for i, child in enumerate(children)
+                if child is img or child.find(lambda t: t is img) is not None
+            ),
+            None,
+        )
+        if owner_index is None:
+            break
+        # Climb only while the portrait's subtree stays a media column. Once an
+        # ancestor picks up the copy, THAT ancestor is the card, and scanning
+        # its siblings would reach into the next person's.
+        if not _is_media_only(children[owner_index]):
+            break
+        match = _profile_text_sibling(children, owner_index)
+        if match is not None:
+            return match
         current = current.parent
         depth += 1
     return None
@@ -1206,6 +1315,27 @@ def _extract_profile_name(container: Tag, *, allow_h2: bool = True) -> str | Non
     return None
 
 
+def _looks_like_role_line(line: str) -> bool:
+    """True when a line reads as a job title rather than prose.
+
+    A role is a LABEL — "Chairperson", "Founder & Speaker", "Head of Clinical
+    Services". The positional scan below takes the lines just after the name,
+    and on the very common card that carries NO role those lines are the first
+    sentence of the bio. "Her interests include music, reading and travelling."
+    is short, capitalised and free of contact tokens, so every other filter
+    waves it through and it lands in the role slot under the person's name.
+    """
+    words = line.split()
+    if len(words) > _ROLE_MAX_WORDS:
+        return False
+    # Trailing full stops mark a sentence, but not on "Ph.D." or "Jr." — so
+    # only once the line is long enough to BE a sentence.
+    if line.endswith((".", "!", "?")) and len(words) >= 4:
+        return False
+    lead = words[0].lower().strip(",.:;") if words else ""
+    return lead not in _PROSE_LEAD_TOKENS
+
+
 def _extract_profile_role(container: Tag, name: str) -> str | None:
     hinted = _find_text_by_hints(container, _PROFILE_ROLE_HINTS)
     if hinted and hinted != name and len(hinted) <= 90:
@@ -1227,6 +1357,8 @@ def _extract_profile_role(container: Tag, name: str) -> str | None:
         if line.lower() in cta_texts or is_boilerplate_line(line):
             continue
         if has_contact_token(line):
+            continue
+        if not _looks_like_role_line(line):
             continue
         return line
     return None
@@ -1524,12 +1656,22 @@ def _extract_profile_candidates(
             portraits.append((photo_url, alt))
 
         container, hinted = _nearest_profile_container(img)
-        if container is None:
-            container = _row_text_sibling_for_profile(img)
-        if container is None:
-            continue
-        name = _extract_profile_name(container, allow_h2=hinted)
+        name = (
+            _extract_profile_name(container, allow_h2=hinted)
+            if container is not None
+            else None
+        )
         if not name:
+            # The ancestor walk found no container, or found one that names
+            # nobody — a page-builder layout that puts the portrait and the
+            # copy in SIBLING columns looks like both. Either way the walk has
+            # nothing to offer, so try across rather than up. Gating this on
+            # `container is None` alone is how a text-less wrapper silently
+            # cost a whole team grid its photos.
+            container = _row_text_sibling_for_profile(img)
+            hinted = False
+            name = _extract_profile_name(container) if container is not None else None
+        if container is None or not name:
             continue
         role = _extract_profile_role(container, name)
         card_email, card_phone, card_social = _profile_card_contacts(
@@ -1734,6 +1876,60 @@ def _extract_document_cards(
         )
 
     return cards[:20]
+
+
+def _strip_document_card_lines(text: str, cards: list[DocumentCardCandidate]) -> str:
+    """Remove each document card's title + link labels from raw_text.
+
+    Without this, the LLM sees the same titles ("Music Therapy for Mental
+    Health") as ordinary page text and invents its OWN services/about section
+    narrating them — duplicating, in a second disconnected section, content
+    the deterministic downloads block (routers.generate._inject_downloads)
+    already renders with real buttons. Same reasoning as nav_extraction.
+    strip_linkbar_lines: claim the text before planning, not after.
+    """
+    exact_lines = {
+        _clean_line(card.title).strip().lower() for card in cards if card.title
+    }
+    label_groups = [
+        [link.label.strip().lower() for link in card.links if link.label]
+        for card in cards
+    ]
+    label_groups = [g for g in label_groups if g]
+    if not exact_lines and not label_groups:
+        return text
+
+    def _is_link_label_line(line: str) -> bool:
+        low = _clean_line(line).strip().lower()
+        for labels in label_groups:
+            remainder = low
+            matched = False
+            for label in labels:
+                replaced = re.sub(re.escape(label), " ", remainder, count=1)
+                if replaced != remainder:
+                    matched = True
+                    remainder = replaced
+            if not matched:
+                continue
+            # A leading "Download " boilerplate word is not one of the card's
+            # OWN link labels, but must not keep the remainder non-empty
+            # either — strip it too before judging what's left over.
+            for stopword in _DOCUMENT_CARD_TITLE_STOPWORDS:
+                remainder = re.sub(re.escape(stopword), " ", remainder)
+            # Only a line that's essentially *made of* this card's link labels
+            # (nothing meaningful left over) is dropped — a short unrelated
+            # line that merely contains a label as a substring must not match.
+            if len(re.sub(r"[^a-z0-9]", "", remainder)) < 5:
+                return True
+        return False
+
+    kept = [
+        line
+        for line in text.split("\n")
+        if _clean_line(line).strip().lower() not in exact_lines
+        and not _is_link_label_line(line)
+    ]
+    return "\n".join(kept)
 
 
 def _about_hint(img: Tag) -> bool:
@@ -2073,6 +2269,10 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
     image_candidates = _extract_images(soup, final_url)
     profile_candidates = _extract_profile_candidates(soup, final_url)
     document_cards = _extract_document_cards(soup, final_url)
+    if document_cards:
+        # Claim the cards' text before the LLM ever sees it — otherwise it
+        # narrates the same titles into an invented, disconnected section.
+        extracted_text = _strip_document_card_lines(extracted_text, document_cards)
     # Fast-path role stamping: without render evidence every candidate is
     # role="unknown", which lets a nav logo or a grid headshot win the hero
     # background. The filename and the profile-card structure are evidence we

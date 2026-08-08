@@ -3972,6 +3972,225 @@ def _harvest_image_slots(plan: SitePlan) -> list[tuple[str | None, ImageIntent]]
     return slots
 
 
+# Every "get in touch" action — the header CTA, a mid-page `cta` block, a
+# scaffolded hero, a pricing tier — defaults to this placeholder because at
+# planning time there is no page-specific target. It only ever resolved on a
+# page that happened to render its own contact section, so it ships as a dead
+# link everywhere else; `_resolve_contact_href` turns it into a real URL.
+_CONTACT_PLACEHOLDER = "#contact"
+# The id stamped on a rendered `contact` section so a `/slug#contact` fallback
+# actually lands (ContainerBlock renders `anchorId` as the HTML id).
+CONTACT_ANCHOR = "contact"
+# Every CTA href field a block (or one of its items/tiers) can carry.
+_CTA_HREF_FIELDS = ("cta_href", "primary_cta_href", "secondary_cta_href")
+_CTA_ITEM_ATTRS = ("items", "tiers")
+# Hrefs that already point somewhere real and are none of this pass's business.
+_EXTERNAL_HREF_PREFIXES = (
+    "http://",
+    "https://",
+    "//",
+    "mailto:",
+    "tel:",
+    "sms:",
+    "whatsapp:",
+)
+
+
+def _is_contact_page(page: PagePlan) -> bool:
+    """True when this page is the site's Contact page.
+
+    The plan's own `page_type` wins, but a slug/title that reads as Contact
+    counts too: menu_builder drops Contact from the primary nav on exactly that
+    inference, so a page it hides has to stay reachable from the header CTA —
+    otherwise one mislabeled `page_type` strands the page in the footer.
+
+    `menu_hidden` pages are out: they are roster detail pages, and one titled
+    "Contact Ashley" is a person, not the site's contact desk.
+    """
+    # Local import: page_inference imports nothing from this module, so this
+    # stays cycle-free (same pattern as menu_builder._is_contact).
+    from app.services.page_inference import _infer_page_type
+
+    if page.is_homepage or page.menu_hidden:
+        return False
+    return (
+        page.page_type == "contact"
+        or _infer_page_type(page.slug, page.title) == "contact"
+    )
+
+
+def _has_contact_section(page: PagePlan) -> bool:
+    """True when this page renders a `contact` block — i.e. a contact FORM
+    (the catalog's only contact template is `contact-split-form`)."""
+    return any(b.kind == "contact" for b in page.blocks)
+
+
+def _resolve_contact_href(pages: list[PagePlan], *, locale: str | None) -> str | None:
+    """Where `#contact` should point for pages in ``locale``.
+
+    A Contact page is the destination. Among several, the ranking is: one that
+    renders a form first (the CTA promises an action, so the page that can
+    complete it wins), then one the plan itself labeled `contact` over one only
+    the slug/title reads that way, then the shallowest slug. Failing a Contact
+    page entirely, the page carrying a `contact` section, linked as
+    ``/slug#contact`` — the render loop stamps the matching anchor.
+
+    Locale-scoped so a translated page reaches its own twin rather than the
+    source-language page; the caller falls back to the base locale when a
+    translation set has no Contact page of its own.
+
+    None means the site has no contact affordance at all; the caller drops the
+    action rather than shipping the placeholder.
+    """
+    scoped = [p for p in pages if p.locale == locale]
+    contact_pages = [p for p in scoped if _is_contact_page(p)]
+    if contact_pages:
+        best = min(
+            contact_pages,
+            key=lambda p: (
+                not _has_contact_section(p),
+                p.page_type != "contact",
+                p.slug.count("/"),
+            ),
+        )
+        return f"/{best.slug}"
+    # No Contact page — link to the section instead, preferring the homepage:
+    # its hero never emits a scroll cue, so the `contact` anchor is free there
+    # (an interior hero can claim its first content section's anchorId).
+    sectioned = sorted(
+        (p for p in scoped if _has_contact_section(p) and not p.menu_hidden),
+        key=lambda p: not p.is_homepage,
+    )
+    if sectioned:
+        return f"/{sectioned[0].slug}#{CONTACT_ANCHOR}"
+    return None
+
+
+def _href_token(value: str) -> str:
+    """Comparison key for a planned href or a page slug/title, so `/About-Us`,
+    `#about_us` and "About Us" all meet on the same page."""
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _page_href_index(pages: list[PagePlan]) -> dict[str, str]:
+    """token → "/slug" for every generated page.
+
+    An LLM naming a real page by a near-miss spelling (`/our-services`,
+    `#Services`, `/coaching` for a child at `services/coaching`) still lands on
+    it. Each page contributes its full slug, its last path segment, and its
+    title; the homepage has no slug to contribute, so it is indexed under its
+    title plus the literal "home" the LLM tends to write for it. First writer
+    wins and pages are walked in plan order, so a top-level page beats a deeper
+    one when a token is ambiguous.
+    """
+    index: dict[str, str] = {}
+    for page in pages:
+        slug = page.slug.strip("/").lower()
+        candidates = (
+            (slug, slug.rsplit("/", 1)[-1], page.title or "")
+            if slug
+            else (page.title or "", "home")
+        )
+        for candidate in candidates:
+            if token := _href_token(candidate):
+                index.setdefault(token, f"/{slug}" if slug else "/")
+    return index
+
+
+def _match_page_href(token: str, index: dict[str, str]) -> str | None:
+    """The page ``token`` names, or None.
+
+    Exact first, then containment either way — the LLM routinely names a page
+    with a possessive or a suffix the generated page set spells plainly
+    ("/our-services" → /services, "/about-us" → /about, "/service" → /services).
+    Longest match wins so a page whose name is a fragment of another doesn't
+    steal the link, and tokens under 4 characters only ever match exactly:
+    "us" or "faq" inside a longer name is coincidence, not a reference.
+    """
+    if not token:
+        return None
+    if exact := index.get(token):
+        return exact
+    if len(token) < 4:
+        return None
+    best: tuple[int, str] | None = None
+    for key, target in index.items():
+        if len(key) < 4 or not (key in token or token in key):
+            continue
+        if best is None or len(key) > best[0]:
+            best = (len(key), target)
+    return best[1] if best else None
+
+
+def _resolve_cta_href(
+    href: str | None, *, index: dict[str, str], fallback: str | None
+) -> str | None:
+    """The real destination for one planned CTA href, or None to drop the button.
+
+    The LLM writes these hrefs from the source site's vocabulary, not from the
+    page set we ended up generating, so it invents paths that don't exist here
+    (`/book-now`) and in-page anchors that are never stamped (`#pricing` — the
+    only anchors this renderer emits are the hero scroll cue and the contact
+    section, both injected downstream of this pass). Both ship as dead links.
+    So an href is read as a *reference to a page* and matched against the real
+    page set; what can't be matched falls back to ``fallback`` (the contact
+    destination for a primary action, None for a secondary one, which would
+    otherwise just duplicate the primary's target).
+    """
+    value = (href or "").strip()
+    if value.lower().startswith(_EXTERNAL_HREF_PREFIXES):
+        return value
+    if not value or value == _CONTACT_PLACEHOLDER:
+        return fallback
+    path, _, fragment = value.partition("#")
+    path = path.strip("/").lower()
+    if not path and not fragment:  # an explicit link to the homepage
+        return "/"
+    return _match_page_href(_href_token(path or fragment), index) or fallback
+
+
+def _resolve_block_cta_hrefs(
+    block: ContentBlock, *, index: dict[str, str], contact_href: str | None
+) -> None:
+    """Point every CTA href on ``block`` (and its items/tiers) at a real page.
+
+    A button with nowhere to go loses its label as well as its href: a blank
+    label makes the mapper emit None for the slot, and template_filler drops a
+    None slot's node entirely — the same route ``apply_hero_cta_policy`` takes
+    to strip an interior hero's CTA. Shipping the button with a dead href would
+    be worse than shipping no button.
+    """
+    targets = [
+        block,
+        *(
+            item
+            for attr in _CTA_ITEM_ATTRS
+            for item in getattr(block, attr, None) or []
+        ),
+    ]
+    for target in targets:
+        for field in _CTA_HREF_FIELDS:
+            if not hasattr(target, field):
+                continue
+            label_field = field.replace("_href", "_label")
+            label = getattr(target, label_field, None)
+            current = getattr(target, field)
+            # An optional CTA the LLM never filled in: nothing to resolve, and
+            # nothing renders either way.
+            if not label and not current:
+                continue
+            resolved = _resolve_cta_href(
+                current,
+                index=index,
+                # A secondary action has no claim on the contact destination —
+                # the primary next to it already goes there.
+                fallback=None if field == "secondary_cta_href" else contact_href,
+            )
+            setattr(target, field, resolved)
+            if resolved is None and hasattr(target, label_field):
+                setattr(target, label_field, "")
+
+
 async def plan_to_site(
     plan: SitePlan,
     *,
@@ -4201,20 +4420,42 @@ async def plan_to_site(
                     )
                 )
 
-    # A dedicated Contact page — when the plan has one — is the real destination
-    # behind every "#contact" placeholder href: the header's CTA (below) and any
-    # mid-page `cta` block that the LLM/scaffold defaulted to "#contact" for
-    # lack of a page-specific target. Rewritten before rendering so the
-    # resolved link is what actually gets baked into each block's element,
-    # rather than a hash that only ever resolved on a page with its own
-    # `contact` block.
-    contact_page = next((p for p in plan.pages if p.page_type == "contact"), None)
-    if contact_page is not None:
-        contact_href = f"/{contact_page.slug}"
-        for _page_plan in plan.pages:
-            for _block in _page_plan.blocks:
-                if isinstance(_block, CtaBlock) and _block.cta_href == "#contact":
-                    _block.cta_href = contact_href
+    # Point every CTA href at a page this site actually generated. Two things
+    # get fixed here: the "#contact" placeholder the LLM/scaffold defaults to
+    # for lack of a page-specific target, and the hrefs the LLM invents from the
+    # SOURCE site's vocabulary ("/book-now", "#pricing") which name no page here
+    # and would ship dead. Rewritten BEFORE rendering so the resolved link is
+    # what gets baked into each block's element.
+    #
+    # The contact destination is the fallback for anything unmatched: a Contact
+    # page that renders a form wins over one that only lists details; with no
+    # Contact page at all it is the page carrying a `contact` section
+    # (`/slug#contact`). A site with no contact affordance at all resolves to
+    # None, and those buttons are dropped rather than shipped dead — the same
+    # rule the header CTA below has always followed.
+    #
+    # Both the destination and the page index are locale-scoped so a translated
+    # page links to its own twin, falling back to the base locale's pages.
+    contact_href_by_locale = {
+        loc: _resolve_contact_href(plan.pages, locale=loc)
+        for loc in {p.locale for p in plan.pages}
+    }
+    base_contact_href = contact_href_by_locale.get(None)
+    _base_href_index = _page_href_index(
+        [p for p in plan.pages if p.locale is None]
+    )
+    href_index_by_locale = {
+        loc: {
+            **_base_href_index,
+            **_page_href_index([p for p in plan.pages if p.locale == loc]),
+        }
+        for loc in {p.locale for p in plan.pages}
+    }
+    for _page_plan in plan.pages:
+        _href = contact_href_by_locale.get(_page_plan.locale) or base_contact_href
+        _index = href_index_by_locale.get(_page_plan.locale, _base_href_index)
+        for _block in _page_plan.blocks:
+            _resolve_block_cta_hrefs(_block, index=_index, contact_href=_href)
 
     # Build each page's body
     pages: list[GeneratedPage] = []
@@ -4252,6 +4493,7 @@ async def plan_to_site(
         hero_target_kind = content_kinds[0] if content_kinds else None
         hero_element: BuilderElement | None = None
         target_element: BuilderElement | None = None
+        contact_element: BuilderElement | None = None
         # This page's slice of the batched site recipe (computed once above).
         design_recipe: DesignRecipe = site_design_recipe.recipe_for(page_index)
         for block_index, block in enumerate(page_plan.blocks):
@@ -4297,6 +4539,8 @@ async def plan_to_site(
             # hero's scroll anchor if the hero ended up full-bleed.
             if target_element is None and block.kind == hero_target_kind:
                 target_element = element
+            if contact_element is None and block.kind == "contact":
+                contact_element = element
             visual_inputs.append(
                 section_visual_input_for(block, image_band=ctx.section_image_band)
             )
@@ -4307,6 +4551,14 @@ async def plan_to_site(
             anchor = hero_scroll_anchor(hero_target_kind)
             if _has_link_to(hero_element, f"#{anchor}"):
                 target_element.anchorId = anchor
+        # Same idea for the contact section: it is the landing spot for the
+        # `/slug#contact` fallback `_resolve_contact_href` hands out when the
+        # site has no Contact page. Second in line — a hero scroll cue already
+        # holds the only anchor a section can carry.
+        if contact_element is not None and (
+            getattr(contact_element, "anchorId", None) is None
+        ):
+            contact_element.anchorId = CONTACT_ANCHOR
         # Story pages: alternate the image side of consecutive about splits so
         # the photos zigzag down the page instead of stacking on one side.
         apply_about_zigzag(elements)
@@ -4420,15 +4672,20 @@ async def plan_to_site(
     if extra_footer_nav:
         footer_nav.extend(extra_footer_nav)
     # The header's primary CTA (label varies by industry, see
-    # _CTA_LABEL_BY_INDUSTRY) routes to the dedicated Contact page's own URL
-    # when the plan has one (computed above, alongside the same rewrite for
-    # mid-page `cta` blocks) — "#contact" only resolves on a page that renders a
-    # `contact` block itself. menu_builder then leaves Contact out of the
-    # primary nav (see its policy note) since this CTA already covers that
-    # action.
+    # _CTA_LABEL_BY_INDUSTRY) routes to the contact destination resolved above
+    # — the site's Contact page, preferring one that carries a form. It is the
+    # header's only route there: menu_builder leaves Contact out of the primary
+    # nav (see its policy note) because this CTA covers that action. It is
+    # therefore never a bare "#contact", which lands nowhere on every page but
+    # the one rendering its own contact section. A site with no contact
+    # affordance at all gets no button rather than a dead one.
     primary_cta = (
-        _CTA_LABEL_BY_INDUSTRY.get(plan.industry_category, "Get in touch"),
-        f"/{contact_page.slug}" if contact_page else "#contact",
+        (
+            _CTA_LABEL_BY_INDUSTRY.get(plan.industry_category, "Get in touch"),
+            base_contact_href,
+        )
+        if base_contact_href
+        else None
     )
 
     # Transparent floating header (white nav ink), solidifying on scroll —

@@ -3,13 +3,17 @@ import unittest
 from bs4 import BeautifulSoup
 
 from app.models.content_blocks import (
+    CtaBlock,
     DocumentCardCandidate,
     DocumentCardLink,
+    HeroBlock,
     PagePlan,
+    ServicesBlock,
+    ServiceItem,
     SourceContent,
 )
 from app.routers.generate import _inject_downloads
-from app.services.scraper import _extract_document_cards
+from app.services.scraper import _extract_document_cards, _strip_document_card_lines
 
 BASE = "https://mmta.org.my/infocard"
 
@@ -133,13 +137,13 @@ class DocumentCardExtractionTest(unittest.TestCase):
         self.assertEqual(cards, [])
 
 
-def _page(slug: str, *, is_homepage: bool = False) -> PagePlan:
+def _page(slug: str, *, is_homepage: bool = False, blocks=None) -> PagePlan:
     return PagePlan(
         page_type="home" if is_homepage else "landing",
         slug=slug,
         title=slug or "Home",
         is_homepage=is_homepage,
-        blocks=[],
+        blocks=blocks if blocks is not None else [],
         seo_title="t",
         seo_description="d",
     )
@@ -225,6 +229,75 @@ class DownloadsInjectionTest(unittest.TestCase):
         home = _page("", is_homepage=True)
         _inject_downloads([home], _source([]))
         self.assertEqual(len(home.blocks), 0)
+
+    def test_inserted_right_after_hero_not_appended_after_cta(self):
+        """The actual second bug: appending at the end landed the downloads
+        block after an unrelated closing CTA. It belongs right after the
+        hero, like the announcement-strap linkbar."""
+        home = _page(
+            "",
+            is_homepage=True,
+            blocks=[
+                HeroBlock(headline="Hi"),
+                ServicesBlock(
+                    heading="Download Our Resources",
+                    items=[ServiceItem(title="Flyer", description="d")],
+                ),
+                CtaBlock(),
+            ],
+        )
+        source = _source(
+            [_card("Brochure", ("Download", "https://mmta.org.my/b.pdf"))]
+        )
+
+        _inject_downloads([home], source)
+
+        self.assertEqual(len(home.blocks), 4)
+        self.assertEqual(
+            [b.kind for b in home.blocks], ["hero", "downloads", "services", "cta"]
+        )
+
+
+class DocumentCardTextStrippingTest(unittest.TestCase):
+    def test_titles_and_link_label_lines_are_removed(self):
+        cards = [
+            _card(
+                "Music Therapy General Flyer",
+                ("Download Flyer", "https://x/a.pdf"),
+            ),
+            _card(
+                "Music Therapy for Mental Health",
+                ("English", "https://x/b.pdf"),
+                ("Bahasa Malaysia", "https://x/c.pdf"),
+                ("中文", "https://x/d.pdf"),
+            ),
+        ]
+        text = "\n".join(
+            [
+                "Info Cards",
+                "Want to find out more about who we are and what we do?",
+                "Music Therapy General Flyer",
+                "Music Therapy for Mental Health",
+                "Download English Bahasa Malaysia 中文",
+                "This paragraph mentions English literature and should survive.",
+            ]
+        )
+
+        result = _strip_document_card_lines(text, cards)
+        lines = result.split("\n")
+
+        self.assertNotIn("Music Therapy General Flyer", lines)
+        self.assertNotIn("Music Therapy for Mental Health", lines)
+        self.assertNotIn("Download English Bahasa Malaysia 中文", lines)
+        self.assertIn("Info Cards", lines)
+        self.assertIn(
+            "This paragraph mentions English literature and should survive.",
+            lines,
+        )
+
+    def test_no_cards_returns_text_unchanged(self):
+        text = "Some page text.\nAnother line."
+        self.assertEqual(_strip_document_card_lines(text, []), text)
 
 
 if __name__ == "__main__":

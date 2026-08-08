@@ -1560,7 +1560,9 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
     generated site's own page set — a document doesn't get its own generated
     page — so there's no generated-slug gate. image_url/href are already
     absolute (resolved at extraction time), which push_orchestrator later
-    re-hosts onto the CMS.
+    re-hosts onto the CMS. Inserted right after the hero (scraper._strip_
+    document_card_lines already kept the LLM from also narrating this content
+    into its own services/about section, so there's nothing to duplicate).
     """
     pages_by_path = _page_by_url_path(pages)
     for source_page in [source, *source.discovered_pages]:
@@ -1581,7 +1583,14 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
             )
             for card in source_page.document_cards
         ]
-        page.blocks.append(DownloadsBlock(items=items))
+        # Right after the hero — same placement _inject_linkbar uses — not
+        # appended at the end, which would land it after an unrelated closing
+        # CTA. A resources/downloads section is top-of-page content.
+        hero_index = next(
+            (i for i, b in enumerate(page.blocks) if b.kind == "hero"), None
+        )
+        insert_at = hero_index + 1 if hero_index is not None else 0
+        page.blocks.insert(insert_at, DownloadsBlock(items=items))
 
 
 def _ensure_hub_child_links(pages: list[PagePlan]) -> None:

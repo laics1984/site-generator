@@ -71,50 +71,50 @@ class ScrapePreviewRequest(BaseModel):
         ),
     )
 
+#for testing
+# @router.post("/preview")
+# async def scrape_preview(payload: ScrapePreviewRequest) -> dict[str, Any]:
+#     cache_key = (
+#         f"{int(payload.respect_robots)}:{int(payload.crawl)}:"
+#         f"{payload.crawl_max_pages}:{payload.crawl_max_depth}:{payload.url}"
+#     )
+#     now = time.time()
+#     cached = _CACHE.get(cache_key)
+#     if cached and (now - cached[0]) < _cache_ttl():
+#         result = cached[1]
+#     else:
+#         try:
+#             result = await scrape_url(
+#                 payload.url,
+#                 respect_robots=payload.respect_robots,
+#                 crawl=payload.crawl,
+#                 crawl_max_pages=payload.crawl_max_pages,
+#                 crawl_max_depth=payload.crawl_max_depth,
+#             )
+#         except ScrapeError as exc:
+#             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+#         except asyncio.TimeoutError as exc:
+#             raise HTTPException(status_code=408, detail="Scrape timed out") from exc
+#         _CACHE[cache_key] = (now, result)
+#         _gc_cache(now)
 
-@router.post("/preview")
-async def scrape_preview(payload: ScrapePreviewRequest) -> dict[str, Any]:
-    cache_key = (
-        f"{int(payload.respect_robots)}:{int(payload.crawl)}:"
-        f"{payload.crawl_max_pages}:{payload.crawl_max_depth}:{payload.url}"
-    )
-    now = time.time()
-    cached = _CACHE.get(cache_key)
-    if cached and (now - cached[0]) < _cache_ttl():
-        result = cached[1]
-    else:
-        try:
-            result = await scrape_url(
-                payload.url,
-                respect_robots=payload.respect_robots,
-                crawl=payload.crawl,
-                crawl_max_pages=payload.crawl_max_pages,
-                crawl_max_depth=payload.crawl_max_depth,
-            )
-        except ScrapeError as exc:
-            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
-        except asyncio.TimeoutError as exc:
-            raise HTTPException(status_code=408, detail="Scrape timed out") from exc
-        _CACHE[cache_key] = (now, result)
-        _gc_cache(now)
-
-    return {
-        "url": result.url,
-        "final_url": result.final_url,
-        "source_content": result.source_content.model_dump(mode="json"),
-        "brand_candidate": (
-            result.brand_candidate.model_dump(mode="json")
-            if result.brand_candidate
-            else None
-        ),
-        "image_candidates": [asdict(c) for c in result.image_candidates],
-        "fetched_at": result.fetched_at,
-        "discovered_count": len(result.source_content.discovered_pages),
-        # URLs the BFS frontier had queued but didn't process because the cap
-        # was reached. Frontend uses these to offer "Crawl N more".
-        "unvisited_urls": result.unvisited_urls,
-        "unvisited_count": len(result.unvisited_urls),
-    }
+#     return {
+#         "url": result.url,
+#         "final_url": result.final_url,
+#         "source_content": result.source_content.model_dump(mode="json"),
+#         "brand_candidate": (
+#             result.brand_candidate.model_dump(mode="json")
+#             if result.brand_candidate
+#             else None
+#         ),
+#         "image_candidates": [asdict(c) for c in result.image_candidates],
+#         "fetched_at": result.fetched_at,
+#         "discovered_count": len(result.source_content.discovered_pages),
+#         # URLs the BFS frontier had queued but didn't process because the cap
+#         # was reached. Frontend uses these to offer "Crawl N more".
+#         "unvisited_urls": result.unvisited_urls,
+#         "unvisited_count": len(result.unvisited_urls),
+#     }
 
 
 def _gc_cache(now: float) -> None:
