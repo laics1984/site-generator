@@ -789,7 +789,7 @@ body {
 }
 
 /* --- from components/blocks/TextBlock.vue --- */
-.wt-text { color: var(--builder-color-text, var(--wt-color-text)); }
+.wt-text { margin: 0; color: var(--wt-footer-ink, var(--builder-color-text, var(--wt-color-text))); }
 
 .wt-clamp-wrap {
   display: flex;
@@ -842,57 +842,6 @@ body {
 .wt-menu-link {
   color: inherit;
   text-decoration: none;
-}
-
-/* Social menus render brand glyphs (see lib/socialIcons.ts): a tight icon row
-   that inherits the surrounding ink, with a hit area bigger than the 20px
-   glyph so it stays tappable in the mobile viewports. */
-.wt-menu--social {
-  gap: 0.5rem;
-  align-items: center;
-}
-
-.wt-social-link {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 999px;
-  color: inherit;
-  opacity: 0.85;
-  transition: opacity 120ms ease;
-}
-
-/* The hover wash is the surrounding ink at low alpha. It lives on a
-   pseudo-element because a currentColor background on the link itself would
-   swallow the glyph, which is drawn in that same color. */
-.wt-social-link::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background-color: currentColor;
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.wt-social-link:hover,
-.wt-social-link:focus-visible {
-  opacity: 1;
-}
-
-.wt-social-link:hover::before,
-.wt-social-link:focus-visible::before {
-  opacity: 0.12;
-}
-
-.wt-social-link__icon {
-  position: relative;
-  display: block;
-  width: 20px;
-  height: 20px;
 }
 
 /* Grouped footer navigation — CSS multi-column rather than a grid. A grid
@@ -1196,6 +1145,102 @@ body {
   .wt-menu--hide-mobile {
     display: none;
   }
+}
+
+/* ── Social inline icons ─────────────────────────────────────────────── */
+
+.wt-social-menu {
+  --_icon-size: var(--wt-social-icon-size, 20px);
+  --_icon-pad: var(--wt-social-icon-pad, 7px);
+  --_icon-color: var(--wt-social-icon-color, currentColor);
+  display: flex;
+  align-items: center;
+  gap: calc(var(--_icon-pad) * 1.15);
+  flex-wrap: wrap;
+  color: inherit;
+}
+
+.wt-social-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: calc(var(--_icon-size) + var(--_icon-pad) * 2);
+  height: calc(var(--_icon-size) + var(--_icon-pad) * 2);
+  padding: var(--_icon-pad);
+  border-radius: 50%;
+  color: var(--_icon-color);
+  background: color-mix(in srgb, var(--_icon-color) 8%, transparent);
+  text-decoration: none;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+  opacity: 0.88;
+}
+
+.wt-social-icon:hover,
+.wt-social-icon:focus-visible {
+  background-color: color-mix(in srgb, var(--_icon-color) 16%, transparent);
+  opacity: 1;
+}
+
+@media (max-width: 1023.98px) {
+  .wt-social-menu--header {
+    display: none;
+  }
+}
+
+.wt-social-icon:focus-visible {
+  outline: 2px solid var(--_icon-color);
+  outline-offset: 2px;
+}
+
+.wt-social-icon__svg {
+  width: var(--_icon-size);
+  height: var(--_icon-size);
+  flex-shrink: 0;
+  fill: currentColor;
+}
+
+/* ── Mobile drawer social icons ──────────────────────────────────────── */
+
+.wt-mobile-menu-social {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0 0.75rem;
+}
+
+.wt-mobile-menu-social__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  color: inherit;
+  background: rgba(148, 163, 184, 0.08);
+  text-decoration: none;
+  transition: background-color 0.15s ease;
+}
+
+.wt-mobile-menu-social__icon:hover,
+.wt-mobile-menu-social__icon:focus-visible {
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.wt-mobile-menu-sheet--overlay .wt-mobile-menu-social__icon {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.wt-mobile-menu-sheet--overlay .wt-mobile-menu-social__icon:hover,
+.wt-mobile-menu-sheet--overlay .wt-mobile-menu-social__icon:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.wt-mobile-menu-social__svg {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  fill: currentColor;
 }
 
 /* --- from components/blocks/VideoBlock.vue --- */
@@ -1728,9 +1773,9 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  border: 1px solid color-mix(in srgb, var(--builder-color-accent, #f59e0b) 24%, transparent);
-  background: color-mix(in srgb, var(--builder-color-accent, #f59e0b) 8%, transparent);
-  color: var(--builder-color-accent, #f59e0b);
+  border: 1px solid color-mix(in srgb, var(--wt-color-primary, #2563eb) 24%, transparent);
+  background: color-mix(in srgb, var(--wt-color-primary, #2563eb) 8%, transparent);
+  color: var(--wt-color-primary, #2563eb);
 }
 
 .wt-cms-card__meta {
@@ -1986,4 +2031,209 @@ body {
   border: 1px dashed currentColor;
   opacity: 0.6;
   border-radius: 12px;
+}
+
+/* --- from components/public/GalleryLightbox.vue --- */
+.wt-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: 1fr auto;
+  align-items: center;
+  gap: clamp(4px, 2vw, 20px);
+  padding: clamp(12px, 3vw, 32px);
+  background: rgba(9, 9, 11, 0.94);
+  backdrop-filter: blur(6px);
+  /* The viewer is its own world — don't inherit the section's body font size. */
+  font-family: var(--wt-font-body, Inter, Arial, sans-serif);
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.wt-lightbox:focus {
+  outline: none;
+}
+
+.wt-lightbox__stage {
+  position: relative;
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.wt-lightbox__image {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+  /* Absolute so the outgoing and incoming frames overlap during the crossfade
+     instead of briefly stacking and resizing the stage. */
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+
+.wt-lightbox__spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.22);
+  border-top-color: rgba(255, 255, 255, 0.85);
+  animation: wt-lightbox-spin 720ms linear infinite;
+}
+
+@keyframes wt-lightbox-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.wt-lightbox__close,
+.wt-lightbox__nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 44px is the minimum comfortable touch target. */
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.wt-lightbox__close:hover,
+.wt-lightbox__nav:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.wt-lightbox__close:focus-visible,
+.wt-lightbox__nav:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+
+.wt-lightbox__close svg,
+.wt-lightbox__nav svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.wt-lightbox__close {
+  position: absolute;
+  top: clamp(12px, 3vw, 28px);
+  right: clamp(12px, 3vw, 28px);
+  z-index: 1;
+}
+
+.wt-lightbox__nav--prev {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.wt-lightbox__nav--next {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.wt-lightbox__bar {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding-top: clamp(10px, 2vw, 18px);
+  text-align: center;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.wt-lightbox__caption {
+  margin: 0;
+  max-width: 70ch;
+  font-size: clamp(0.875rem, 1.6vw, 1rem);
+  line-height: 1.5;
+}
+
+.wt-lightbox__counter {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.wt-lightbox-fade-enter-active,
+.wt-lightbox-fade-leave-active {
+  transition: opacity 220ms ease;
+}
+
+.wt-lightbox-fade-enter-from,
+.wt-lightbox-fade-leave-to {
+  opacity: 0;
+}
+
+/* Phones: the arrows would crowd the photo, so drop them onto the bar and let
+   swipe be the primary gesture. */
+@media (max-width: 640px) {
+  .wt-lightbox {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+
+  .wt-lightbox__stage {
+    grid-column: 1;
+  }
+
+  .wt-lightbox__nav {
+    grid-column: 1;
+    grid-row: 2;
+    align-self: end;
+  }
+
+  .wt-lightbox__nav--prev {
+    justify-self: start;
+  }
+
+  .wt-lightbox__nav--next {
+    justify-self: end;
+  }
+
+  .wt-lightbox__bar {
+    grid-column: 1;
+    grid-row: 2;
+    padding-inline: 52px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wt-lightbox-fade-enter-active,
+  .wt-lightbox-fade-leave-active,
+  .wt-lightbox__close,
+  .wt-lightbox__nav {
+    transition: none;
+  }
+
+  .wt-lightbox__spinner {
+    animation-duration: 2s;
+  }
 }

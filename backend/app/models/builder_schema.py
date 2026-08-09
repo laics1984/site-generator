@@ -194,6 +194,13 @@ class BuilderElement(BaseModel):
     # right panel hides the control otherwise.
     htmlTag: str | None = None
     backgroundTexture: BackgroundStrategy | None = None
+    # Marks this element as a lightbox gallery group: on the public site every
+    # descendant image becomes click-to-enlarge and the group navigates as one
+    # set, in DOM order. Set on the tile grid, not the individual images — one
+    # flag defines both the trigger surface and the navigation order. The
+    # builder canvas ignores it; renderers that don't know the field degrade to
+    # plain, non-interactive tiles.
+    lightbox: bool | None = None
 
 
 BuilderElement.model_rebuild()

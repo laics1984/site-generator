@@ -2857,6 +2857,10 @@ async def _build_gallery(block: GalleryBlock, ctx: RenderContext) -> BuilderElem
         },
         content=tiles,
         responsiveStyles=ResponsiveStyles(mobile={"gap": "12px"}),
+        # Click-to-enlarge on the public site, matching the gallery-grid catalog
+        # template this fallback stands in for. Tiles that link to a child
+        # case-study page keep their link — the runtime skips linked images.
+        lightbox=True,
     )
 
     return _section(ctx, [header, grid], name="Gallery")

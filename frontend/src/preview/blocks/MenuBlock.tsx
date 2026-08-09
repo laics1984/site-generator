@@ -532,8 +532,14 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
   // that way) is the giveaway that a preview is unfinished.
   if (isSocialMenu) {
     return (
+      // Class names track upstream's social markup (`wt-social-menu` /
+      // `wt-social-icon`), which replaced the older `wt-menu--social` /
+      // `wt-social-link` pair. NOTE: the glyph rendering below still diverges
+      // from upstream (this port resolves glyphs by href with a monogram
+      // fallback; MenuBlock.vue maps them by label) — a real re-port, not a
+      // rename, and out of scope here.
       <nav
-        className={['wt-menu', 'wt-menu--social', nodeClasses].filter(Boolean).join(' ')}
+        className={['wt-social-menu', nodeClasses].filter(Boolean).join(' ')}
         style={resolvedStyles}
         data-wt-node-id={nodeDomId}
         aria-label={menuLabel}
@@ -545,7 +551,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
           return (
             <a
               key={`${glyph.key}:${index}`}
-              className="wt-menu-link wt-social-link wt-ui-link"
+              className="wt-social-icon"
               href={href}
               target={item.target || undefined}
               rel={item.rel || undefined}
@@ -554,7 +560,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
               onClick={inert}
             >
               <svg
-                className="wt-social-link__icon"
+                className="wt-social-icon__svg"
                 viewBox="0 0 24 24"
                 width="20"
                 height="20"

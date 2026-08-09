@@ -7302,6 +7302,7 @@
             "type": "3Col",
             "$repeat": "items",
             "$gridFit": true,
+            "lightbox": true,
             "styles": {
               "backgroundPosition": "center",
               "objectFit": "cover",

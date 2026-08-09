@@ -706,7 +706,11 @@ class GalleryBlock(BaseModel):
     kind: Literal["gallery"] = "gallery"
     heading: str = "Gallery"
     subheading: str | None = None
-    items: list[GalleryItem] = Field(min_length=1, max_length=12)
+    # A real scraped photo gallery routinely runs past a dozen shots, and the
+    # tiles are click-to-enlarge (see BuilderElement.lightbox), so a longer set
+    # is browsable rather than just a taller grid. Still capped — every unique
+    # image is one media upload at push time.
+    items: list[GalleryItem] = Field(min_length=1, max_length=24)
 
     @field_validator("heading", mode="before")
     @classmethod

@@ -8,12 +8,18 @@
  * renders inside an iframe, so the scroll container is the frame's own
  * document. `scrollRoot` carries it in.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import type { PublicBlockNode, PublicMenu, PublicSchemaTree, PublicStyleTokens } from './lib/public'
 import { SchemaRenderer } from './SchemaRenderer'
+import { GalleryLightbox } from './GalleryLightbox'
 import { getNodeStyles } from './lib/blockRuntime'
 import { isFirstSectionHeaderOverlaySafe } from './lib/headerOverlay'
+import {
+  collectLightboxGroupIds,
+  startLightboxRuntime,
+  type LightboxSlide,
+} from './lib/lightbox'
 import {
   findFirstNonBreadcrumbNode,
   getNodeChildren,
@@ -130,6 +136,40 @@ export function PreviewSiteShell({
 }: PreviewSiteShellProps) {
   const cssVars = useMemo(() => buildCssVars(site.builderStyles), [site.builderStyles])
   const runtimeMenus = useMemo(() => site.menus ?? [], [site.menus])
+
+  // Click-to-enlarge on gallery grids (`lightbox` markers from the section
+  // catalog). PORT of useSchemaLightbox — the composable's job is split between
+  // this state and the effect below, because the runtime needs the iframe's
+  // document, which only exists once the root has mounted into it.
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const [frameDoc, setFrameDoc] = useState<Document | null>(null)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
+  const [lightboxSlides, setLightboxSlides] = useState<LightboxSlide[]>([])
+  const [lightboxIndex, setLightboxIndex] = useState(0)
+  const closeLightbox = useCallback(() => setLightboxOpen(false), [])
+
+  const attachRoot = useCallback((node: HTMLDivElement | null) => {
+    rootRef.current = node
+    setFrameDoc(node?.ownerDocument ?? null)
+  }, [])
+
+  useEffect(() => {
+    if (!frameDoc) return
+    // Re-arming means the tree was replaced; a viewer left open would be
+    // floating over content that no longer produced it.
+    setLightboxOpen(false)
+    const groupIds = collectLightboxGroupIds([site.headerSchema, bodySchema, site.footerSchema])
+    if (groupIds.length === 0) return
+    return startLightboxRuntime({
+      doc: frameDoc,
+      groupIds,
+      onOpen: (event) => {
+        setLightboxSlides(event.slides)
+        setLightboxIndex(event.index)
+        setLightboxOpen(true)
+      },
+    })
+  }, [frameDoc, site.headerSchema, site.footerSchema, bodySchema])
 
   const pageWidthMode = (() => {
     const page = asRecord(site.builderStyles)?.page
@@ -300,6 +340,7 @@ export function PreviewSiteShell({
           <HeaderOverlayContext.Provider value={runtimeHeaderOverlay}>
             <HeaderShrinkContext.Provider value={runtimeHeaderShrink}>
               <div
+                ref={attachRoot}
                 className="wt-site"
                 style={cssVars as CSSProperties}
                 data-page-width-mode={pageWidthMode}
@@ -320,6 +361,14 @@ export function PreviewSiteShell({
                     <SchemaRenderer schema={site.footerSchema} scope="footer" />
                   </footer>
                 )}
+                <GalleryLightbox
+                  open={lightboxOpen}
+                  slides={lightboxSlides}
+                  index={lightboxIndex}
+                  doc={frameDoc}
+                  onIndexChange={setLightboxIndex}
+                  onClose={closeLightbox}
+                />
               </div>
             </HeaderShrinkContext.Provider>
           </HeaderOverlayContext.Provider>

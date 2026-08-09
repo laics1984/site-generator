@@ -55,6 +55,9 @@ const VUE_SOURCES = [
   'components/blocks/CmsListBlock.vue',
   'components/blocks/CmsArchiveHeaderBlock.vue',
   'components/blocks/DynamicFieldBlock.vue',
+  // Overlay, not a block — last in the cascade, and its `.wt-lightbox*`
+  // namespace collides with nothing above it.
+  'components/public/GalleryLightbox.vue',
 ]
 
 function extractStyleBlocks(source) {

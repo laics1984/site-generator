@@ -108,6 +108,27 @@ exception is a `$bento` fan-out container. `$bento` is Python-only; the builder'
 TS `materializeTemplate` has no branch for it (known parity gap). Optional
 `"moods": [...]` restricts an entry to those brand moods.
 
+## Gallery lightbox
+
+`BuilderElement.lightbox: true` on a **tile grid** makes its descendant images
+click-to-enlarge on the published site, navigable as one set in DOM order. One
+flag defines both the trigger surface and the navigation order, so the runtime
+binds a single delegated listener per group. Authored in the catalog
+(`gallery-grid`'s "Gallery Grid" node); the fallback `schema_builder._build_gallery`
+sets it too.
+
+It rides the same field whitelist as `classes`/`motion` — a new field must be
+added to **four** places or it is silently dropped: `CatalogNode` + `baseFields`
+in `builder/src/lib/section-catalog.ts`, and `_base_fields` in
+`template_filler.py`, plus the `BuilderElement` type on both sides. **A new
+gallery variant without the marker just isn't clickable** — nothing errors.
+
+Renderers: `webtree-public/lib/lightbox.ts` + `components/public/GalleryLightbox.vue`
+(wired via `useSchemaLightbox` in `PublicSiteShell`), mirrored in
+`frontend/src/preview/`. Progressive enhancement only — SSR markup is untouched,
+and a linked tile (gallery item pointing at a case-study page) keeps its link
+instead of enlarging. Tests: `lib/lightbox.test.ts`, `test_gallery_lightbox.py`.
+
 ## SEO
 
 `services/seo.py` owns the **data**; the CMS renderer owns injection (it wraps
