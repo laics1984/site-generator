@@ -97,8 +97,12 @@ async def run_crawl_job(job_id: str) -> None:
 
 
 def _result_to_payload(result) -> dict[str, Any]:
-    """Mirror the /api/scrape/preview response shape so the existing
-    frontend type (ScrapePreview) hydrates from job result without changes."""
+    """The canonical scrape-result payload shape.
+
+    The frontend's ScrapePreview type hydrates straight from this, and
+    routers/document.py mirrors it for uploads, so this function is where the
+    shape is defined. (It was previously defined by POST /api/scrape/preview,
+    which has since been deleted.)"""
     return {
         "url": result.url,
         "final_url": result.final_url,

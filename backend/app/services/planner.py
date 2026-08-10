@@ -46,7 +46,13 @@ from app.models.content_blocks import (
 from app.config import settings
 from app.models.industry import PageScaffold
 from app.services.industry_personality import personality_prompt_lines
-from app.services.llm import LlmClient, chat_json_cached, get_llm, get_reasoning_llm
+from app.services.llm import (
+    LlmClient,
+    LlmError,
+    chat_json_cached,
+    get_llm,
+    get_reasoning_llm,
+)
 from app.services.prompts import (
     DETECT_BRAND_PROMPT,
     LEGACY_SYSTEM_PROMPT,
@@ -210,6 +216,11 @@ class ScaffoldedSitePlan(BaseModel):
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
     pages: list[PagePlan]
+    # Slugs whose generating LLM call failed outright. They are still SHIPPED —
+    # `_align_pages_to_scaffolds` re-materialises each one from its scaffold with
+    # structural defaults — but the copy is generic, so the caller logs it and
+    # can surface it. Empty on a clean run.
+    degraded_slugs: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -386,6 +397,41 @@ _TOK_PER_SECTION_OUT = 230
 _TOK_PER_IMAGE = 30
 _INPUT_SHARE = 0.48          # fraction of num_ctx reserved for input tokens
 _CHARS_PER_TOKEN = 4          # rough English chars→tokens ratio for estimates
+# CJK text has no spaces and tokenises far denser — roughly one token per
+# character, against English's ~4. Treating a Chinese page as 4 chars/token
+# under-counts its real cost by ~3x, which silently overflows num_ctx and burns
+# a truncation retry (or a whole degraded batch). This generator targets
+# multilingual Malaysian sites, so /zh mirrors are routine, not exotic.
+_CJK_CHARS_PER_TOKEN = 1.2
+# Hiragana/katakana, CJK ideographs (incl. extension A), compatibility
+# ideographs, and half-width katakana. Written as \u escapes so the ranges
+# stay reviewable in a diff and survive any editor's encoding. Hangul is
+# deliberately absent - Korean tokenises much closer to the Latin rate, so
+# billing it as CJK would over-count.
+_CJK_RE = re.compile(
+    "["
+    "\u3040-\u30ff"   # hiragana + katakana
+    "\u3400-\u4dbf"   # CJK unified ideographs extension A
+    "\u4e00-\u9fff"   # CJK unified ideographs
+    "\uf900-\ufaff"   # CJK compatibility ideographs
+    "\uff66-\uff9f"   # half-width katakana
+    "]"
+)
+
+
+def _estimate_tokens(text: str) -> int:
+    """Character-count → token estimate, weighted by script.
+
+    English bills at ``_CHARS_PER_TOKEN``; CJK characters at
+    ``_CJK_CHARS_PER_TOKEN``. A mixed string is billed proportionally rather
+    than by a threshold, so a mostly-English page with a Chinese address doesn't
+    jump budgets.
+    """
+    if not text:
+        return 0
+    cjk = len(_CJK_RE.findall(text))
+    other = max(0, len(text) - cjk)
+    return int(cjk / _CJK_CHARS_PER_TOKEN + other / _CHARS_PER_TOKEN)
 
 # The batch/chunk caps themselves are model-variant knobs and live in settings:
 #   settings.max_sections_per_batch      section-density cap per batch
@@ -434,18 +480,15 @@ def _build_batches(
         # the per-call budget — larger pages are chunked elsewhere, never batched).
         # This lets tiny pages pack several-per-batch instead of all costing a flat
         # estimate. Only small pages (<= the per-call budget) reach this function.
-        src_chars = (
-            min(
-                len(source_map[s.slug].raw_text or ""),
-                settings.multipass_max_chars_per_call,
-            )
+        src_text = (
+            (source_map[s.slug].raw_text or "")[: settings.multipass_max_chars_per_call]
             if has_source
-            else 0
+            else ""
         )
         image_count = len(promptable_images(source_map[s.slug])) if has_source else 0
         page_input = (
             _TOK_PER_PAGE_STUB
-            + src_chars // _CHARS_PER_TOKEN
+            + _estimate_tokens(src_text)
             + image_count * _TOK_PER_IMAGE
         )
         page_output = len(s.sections) * _TOK_PER_SECTION_OUT
@@ -1007,9 +1050,10 @@ async def plan_site_with_scaffolds(
     # personality, with an empty pages list) once, instead of trusting the
     # _TOK_BRAND_SOURCE guess — an unusually long brand summary or heading list
     # would otherwise let batches overflow the input budget.
-    fixed_input_tokens = (
-        len(_build_scaffolded_user_prompt(source, brand, [], None, source_map))
-        // _CHARS_PER_TOKEN
+    # Script-weighted: this envelope carries the entry page's own raw_text, so on
+    # a Chinese-language site a flat chars/4 under-counts it several-fold.
+    fixed_input_tokens = _estimate_tokens(
+        _build_scaffolded_user_prompt(source, brand, [], None, source_map)
     )
 
     # 3. Build an ordered work-list. Runs of small pages flow through the existing
@@ -1058,6 +1102,7 @@ async def plan_site_with_scaffolds(
     all_pages: list[PagePlan] = []
     parent_context: dict[str, dict] = {}
     first: ScaffoldedSitePlan | None = None
+    degraded_slugs: list[str] = []
 
     async def _run_item(
         item_index: int, item_kind: str, payload: object
@@ -1096,6 +1141,39 @@ async def plan_site_with_scaffolds(
         )
         return list(result.pages), result
 
+    def _item_slugs(item_kind: str, payload: object) -> list[str]:
+        """The scaffold slugs one work item is responsible for."""
+        if item_kind == "batch":
+            return [s.slug for s in payload]  # type: ignore[union-attr]
+        return [payload.slug]  # type: ignore[union-attr]
+
+    async def _run_item_safe(
+        item_index: int, item_kind: str, payload: object
+    ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
+        """`_run_item`, but a failed LLM call costs only ITS OWN pages.
+
+        A single `LlmError` used to abort the whole generation: batch 4 of 6
+        timing out on a cold local model threw away five batches that had
+        already succeeded, and the user got a 502 after two minutes of work.
+        The pages this item owned are simply not produced — alignment then
+        re-materialises each from its scaffold with structural defaults, which
+        is the same path a page the model silently dropped already takes.
+        """
+        try:
+            return await _run_item(item_index, item_kind, payload)
+        except LlmError as exc:
+            slugs = _item_slugs(item_kind, payload)
+            degraded_slugs.extend(slugs)
+            logger.warning(
+                "Content generation failed for %s (%s) — shipping %d page(s) with "
+                "scaffold defaults instead of failing the whole site: %s",
+                ", ".join(f"/{s}" for s in slugs) or "(homepage)",
+                item_kind,
+                len(slugs),
+                exc,
+            )
+            return [], None
+
     def _absorb(produced: list[PagePlan], result: "ScaffoldedSitePlan | None") -> None:
         # Harvest parent hero context for children that come in later work items.
         # Children are guaranteed later because of the depth sort.
@@ -1112,7 +1190,7 @@ async def plan_site_with_scaffolds(
         # Strictly serial — the right shape for a single local GPU model, and
         # every item sees the freshest parent_context (same as always).
         for item_index, (item_kind, payload, _depth) in enumerate(worklist):
-            _absorb(*await _run_item(item_index, item_kind, payload))
+            _absorb(*await _run_item_safe(item_index, item_kind, payload))
     else:
         # Same-depth items are mutually independent (a page never parents a
         # sibling), so run each contiguous depth group under a semaphore and
@@ -1125,7 +1203,7 @@ async def plan_site_with_scaffolds(
             item_index: int, item_kind: str, payload: object
         ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
             async with sem:
-                return await _run_item(item_index, item_kind, payload)
+                return await _run_item_safe(item_index, item_kind, payload)
 
         pos = 0
         while pos < len(worklist):
@@ -1159,7 +1237,27 @@ async def plan_site_with_scaffolds(
     extras = [p for p in all_pages if p not in ordered_pages]
     final_pages = ordered_pages + extras
 
-    assert first is not None
+    if first is None:
+        # Every work item failed (or there were none). The site-level fields
+        # normally come from the first successful call; fall back to the brand
+        # detection that already ran, so the caller still gets a themeable plan
+        # of scaffold-default pages rather than an AssertionError.
+        if degraded_slugs:
+            logger.error(
+                "Every content-generation call failed — falling back to detected "
+                "brand metadata and scaffold-default pages for all %d page(s)",
+                len(degraded_slugs),
+            )
+        first = ScaffoldedSitePlan(
+            site_name=(brand.site_name if brand else None) or source.title or "Untitled",
+            tagline=brand.tagline if brand else None,
+            brand_summary=brand.brand_summary if brand else "",
+            brand_mood=brand.brand_mood if brand else None,
+            industry_category=brand.industry_category if brand else "other",
+            primary_color_hint=brand.primary_color_hint if brand else None,
+            pages=[],
+        )
+
     plan = ScaffoldedSitePlan(
         site_name=first.site_name,
         tagline=first.tagline,
@@ -1168,5 +1266,6 @@ async def plan_site_with_scaffolds(
         industry_category=first.industry_category,
         primary_color_hint=first.primary_color_hint,
         pages=final_pages,
+        degraded_slugs=degraded_slugs,
     )
     return plan, source_map

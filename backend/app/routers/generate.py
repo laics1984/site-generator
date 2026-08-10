@@ -1293,6 +1293,18 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         ocr_task.cancel()
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
 
+    # Per-batch failures no longer abort the run (see planner._run_item_safe) —
+    # the affected pages ship with scaffold defaults. Surface which ones, so a
+    # thin page is traceable to a failed call rather than to bad source content.
+    if scaffolded.degraded_slugs:
+        logger.warning(
+            "%d of %d page(s) fell back to scaffold defaults after a failed "
+            "content call: %s",
+            len(scaffolded.degraded_slugs),
+            len(content_scaffolds),
+            ", ".join(f"/{s}" for s in scaffolded.degraded_slugs),
+        )
+
     # Build the SitePlan that schema_builder consumes.
     plan = SitePlan(
         site_name=scaffolded.site_name or detected.site_name,

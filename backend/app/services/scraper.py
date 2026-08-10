@@ -2154,7 +2154,24 @@ def _extract_headings(soup: BeautifulSoup) -> list[str]:
     return deduped[:50]
 
 
+# How many links one page contributes. The cap exists so a sitemap-style page
+# can't balloon SourceContent; it is applied AFTER crawlable links are sorted to
+# the front (see below), so the crawl frontier is never the thing that loses out.
+_MAX_LINKS_PER_PAGE = 200
+
+
 def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
+    """Absolute links on the page, crawlable same-host ones first.
+
+    The order is load-bearing: this list is the crawl's seed frontier
+    (``scrape_url`` passes it as ``seed_links``), and the cap used to be applied
+    to raw document order. On a page carrying a mega-menu and a footer sitemap,
+    the first 50 links are all chrome, external and asset URLs — so genuine
+    content links were cut before ``_is_crawlable_link`` ever saw them, and the
+    crawl silently explored a fraction of the site.
+
+    Sorting is stable, so within each group document order is preserved.
+    """
     out: list[str] = []
     seen = set()
     for a in soup.find_all("a", href=True):
@@ -2167,7 +2184,10 @@ def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
         if abs_url and abs_url not in seen and abs_url.startswith(("http://", "https://")):
             seen.add(abs_url)
             out.append(abs_url)
-    return out[:50]
+
+    entry_host = urlparse(base_url).netloc
+    out.sort(key=lambda url: 0 if _is_crawlable_link(url, entry_host) else 1)
+    return out[:_MAX_LINKS_PER_PAGE]
 
 
 def _extract_meta_string(soup: BeautifulSoup, *names: str) -> str | None:
@@ -2442,6 +2462,7 @@ async def _crawl_extra_pages(
     timeout_ms: int,
     respect_robots: bool,
     extra_seed_urls: list[str] | None = None,
+    fallback_seed_urls: list[str] | None = None,
     already_seen: set[str] | None = None,
     priority_seed_urls: set[str] | None = None,
     on_progress: "Callable[[int, str], Awaitable[None]] | None" = None,
@@ -2472,6 +2493,12 @@ async def _crawl_extra_pages(
     lets the caller mark some of ``seed_links``/``extra_seed_urls`` (e.g. the
     entry page's own profile-card links, when the entry page is itself a
     roster) as high-priority up front.
+
+    ``fallback_seed_urls`` (the site's own sitemap) is queued LAST, behind every
+    link the entry page actually shows. A sitemap is a complete inventory rather
+    than a statement of importance, so it must not outrank the owner's own
+    navigation — its job is to reach pages the link graph hides, not to reorder
+    the ones it doesn't.
     """
     entry_parsed = urlparse(entry_final_url)
     entry_host = entry_parsed.netloc
@@ -2539,8 +2566,13 @@ async def _crawl_extra_pages(
 
     # Register every candidate path before queueing: /about must be known when
     # /bm/about is classified, whatever order the entry page lists them in.
-    _register_paths([*(extra_seed_urls or []), *seed_links])
-    for link in [*(extra_seed_urls or []), *seed_links]:
+    _all_seeds = [
+        *(extra_seed_urls or []),
+        *seed_links,
+        *(fallback_seed_urls or []),
+    ]
+    _register_paths(_all_seeds)
+    for link in _all_seeds:
         norm = _normalize_crawl_url(link)
         if not norm or norm in seen:
             continue
@@ -2753,6 +2785,25 @@ async def _crawl_extra_pages(
 # --- top-level orchestration ----------------------------------------------------
 
 
+async def _sitemap_seed_urls(entry_final_url: str) -> list[str]:
+    """The site's sitemap URLs, for use as a last-resort crawl frontier.
+
+    Wholly advisory — ``probe_sitemap`` already swallows every error and returns
+    an empty result, and this adds a belt-and-braces guard so a surprise here can
+    never take down a crawl that would otherwise have succeeded on links alone.
+    Cost is one or two plain HTTP round-trips (1-3s) against a crawl measured in
+    tens of seconds.
+    """
+    try:
+        from app.services.sitemap import probe_sitemap
+
+        result = await probe_sitemap(entry_final_url)
+    except Exception as exc:  # noqa: BLE001 — advisory seed, never load-bearing
+        logger.debug("sitemap seed unavailable for %s: %s", entry_final_url, exc)
+        return []
+    return list(result.urls)
+
+
 async def scrape_url(
     url: str,
     *,
@@ -2845,12 +2896,25 @@ async def scrape_url(
                         for norm in (_normalize_crawl_url(c.profile_url),)
                         if norm
                     }
-                logger.info("crawling up to %d extra pages from %s", crawl_max_pages, final_url)
+                # The site's own inventory, as a LAST-resort seed set. The BFS
+                # only ever sees pages some crawled page links to, so anything
+                # reachable solely from a page beyond the budget — or from no
+                # page at all — was previously invisible. Advisory: any failure
+                # yields no URLs and the crawl proceeds on links alone.
+                sitemap_seeds: list[str] = []
+                if settings.crawl_seed_from_sitemap:
+                    with stage("crawl_sitemap_seed"):
+                        sitemap_seeds = await _sitemap_seed_urls(final_url)
+                logger.info(
+                    "crawling up to %d extra pages from %s (%d sitemap seed(s))",
+                    crawl_max_pages, final_url, len(sitemap_seeds),
+                )
                 with stage("crawl_extra_pages"):
                     discovered, unvisited_urls = await _crawl_extra_pages(
                     context,
                     entry_final_url=final_url,
                     seed_links=entry.source_content.links,
+                    fallback_seed_urls=sitemap_seeds,
                     max_pages=crawl_max_pages,
                     max_depth=crawl_max_depth,
                     timeout_ms=12000,

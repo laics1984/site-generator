@@ -1,13 +1,27 @@
 """
-Scrape endpoint. Returns extracted SourceContent + brand candidate so the
-frontend can show a confirmation step before spending an LLM call.
+Scrape endpoints. A crawl runs as a background JOB: POST /start returns a
+job_id immediately and the frontend polls /jobs/{id}. A 1-2 minute crawl
+therefore never rides on a single HTTP request, and can report progress and be
+cancelled mid-flight.
+
+The extracted SourceContent + brand candidate come back in the job's `result`,
+so the frontend can show a confirmation step before any LLM call is spent.
+
+A synchronous POST /preview used to run the whole crawl inline and return the
+same payload. It was the original implementation, the job model superseded it,
+and its last caller was gone — so it is deleted rather than kept as a debug
+entrypoint: it bypassed progress, cancellation, result re-use and orphan
+reaping, which makes it a path that no longer tests what production does. To
+drive a crawl by hand, POST /start and poll /jobs/{id} — the same route the app
+takes. Result RE-USE, which was that endpoint's in-process cache, now lives on
+the job path where the traffic actually is (`CrawlJobManager.find_reusable`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
-from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -16,115 +30,17 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.services.crawl_jobs import get_manager
 from app.services.crawl_orchestrator import run_crawl_job
-from app.services.scraper import ScrapeError, ScrapeResult, extend_crawl, scrape_url
+from app.services.scraper import ScrapeError, extend_crawl
 from app.services.sitemap import probe_sitemap
 from app.services.url_guard import UnsafeUrlError, assert_public_url
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scrape", tags=["scrape"])
 
 
-# In-process cache absorbing double-clicks, back-button traffic, and
-# regeneration re-POSTs. TTL is config-driven (SCRAPE_CACHE_TTL_SECONDS,
-# default 30 min) so a whole page-picker/editing session stays inside it.
-_CACHE: dict[str, tuple[float, ScrapeResult]] = {}
-
-
-def _cache_ttl() -> float:
-    return settings.scrape_cache_ttl_seconds
-
-
-class ScrapePreviewRequest(BaseModel):
-    url: str = Field(..., description="The page to scrape (http or https).")
-    respect_robots: bool = Field(
-        default=True,
-        description="Honour robots.txt. Defaults to true; flip only if you own the site.",
-    )
-    crawl: bool = Field(
-        default=True,
-        description=(
-            "Walk same-domain links to discover sub-pages. Adds 10-30s but lets "
-            "the generator mirror the source site's structure. Set false for fast "
-            "single-page generation."
-        ),
-    )
-    crawl_max_pages: int = Field(
-        default=20,
-        ge=0,
-        le=40,
-        description=(
-            "Cap on additional pages discovered (excluding the entry). "
-            "Raising this only affects crawl time — it does NOT increase LLM "
-            "cost, which is driven by how many pages the user selects in the "
-            "page picker downstream."
-        ),
-    )
-    crawl_max_depth: int = Field(
-        default=3,
-        ge=1,
-        le=4,
-        description=(
-            "Maximum link-hops away from the entry page. NOT URL-path depth — "
-            "a flat-URL page like /our-team still counts as depth N if it took "
-            "N clicks from the homepage to reach. 3 hops surfaces pages hidden "
-            "from the homepage menu (linked only from /services or /about). "
-            "Bump to 4 for very deep marketing sites."
-        ),
-    )
-
-#for testing
-# @router.post("/preview")
-# async def scrape_preview(payload: ScrapePreviewRequest) -> dict[str, Any]:
-#     cache_key = (
-#         f"{int(payload.respect_robots)}:{int(payload.crawl)}:"
-#         f"{payload.crawl_max_pages}:{payload.crawl_max_depth}:{payload.url}"
-#     )
-#     now = time.time()
-#     cached = _CACHE.get(cache_key)
-#     if cached and (now - cached[0]) < _cache_ttl():
-#         result = cached[1]
-#     else:
-#         try:
-#             result = await scrape_url(
-#                 payload.url,
-#                 respect_robots=payload.respect_robots,
-#                 crawl=payload.crawl,
-#                 crawl_max_pages=payload.crawl_max_pages,
-#                 crawl_max_depth=payload.crawl_max_depth,
-#             )
-#         except ScrapeError as exc:
-#             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
-#         except asyncio.TimeoutError as exc:
-#             raise HTTPException(status_code=408, detail="Scrape timed out") from exc
-#         _CACHE[cache_key] = (now, result)
-#         _gc_cache(now)
-
-#     return {
-#         "url": result.url,
-#         "final_url": result.final_url,
-#         "source_content": result.source_content.model_dump(mode="json"),
-#         "brand_candidate": (
-#             result.brand_candidate.model_dump(mode="json")
-#             if result.brand_candidate
-#             else None
-#         ),
-#         "image_candidates": [asdict(c) for c in result.image_candidates],
-#         "fetched_at": result.fetched_at,
-#         "discovered_count": len(result.source_content.discovered_pages),
-#         # URLs the BFS frontier had queued but didn't process because the cap
-#         # was reached. Frontend uses these to offer "Crawl N more".
-#         "unvisited_urls": result.unvisited_urls,
-#         "unvisited_count": len(result.unvisited_urls),
-#     }
-
-
-def _gc_cache(now: float) -> None:
-    expired = [k for k, (ts, _) in _CACHE.items() if (now - ts) > _cache_ttl()]
-    for k in expired:
-        _CACHE.pop(k, None)
-
-
 class ExtendCrawlRequest(BaseModel):
-    entry_url: str = Field(..., description="The original entry URL (final_url from prior preview).")
+    entry_url: str = Field(..., description="The original entry URL (final_url from the prior crawl).")
     seed_urls: list[str] = Field(
         ...,
         description="Unvisited URLs from the prior crawl to resume from.",
@@ -144,7 +60,7 @@ async def scrape_extend(payload: ExtendCrawlRequest) -> dict[str, Any]:
     """
     Resume a crawl from a saved frontier without re-rendering the entry page.
 
-    Frontend usage: pass the prior preview's `final_url` as `entry_url`, its
+    Frontend usage: pass the prior crawl's `final_url` as `entry_url`, its
     `unvisited_urls` as `seed_urls`, and the source URLs already in
     `discovered_pages` as `already_seen`. Returns the new pages + a fresh
     `unvisited_urls` list (which may be empty when the crawl is now exhausted).
@@ -186,24 +102,45 @@ async def start_crawl(payload: StartCrawlRequest) -> dict[str, Any]:
     """
     Kick off a crawl as a background task. Returns immediately with a job_id.
     Frontend polls GET /api/scrape/jobs/{id} for status + progress + result.
+
+    An identical crawl (same URL, same options) that finished within
+    `scrape_cache_ttl_seconds` is handed straight back instead of re-run. A
+    crawl is the most expensive thing this service does, and a double-click,
+    a browser Back, or a regeneration would otherwise re-render every page.
+    The response is shape-identical, so the frontend polls the returned id
+    exactly as it would a fresh one and gets `status: "done"` on its first tick.
     """
     try:
         await assert_public_url(payload.url)
     except UnsafeUrlError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     mgr = get_manager()
-    job = await mgr.create(
-        payload.url,
-        options={
-            "respect_robots": payload.respect_robots,
-            "crawl": payload.crawl,
-            "crawl_max_pages": payload.crawl_max_pages,
-            "crawl_max_depth": payload.crawl_max_depth,
-        },
+    options = {
+        "respect_robots": payload.respect_robots,
+        "crawl": payload.crawl,
+        "crawl_max_pages": payload.crawl_max_pages,
+        "crawl_max_depth": payload.crawl_max_depth,
+    }
+
+    # Housekeeping on the cheapest possible trigger: fail rows a dead process
+    # left mid-flight, then drop results past the retention window.
+    await mgr.reap_orphans()
+    await mgr.purge_expired(max_age_seconds=settings.scrape_cache_ttl_seconds)
+
+    reusable = await mgr.find_reusable(
+        payload.url, options, max_age_seconds=settings.scrape_cache_ttl_seconds
     )
+    if reusable is not None:
+        logger.info(
+            "Reusing crawl job %s for %s (%.0fs old)",
+            reusable.id, payload.url, time.time() - reusable.created_at,
+        )
+        return {"job_id": reusable.id, "status": reusable.status, "reused": True}
+
+    job = await mgr.create(payload.url, options=options)
     task = asyncio.create_task(run_crawl_job(job.id))
     mgr.register_task(job.id, task)
-    return {"job_id": job.id, "status": job.status}
+    return {"job_id": job.id, "status": job.status, "reused": False}
 
 
 @router.get("/jobs/{job_id}")

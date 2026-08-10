@@ -2,7 +2,7 @@
 Document endpoints.
 
 - ``/preview`` accepts a PDF/DOCX upload and returns the same response shape as
-  /api/scrape/preview so the frontend's ScrapePreview component can render either
+  a crawl job's result so the frontend's ScrapePreview component can render either
   source kind without branching.
 - ``/export`` renders a scraped/inferred site into an editable .docx content
   brief that re-imports through ``/preview`` (the scrape → document bridge).
@@ -102,7 +102,7 @@ def _candidates_from_source(source: SourceContent) -> list["_ImageCandidate"]:
 async def document_preview(file: UploadFile = File(...)) -> dict:
     """Parse an uploaded PDF/DOCX and return SourceContent + brand candidate.
 
-    Response shape matches /api/scrape/preview so the frontend can reuse the
+    Response shape matches a crawl job's `result` so the frontend can reuse the
     ScrapePreview → PagePicker → Generate flow with no source-kind branching.
     """
     if not file.filename:

@@ -130,10 +130,18 @@ class Settings(BaseSettings):
     llm_cache_enabled: bool = True
     llm_cache_ttl_seconds: int = 1800
     llm_cache_max_entries: int = 64
-    # TTL for the scrape-preview cache (routers/scrape.py). 5 minutes routinely
-    # expired while the user was still in the page picker, forcing a full
-    # re-scrape on regeneration; 30 minutes covers a whole editing session.
+    # TTL for the crawl-job result cache (routers/scrape.py + crawl_jobs). 5
+    # minutes routinely expired while the user was still in the page picker,
+    # forcing a full re-scrape on regeneration; 30 minutes covers a whole
+    # editing session.
     scrape_cache_ttl_seconds: int = 1800
+
+    # Seed the crawl frontier from the site's own sitemap, behind every link the
+    # entry page shows. The BFS alone only reaches pages some crawled page links
+    # to, so a page linked only from beyond the budget (or from nowhere) was
+    # invisible even when the sitemap listed it. Costs 1-3s of plain HTTP per
+    # crawl; off → links-only discovery, exactly as before.
+    crawl_seed_from_sitemap: bool = True
 
     # Brand detection + the legacy free-form planner: faithful rewrite — keep it
     # close to the source, not creative.

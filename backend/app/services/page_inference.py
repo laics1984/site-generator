@@ -92,6 +92,60 @@ def _slug_tokens(slug: str) -> set[str]:
     }
 
 
+def _match_tokens(text: str) -> list[str]:
+    """Ordered, lowercased word tokens of a slug + title.
+
+    Order is preserved (unlike ``_slug_tokens``) because multi-word hints match
+    as a contiguous run: "how-we-work" must find `how, we, work` adjacent and in
+    that order, not merely present.
+    """
+    return [t for t in re.split(r"[^a-z0-9]+", text.lower()) if t]
+
+
+def _hint_matches(hint: str, tokens: list[str]) -> bool:
+    """True when `hint`'s own tokens appear as a contiguous run in `tokens`.
+
+    Whole-token matching (not substring) is what keeps "work" off /framework,
+    "team" off /teamwork and "help" off /helpful-resources — every one of which
+    the old ``hint in haystack`` test claimed.
+    """
+    needle = _match_tokens(hint)
+    if not needle:
+        return False
+    span = len(needle)
+    return any(
+        tokens[i : i + span] == needle for i in range(len(tokens) - span + 1)
+    )
+
+
+def _matched_page_type(slug: str, title: str = "") -> PageType | None:
+    """The page type a slug + title actually evidences, or None.
+
+    Hints are tried in TWO passes — every multi-word hint across all types
+    before any single-word hint. Within a pass, ``_TYPE_HINTS`` order decides.
+
+    The two passes are the whole point: "work" (a `work` hint) and
+    "how-we-work" (a `process` hint) both match /how-we-work, and `work` sits
+    earlier in the table, so a single ordered pass types the page as a
+    portfolio. The more specific hint has to win regardless of table order.
+    """
+    tokens = _match_tokens(f"{slug} {title}")
+    if not tokens:
+        return None
+    first_segment = slug.split("/", 1)[0].lower()
+
+    for multiword in (True, False):
+        for page_type, hints in _TYPE_HINTS:
+            for hint in hints:
+                if (len(_match_tokens(hint)) > 1) is not multiword:
+                    continue
+                # An exact first-segment match is the strongest evidence there
+                # is (/team, /pricing) and stays a direct hit.
+                if hint == first_segment or _hint_matches(hint, tokens):
+                    return page_type
+    return None
+
+
 def _infer_page_type(slug: str, title: str = "") -> PageType:
     """Best-effort match of a URL slug + title to one of the PageType literals.
 
@@ -100,14 +154,9 @@ def _infer_page_type(slug: str, title: str = "") -> PageType:
     """
     if not slug:
         return "home"
-    haystack = f"{slug} {title}".lower()
-    for page_type, hints in _TYPE_HINTS:
-        for hint in hints:
-            # Match against full token, slash-delimited segment, or substring
-            if hint == slug.split("/", 1)[0]:
-                return page_type
-            if hint in haystack:
-                return page_type
+    matched = _matched_page_type(slug, title)
+    if matched is not None:
+        return matched
     # No match — depth decides between landing (sub) and services (top).
     return "landing" if "/" in slug else "services"
 
@@ -668,12 +717,7 @@ def _explicit_page_type(slug: str) -> PageType | None:
     which would make every strip target look like a listing page — here we
     need to know the type was *evidenced*, not defaulted.
     """
-    haystack = slug.lower()
-    for page_type, hints in _TYPE_HINTS:
-        for hint in hints:
-            if hint == slug.split("/", 1)[0] or hint in haystack:
-                return page_type
-    return None
+    return _matched_page_type(slug)
 
 
 def _is_explicit_listing(slug: str) -> bool:

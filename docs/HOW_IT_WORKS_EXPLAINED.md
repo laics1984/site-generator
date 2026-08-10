@@ -1137,9 +1137,7 @@ art direction, plus its tests, can never run.
 **9. The quality audit is invisible.** It runs on every generation and writes one line to the server
 log. Surfacing it in the preview would turn a developer log into an operator's checklist.
 
-**10. The synchronous scrape endpoint is dead but still holds the cache.** `/api/scrape/preview` was
-the original implementation; the job-based one replaced it. The frontend function that calls it has
-zero callers. Its 30-minute cache — described as absorbing double-clicks and back-button traffic — is
-therefore unreachable, and the path the UI *does* use has no de-duplication at all. Clicking "Fetch
-site" twice on the same URL re-crawls the entire site.
-*Fix:* delete the endpoint and move the cache onto the job path.
+**10. ~~The synchronous scrape endpoint is dead but still holds the cache.~~ FIXED.**
+`/api/scrape/preview` and its unused frontend function are gone. Crawl results are now re-used on the
+job path itself: clicking "Fetch site" twice on the same URL within the retention window returns the
+previous crawl instead of re-rendering every page.

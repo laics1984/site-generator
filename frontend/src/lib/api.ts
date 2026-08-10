@@ -113,21 +113,10 @@ export interface ScrapeOptions {
   crawlMaxDepth?: number
 }
 
-export async function scrapeUrlPreview(
-  url: string,
-  opts: ScrapeOptions = {},
-): Promise<ScrapePreview> {
-  return jsonRequest('/api/scrape/preview', {
-    method: 'POST',
-    body: JSON.stringify({
-      url,
-      respect_robots: opts.respectRobots ?? true,
-      crawl: opts.crawl ?? true,
-      crawl_max_pages: opts.crawlMaxPages ?? 20,
-      crawl_max_depth: opts.crawlMaxDepth ?? 3,
-    }),
-  })
-}
+/* `scrapeUrlPreview` (POST /api/scrape/preview) lived here. It was the original
+ * synchronous scrape, superseded by the job model below (startCrawl + polling),
+ * and had no remaining call sites — the wizard has used startCrawl throughout.
+ * Removed with the endpoint it called. */
 
 /** Fast sitemap probe — returns total URL count before paying for Playwright. */
 export async function probeSitemap(url: string): Promise<SitemapProbeResult> {

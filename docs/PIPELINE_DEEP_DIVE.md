@@ -57,7 +57,7 @@ treats a probe failure as "proceed with the default cap" (App.tsx:189-192). A pr
 
 ## Phase 2 — Crawl job lifecycle
 
-`runScrape` (App.tsx:199) does **not** call the synchronous `/api/scrape/preview`. It uses a job model:
+`runScrape` (App.tsx:199) uses a job model rather than one long request:
 
 ```
 POST /api/scrape/start    → { job_id }        (returns instantly)
@@ -71,14 +71,18 @@ DELETE /api/scrape/jobs/id    (best-effort cleanup)
   (a) hand `scrape_url` an `on_progress` callback that writes progress to SQLite,
   (b) hand it an `is_cancelled` closure the crawl checks *between pages*, and
   (c) **never raise into `create_task`** — every exception path records `job.error` and returns.
-- `_result_to_payload` (crawl_orchestrator.py:99) deliberately mirrors the `/preview` response shape
-  byte-for-byte so the frontend's `ScrapePreview` type hydrates from either endpoint unchanged.
+- `_result_to_payload` (crawl_orchestrator.py:99) DEFINES the canonical scrape-result payload shape.
+  The frontend's `ScrapePreview` type hydrates straight from it, and `routers/document.py` mirrors
+  it for uploads.
 
-**Also still live:** `POST /api/scrape/preview` with a 30-minute in-process cache keyed on
-`(respect_robots, crawl, max_pages, max_depth, url)` — `scrape.py:29`. Absorbs double-clicks and
-back-button traffic. GC'd lazily on write (`_gc_cache`).
-⚠️ Its frontend caller (`api.ts:116 scrapeUrlPreview`) has **zero call sites** — this endpoint and its
-cache are effectively dead. See improvement #10.
+**Result re-use** lives on this path: `start_crawl` hands back a recent successful job with the same
+`(url, options)` inside `settings.scrape_cache_ttl_seconds` rather than re-crawling, and on the same
+call sweeps expired rows and reaps jobs stranded `running` by a dead process
+(`CrawlJobManager.find_reusable` / `purge_expired` / `reap_orphans`).
+
+A synchronous `POST /api/scrape/preview` used to run the crawl inline. It was deleted once its last
+caller was gone, because it bypassed progress, cancellation, re-use and reaping — a debug path that no
+longer exercised what production does. Drive a crawl by hand with `/start` + polling `/jobs/{id}`.
 
 ---
 
@@ -867,9 +871,7 @@ per-page in the crawl — but a redirect chain that never returns is still ungua
 follows redirects internally without a per-hop check). Low severity given the trust model, but worth an
 `httpx` event-hook that validates each hop.
 
-**16. `/api/scrape/preview` is dead code holding the only cache.** It was the original synchronous
-implementation; the job model replaced it. Its frontend caller `scrapeUrlPreview` (api.ts:116) has zero call
-sites, so `settings.scrape_cache_ttl_seconds` and the 30-minute dedupe cache are unreachable — while
-`/api/scrape/start` creates a fresh `uuid4()` job unconditionally, so clicking "Fetch site" twice on the same
-URL re-renders the whole crawl. Fix: delete the endpoint + the dead frontend function, and add a
-recent-terminal-job lookup on `(entry_url, options)` in `crawl_jobs.create`.
+**16. ~~`/api/scrape/preview` is dead code holding the only cache.~~ DONE.** The endpoint and its
+frontend caller are deleted; result re-use moved onto the job path (`find_reusable`), the frontend no
+longer deletes each job the instant polling finishes (which is what made re-use impossible), and
+expired rows are swept while orphaned `running` rows are reaped on the next kickoff.

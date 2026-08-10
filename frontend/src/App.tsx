@@ -14,7 +14,6 @@ import { SourcePanel } from '@/components/SourcePanel'
 import { WorkspaceHeader } from '@/components/WorkspaceHeader'
 import {
   cancelCrawlJob,
-  deleteCrawlJob,
   exportSiteDocument,
   extendCrawl,
   generateFromSource,
@@ -236,8 +235,12 @@ export default function App() {
         }
         await new Promise((r) => setTimeout(r, 1000))
       }
-      // Best-effort cleanup of the job row.
-      if (started) deleteCrawlJob(started.job_id)
+      // Deliberately NOT deleted here. The backend hands an identical crawl
+      // (same URL + options, within the retention window) straight back
+      // instead of re-rendering every page, and deleting the row the instant
+      // polling finished meant that could never hit — a double-click or a
+      // Back-then-Fetch re-crawled the whole site. Rows are swept by the
+      // backend on the next kickoff.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Scrape failed')
     } finally {

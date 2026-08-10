@@ -198,6 +198,75 @@ class CrawlJobManager:
             await conn.commit()
         return True
 
+    async def find_reusable(
+        self, entry_url: str, options: dict[str, Any], *, max_age_seconds: float
+    ) -> CrawlJob | None:
+        """A recent successful crawl of the SAME url with the SAME options.
+
+        Crawling is the most expensive thing this app does, and re-clicking
+        "Fetch site" (double-click, browser Back, a regeneration) used to redo
+        every Playwright render from scratch — the synchronous endpoint had a
+        30-minute cache for exactly this, but the job path that replaced it
+        never got one.
+
+        Options are compared as PARSED dicts rather than as their stored JSON so
+        key order can never produce a false miss.
+        """
+        cutoff = time.time() - max_age_seconds
+        async with connect() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM crawl_jobs WHERE entry_url = ? AND status = 'done' "
+                "AND created_at >= ? ORDER BY created_at DESC LIMIT 10",
+                (entry_url, cutoff),
+            )
+            rows = await cur.fetchall()
+        for row in rows:
+            job = _row_to_job(row)
+            if job.options == options and job.result:
+                return job
+        return None
+
+    async def purge_expired(self, *, max_age_seconds: float) -> int:
+        """Drop terminal jobs older than the retention window. Returns the count.
+
+        Replaces the frontend's fire-and-forget DELETE straight after polling:
+        deleting a job the moment it finished meant a reusable result never
+        outlived the request that produced it, so `find_reusable` could never
+        hit. Cheap enough to run on every kickoff.
+        """
+        cutoff = time.time() - max_age_seconds
+        async with connect() as conn:
+            cur = await conn.execute(
+                "DELETE FROM crawl_jobs WHERE status IN ('done','failed','cancelled') "
+                "AND created_at < ?",
+                (cutoff,),
+            )
+            await conn.commit()
+            return cur.rowcount or 0
+
+    async def reap_orphans(self) -> int:
+        """Fail jobs left `queued`/`running` by a process that died.
+
+        Job rows are durable but the asyncio.Task that advances them is not, so
+        a backend restart mid-crawl stranded rows in `running` forever — the
+        frontend would poll one of those until its own 10-minute ceiling. Only
+        jobs this process has no live task for are touched, so a concurrently
+        running crawl is never disturbed.
+        """
+        async with connect() as conn:
+            cur = await conn.execute(
+                "SELECT id FROM crawl_jobs WHERE status IN ('queued','running')"
+            )
+            rows = await cur.fetchall()
+        stranded = [r["id"] for r in rows if r["id"] not in self._tasks]
+        for job_id in stranded:
+            await self.mark_failed(
+                job_id, "Backend restarted while this crawl was running."
+            )
+        if stranded:
+            logger.info("Reaped %d orphaned crawl job(s)", len(stranded))
+        return len(stranded)
+
     # --- internals --------------------------------------------------------------
 
     async def _update(self, job_id: str, fields: dict[str, Any]) -> None:
