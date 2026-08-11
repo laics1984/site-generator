@@ -227,6 +227,11 @@ Guidance:
   reason. With no brand colour (null), choose freely on brief fit.
 - Judge palettes by the feeling of the swatches against the industry and mood;
   judge font pairings by their tags and the personality of the faces.
+- The site's colour scheme is already decided. Every palette listed below is a
+  palette for THAT scheme — pick one of them as-is. Never invent a colour, and
+  never suggest adjusting one.
+- Each palette lists the moods it was designed for. A palette listing no moods
+  suits any mood.
 - hero_height: "full" gives every page a full-screen photographic opening;
   "banded" gives a shorter photo band so page content starts near the fold.
   Choose "full" when the brand sells atmosphere, place, craft or emotion and
@@ -250,6 +255,7 @@ async def generate_design_language(
     mood: BrandMood | None,
     industry: str | None,
     seed_hex: str | None,
+    color_scheme: str = "light",
     llm: LlmClient | None = None,
 ) -> DesignLanguage:
     """Pick the site's curated palette + font pairing in one small LLM call.
@@ -257,7 +263,12 @@ async def generate_design_language(
     Runs before build_theme so the picks flow in as palette_choice/font_choice.
     Returns an empty DesignLanguage (deterministic theming, exactly as before
     this pass existed) when the pass is disabled or the LLM call fails; invalid
-    slugs are additionally discarded by the theme lookups themselves."""
+    slugs are additionally discarded by the theme lookups themselves.
+
+    `color_scheme` must be the scheme the site will actually be built with: the
+    curated palettes are scheme-specific and a slug from the wrong table simply
+    fails to resolve, so offering the light menu for a dark build would silently
+    reduce this pass to a no-op."""
     # Imported here (not at module top) to keep this module import-light for
     # the callers that only need the recipe models.
     from app.services.theme import curated_palette_options, font_pairing_options
@@ -268,8 +279,12 @@ async def generate_design_language(
     effective_mood: BrandMood = mood or "modern"
     palette_lines = [
         f'  - "{o["slug"]}" ({o["name"]}; primary {o["primary"]}, accent {o["accent"]}, '
-        f'dark {o["dark"]}, tint {o["tint"]}; suits: {", ".join(o["categories"]) or "any"})'
-        for o in curated_palette_options(industry)
+        + ", ".join(f"{k} {v}" for k, v in o["swatches"].items())
+        + f'; suits: {", ".join(o["categories"]) or "any"}'
+        + f'; moods: {", ".join(o["moods"]) or "any"})'
+        for o in curated_palette_options(
+            industry, mood=effective_mood, scheme=color_scheme
+        )
     ]
     font_lines = [
         f'  - "{o["slug"]}" ({o["heading_font"]} headings / {o["body_font"]} body; '
@@ -281,7 +296,8 @@ async def generate_design_language(
         f"Brand mood: {effective_mood}\n"
         f"Industry: {industry or 'other'}\n"
         f"Industry design personality: {personality_for(industry).design}\n"
-        f"Brand colour (from logo): {seed_hex or 'null'}\n\n"
+        f"Brand colour (from logo): {seed_hex or 'null'}\n"
+        f"Colour scheme: {color_scheme}\n\n"
         "Curated palettes:\n" + "\n".join(palette_lines) + "\n\n"
         "Font pairings:\n" + "\n".join(font_lines)
     )

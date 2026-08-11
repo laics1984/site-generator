@@ -154,8 +154,10 @@ confidence without any pipeline change.
   `build_theme` generation call site) into `_curated_palette`. Avoidance
   rotates strictly **within the fit group** (a brand-hued site stays in its
   hue-near group; industry pins hold), all-avoided falls back to the seeded
-  legacy pick, and the non-curated paths (tailwind snap, dark scheme,
-  explicit design-language pick) never react to history. The chosen curated
+  legacy pick, and the non-curated paths (tailwind snap, explicit
+  design-language pick) never react to history. Dark builds take part too
+  since they gained their own curated table — see "Mood-aware palettes"
+  below. The chosen curated
   slug is tracked on `ThemeTokens.palette_slug` (internal — not part of
   BuilderStyles), so the manifest's `palette` decision and the diversity
   history operate on a real palette identity instead of a hex.
@@ -221,6 +223,45 @@ builder gained a local archetype swap on top of it.
   the reveal default and keeps the overlay flag as it was.
 * The interim `/api/generate/rechrome` endpoint (builder→generator swap) was
   removed — superseded by the builder-local materialization.
+
+## Mood-aware palettes (implemented)
+
+Curated palettes were tagged by industry only, so a *playful* restaurant and a
+*luxury* restaurant resolved to the same colours; and the dark scheme discarded
+every curated and design-language pick, deriving its palette algorithmically
+from the logo hue. Three changes in `theme.py`:
+
+* **A mood axis.** `CuratedPalette.moods` narrows the candidate set after the
+  industry filter. Untagged entries are **wildcards** (`_mood_narrow`), not
+  non-matches — the legacy 28 predate the axis, and strict filtering would have
+  dropped them all the moment one tagged entry appeared. Mood is also folded
+  into the selection seed: the filter alone left mood nearly invisible, because
+  wildcards dominate most pools and two moods with same-sized pools resolved to
+  the same index. Both together give a mean of ~4 distinct palettes across the
+  6 moods per industry, and keep a mood-specific palette out of the wrong brief.
+* **A dark catalogue.** `CuratedDarkPalette` + `_CURATED_DARK_PALETTES` is a
+  separate table with its own mapper, because the light token model (one `dark`
+  + one `tint`) cannot express the three dark rungs a dark palette needs
+  (`band` < `page` < `surface`). Slugs are `dark-` prefixed: `record_choice`
+  stores a bare string with no scheme column, so an un-prefixed dark "saas"
+  would share diversity history with the light one. `_dark_ink` is the mirror
+  of `_brand_ink` — it caps the *light* body ink's chroma so paragraphs don't
+  read as highlighted. `palette_mode="derive"` still yields the algorithmic
+  `_dark_palette`.
+* **A non-white page.** `CuratedPalette.page` lets an earthy palette carry its
+  dominant 60% in the page itself, and `_light_surface` steps the band off the
+  page rather than falling back to a fixed cool slate — which on a warm
+  parchment page read as a bug.
+
+`_curated_candidates` / `curated_palette_by_slug` / `curated_palette_options`
+take `mood` and `scheme` and **must stay in lockstep** (pinned by
+`test_options_and_lookup_mirror_the_candidate_set`); a slug can never resolve
+across schemes. `curated_palette_options` quotes the **mapped** palette, not the
+source tokens — a curated `dark` of `#0F172A` ships as `#171a22` once
+`_brand_ink` has capped it, so the old menu showed the model colours the page
+never painted. `resolve_color_scheme` is now called *before*
+`generate_design_language` in both generate paths, so the model is offered the
+menu for the scheme the site will actually be built with.
 
 ## Extension points (roadmap)
 

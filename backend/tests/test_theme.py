@@ -1,23 +1,34 @@
 """Tests for the mood font-pairing pools and deterministic per-site selection."""
 
 import re
+import typing
 import unittest
 
 from app.models.brand import BrandMood
+from app.models.industry import IndustryCategory
 from app.services.theme import (
     MOOD_SPECS,
     FontPairing,
     band_colors,
     build_theme,
+    curated_palette_by_slug,
+    curated_palette_options,
     resolve_color_scheme,
+    _CURATED_DARK_PALETTES,
     _CURATED_PALETTES,
+    _DARK_INK_MAX_SATURATION,
+    _DARK_INK_MIN_LIGHTNESS,
     _INK_MAX_LIGHTNESS,
     _INK_MAX_SATURATION,
+    _curated_candidates,
+    _dark_palette,
     _hex_to_rgb,
     _palette_from_curated,
+    _palette_from_curated_dark,
     _contrast,
     _relative_luminance,
     _rgb_to_hls,
+    _text_for_background,
 )
 
 MOODS: tuple[BrandMood, ...] = (
@@ -177,6 +188,39 @@ class CuratedPaletteTest(unittest.TestCase):
             self.assertGreaterEqual(_contrast(p.secondary, "#ffffff"), 4.5, c.name)
             # Light section surface stays clearly light for section rhythm.
             self.assertGreater(_relative_luminance(p.surface), 0.85, c.name)
+            # The band is a real but calm step DOWN from the page — never
+            # lighter than the page (which reads as a rendering fault) and never
+            # so deep it stops being a light band.
+            step = _relative_luminance(p.background) - _relative_luminance(p.surface)
+            self.assertGreaterEqual(step, 0.012, f"{c.name}: band invisible")
+            self.assertLessEqual(step, 0.13, f"{c.name}: band too deep")
+
+    def test_a_warm_page_gets_a_warm_band(self):
+        """A non-white page must not be banded with cool slate.
+
+        `_light_surface` used to hand back a fixed #f8fafc whenever the authored
+        tint missed its luminance gate, which on a warm parchment page reads as a
+        bug rather than a design."""
+        for c in _CURATED_PALETTES:
+            if c.page.lower() == "#ffffff":
+                continue
+            p = _palette_from_curated(c)
+            page_h = _rgb_to_hls(*_hex_to_rgb(p.background))[0] * 360
+            band_h = _rgb_to_hls(*_hex_to_rgb(p.surface))[0] * 360
+            self.assertLessEqual(
+                abs(((band_h - page_h + 180) % 360) - 180), 30, f"{c.name}: band hue drifts"
+            )
+            self.assertGreater(
+                _rgb_to_hls(*_hex_to_rgb(p.surface))[2], 0.02, f"{c.name}: band went grey"
+            )
+
+    def test_slugs_are_unique_across_both_catalogues(self):
+        # diversity.record_choice stores a bare slug with no scheme column, so a
+        # collision would make a light and a dark palette steer each other.
+        slugs = [c.slug for c in _CURATED_PALETTES] + [
+            c.slug for c in _CURATED_DARK_PALETTES
+        ]
+        self.assertEqual(len(slugs), len(set(slugs)))
 
     def test_curated_dark_band_is_an_ink_not_a_saturated_brand_shade(self):
         """`secondary` paints every heading, every body line and every dark
@@ -374,6 +418,194 @@ class DarkSchemeTest(unittest.TestCase):
         self.assertEqual(light.typography.heading_font, dark.typography.heading_font)
 
 
+class CuratedDarkPaletteTest(unittest.TestCase):
+    """The dark catalogue's equivalent of CuratedPaletteTest.
+
+    The light set's invariants don't transfer — a dark palette wants low
+    luminance everywhere and a LIGHT ink — so these are their mirror image.
+    """
+
+    def test_every_dark_palette_is_dark_and_readable(self):
+        for c in _CURATED_DARK_PALETTES:
+            self.assertTrue(c.categories, f"{c.name}: no category tags")
+            p = _palette_from_curated_dark(c)
+            self.assertLess(_relative_luminance(p.background), 0.05, c.name)
+            # Hard ceiling: the elevated band still has to carry white body text
+            # at AA, which caps it at relative luminance 0.1833.
+            self.assertLess(_relative_luminance(p.surface), 0.18, c.name)
+            self.assertGreaterEqual(_contrast(p.background, p.text), 7.0, c.name)
+            self.assertGreater(_relative_luminance(p.text), 0.6, c.name)
+
+    def test_dark_bands_stay_white_ink(self):
+        for c in _CURATED_DARK_PALETTES:
+            p = _palette_from_curated_dark(c)
+            for band in ("light", "dark"):
+                bg, fg = band_colors(p, band)
+                self.assertEqual(fg, "#ffffff", f"{c.name}/{band}")
+                self.assertGreaterEqual(_contrast(bg, fg), 4.5, f"{c.name}/{band}")
+
+    def test_dark_ladder_ascends_from_band_to_surface(self):
+        # band (darkest) < page < surface (elevated), mirroring what the
+        # algorithmic _dark_palette produced, so the luminance rhythm is unchanged.
+        for c in _CURATED_DARK_PALETTES:
+            band_l = _rgb_to_hls(*_hex_to_rgb(c.band))[1]
+            page_l = _rgb_to_hls(*_hex_to_rgb(c.page))[1]
+            surf_l = _rgb_to_hls(*_hex_to_rgb(c.surface))[1]
+            self.assertLess(band_l, page_l, f"{c.name}: band not below page")
+            self.assertLess(page_l, surf_l, f"{c.name}: surface not above page")
+            self.assertGreaterEqual(page_l - band_l, 0.015, f"{c.name}: bands merge")
+            self.assertGreaterEqual(surf_l - page_l, 0.03, f"{c.name}: surface merges")
+
+    def test_dark_primary_needs_no_button_correction(self):
+        """What the catalogue declares is what the page paints.
+
+        build_theme darkens a primary that fails AA as a button fill. That guard
+        is silent, so a catalogue entry relying on it would render a colour
+        nobody chose — these are authored to clear the bar as written."""
+        for c in _CURATED_DARK_PALETTES:
+            p = _palette_from_curated_dark(c)
+            self.assertGreaterEqual(
+                _contrast(p.primary, _text_for_background(p.primary)), 4.5, c.name
+            )
+
+    def test_dark_brand_colours_pop_off_the_page(self):
+        for c in _CURATED_DARK_PALETTES:
+            p = _palette_from_curated_dark(c)
+            self.assertGreaterEqual(_contrast(p.primary, p.background), 3.0, c.name)
+            self.assertGreaterEqual(_contrast(p.accent, p.background), 3.0, c.name)
+            self.assertGreaterEqual(
+                _rgb_to_hls(*_hex_to_rgb(p.primary))[2], 0.45, f"{c.name}: primary is muddy"
+            )
+
+    def test_dark_ink_is_light_and_near_neutral(self):
+        # The mirror of _brand_ink: a strongly tinted light ink makes every
+        # paragraph look highlighted.
+        eps = 1 / 255
+        for c in _CURATED_DARK_PALETTES:
+            _h, l, s = _rgb_to_hls(*_hex_to_rgb(_palette_from_curated_dark(c).text))
+            self.assertGreaterEqual(l, _DARK_INK_MIN_LIGHTNESS - eps, f"{c.name}: ink dim")
+            self.assertLessEqual(s, _DARK_INK_MAX_SATURATION + eps, f"{c.name}: ink tinted")
+
+    def test_dark_slugs_are_namespaced(self):
+        for c in _CURATED_DARK_PALETTES:
+            self.assertTrue(c.slug.startswith("dark-"), c.slug)
+
+
+class MoodAwareCandidatesTest(unittest.TestCase):
+    INDUSTRIES = tuple(typing.get_args(IndustryCategory))
+
+    def test_every_mood_and_industry_has_at_least_two_candidates(self):
+        """The variety guarantee.
+
+        One candidate means the seeded pick is forced AND diversity avoidance
+        can't rotate — every dark editorial agency would ship an identical
+        palette, which is the convergence the catalogue exists to break."""
+        for scheme in ("light", "dark"):
+            for mood in MOODS:
+                for industry in self.INDUSTRIES:
+                    n = len(_curated_candidates(industry, mood, scheme))
+                    self.assertGreaterEqual(
+                        n, 2, f"{scheme}/{mood}/{industry} has {n} candidate(s)"
+                    )
+
+    def test_mood_narrows_but_never_empties(self):
+        for scheme, table in (("light", _CURATED_PALETTES), ("dark", _CURATED_DARK_PALETTES)):
+            for mood in MOODS:
+                got = _curated_candidates(None, mood, scheme)
+                self.assertTrue(got, f"{scheme}/{mood} emptied the pool")
+                for c in got:
+                    # Either a wildcard (no moods) or tagged for this mood.
+                    self.assertTrue(
+                        not c.moods or mood in c.moods, f"{c.name} leaked into {mood}"
+                    )
+                # Every entry tagged for this mood is offered.
+                for c in table:
+                    if mood in c.moods:
+                        self.assertIn(c, got, f"{c.name} missing from {mood}")
+
+    def test_untagged_entries_are_wildcards(self):
+        # The legacy 28 predate the mood axis; strict filtering would have
+        # dropped them all the moment one tagged entry appeared.
+        legacy = [c for c in _CURATED_PALETTES if not c.moods]
+        self.assertTrue(legacy)
+        for mood in MOODS:
+            offered = _curated_candidates(None, mood, "light")
+            for c in legacy:
+                self.assertIn(c, offered, f"{c.name} lost on mood {mood}")
+
+    def test_options_and_lookup_mirror_the_candidate_set(self):
+        """The three-way lockstep the module docstrings promise, plus the
+        guarantee that a slug can never cross schemes."""
+        for scheme in ("light", "dark"):
+            other = "dark" if scheme == "light" else "light"
+            for mood in MOODS:
+                for industry in self.INDUSTRIES:
+                    where = f"{scheme}/{mood}/{industry}"
+                    candidates = {c.slug for c in _curated_candidates(industry, mood, scheme)}
+                    options = {
+                        o["slug"]
+                        for o in curated_palette_options(industry, mood=mood, scheme=scheme)
+                    }
+                    self.assertEqual(candidates, options, where)
+                    for slug in candidates:
+                        self.assertIsNotNone(
+                            curated_palette_by_slug(slug, industry, mood=mood, scheme=scheme),
+                            f"{where}: {slug} unresolvable",
+                        )
+                    for slug in {
+                        c.slug for c in _curated_candidates(industry, mood, other)
+                    }:
+                        self.assertIsNone(
+                            curated_palette_by_slug(slug, industry, mood=mood, scheme=scheme),
+                            f"{where}: {other} slug {slug} leaked",
+                        )
+
+    def test_mood_actually_changes_the_palette(self):
+        """The point of the whole mood axis.
+
+        Filtering alone was not enough: the legacy wildcards dominate most pools
+        and two moods with same-sized pools resolved to the same index, so a
+        luxury and a technical restaurant both got Brewery/Winery. Mood is now
+        part of the selection seed as well as the filter."""
+        for scheme in ("light", "dark"):
+            for industry in self.INDUSTRIES:
+                slugs = {
+                    build_theme(
+                        None,
+                        mood=mood,
+                        palette_mode="curated",
+                        industry=industry,
+                        color_scheme=scheme,
+                        font_seed="Acme Co",
+                    ).palette_slug
+                    for mood in MOODS
+                }
+                self.assertGreaterEqual(
+                    len(slugs), 3, f"{scheme}/{industry}: mood barely moves the palette"
+                )
+
+    def test_a_mood_specific_palette_never_reaches_the_wrong_brief(self):
+        # Bordeaux is luxury/editorial; a technical restaurant must never get it.
+        for mood in MOODS:
+            offered = {c.slug for c in _curated_candidates("restaurant", mood, "light")}
+            if mood in ("luxury", "editorial"):
+                self.assertIn("bordeaux", offered, mood)
+            else:
+                self.assertNotIn("bordeaux", offered, mood)
+
+    def test_options_quote_the_colours_that_actually_ship(self):
+        # The menu used to print raw source tokens: a curated `dark` of #0F172A
+        # was offered while _brand_ink capped it to #171a22 on the page.
+        for o in curated_palette_options("saas"):
+            entry = curated_palette_by_slug(str(o["slug"]), "saas")
+            self.assertIsNotNone(entry)
+            mapped = _palette_from_curated(entry)  # type: ignore[arg-type]
+            swatches = o["swatches"]
+            self.assertEqual(swatches["page"], mapped.background)  # type: ignore[index]
+            self.assertEqual(swatches["band"], mapped.secondary)  # type: ignore[index]
+            self.assertEqual(swatches["ink"], mapped.text)  # type: ignore[index]
+
+
 class HeroHeightTokenTest(unittest.TestCase):
     """to_builder_styles emits the hero token only when banded, so default
     ("full") sites carry no hero override and fall back to the full-screen look."""
@@ -453,16 +685,45 @@ class DesignLanguageOverrideTest(unittest.TestCase):
         )
         self.assertEqual(base.palette, cross.palette)
 
-    def test_dark_scheme_ignores_palette_choice(self):
+    def test_dark_scheme_takes_a_curated_dark_pick(self):
+        entry = next(
+            c for c in _CURATED_DARK_PALETTES if c.slug == "dark-midnight-violet"
+        )
+        t = build_theme(
+            "#2563eb",
+            mood="modern",
+            color_scheme="dark",
+            industry="saas",
+            palette_choice="dark-midnight-violet",
+        )
+        self.assertEqual(t.palette, _palette_from_curated_dark(entry))
+        self.assertEqual(t.palette_slug, "dark-midnight-violet")
+
+    def test_a_light_slug_cannot_leak_into_a_dark_build(self):
+        # "ai-platform" is a light-catalogue slug; on a dark build it must not
+        # resolve at all, leaving the deterministic dark pick untouched.
         base = build_theme("#2563eb", mood="modern", color_scheme="dark", industry="saas")
-        picked = build_theme(
+        leaked = build_theme(
             "#2563eb",
             mood="modern",
             color_scheme="dark",
             industry="saas",
             palette_choice="ai-platform",
         )
-        self.assertEqual(base.palette, picked.palette)
+        self.assertEqual(base.palette, leaked.palette)
+
+    def test_dark_curated_records_a_slug(self):
+        # Before the dark catalogue existed the dark path recorded nothing, so
+        # the design manifest had no palette to log and diversity had none to
+        # rotate off.
+        t = build_theme("#2563eb", mood="modern", color_scheme="dark", industry="saas")
+        self.assertIsNotNone(t.palette_slug)
+        self.assertTrue(str(t.palette_slug).startswith("dark-"))
+
+    def test_derive_mode_keeps_the_algorithmic_dark_palette(self):
+        t = build_theme("#2563eb", palette_mode="derive", color_scheme="dark")
+        self.assertEqual(t.palette, _dark_palette("#2563eb"))
+        self.assertIsNone(t.palette_slug)
 
     def test_valid_font_choice_takes_that_pairing(self):
         pool = MOOD_SPECS["modern"].font_pool

@@ -654,6 +654,43 @@ class PaletteAvoidanceTest(unittest.TestCase):
         )
         self.assertEqual(theme.palette_slug, slug)
 
+    def test_dark_avoidance_rotates_within_the_dark_set(self):
+        """Dark builds now take part in diversity at all.
+
+        Before the dark catalogue the dark path recorded no slug, so history had
+        nothing to steer with and consecutive dark sites converged."""
+        base = build_theme(
+            None, color_scheme="dark", industry="saas", font_seed="Acme"
+        )
+        self.assertIsNotNone(base.palette_slug)
+        shifted = build_theme(
+            None,
+            color_scheme="dark",
+            industry="saas",
+            font_seed="Acme",
+            avoid_palettes={base.palette_slug},
+        )
+        self.assertNotEqual(shifted.palette_slug, base.palette_slug)
+        # Avoidance rotates taste but never widens the fit — still a dark pick.
+        self.assertTrue(str(shifted.palette_slug).startswith("dark-"))
+
+    def test_dark_saturated_avoidance_falls_back_to_base_pick(self):
+        from app.services.theme import curated_palette_options
+
+        base = build_theme(None, color_scheme="dark", industry="saas", font_seed="Acme")
+        every = {
+            str(o["slug"])
+            for o in curated_palette_options("saas", mood="modern", scheme="dark")
+        }
+        saturated = build_theme(
+            None,
+            color_scheme="dark",
+            industry="saas",
+            font_seed="Acme",
+            avoid_palettes=every,
+        )
+        self.assertEqual(saturated.palette_slug, base.palette_slug)
+
 
 class OverlayCapabilityContractTest(unittest.TestCase):
     def test_every_archetype_can_overlay(self):

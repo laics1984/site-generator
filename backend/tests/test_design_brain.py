@@ -149,6 +149,56 @@ class DesignLanguageTest(unittest.TestCase):
         self.assertEqual(language.palette, "ai-platform")
         self.assertEqual(language.font_pairing, "space-grotesk-dm-sans")
 
+    def _prompt_for(self, **kwargs) -> str:
+        calls: list[str] = []
+
+        class FakeLLM:
+            async def chat_json(self, *, user_prompt, schema, **_):
+                calls.append(user_prompt)
+                return schema()
+
+        original = settings.design_language_enabled
+        settings.design_language_enabled = True
+        try:
+            asyncio.run(generate_design_language(llm=FakeLLM(), **kwargs))
+        finally:
+            settings.design_language_enabled = original
+        return calls[0]
+
+    def test_dark_scheme_offers_only_dark_palettes(self):
+        """The scheme is resolved before this pass so the menu can match it.
+
+        Offering light slugs on a dark build would reduce the whole pass to a
+        no-op: a light slug simply fails to resolve in a dark theme."""
+        prompt = self._prompt_for(
+            brand_name="Acme AI",
+            mood="modern",
+            industry="saas",
+            seed_hex="#7c3aed",
+            color_scheme="dark",
+        )
+        self.assertIn("Colour scheme: dark", prompt)
+        self.assertIn('"dark-midnight-violet"', prompt)
+        # No light-catalogue slug is on the dark menu.
+        self.assertNotIn('"ai-platform"', prompt)
+        self.assertNotIn('"saas"', prompt)
+
+    def test_light_scheme_is_the_default_and_offers_light_palettes(self):
+        prompt = self._prompt_for(
+            brand_name="Acme AI", mood="modern", industry="saas", seed_hex="#7c3aed"
+        )
+        self.assertIn("Colour scheme: light", prompt)
+        self.assertIn('"ai-platform"', prompt)
+        self.assertNotIn("dark-midnight-violet", prompt)
+
+    def test_prompt_states_each_palette_s_moods(self):
+        prompt = self._prompt_for(
+            brand_name="Acme AI", mood="technical", industry="saas", seed_hex=None
+        )
+        # A mood-tagged entry advertises its moods; the legacy wildcards say "any".
+        self.assertIn("moods: technical", prompt)
+        self.assertIn("moods: any", prompt)
+
     def test_disabled_returns_empty_without_calling_llm(self):
         class BoomLLM:
             async def chat_json(self, *_, **__):

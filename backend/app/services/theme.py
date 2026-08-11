@@ -194,12 +194,57 @@ class CuratedPalette:
     accent: str
     dark: str  # darkest token → body text + dark-band background
     tint: str  # light page tint → light section surface
+    # The page canvas (ColorPalette.background). Defaults to white, which is what
+    # every legacy entry wants; a warm/off-white page lets an earthy palette carry
+    # its dominant 60% in the page itself rather than only in the bands.
+    page: str = "#ffffff"
+    # BrandMood values this palette was designed for. Empty = suits any mood; see
+    # _mood_narrow for why that is a wildcard rather than a "matches nothing".
+    moods: tuple[BrandMood, ...] = ()
 
     @property
     def slug(self) -> str:
         """Stable id derived from the name (e.g. "ai-platform") — the handle
         the design-language LLM picks by."""
         return _slug(self.name)
+
+
+@dataclass(frozen=True)
+class CuratedDarkPalette:
+    """A hand-designed DARK-scheme palette.
+
+    The light catalogue's token model doesn't transfer: a dark palette needs three
+    distinct dark rungs (the page, the elevated band, the darkest band), which
+    `CuratedPalette`'s single `dark` + `tint` pair cannot express. Kept as its own
+    table so the light set's invariants — and the tests that iterate it — stay
+    exactly as they were.
+
+    The ladder runs `band` (darkest) < `page` < `surface` (lightest), mirroring the
+    algorithmic `_dark_palette` it replaces, so `band_colors` keeps painting the
+    dark band from `secondary` and the "light" band from `surface`. Both must stay
+    dark enough for white ink: `_text_for_background` flips at luminance 0.5, and
+    AA against white caps `surface` at relative luminance 0.1833.
+    """
+
+    name: str
+    categories: tuple[str, ...]  # IndustryCategory values this palette suits
+    primary: str  # vivid brand hue — the button fill, already AA-safe as authored
+    accent: str  # vivid counterpoint, ~10% emphasis only (never a section fill)
+    page: str  # ColorPalette.background — the page canvas (middle rung)
+    surface: str  # the ELEVATED band (lightest rung) → band_colors("light")
+    band: str  # the DARKEST rung → ColorPalette.secondary → band_colors("dark")
+    ink: str  # light body-text seed, capped by _dark_ink
+    moods: tuple[BrandMood, ...] = ()
+
+    @property
+    def slug(self) -> str:
+        """Stable id, namespaced with a `dark-` prefix.
+
+        `diversity.record_choice` stores a bare slug string with no scheme column,
+        so an un-prefixed dark "saas" would share history with the light "saas"
+        and the two would steer each other. The prefix also means a light slug can
+        never resolve in a dark build even if display names collide."""
+        return f"dark-{_slug(self.name)}"
 
 
 @dataclass(frozen=True)
@@ -784,6 +829,206 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
     CuratedPalette("Portfolio", ("personal",), "#18181B", "#2563EB", "#09090B", "#FAFAFA"),
     CuratedPalette("Freelancer", ("personal",), "#6366F1", "#16A34A", "#312E81", "#EEF2FF"),
     CuratedPalette("Magazine / Blog", ("personal",), "#18181B", "#EC4899", "#09090B", "#FAFAFA"),
+    #
+    # --- mood-tagged entries ----------------------------------------------------
+    # The 28 above predate the mood axis and stay untagged (wildcards, see
+    # _mood_narrow). Everything below declares the moods it was designed for, so a
+    # playful restaurant and a luxury restaurant stop landing on the same palette.
+    # `primary` is authored AA-safe against its auto-picked label so build_theme's
+    # button guard never silently darkens what the catalogue promises.
+    #
+    # modern / technical — trust, clarity, engineering
+    CuratedPalette(
+        "Corporate Trust", ("professional-services", "consultancy"),
+        "#2563EB", "#0D9488", "#0F172A", "#F1F5F9",
+        moods=("modern", "technical"),
+    ),
+    CuratedPalette(
+        "Modern Minimalist", ("agency", "personal", "saas"),
+        # Coral is the ACCENT, not the button: #F43F5E is 3.67:1 on white, and §7
+        # bans accent as a section fill anyway. The near-neutral slate carries the
+        # actions at 10.35:1 — which is the minimalist look the brief describes.
+        "#334155", "#F43F5E", "#0F172A", "#F8FAFC",
+        moods=("modern", "editorial"),
+    ),
+    CuratedPalette(
+        "Signal Indigo", ("saas", "ecommerce"),
+        "#4338CA", "#F59E0B", "#1E1B4B", "#EEF2FF",
+        moods=("modern", "playful"),
+    ),
+    CuratedPalette(
+        "Blueprint Cyan", ("saas", "professional-services"),
+        "#0E7490", "#F97316", "#082F49", "#ECFEFF",
+        moods=("technical",),
+    ),
+    CuratedPalette(
+        "Slate Systems", ("saas", "consultancy", "professional-services"),
+        "#475569", "#06B6D4", "#020617", "#F1F5F9",
+        moods=("technical", "modern"),
+    ),
+    CuratedPalette(
+        # `dark` is #0F2A18 rather than a deeper green-950: below about L 0.11 an
+        # 8-bit round-trip quantises saturation so coarsely that _brand_ink's
+        # output measures over the 0.20 cap even though the cap was applied.
+        "Terminal Green", ("saas",),
+        "#15803D", "#0EA5E9", "#0F2A18", "#F0FDF4",
+        moods=("technical",),
+    ),
+    # luxury — deep, saturated, restrained
+    CuratedPalette(
+        "Bordeaux", ("restaurant", "ecommerce"),
+        "#881337", "#A16207", "#4C0519", "#FFF1F2",
+        moods=("luxury", "editorial"),
+    ),
+    CuratedPalette(
+        "Deep Forest", ("professional-services", "consultancy", "ecommerce"),
+        "#14532D", "#B45309", "#0E3B26", "#F0FDF4",
+        moods=("luxury",),
+    ),
+    CuratedPalette(
+        "Plum Velvet", ("ecommerce", "agency", "personal"),
+        "#581C87", "#D97706", "#2E1065", "#FAF5FF",
+        moods=("luxury",),
+    ),
+    # editorial — warm papers, high-contrast type
+    CuratedPalette(
+        "Ink and Paper", ("personal", "agency"),
+        "#292524", "#DC2626", "#1C1917", "#F5F5F4", page="#FAFAF9",
+        moods=("editorial",),
+    ),
+    CuratedPalette(
+        "Warm Editorial", ("restaurant", "personal", "agency"),
+        "#9A3412", "#0F766E", "#1C1917", "#F5F1E9", page="#FBF8F3",
+        moods=("editorial", "friendly"),
+    ),
+    CuratedPalette(
+        # The brief's single #F5F5F4 is split into a warm parchment page and a
+        # warmer band: one flat tone for both leaves no room for a band that still
+        # clears the light-surface floor. #1C1917 is already inky enough to pass
+        # _brand_ink untouched, so the charcoal survives verbatim.
+        "Eco Natural", ("nonprofit", "ecommerce", "restaurant"),
+        "#15803D", "#A16207", "#1C1917", "#F5F1E9", page="#FBF8F3",
+        moods=("friendly", "editorial"),
+    ),
+    # playful — bright, high-energy
+    CuratedPalette(
+        # #EA580C was the natural orange here but is 3.56:1 on white; the guard
+        # would have darkened it silently, so the catalogue carries the AA-safe
+        # sibling and what you read is what ships.
+        "Citrus Pop", ("restaurant", "ecommerce", "personal"),
+        "#C2410C", "#7C3AED", "#431407", "#FFF7ED",
+        moods=("playful", "friendly"),
+    ),
+    CuratedPalette(
+        "Lime Punch", ("agency", "ecommerce", "personal"),
+        "#4D7C0F", "#DB2777", "#1C2E12", "#F7FEE7",
+        moods=("playful",),
+    ),
+    CuratedPalette(
+        "Electric Grape", ("saas", "agency"),
+        "#6D28D9", "#F59E0B", "#2E1065", "#F5F3FF",
+        moods=("playful", "modern"),
+    ),
+)
+
+
+# Hand-designed DARK-scheme palettes. Before these, a dark site threw away every
+# curated and design-language pick and derived its colours algorithmically from the
+# logo hue — so dark builds recorded no palette slug, the design manifest had
+# nothing to log and the diversity engine had nothing to rotate.
+#
+# The ladder is band < page < surface by lightness, matching what `_dark_palette`
+# produced, so `band_colors` and the luminance rhythm need no changes. Every
+# `surface` sits far under the 0.1833 relative-luminance ceiling that white body
+# text at AA imposes.
+#
+# No childcare entries by design: that brief bans dark outright (see
+# _INDUSTRY_SCHEME_LEAN), so childcare reaches this table only via an explicit
+# override, where the whole-set fallback is the right answer.
+_CURATED_DARK_PALETTES: tuple[CuratedDarkPalette, ...] = (
+    CuratedDarkPalette(
+        # The reference "Dark Mode Tech" brief. Its #8B5CF6 violet is 4.23:1 on
+        # white and 4.22:1 on near-black — it fails as a button against EITHER
+        # ink — so the AA-safe sibling #7C3AED (5.70:1) ships in its place.
+        "Midnight Violet", ("saas", "agency"),
+        "#7C3AED", "#38BDF8", "#090D16", "#141A28", "#05080F", "#E5E9EE",
+        moods=("modern", "technical"),
+    ),
+    CuratedDarkPalette(
+        "Deep Space Blue", ("saas", "professional-services", "consultancy"),
+        "#2563EB", "#22D3EE", "#080D1C", "#121A2B", "#020617", "#E5E9EE",
+        moods=("modern", "technical"),
+    ),
+    CuratedDarkPalette(
+        "Terminal Emerald", ("saas", "agency", "professional-services", "consultancy"),
+        "#047857", "#A3E635", "#04140F", "#0C2620", "#020D0A", "#E3EBE7",
+        moods=("technical",),
+    ),
+    CuratedDarkPalette(
+        "Obsidian Gold", ("ecommerce", "consultancy", "personal"),
+        "#B45309", "#FBBF24", "#12100E", "#221E1A", "#0A0908", "#F5F5F4",
+        moods=("luxury",),
+    ),
+    CuratedDarkPalette(
+        "Wine Cellar", ("restaurant", "ecommerce"),
+        "#BE123C", "#F59E0B", "#17060D", "#2A0F19", "#0F0409", "#F2EBEC",
+        moods=("luxury", "editorial"),
+    ),
+    CuratedDarkPalette(
+        "Charcoal Editorial", ("agency", "personal"),
+        "#E11D48", "#FACC15", "#0A0A0A", "#1A1A1A", "#050505", "#FAFAFA",
+        moods=("editorial",),
+    ),
+    CuratedDarkPalette(
+        "Forest Night", ("nonprofit", "professional-services", "ecommerce", "personal"),
+        "#15803D", "#FACC15", "#06180C", "#0F2A18", "#031006", "#E6EDE8",
+        moods=("friendly", "editorial"),
+    ),
+    CuratedDarkPalette(
+        "Indigo Studio", ("agency", "saas", "personal"),
+        "#4F46E5", "#F472B6", "#080A22", "#151838", "#05061A", "#E9EBF0",
+        moods=("modern", "playful"),
+    ),
+    CuratedDarkPalette(
+        "Graphite Luxe", ("consultancy", "professional-services", "ecommerce", "nonprofit"),
+        "#A16207", "#38BDF8", "#0C0A09", "#1C1917", "#050403", "#FAFAF9",
+        moods=("luxury", "editorial"),
+    ),
+    CuratedDarkPalette(
+        "Magenta Lab", ("agency", "saas", "personal", "restaurant"),
+        "#C026D3", "#22D3EE", "#14061A", "#260C30", "#0C0310", "#EFEAF1",
+        moods=("playful", "modern"),
+    ),
+    CuratedDarkPalette(
+        "Ember Kitchen", ("restaurant",),
+        "#C2410C", "#FBBF24", "#150A06", "#271510", "#0B0503", "#F1EEEA",
+        moods=("friendly", "playful"),
+    ),
+    CuratedDarkPalette(
+        "Deep Ocean", ("nonprofit", "professional-services", "restaurant"),
+        "#0E7490", "#FBBF24", "#041619", "#0C2A31", "#020F11", "#E4EAEC",
+        moods=("friendly", "modern"),
+    ),
+    # The three below exist to give every (mood × industry) cell a second option.
+    # With one candidate the seeded pick is forced and diversity can't rotate, so
+    # every dark editorial agency would have shipped the identical palette — the
+    # convergence this whole catalogue is meant to break. Their categories are
+    # chosen to not collide with the same-primary entries above.
+    CuratedDarkPalette(
+        "Sepia Press", ("agency", "personal", "restaurant", "consultancy", "nonprofit"),
+        "#DC2626", "#FBBF24", "#14100C", "#241D16", "#0A0705", "#F1EEEA",
+        moods=("editorial",),
+    ),
+    CuratedDarkPalette(
+        "Copper Hearth", ("restaurant", "ecommerce", "personal"),
+        "#A16207", "#FCD34D", "#160F09", "#281C12", "#0B0705", "#F1EEEA",
+        moods=("friendly", "luxury"),
+    ),
+    CuratedDarkPalette(
+        "Steel Meridian", ("consultancy", "professional-services", "nonprofit"),
+        "#7C3AED", "#FBBF24", "#0B0E14", "#181C24", "#050709", "#E6E9ED",
+        moods=("modern", "luxury"),
+    ),
 )
 
 
@@ -817,13 +1062,34 @@ def _brand_ink(dark_hex: str) -> str:
     )
 
 
+# Floor for a light section band. The band has to stay clearly light so body text
+# keeps its contrast across alternating sections, but the old inline 0.9 was
+# tighter than the invariant actually needs (the test bar is 0.85) and it silently
+# discarded three legitimate catalogue tints — a bakery's #FEF3C7 (0.893) and two
+# #EEF2FF (0.889) — replacing each with cool slate. 0.86 keeps a real margin over
+# the 0.85 bar while letting an authored warm tint survive.
+_SURFACE_MIN_LUMINANCE = 0.86
+
+
+def _light_surface(page: str, tint: str) -> str:
+    """The light section band for a curated palette.
+
+    The authored tint when it is clearly light; otherwise a step off the PAGE
+    rather than a fixed cool slate — on a warm parchment page a #f8fafc band reads
+    as a rendering bug, not as a design.
+    """
+    if _relative_luminance(tint) >= _SURFACE_MIN_LUMINANCE:
+        return tint
+    if page.lower() == "#ffffff":
+        return "#f8fafc"  # legacy fallback, byte-identical to the previous output
+    return _adjust_lightness(page, -0.03)
+
+
 def _palette_from_curated(c: CuratedPalette) -> ColorPalette:
     """Map a curated palette's source tokens onto the builder's 6-token palette,
     keeping our light-bg / dark-band invariants and the WCAG text guard."""
-    background = "#ffffff"
-    # Light section surface: the catalogue's page tint, clamped to stay clearly
-    # light (so body text keeps contrast on alternating sections).
-    surface = c.tint if _relative_luminance(c.tint) >= 0.9 else "#f8fafc"
+    background = c.page
+    surface = _light_surface(c.page, c.tint)
     # `dark` doubles as the dark-band background and the body text colour, so it
     # is taken as a hue-tinted ink rather than at full brand chroma (see
     # _brand_ink). Darkening only ever helps the 7:1 text guard below.
@@ -839,52 +1105,152 @@ def _palette_from_curated(c: CuratedPalette) -> ColorPalette:
     )
 
 
+# The dark ink cap is the mirror image of _brand_ink, and it exists for a
+# different reason. In a dark palette `secondary` is NOT the body ink —
+# style_tokens reads `palette.text` when the scheme is dark — so the light side's
+# "one colour wash" argument doesn't apply to the band. It applies to the text: a
+# strongly tinted light ink (amber-200 body copy) makes every paragraph look
+# highlighted. So the cap only ever lightens and desaturates.
+_DARK_INK_MAX_SATURATION = 0.22
+_DARK_INK_MIN_LIGHTNESS = 0.86
+
+
+def _dark_ink(ink_hex: str) -> str:
+    """A light, near-neutral body ink carrying `ink_hex`'s hue but not its chroma."""
+    h, l, s = _rgb_to_hls(*_hex_to_rgb(ink_hex))
+    return _rgb_to_hex(
+        *_hls_to_rgb(h, max(l, _DARK_INK_MIN_LIGHTNESS), min(s, _DARK_INK_MAX_SATURATION))
+    )
+
+
+def _palette_from_curated_dark(c: CuratedDarkPalette) -> ColorPalette:
+    """Map a curated dark palette onto the builder's 6-token palette.
+
+    `band` (the darkest rung) becomes `secondary` so `band_colors("dark")` paints
+    it; `surface` stays the elevated band. Both are authored dark enough that
+    `_text_for_background` returns white for each.
+    """
+    return ColorPalette(
+        primary=c.primary,
+        secondary=c.band,
+        accent=c.accent,
+        text=_ensure_contrast_against(c.page, _dark_ink(c.ink), min_ratio=7.0),
+        background=c.page,
+        surface=c.surface,
+    )
+
+
+def _palette_of(entry: CuratedPalette | CuratedDarkPalette) -> ColorPalette:
+    """Map either catalogue entry onto a ColorPalette — the one place the two
+    tables' mappers are dispatched, so every caller stays scheme-agnostic."""
+    if isinstance(entry, CuratedDarkPalette):
+        return _palette_from_curated_dark(entry)
+    return _palette_from_curated(entry)
+
+
 def _has_brand_hue(seed_hex: str) -> bool:
     """True when the seed carries a usable brand hue (not greyscale). Mirrors the
     saturation threshold _nearest_tailwind_hue uses to fall back to generic blue."""
     return _rgb_to_hls(*_hex_to_rgb(seed_hex))[2] >= 0.12
 
 
-def _curated_candidates(industry: str | None) -> list[CuratedPalette]:
-    """The curated palettes an industry may draw from: its tagged subset when it
-    has one, else the whole set. Shared by the deterministic picker and the
-    design-language slug lookup so an LLM pick can never widen the pool."""
-    norm = (industry or "").strip().lower()
-    return [c for c in _CURATED_PALETTES if norm in c.categories] or list(
-        _CURATED_PALETTES
+_CuratedEntry = CuratedPalette | CuratedDarkPalette
+
+
+def _mood_narrow(
+    pool: list[_CuratedEntry], mood: BrandMood | None
+) -> list[_CuratedEntry]:
+    """Narrow a candidate pool to the palettes designed for `mood`.
+
+    An entry with no `moods` tags is a WILDCARD, not a non-match. Every one of the
+    legacy 28 is untagged, so strict "tagged entries only" narrowing would drop
+    SaaS/Analytics/AI Platform the moment one modern-tagged saas palette existed —
+    silently rewriting every seeded pick. The union rule is monotone: mood only
+    ever adds or removes newly tagged entries.
+
+    Never returns empty. Some (mood × industry) pairs have no tagged entry at all
+    — restaurant × technical, for one — and the `or pool` guard is what keeps them
+    working, so it is load-bearing rather than defensive.
+    """
+    if not mood:
+        return pool
+    kept = [c for c in pool if not c.moods or mood in c.moods]
+    return kept or pool
+
+
+def _curated_candidates(
+    industry: str | None,
+    mood: BrandMood | None = None,
+    scheme: str = "light",
+) -> list[_CuratedEntry]:
+    """The curated palettes a site may draw from: the scheme's table, narrowed to
+    the industry's tagged subset when it has one, then to the mood's.
+
+    The single source of truth — the deterministic picker, the design-language
+    slug lookup and the LLM's option list all route through here, so an LLM pick
+    can never widen the pool or cross schemes."""
+    table: list[_CuratedEntry] = list(
+        _CURATED_DARK_PALETTES if scheme == "dark" else _CURATED_PALETTES
     )
+    norm = (industry or "").strip().lower()
+    pool = [c for c in table if norm in c.categories] or table
+    return _mood_narrow(pool, mood)
 
 
-def curated_palette_by_slug(slug: str | None, industry: str | None) -> CuratedPalette | None:
-    """Resolve a design-language palette pick, validated against the industry's
-    candidate set (same set `_curated_palette` chooses from — preserves the
-    forced-industry palettes, e.g. childcare pastels). Unknown/None slug → None,
-    so callers fall back to the deterministic pick."""
+def curated_palette_by_slug(
+    slug: str | None,
+    industry: str | None,
+    *,
+    mood: BrandMood | None = None,
+    scheme: str = "light",
+) -> _CuratedEntry | None:
+    """Resolve a design-language palette pick, validated against the same
+    candidate set `_curated_palette` chooses from (preserving the forced-industry
+    palettes, e.g. childcare pastels). Unknown/None slug → None, so callers fall
+    back to the deterministic pick. Because the set is scheme-scoped, a light slug
+    can never resolve in a dark build."""
     if not slug:
         return None
     norm_slug = slug.strip().lower()
-    for c in _curated_candidates(industry):
+    for c in _curated_candidates(industry, mood, scheme):
         if c.slug == norm_slug:
             return c
     return None
 
 
-def curated_palette_options(industry: str | None) -> list[dict[str, object]]:
+def curated_palette_options(
+    industry: str | None,
+    *,
+    mood: BrandMood | None = None,
+    scheme: str = "light",
+) -> list[dict[str, object]]:
     """The palette options offered to the design-language LLM — one dict per
-    candidate with the slug it must answer with plus the swatch hexes/tags it
-    judges by. Mirrors `curated_palette_by_slug`'s candidate set exactly."""
-    return [
-        {
-            "slug": c.slug,
-            "name": c.name,
-            "categories": list(c.categories),
-            "primary": c.primary,
-            "accent": c.accent,
-            "dark": c.dark,
-            "tint": c.tint,
-        }
-        for c in _curated_candidates(industry)
-    ]
+    candidate with the slug it must answer with plus the swatches it judges by.
+    Mirrors `curated_palette_by_slug`'s candidate set exactly.
+
+    `swatches` carries the MAPPED ColorPalette, not the raw source tokens: a
+    curated `dark` of #0F172A ships as #171a22 once `_brand_ink` has capped it, so
+    quoting the source would show the model colours the page never paints.
+    """
+    options: list[dict[str, object]] = []
+    for c in _curated_candidates(industry, mood, scheme):
+        mapped = _palette_of(c)
+        options.append(
+            {
+                "slug": c.slug,
+                "name": c.name,
+                "categories": list(c.categories),
+                "moods": list(c.moods),
+                "primary": mapped.primary,
+                "accent": mapped.accent,
+                "swatches": {
+                    "page": mapped.background,
+                    "band": mapped.secondary,
+                    "ink": mapped.text,
+                },
+            }
+        )
+    return options
 
 
 def _curated_palette(
@@ -892,6 +1258,9 @@ def _curated_palette(
     industry: str | None,
     font_seed: str | None,
     avoid_slugs: set[str] | None = None,
+    *,
+    mood: BrandMood | None = None,
+    scheme: str = "light",
 ) -> tuple[ColorPalette, str]:
     """Pick a curated palette by industry fit, then by nearest hue to the brand
     seed (so the logo colour still steers the choice); the seed breaks ties. With
@@ -903,12 +1272,16 @@ def _curated_palette(
     but never widen the fit: a brand-hued site still lands in its hue-near
     group, an industry-pinned site inside its industry set. All-avoided (small
     groups saturate fast) → the seeded base pick stands, exactly the legacy
-    output. Returns (palette, slug) so callers can record what was chosen."""
-    candidates = _curated_candidates(industry)
+    output. Returns (palette, slug) so callers can record what was chosen.
+
+    Scheme-agnostic: both catalogue dataclasses expose `.primary` and `.slug`, so
+    the selection below is identical for light and dark — only the candidate set
+    and the final mapper differ."""
+    candidates = _curated_candidates(industry, mood, scheme)
     if seed_hex and _has_brand_hue(seed_hex):
         seed_h = _rgb_to_hls(*_hex_to_rgb(seed_hex))[0] * 360.0
 
-        def hue_dist(c: CuratedPalette) -> float:
+        def hue_dist(c: _CuratedEntry) -> float:
             ph = _rgb_to_hls(*_hex_to_rgb(c.primary))[0] * 360.0
             return abs(((ph - seed_h + 180.0) % 360.0) - 180.0)
 
@@ -916,7 +1289,13 @@ def _curated_palette(
         group = [c for c in candidates if hue_dist(c) - nearest < 1e-9]
     else:
         group = candidates
-    base = _seeded_index(font_seed, len(group))
+    # Mood is part of the seed, not just the filter. Filtering alone leaves the
+    # mood almost invisible: the legacy wildcards dominate most pools, and two
+    # moods whose pools happen to be the same size land on the SAME index — a
+    # luxury and a technical restaurant were both resolving to Brewery/Winery.
+    # Folding the mood in means a mood change always re-rolls the pick, while the
+    # tag filter still keeps mood-specific palettes out of the wrong briefs.
+    base = _seeded_index(f"{font_seed}|{mood}" if mood else font_seed, len(group))
     chosen = group[base]
     if avoid_slugs:
         for offset in range(len(group)):
@@ -924,7 +1303,7 @@ def _curated_palette(
             if candidate.slug not in avoid_slugs:
                 chosen = candidate
                 break
-    return _palette_from_curated(chosen), chosen.slug
+    return _palette_of(chosen), chosen.slug
 
 
 # Maps the generator's controlled IndustryCategory vocabulary (and free-text
@@ -1148,9 +1527,11 @@ def build_theme(
       - "derive": the legacy free-form HSL derivation.
     Either way `mood` still drives typography, radius, and page width.
 
-    `color_scheme="dark"` overrides the palette with a dark-scheme one (dark page +
-    surfaces, light text, vivid brand primary/accent); typography/mood are unchanged
-    and the existing band/rhythm machinery handles light text automatically.
+    `color_scheme="dark"` takes a hand-designed dark palette (dark page + surfaces,
+    light text, vivid brand primary/accent) chosen by the same industry/mood/hue/
+    seed route the light scheme uses; typography/mood are unchanged and the existing
+    band/rhythm machinery handles light text automatically. `palette_mode="derive"`
+    is the escape hatch back to the algorithmic `_dark_palette` ramp.
 
     Font pairing is chosen from the mood's pool by (1) `industry` fit when given,
     then (2) `font_seed` (a stable per-site id, typically the brand name) for
@@ -1159,10 +1540,9 @@ def build_theme(
 
     `palette_choice`/`font_choice` are design-language picks (curated palette /
     font-pairing slugs, typically from the LLM pass in design_brain.py). A valid
-    palette slug takes the curated palette directly (light scheme only — dark
-    stays algorithmic); a valid font slug takes that pairing from the mood's
-    pool. Invalid or None choices change nothing: the deterministic selection
-    above runs exactly as before.
+    palette slug takes that curated palette directly on either scheme; a valid
+    font slug takes that pairing from the mood's pool. Invalid or None choices
+    change nothing: the deterministic selection above runs exactly as before.
     """
     raw = (seed_hex or "").strip().lower()
     has_seed = raw.startswith("#") and len(raw) == 7
@@ -1173,13 +1553,12 @@ def build_theme(
     # generic-blue fallback.
     brand_hue = has_seed and _has_brand_hue(seed)
     norm_industry = (industry or "").strip().lower()
-    # A valid design-language pick wins on the light scheme; it is validated
-    # against the industry's own candidate set, so forced-industry palettes
-    # (childcare pastels) can't be escaped and a hallucinated slug is a no-op.
-    chosen_curated = (
-        curated_palette_by_slug(palette_choice, industry)
-        if color_scheme != "dark"
-        else None
+    # A valid design-language pick wins on either scheme. It is validated against
+    # the industry's AND mood's AND scheme's own candidate set, so forced-industry
+    # palettes (childcare pastels) can't be escaped, a hallucinated slug is a
+    # no-op, and a light slug can never resolve in a dark build.
+    chosen_curated = curated_palette_by_slug(
+        palette_choice, industry, mood=mood, scheme=color_scheme
     )
     # Track WHICH curated palette was taken (None on the non-curated paths) so
     # the design manifest can record a real slug and the diversity history can
@@ -1187,22 +1566,42 @@ def build_theme(
     # candidate group (_curated_palette) — an explicit design-language pick and
     # the non-curated paths are never overridden by history.
     palette_slug: str | None = None
-    if color_scheme == "dark":
-        # Dark scheme owns palette construction (the curated/Tailwind paths are
-        # light-only); brand hue still drives the primary/accent.
-        palette = _dark_palette(seed)
-    elif chosen_curated is not None:
-        palette = _palette_from_curated(chosen_curated)
+    if chosen_curated is not None:
+        palette = _palette_of(chosen_curated)
         palette_slug = chosen_curated.slug
+    elif color_scheme == "dark":
+        if palette_mode == "derive" or not _CURATED_DARK_PALETTES:
+            # The algorithmic escape hatch, and the only remaining way to get it.
+            palette = _dark_palette(seed)
+        else:
+            # A dark site draws from the hand-designed dark table even when the
+            # logo carries a strong hue. That is not a loss of brand fidelity:
+            # the light path's `_snap_palette` ALREADY quantises the brand hue to
+            # one of 17 Tailwind families, so hue-nearest selection over a
+            # hue-spanning catalogue is the same trade the codebase has always
+            # made — and confining curated darks to greyscale logos would make
+            # them almost unreachable in production.
+            palette, palette_slug = _curated_palette(
+                seed if has_seed else None,
+                industry,
+                font_seed,
+                avoid_slugs=avoid_palettes,
+                mood=mood,
+                scheme="dark",
+            )
     elif norm_industry in _INDUSTRY_CURATED_PALETTE:
         # Fixed cheerful pastel palette, logo hue ignored (seed=None) so the
         # brand colour can't override the brief's multi-pastel direction.
         palette, palette_slug = _curated_palette(
-            None, industry, font_seed, avoid_slugs=avoid_palettes
+            None, industry, font_seed, avoid_slugs=avoid_palettes, mood=mood
         )
     elif palette_mode == "curated" or (palette_mode == "auto" and not brand_hue):
         palette, palette_slug = _curated_palette(
-            seed if has_seed else None, industry, font_seed, avoid_slugs=avoid_palettes
+            seed if has_seed else None,
+            industry,
+            font_seed,
+            avoid_slugs=avoid_palettes,
+            mood=mood,
         )
     elif palette_mode in ("tailwind", "auto"):
         palette = _snap_palette(seed)

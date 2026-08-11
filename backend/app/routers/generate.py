@@ -1055,6 +1055,15 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         (brand.extracted_palette[0] if brand and brand.extracted_palette else None)
         or plan.primary_color_hint
     )
+    # Resolved BEFORE the design-language pass, not inline in build_theme: the
+    # curated palettes are scheme-specific, so the model has to be shown the dark
+    # menu on a dark build or it can only ever pick something that gets discarded.
+    color_scheme = resolve_color_scheme(
+        payload.color_scheme_override,
+        brand.color_scheme if brand else None,
+        brand.logo_is_light if brand else None,
+        industry=plan.industry_category,
+    )
     # Design-language pass: the reasoning model picks a curated palette + font
     # pairing before theme construction. Empty/invalid picks change nothing —
     # build_theme falls back to its deterministic selection.
@@ -1063,6 +1072,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         mood=mood,
         industry=plan.industry_category,
         seed_hex=seed_hex,
+        color_scheme=color_scheme,
     )
     theme = build_theme(
         seed_hex,
@@ -1072,12 +1082,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         font_seed=(brand.name if brand else plan.site_name),
         industry=plan.industry_category,
         palette_mode="auto",
-        color_scheme=resolve_color_scheme(
-            payload.color_scheme_override,
-            brand.color_scheme if brand else None,
-            brand.logo_is_light if brand else None,
-            industry=plan.industry_category,
-        ),
+        color_scheme=color_scheme,
         palette_choice=language.palette,
         font_choice=language.font_pairing,
         # Diversity: steer the curated pick off palettes recent sites used
@@ -1219,6 +1224,15 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         (brand.extracted_palette[0] if brand.extracted_palette else None)
         or detected.primary_color_hint
     )
+    # Resolved BEFORE the design-language pass, not inline in build_theme: the
+    # curated palettes are scheme-specific, so the model has to be shown the dark
+    # menu on a dark build or it can only ever pick something that gets discarded.
+    color_scheme = resolve_color_scheme(
+        payload.color_scheme_override,
+        brand.color_scheme,
+        brand.logo_is_light,
+        industry=industry,
+    )
     # Design-language pass: the reasoning model picks a curated palette + font
     # pairing before theme construction. Empty/invalid picks change nothing —
     # build_theme falls back to its deterministic selection.
@@ -1228,6 +1242,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             mood=mood,
             industry=industry,
             seed_hex=seed_hex,
+            color_scheme=color_scheme,
         )
     theme = build_theme(
         seed_hex,
@@ -1235,12 +1250,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         font_seed=brand.name,
         industry=industry,
         palette_mode="auto",
-        color_scheme=resolve_color_scheme(
-            payload.color_scheme_override,
-            brand.color_scheme,
-            brand.logo_is_light,
-            industry=industry,
-        ),
+        color_scheme=color_scheme,
         palette_choice=language.palette,
         font_choice=language.font_pairing,
         # Diversity: steer the curated pick off palettes recent sites used
