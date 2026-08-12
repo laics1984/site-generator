@@ -590,15 +590,56 @@ class TemplateVarietySeedTest(unittest.TestCase):
         block = FeaturesBlock(
             heading="What we do",
             items=[
-                FeatureItem(title=f"Thing {i}", description="Useful.")
+                FeatureItem(
+                    title=f"Thing {i}", description="Useful.", image_query="a workshop"
+                )
                 for i in range(3)
             ],
         )
-        # Card imagery is synthesized from titles, so the photo-topped policy
-        # is a hard site rule — every seed must yield the same image-card grid.
+        # Imagery the SOURCE supplied makes the photo-topped policy a hard site
+        # rule — every seed must yield the same image-card grid. (Imagery merely
+        # synthesized from card titles no longer counts: see
+        # section_content._items_have_real_images.)
         for seed in ("Acme", "Globex", "Initech"):
             t, _ = block_to_section(block, mood="modern", variety_seed=seed)
             self.assertEqual(t["id"], "features-image-cards", seed)
+
+    def _text_features(self):
+        from app.models.content_blocks import FeatureItem, FeaturesBlock
+
+        return FeaturesBlock(
+            heading="What we do",
+            items=[
+                FeatureItem(title=f"Thing {i}", description="Useful.") for i in range(3)
+            ],
+        )
+
+    def _picks(self, block, mood):
+        from app.services.section_content import block_to_section
+
+        return {
+            block_to_section(block, mood=mood, industry="saas", variety_seed=seed)[0]["id"]
+            for seed in ("Acme", "Globex", "Initech", "Umbrella", "Soylent")
+        }
+
+    def test_the_seed_never_overrules_the_moods_layout_choice(self):
+        """`modern` ranks bento first (_MOOD_LAYOUT_PREFERENCE), and with no
+        source imagery nothing outranks that — so every brand gets the bento.
+
+        The seed used to rotate the whole preference head, which displaced the
+        mood's own pick and left `modern` on a card grid."""
+        self.assertEqual(self._picks(self._text_features(), "modern"), {"features-bento"})
+
+    def test_the_seed_still_varies_where_the_mood_is_indifferent(self):
+        # `technical` ranks the grid family top, and that family holds two
+        # photo-less members — a tie the mood does not resolve, so the brand
+        # seed decides which one and same-mood sites still differ.
+        picks = self._picks(self._text_features(), "technical")
+        self.assertGreater(len(picks), 1, "variety seed had no effect")
+        self.assertTrue(
+            picks <= {"features-card-grid", "features-two-col"},
+            f"seed escaped the mood's chosen family: {picks}",
+        )
 
 
 class PaletteAvoidanceTest(unittest.TestCase):

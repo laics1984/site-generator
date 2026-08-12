@@ -104,9 +104,44 @@ must **also** land in `hero_director._MOOD_SPECS` rotations or they're never
 picked. New variants of an existing type need only the catalog entry.
 
 Catalog rules: no `display:grid` (use 2Col/3Col/flex) — the one sanctioned
-exception is a `$bento` fan-out container. `$bento` is Python-only; the builder's
-TS `materializeTemplate` has no branch for it (known parity gap). Optional
-`"moods": [...]` restricts an entry to those brand moods.
+exception is a `$bento` fan-out container, which `check_catalog_contract.py`
+exempts by node name. `$bento` has full parity: `_bento_spans` in
+`template_filler.py` and `bentoSpans` in `builder/src/lib/section-catalog.ts`
+are line-for-line mirrors — keep them in lockstep.
+
+Layout selection precedence is `explicit_id → content preference (_PREFERENCE) →
+mood preference (_MOOD_LAYOUT_PREFERENCE, keyed on `layoutVariant`) → pool[0]`,
+all gated by `is_feasible`. The `variety_seed` rotation is a **tiebreaker, not a
+chooser**: it may reorder templates the mood ranks no worse than the current
+leader, never promote one the mood ranks worse, and never promote a photo-led
+variant when the source supplied no photography. Before that bound, it displaced
+the mood's own pick — `modern` ranks bento first and was still landing on a card
+grid. Content preferences must not pin a layout family for text sections either,
+or the mood never gets a say.
+
+Two optional gates restrict an entry: `"moods": [...]` (values must be real
+`BrandMood`s) and `"industries": [...]` (real `IndustryCategory` values); absent
+= neutral. **A gate written in the wrong vocabulary is a silent off switch, not
+a gate** — `profile-centered` declared `classic`/`elegant`/`trustworthy`/`calm`
+and was unreachable on every site for as long as it existed, while its own test
+passed by fabricating those moods. `test_icons.CatalogGateVocabularyTest` now
+fails on any unknown value or any mood-gated entry no mood can reach.
+
+A photo-topped policy in `section_content._policy_template_id` overrules the
+layout pick for `features`/`services` whose cards carry imagery **the source
+actually supplied** — a bound `image_url` or a planner-written `image_query`
+(`_items_have_real_images`), read off the block rather than the mapped content.
+`_item_image` still backfills a stock query from the card's title, so a photo
+layout stays *feasible* when nothing else is available; it just no longer forces
+itself, which it used to do on every section ever built. It governs **its own
+`layoutVariant` family only**: `features-card-grid`
+is `features-image-cards` with the pictures taken out, so it stays overruled,
+while a bento or an editorial list is a different composition and competes
+(`_leads_with_photo` for photo variants, `_layout_family` for the rest). Scoped
+to the whole section type it silently killed 4 of 6 features layouts and 3 of 6
+services layouts. The friendly/playful `services-programs-age` rule is more
+specific and stays absolute, since no other variant declares its age badge, and
+it now also requires the items to actually carry one (`_items_have_audience`).
 
 ## Gallery lightbox
 

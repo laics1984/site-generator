@@ -46,6 +46,7 @@ from app.models.content_blocks import (
     TestimonialsBlock,
     VisualPolicy,
 )
+from app.services.icons import icons_for_items
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
 from app.services.style_tokens import brand_ink
 from app.services.template_filler import get_template, templates_for_type
@@ -133,19 +134,35 @@ def _item_image(item: Any, alt_fallback: str) -> dict[str, str] | None:
     return _image(getattr(item, "image_query", None) or alt_fallback, alt_fallback)
 
 
+def _attach_icons(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Give every item an `icon` value, or none of them one.
+
+    Only the icon-bearing templates declare the slot, so this is inert
+    everywhere else — an undeclared slot is simply never bound. The
+    all-or-nothing rule is the point: a grid where three tiles carry a glyph and
+    two don't reads as a rendering fault, not a design.
+    """
+    names = icons_for_items(items)
+    if not names:
+        return items
+    for item, name in zip(items, names):
+        item["icon"] = {"icon": name, "alt": ""}
+    return items
+
+
 def _features_content(b: FeaturesBlock) -> dict[str, Any]:
     return {
         "eyebrow": "Features",
         "heading": b.heading,
         "subheading": b.subheading,
-        "items": [
+        "items": _attach_icons([
             {
                 "title": i.title,
                 "description": i.description,
                 "image": _item_image(i, i.title),
             }
             for i in b.items
-        ],
+        ]),
     }
 
 
@@ -367,7 +384,9 @@ def _menu_content(b: MenuBlock) -> dict[str, Any]:
 def _stats_content(b: Any) -> dict[str, Any]:
     return {
         "heading": b.heading,
-        "items": [{"value": i.value, "label": i.label} for i in b.items],
+        "items": _attach_icons(
+            [{"value": i.value, "label": i.label} for i in b.items]
+        ),
     }
 
 
@@ -501,11 +520,42 @@ def _cta_preference(content: dict[str, Any], b: CtaBlock) -> list[str]:
     return ["cta-banner", "cta-minimal"]
 
 
-def _most_items_have_images(content: dict[str, Any]) -> bool:
-    """True when the section's cards can lead with photos: 2+ items and every
-    item carries an image value (bound scraped photo or stock query)."""
+def _items_have_real_images(block: Any) -> bool:
+    """True when the cards carry imagery the SOURCE actually provided: 2+ items
+    and every one has a bound scraped photo (`image_url`, resolved from
+    `image_ref`) or a planner-written `image_query`.
+
+    Read from the BLOCK, not the mapped content dict, and that distinction is
+    the whole rule. `_item_image` backfills a query-less card from its own
+    title, so a content-level test ("does each item have an image value?") is
+    true for every features/services section ever built — which made the
+    photo-topped policy unconditional and left the text layouts unreachable.
+
+    Cards still get that title fallback when a photo layout is chosen; it just
+    no longer *forces* one. A site whose source had no feature photography is
+    free to stay on a text layout instead of filling a grid with stock images
+    searched on phrases like "24/7 Support".
+    """
+    items = getattr(block, "items", None) or []
+    if len(items) < 2:
+        return False
+    return all(
+        getattr(i, "image_url", None) or getattr(i, "image_query", None) for i in items
+    )
+
+
+def _items_have_audience(content: dict[str, Any]) -> bool:
+    """True when the cards actually carry a who-it's-for badge.
+
+    `services-programs-age` is the badge-carrying variant — its own description
+    says the badge "reads as 'For startups' etc. for other audiences", so it is
+    not childcare-only. But forcing it on a section with no audiences at all
+    gives every friendly brand a programme layout whose defining element is
+    absent: a restaurant's dishes rendered as programme cards with no badge.
+    Gate on the content that makes the variant mean something.
+    """
     items = content.get("items") or []
-    return len(items) >= 2 and all(i.get("image") for i in items)
+    return bool(items) and any(i.get("ideal") for i in items)
 
 
 def _is_founders_band(block: Any) -> bool:
@@ -524,16 +574,22 @@ def _is_founders_band(block: Any) -> bool:
 def _features_preference(content: dict[str, Any], b: FeaturesBlock) -> list[str]:
     # Photo-topped cards whenever every card has an image to lead with —
     # landing-page practice: show it, don't just say it.
-    if _most_items_have_images(content):
+    if _items_have_real_images(b):
         return ["features-image-cards", "features-card-grid", "features-two-col"]
-    # Match column count to item count: 3+ -> 3-col grid, 1-2 -> 2-col.
-    return ["features-card-grid"] if len(b.items) >= 3 else ["features-two-col", "features-card-grid"]
+    # With no source imagery the layout FAMILY is a mood decision, not a content
+    # one — see _MOOD_LAYOUT_PREFERENCE, which already ranks bento first for
+    # `modern` and `playful`, grid for `technical`, editorial for `editorial`.
+    # Hardcoding the card grid here silently overrode all of that. Express only
+    # what the item count actually dictates: a three-column grid holding two
+    # cards reads as a mistake, so a short section still asks for two-col.
+    return [] if len(b.items) >= 3 else ["features-two-col"]
 
 
 def _services_preference(content: dict[str, Any], b: ServicesBlock) -> list[str]:
-    if _most_items_have_images(content):
+    if _items_have_real_images(b):
         return ["services-image-cards", "services-offer-grid", "services-two-col"]
-    return ["services-offer-grid"] if len(b.items) >= 3 else ["services-two-col", "services-offer-grid"]
+    # As above: mood picks the family, the item count picks the column count.
+    return [] if len(b.items) >= 3 else ["services-two-col"]
 
 
 def _testimonials_preference(content: dict[str, Any], b: TestimonialsBlock) -> list[str]:
@@ -700,6 +756,20 @@ def mood_preferred_ids(mood: BrandMood | None, section_type: str) -> list[str]:
     return [t["id"] for t in ordered]
 
 
+def _mood_rank(mood: BrandMood | None, template_id: str) -> int:
+    """How highly `mood` ranks a template's layout family (lower = preferred).
+
+    Families the mood doesn't name share one rank at the end, so they tie with
+    each other rather than with anything the mood actually asked for. With no
+    mood every template ties, which leaves the variety seed free to pick.
+    """
+    pref = _MOOD_LAYOUT_PREFERENCE.get(mood) if mood else None
+    if not pref:
+        return 0
+    family = _layout_family(template_id)
+    return pref.index(family) if family in pref else len(pref)
+
+
 def mood_allows(template: dict[str, Any], mood: BrandMood | None) -> bool:
     """A template with a ``moods`` list is only offered to those brand moods
     (e.g. playful kindergarten styling never lands on a law firm). Templates
@@ -710,6 +780,25 @@ def mood_allows(template: dict[str, Any], mood: BrandMood | None) -> bool:
     return mood in allowed
 
 
+def industry_allows(template: dict[str, Any], industry: str | None) -> bool:
+    """A template with an ``industries`` list is only offered to those industries.
+
+    The sibling of `mood_allows`, and the reason both exist: mood was the only
+    lever, so an industry-specific layout could only be gated by the mood its
+    industry happens to lean toward — which leaks (every *friendly* brand got
+    the childcare-derived variants, not just childcare). Templates without the
+    field — the whole pre-existing catalog — are industry-neutral.
+
+    Free-text industries are matched case-insensitively against the controlled
+    IndustryCategory values a catalog entry declares; an unknown industry simply
+    matches nothing gated, which is the safe direction.
+    """
+    allowed = template.get("industries")
+    if not allowed:
+        return True
+    return (industry or "").strip().lower() in {a.lower() for a in allowed}
+
+
 def select_template(
     section_type: str,
     content: dict[str, Any],
@@ -717,9 +806,14 @@ def select_template(
     preferred_ids: list[str] | None = None,
     explicit_id: str | None = None,
     mood: BrandMood | None = None,
+    industry: str | None = None,
 ) -> dict[str, Any] | None:
     """Choose a catalog template for a section: feasibility filter, then preference."""
-    candidates = [t for t in templates_for_type(section_type) if mood_allows(t, mood)]
+    candidates = [
+        t
+        for t in templates_for_type(section_type)
+        if mood_allows(t, mood) and industry_allows(t, industry)
+    ]
     if not candidates:
         return None
     feasible = [t for t in candidates if is_feasible(t, content)]
@@ -1707,11 +1801,151 @@ def apply_section_rhythm(sections: list[BuilderElement]) -> None:
         surface_next = not surface_next
 
 
+# Image slots that are a decorative MARK, not the card's lead photograph. A
+# variant carrying only these does not satisfy "cards lead with a photo", so it
+# must not slip past the photo-topped policy on a technicality — an icon grid is
+# still a text grid. Kept as ids rather than a catalog flag so there is no new
+# field to keep in lockstep across the two catalogs.
+_DECORATIVE_IMAGE_SLOTS = frozenset({"icon", "logo", "badge", "avatar"})
+
+
+def _layout_family(template_id: str) -> str | None:
+    """A template's `layoutVariant` — the compositional family it belongs to
+    (grid, bento, editorial, split…), as distinct from its `styleVariant`."""
+    template = get_template(template_id)
+    return template.get("layoutVariant") if template else None
+
+
+def _leads_with_photo(template: dict[str, Any] | None) -> bool:
+    """True when a template's repeating items each lead with a photograph.
+
+    Derived from the template's own slot shape. Optionality is deliberately NOT
+    the test: `features-image-cards` declares its lead image optional while
+    `features-bento-photo` declares it required, so it discriminates nothing.
+    """
+    if not template:
+        return False
+    for slot in template.get("slots", []):
+        if slot.get("kind") != "list":
+            continue
+        if any(
+            i.get("kind") == "image" and i.get("id") not in _DECORATIVE_IMAGE_SLOTS
+            for i in slot.get("item", [])
+        ):
+            return True
+    return False
+
+
+def _policy_template_id(
+    kind: str,
+    content: dict[str, Any],
+    block: ContentBlock,
+    mood: BrandMood | None,
+    requested: str | None = None,
+    industry: str | None = None,
+) -> str | None:
+    """The template a block's own CONTENT dictates, overruling `requested`.
+
+    These are site policy, not styling, so they beat the design-brain's explicit
+    id, mood ordering and the variety rotation alike. Returns None when nothing
+    is dictated — i.e. when `requested` is free to stand.
+
+    Shared with `selectable_templates`, which offers exactly the variants this
+    function would NOT overrule, so the menu can never propose a pick that
+    selection then discards in silence.
+    """
+    # Photo-topped cards: when every card carries an image, show the photo.
+    if kind in ("features", "services") and _items_have_real_images(block):
+        # Friendly/playful brands (childcare et al) get the badge-carrying
+        # program cards. This is the MORE SPECIFIC rule and stays absolute:
+        # those cards carry the age/audience badge the brief depends on, and no
+        # other variant declares that slot, so letting one compete would drop
+        # it. Checked before the photo allowance below for exactly that reason.
+        if (
+            kind == "services"
+            and mood in ("friendly", "playful")
+            and _items_have_audience(content)
+        ):
+            return "services-programs-age"
+        forced = f"{kind}-image-cards"
+        if requested:
+            wanted = get_template(requested)
+            # A variant whose own items carry images already satisfies "cards
+            # lead with a photo", so it competes rather than being overruled.
+            if _leads_with_photo(wanted):
+                return None
+            # And the rule is about the SAME grid minus its photos — its own
+            # rationale is that the design brain "would otherwise happily
+            # re-select the text-only grid". A different layout family is a
+            # compositional choice, not a way of losing the photos by accident:
+            # `features-card-grid` is `features-image-cards` with the pictures
+            # taken out, but a bento's mixed-size tiles or an editorial list are
+            # different objects, and each family carries its own photo variant
+            # for when photos are what's wanted. Without this, one policy killed
+            # four of six features layouts and three of six services layouts.
+            if wanted and wanted.get("layoutVariant") != _layout_family(forced):
+                return None
+        return forced
+    # Same shape of rule for people: a short, all-founder roster is a founders
+    # band, not a staff directory. Identity, not imagery — nothing competes.
+    if kind == "team" and _is_founders_band(block):
+        return "team-founders"
+    return None
+
+
+def selectable_templates(
+    block: ContentBlock,
+    *,
+    mood: BrandMood | None = None,
+    industry: str | None = None,
+) -> list[dict[str, Any]]:
+    """The catalog templates `block_to_section` could actually land on for this
+    block — the menu the design brain is allowed to offer.
+
+    Empty when there is nothing to decide: the kind is unsupported, content
+    policy has already fixed the template, or nothing is feasible (in which case
+    `select_template` ignores an explicit id and degrades to the deterministic
+    pool anyway).
+
+    This exists because the two sides had drifted. The prompt listed every
+    mood-allowed variant while `select_template` additionally required
+    `is_feasible`, so a features section with two items was still offered
+    `features-bento` (which needs three). The model would pick it, the pick was
+    silently discarded, and that section quietly fell back to the deterministic
+    default — the very convergence this pass exists to break, with nothing in
+    the output to show for it. Both sides now read this one function.
+    """
+    kind = block.kind
+    mapper = _MAPPERS.get(kind)
+    if mapper is None:
+        return []
+    content = mapper(block)
+    candidates = [
+        t
+        for t in templates_for_type(kind)
+        if mood_allows(t, mood) and industry_allows(t, industry)
+    ]
+    # "Everything policy would not overrule" — asked of `_policy_template_id`
+    # itself rather than reimplemented here, so the menu and the selector cannot
+    # drift. A kind under a hard lock (founders band) yields nothing; a kind
+    # under the photo rule yields its photo-leading variants.
+    return [
+        t
+        for t in candidates
+        if is_feasible(t, content)
+        and _policy_template_id(
+            kind, content, block, mood, requested=t["id"], industry=industry
+        )
+        is None
+    ]
+
+
 def block_to_section(
     block: ContentBlock,
     *,
     explicit_id: str | None = None,
     mood: BrandMood | None = None,
+    industry: str | None = None,
     is_homepage: bool = True,
     hero_scroll_target_kind: str | None = None,
     variety_seed: str | None = None,
@@ -1737,22 +1971,12 @@ def block_to_section(
     if mapper is None:
         return None
     content = mapper(block)
-    # Photo-topped card grids are a hard site policy, not a stylistic choice:
-    # when every card carries an image, the image variant wins even over the
-    # design-brain's explicit pick (which draws from ALL variants and would
-    # otherwise happily re-select the text-only grid).
-    if kind in ("features", "services") and _most_items_have_images(content):
-        explicit_id = f"{kind}-image-cards"
-        # Friendly/playful brands (childcare et al) get the badge-carrying
-        # program cards instead — same photo-topped policy, warmer framing.
-        if kind == "services" and mood in ("friendly", "playful"):
-            explicit_id = "services-programs-age"
-    # Same shape of rule for people: a short, all-founder roster is a founders
-    # band, not a staff directory. Explicit rather than a _PREFERENCE entry so
-    # neither mood ordering nor the variety rotation below can demote it back to
-    # the generic grid — the block's content, not its styling, decides this.
-    if kind == "team" and _is_founders_band(block):
-        explicit_id = "team-founders"
+    explicit_id = (
+        _policy_template_id(
+            kind, content, block, mood, requested=explicit_id, industry=industry
+        )
+        or explicit_id
+    )
     pref_fn = _PREFERENCE.get(kind)
     content_pref = pref_fn(content, block) if pref_fn else []
     # Content leads the layout choice so available imagery is actually used.
@@ -1766,21 +1990,44 @@ def block_to_section(
     # so different brands lead with different (still feasible, still
     # mood-gated) variants; one brand stays idempotent, and every direct call
     # without a seed keeps the legacy order.
-    has_image_signal = bool(content.get("image")) or _most_items_have_images(content)
+    has_image_signal = bool(content.get("image")) or _items_have_real_images(block)
     if variety_seed and not has_image_signal:
         deduped: list[str] = []
         for pid in preferred:
             if pid not in deduped:
                 deduped.append(pid)
-        if len(deduped) > 1:
+        # The seed may reorder, but it may never promote a layout the MOOD ranks
+        # worse than the one already leading — and never a photo-led variant
+        # when the source supplied no photography. Rotating the whole head used
+        # to displace the mood's own pick, which is why `modern`, whose top
+        # layout family is bento, still landed on a card grid.
+        #
+        # The bound is "no worse than the leader" rather than "exactly the
+        # leader's rank" on purpose: where a content preference has already
+        # pinned the layout (cta_preference always leads with the banner), the
+        # mood never got a say, and locking to that leader's rank would freeze
+        # the section to one layout for every brand. This keeps the seed's
+        # variety exactly where mood is silent, and removes it where mood spoke.
+        leader = _mood_rank(mood, deduped[0]) if deduped else 0
+        head = [
+            pid
+            for pid in deduped
+            if _mood_rank(mood, pid) <= leader
+            and not _leads_with_photo(get_template(pid))
+        ]
+        if len(head) > 1:
             from app.services.diversity import seeded_index
 
-            offset = seeded_index(
-                variety_seed, f"template:{kind}", min(3, len(deduped))
-            )
-            preferred = deduped[offset:] + deduped[:offset]
+            offset = seeded_index(variety_seed, f"template:{kind}", len(head))
+            head = head[offset:] + head[:offset]
+            preferred = head + [pid for pid in deduped if pid not in head]
     template = select_template(
-        kind, content, preferred_ids=preferred, explicit_id=explicit_id, mood=mood
+        kind,
+        content,
+        preferred_ids=preferred,
+        explicit_id=explicit_id,
+        mood=mood,
+        industry=industry,
     )
     if template is None:
         return None

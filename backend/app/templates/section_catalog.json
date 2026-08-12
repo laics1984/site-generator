@@ -6417,10 +6417,9 @@
       ],
       "thumbnail": "profile-centered",
       "moods": [
-        "classic",
-        "elegant",
-        "trustworthy",
-        "calm"
+        "editorial",
+        "luxury",
+        "technical"
       ],
       "slots": [
         {
@@ -6739,10 +6738,9 @@
       ],
       "thumbnail": "profile-banner",
       "moods": [
-        "bold",
         "modern",
         "playful",
-        "vibrant"
+        "friendly"
       ],
       "slots": [
         {
@@ -11680,6 +11678,11 @@
           "minItems": 3,
           "item": [
             {
+              "id": "icon",
+              "kind": "image",
+              "optional": true
+            },
+            {
               "id": "title",
               "kind": "text"
             },
@@ -11697,23 +11700,43 @@
         "items": [
           {
             "title": "Fast",
-            "description": "Built for speed end to end."
+            "description": "Built for speed end to end.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M13%202L4.5%2013.5H11l-1%208.5%208.5-11.5H12l1-8.5z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           },
           {
             "title": "Secure",
-            "description": "Sensible defaults, hardened."
+            "description": "Sensible defaults, hardened.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%202l8%203v6c0%205-3.4%209.7-8%2011-4.6-1.3-8-6-8-11V5l8-3z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           },
           {
             "title": "Flexible",
-            "description": "Adapts to your stack."
+            "description": "Adapts to your stack.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%208a4%204%200%20100%208%204%204%200%20000-8zm9.4%204l1.8%201.4-1.8%203.2-2.2-.7a7.6%207.6%200%2001-1.8%201l-.4%202.3h-3.6l-.4-2.3a7.6%207.6%200%2001-1.8-1l-2.2.7-1.8-3.2L4.6%2012l-1.8-1.4%201.8-3.2%202.2.7a7.6%207.6%200%20011.8-1L9%204.8h3.6l.4%202.3a7.6%207.6%200%20011.8%201l2.2-.7%201.8%203.2L21.4%2012z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           },
           {
             "title": "Observable",
-            "description": "Know what's happening."
+            "description": "Know what's happening.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M4%2020h16v2H4v-2zm2-8h3v7H6v-7zm5-6h3v13h-3V6zm5%203h3v10h-3V9z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           },
           {
             "title": "Scalable",
-            "description": "Grows with you."
+            "description": "Grows with you.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%202l2%206%206%202-6%202-2%206-2-6-6-2%206-2%202-6zm7%2012l1%203%203%201-3%201-1%203-1-3-3-1%203-1%201-3z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           }
         ]
       },
@@ -11928,6 +11951,32 @@
                 },
                 "content": [
                   {
+                    "name": "Tile Icon",
+                    "type": "image",
+                    "$slot": "icon",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "contain",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "90%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "36px",
+                      "height": "36px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "28px",
+                        "height": "28px"
+                      },
+                      "tablet": {
+                        "width": "32px",
+                        "height": "32px"
+                      }
+                    }
+                  },
+                  {
                     "name": "Heading",
                     "type": "text",
                     "$slot": "title",
@@ -11980,7 +12029,22 @@
             ]
           }
         ]
-      }
+      },
+      "moods": [
+        "modern",
+        "technical",
+        "playful",
+        "editorial"
+      ],
+      "industries": [
+        "saas",
+        "agency",
+        "ecommerce",
+        "consultancy",
+        "professional-services",
+        "personal",
+        "other"
+      ]
     },
     {
       "id": "hero-bento",
@@ -18890,6 +18954,1485 @@
           }
         ]
       }
+    },
+    {
+      "id": "features-bento-photo",
+      "sectionType": "features",
+      "layoutVariant": "bento",
+      "styleVariant": "photo-grid",
+      "label": "Bento Feature Grid (Photo)",
+      "description": "Modular bento grid of dark tiles in mixed sizes; each tile leads with its own photo where one is available and falls back to the brand's dark band colour where it is not. Satisfies the photo-topped card policy, so it competes with the image-card grid.",
+      "tags": [
+        "Features",
+        "Bento",
+        "Photo",
+        "Modular",
+        "Grid"
+      ],
+      "thumbnail": "features-bento-photo",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "image",
+              "kind": "image"
+            },
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "description",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Features",
+        "heading": "Everything you need, modular.",
+        "subheading": "A flexible set of capabilities arranged in a bento grid.",
+        "items": [
+          {
+            "image": {
+              "query": "team collaborating at a desk"
+            },
+            "title": "Fast",
+            "description": "Built for speed end to end."
+          },
+          {
+            "image": {
+              "query": "server room detail"
+            },
+            "title": "Secure",
+            "description": "Sensible defaults, hardened."
+          },
+          {
+            "image": {
+              "query": "designer sketching"
+            },
+            "title": "Flexible",
+            "description": "Adapts to your stack."
+          },
+          {
+            "image": {
+              "query": "analytics dashboard"
+            },
+            "title": "Observable",
+            "description": "Know what's happening."
+          },
+          {
+            "image": {
+              "query": "city skyline at dusk"
+            },
+            "title": "Scalable",
+            "description": "Grows with you."
+          }
+        ]
+      },
+      "tree": {
+        "name": "Features - Bento Photo",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingRight": "20px",
+            "paddingBottom": "64px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "84px",
+            "paddingRight": "32px",
+            "paddingBottom": "84px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Intro",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "14px",
+              "maxWidth": "640px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "10px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.14em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif))",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.08",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.66)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.65"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px"
+                  },
+                  "tablet": {}
+                }
+              }
+            ]
+          },
+          {
+            "name": "Bento Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "container",
+            "$bento": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "grid",
+              "gridTemplateColumns": "repeat(6, 1fr)",
+              "gridAutoFlow": "dense",
+              "gridAutoRows": "minmax(150px, auto)",
+              "gap": "16px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gridTemplateColumns": "repeat(2, 1fr)",
+                "gridAutoRows": "minmax(120px, auto)",
+                "gap": "12px"
+              },
+              "tablet": {
+                "gridTemplateColumns": "repeat(4, 1fr)",
+                "gap": "14px"
+              }
+            },
+            "content": [
+              {
+                "name": "Bento Tile",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "10px",
+                  "justifyContent": "flex-end",
+                  "padding": "28px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "var(--builder-color-secondary, #0f172a)",
+                  "backgroundSize": "cover",
+                  "border": "1px solid rgba(148,163,184,0.16)",
+                  "boxShadow": "0 1px 2px rgba(15,23,42,0.05), 0 8px 24px rgba(15,23,42,0.05)",
+                  "minHeight": "210px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "padding": "20px",
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "padding": "24px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Heading",
+                    "type": "text",
+                    "$slot": "title",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "#ffffff",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "22px",
+                      "fontWeight": 700,
+                      "lineHeight": "1.2",
+                      "letterSpacing": "-0.01em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "18px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Body",
+                    "type": "text",
+                    "$slot": "description",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(255,255,255,0.82)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "fontWeight": 400,
+                      "lineHeight": "1.5"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ],
+                "$styleSlot": {
+                  "slot": "image",
+                  "property": "backgroundImage",
+                  "format": "linear-gradient(rgba(15,23,42,0.35), rgba(15,23,42,0.78)), url('{}')"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "moods": [
+        "modern",
+        "technical",
+        "playful",
+        "editorial"
+      ],
+      "industries": [
+        "saas",
+        "agency",
+        "ecommerce",
+        "consultancy",
+        "professional-services",
+        "personal",
+        "other"
+      ]
+    },
+    {
+      "id": "services-bento-photo",
+      "sectionType": "services",
+      "layoutVariant": "bento",
+      "styleVariant": "photo-grid",
+      "label": "Bento Service Grid (Photo)",
+      "description": "Modular bento grid of dark tiles for service offerings; each tile leads with its own photo where one is available, otherwise the brand's dark band colour. Satisfies the photo-topped card policy.",
+      "tags": [
+        "Services",
+        "Bento",
+        "Photo",
+        "Modular",
+        "Grid"
+      ],
+      "thumbnail": "services-bento-photo",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "image",
+              "kind": "image"
+            },
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "description",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Services",
+        "heading": "What we do, end to end.",
+        "subheading": "A modular set of services arranged in a bento grid.",
+        "items": [
+          {
+            "image": {
+              "query": "team collaborating at a desk"
+            },
+            "title": "Fast",
+            "description": "Built for speed end to end."
+          },
+          {
+            "image": {
+              "query": "server room detail"
+            },
+            "title": "Secure",
+            "description": "Sensible defaults, hardened."
+          },
+          {
+            "image": {
+              "query": "designer sketching"
+            },
+            "title": "Flexible",
+            "description": "Adapts to your stack."
+          },
+          {
+            "image": {
+              "query": "analytics dashboard"
+            },
+            "title": "Observable",
+            "description": "Know what's happening."
+          },
+          {
+            "image": {
+              "query": "city skyline at dusk"
+            },
+            "title": "Scalable",
+            "description": "Grows with you."
+          }
+        ]
+      },
+      "tree": {
+        "name": "Services - Bento Photo",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingRight": "20px",
+            "paddingBottom": "64px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "84px",
+            "paddingRight": "32px",
+            "paddingBottom": "84px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Intro",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "14px",
+              "maxWidth": "640px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "10px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.14em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif))",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.08",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.66)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.65"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px"
+                  },
+                  "tablet": {}
+                }
+              }
+            ]
+          },
+          {
+            "name": "Bento Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "container",
+            "$bento": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "grid",
+              "gridTemplateColumns": "repeat(6, 1fr)",
+              "gridAutoFlow": "dense",
+              "gridAutoRows": "minmax(150px, auto)",
+              "gap": "16px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gridTemplateColumns": "repeat(2, 1fr)",
+                "gridAutoRows": "minmax(120px, auto)",
+                "gap": "12px"
+              },
+              "tablet": {
+                "gridTemplateColumns": "repeat(4, 1fr)",
+                "gap": "14px"
+              }
+            },
+            "content": [
+              {
+                "name": "Bento Tile",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "10px",
+                  "justifyContent": "flex-end",
+                  "padding": "28px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "var(--builder-color-secondary, #0f172a)",
+                  "backgroundSize": "cover",
+                  "border": "1px solid rgba(148,163,184,0.16)",
+                  "boxShadow": "0 1px 2px rgba(15,23,42,0.05), 0 8px 24px rgba(15,23,42,0.05)",
+                  "minHeight": "210px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "padding": "20px",
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "padding": "24px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Heading",
+                    "type": "text",
+                    "$slot": "title",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "#ffffff",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "22px",
+                      "fontWeight": 700,
+                      "lineHeight": "1.2",
+                      "letterSpacing": "-0.01em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "18px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Body",
+                    "type": "text",
+                    "$slot": "description",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(255,255,255,0.82)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "fontWeight": 400,
+                      "lineHeight": "1.5"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ],
+                "$styleSlot": {
+                  "slot": "image",
+                  "property": "backgroundImage",
+                  "format": "linear-gradient(rgba(15,23,42,0.35), rgba(15,23,42,0.78)), url('{}')"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "moods": [
+        "modern",
+        "technical",
+        "playful",
+        "editorial"
+      ],
+      "industries": [
+        "saas",
+        "agency",
+        "ecommerce",
+        "consultancy",
+        "professional-services",
+        "personal",
+        "other"
+      ]
+    },
+    {
+      "id": "gallery-bento",
+      "sectionType": "gallery",
+      "layoutVariant": "bento",
+      "styleVariant": "photo-grid",
+      "label": "Bento Gallery",
+      "description": "Photo gallery arranged as a modular bento: one large lead image, periodic wide images and standard tiles. Tiles are click-to-enlarge and navigate as one set.",
+      "tags": [
+        "Gallery",
+        "Bento",
+        "Photo",
+        "Modular",
+        "Grid"
+      ],
+      "thumbnail": "gallery-bento",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "image",
+              "kind": "image"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Gallery",
+        "heading": "A look around.",
+        "subheading": "Moments from the work.",
+        "items": [
+          {
+            "image": {
+              "query": "bright studio interior"
+            }
+          },
+          {
+            "image": {
+              "query": "close up of hands working"
+            }
+          },
+          {
+            "image": {
+              "query": "team portrait candid"
+            }
+          },
+          {
+            "image": {
+              "query": "finished product detail"
+            }
+          },
+          {
+            "image": {
+              "query": "workshop wide shot"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Gallery - Bento",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingRight": "20px",
+            "paddingBottom": "64px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "84px",
+            "paddingRight": "32px",
+            "paddingBottom": "84px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Intro",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "14px",
+              "maxWidth": "640px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "10px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.14em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif))",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.08",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.66)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.65"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px"
+                  },
+                  "tablet": {}
+                }
+              }
+            ]
+          },
+          {
+            "name": "Bento Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "container",
+            "$bento": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "grid",
+              "gridTemplateColumns": "repeat(6, 1fr)",
+              "gridAutoFlow": "dense",
+              "gridAutoRows": "minmax(150px, auto)",
+              "gap": "16px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gridTemplateColumns": "repeat(2, 1fr)",
+                "gridAutoRows": "minmax(120px, auto)",
+                "gap": "12px"
+              },
+              "tablet": {
+                "gridTemplateColumns": "repeat(4, 1fr)",
+                "gap": "14px"
+              }
+            },
+            "content": [
+              {
+                "name": "Bento Tile",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "borderRadius": "20px",
+                  "overflow": "hidden",
+                  "backgroundColor": "var(--builder-color-secondary, #0f172a)",
+                  "minHeight": "150px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "minHeight": "0px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Gallery Image",
+                    "type": "image",
+                    "$slot": "image",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "height": "100%",
+                      "minHeight": "150px",
+                      "display": "block"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "minHeight": "120px"
+                      },
+                      "tablet": {
+                        "minHeight": "140px"
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "lightbox": true
+          }
+        ]
+      },
+      "moods": [
+        "modern",
+        "editorial",
+        "playful"
+      ],
+      "industries": [
+        "agency",
+        "personal",
+        "restaurant",
+        "ecommerce",
+        "nonprofit",
+        "other"
+      ]
+    },
+    {
+      "id": "stats-bento",
+      "sectionType": "stats",
+      "layoutVariant": "bento",
+      "styleVariant": "grid",
+      "label": "Bento Stat Grid",
+      "description": "Key numbers as a modular bento of brand-dark tiles, the lead figure given a large tile. An alternative to the single counter band.",
+      "tags": [
+        "Stats",
+        "Bento",
+        "Numbers",
+        "Modular",
+        "Grid"
+      ],
+      "thumbnail": "stats-bento",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "icon",
+              "kind": "image",
+              "optional": true
+            },
+            {
+              "id": "value",
+              "kind": "text"
+            },
+            {
+              "id": "label",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "By the numbers",
+        "heading": "Measured, not claimed.",
+        "subheading": "A few figures that describe the work.",
+        "items": [
+          {
+            "value": "500+",
+            "label": "Projects delivered",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M4%2020h16v2H4v-2zm2-8h3v7H6v-7zm5-6h3v13h-3V6zm5%203h3v10h-3V9z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
+          },
+          {
+            "value": "12",
+            "label": "Years in practice",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%202a10%2010%200%20100%2020%2010%2010%200%20000-20zm1%205h-2v6l5%203%201-1.7-4-2.3V7z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
+          },
+          {
+            "value": "98%",
+            "label": "Client satisfaction",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%202a10%2010%200%20100%2020%2010%2010%200%20000-20zM8.5%209.5a1.5%201.5%200%20113%200%201.5%201.5%200%2001-3%200zm4%200a1.5%201.5%200%20113%200%201.5%201.5%200%2001-3%200zM12%2018a5%205%200%2001-4.6-3h9.2A5%205%200%200112%2018z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
+          },
+          {
+            "value": "40",
+            "label": "Specialists on staff",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M9%2012a4%204%200%20100-8%204%204%200%20000%208zm0%202c-3.3%200-8%201.7-8%204v3h16v-3c0-2.3-4.7-4-8-4zm9-2a3%203%200%20100-6%203%203%200%20000%206zm5%206v3h-3v-3c0-1.4-.7-2.5-1.8-3.3%203%20.4%204.8%201.8%204.8%203.3z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Stats - Bento",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingRight": "20px",
+            "paddingBottom": "64px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "84px",
+            "paddingRight": "32px",
+            "paddingBottom": "84px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Intro",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "14px",
+              "maxWidth": "640px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "10px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.14em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif))",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.08",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.66)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.65"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px"
+                  },
+                  "tablet": {}
+                }
+              }
+            ]
+          },
+          {
+            "name": "Bento Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "container",
+            "$bento": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "grid",
+              "gridTemplateColumns": "repeat(6, 1fr)",
+              "gridAutoFlow": "dense",
+              "gridAutoRows": "minmax(150px, auto)",
+              "gap": "16px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gridTemplateColumns": "repeat(2, 1fr)",
+                "gridAutoRows": "minmax(120px, auto)",
+                "gap": "12px"
+              },
+              "tablet": {
+                "gridTemplateColumns": "repeat(4, 1fr)",
+                "gap": "14px"
+              }
+            },
+            "content": [
+              {
+                "name": "Bento Tile",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "10px",
+                  "justifyContent": "flex-end",
+                  "padding": "28px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "rgba(248,250,252,0.92)",
+                  "backgroundSize": "cover",
+                  "border": "1px solid rgba(148,163,184,0.16)",
+                  "boxShadow": "0 1px 2px rgba(15,23,42,0.05), 0 8px 24px rgba(15,23,42,0.05)",
+                  "minHeight": "150px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "padding": "20px",
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "padding": "24px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Tile Icon",
+                    "type": "image",
+                    "$slot": "icon",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "contain",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "90%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "36px",
+                      "height": "36px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "28px",
+                        "height": "28px"
+                      },
+                      "tablet": {
+                        "width": "32px",
+                        "height": "32px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Heading",
+                    "type": "text",
+                    "$slot": "value",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "44px",
+                      "fontWeight": 800,
+                      "lineHeight": "1.0",
+                      "letterSpacing": "-0.03em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "32px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Body",
+                    "type": "text",
+                    "$slot": "label",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.66)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "fontWeight": 500,
+                      "lineHeight": "1.4"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "moods": [
+        "modern",
+        "technical",
+        "playful",
+        "editorial"
+      ],
+      "industries": [
+        "saas",
+        "agency",
+        "ecommerce",
+        "consultancy",
+        "professional-services",
+        "personal",
+        "other"
+      ]
     }
   ]
 }

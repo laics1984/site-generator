@@ -208,13 +208,41 @@ class ImageCardTemplatesTest(unittest.TestCase):
         self.assertTrue(all(i["image"] for i in content["items"]))
 
     def test_friendly_mood_services_prefer_program_cards(self):
-        # Friendly/playful brands keep the photo-topped card policy but get the
-        # badge-carrying program cards (services-programs-age) instead.
+        # Friendly/playful brands keep the photo-topped card policy and get the
+        # badge-carrying program cards — but only when the items actually carry
+        # a who-it's-for badge, which is the variant's defining element.
+        from app.models.content_blocks import ServiceItem, ServicesBlock
         from app.services.section_content import block_to_section
 
-        template, content = block_to_section(self._services_block(), mood="friendly")
+        block = ServicesBlock(
+            heading="Our Services",
+            items=[
+                ServiceItem(
+                    title=name,
+                    description=f"{name} description.",
+                    image_query=f"{name.lower()} classroom",
+                    audience=age,
+                )
+                for name, age in (
+                    ("Toddlers", "Ages 2-3"),
+                    ("Preschool", "Ages 3-4"),
+                    ("Kindergarten", "Ages 5-6"),
+                )
+            ],
+        )
+        template, content = block_to_section(block, mood="friendly")
         self.assertEqual(template["id"], "services-programs-age")
         self.assertTrue(all(i["image"] for i in content["items"]))
+
+    def test_badgeless_friendly_services_stay_on_the_image_cards(self):
+        """The programme variant's whole point is the who-it's-for badge. With
+        no audiences the badge slot is unbound and dropped, so forcing the
+        variant gave every friendly brand a programme layout whose defining
+        element was missing — a restaurant's dishes as programme cards."""
+        from app.services.section_content import block_to_section
+
+        template, _content = block_to_section(self._services_block(), mood="friendly")
+        self.assertEqual(template["id"], "services-image-cards")
 
     def test_bound_item_photo_fills_src_directly(self):
         from app.services.section_content import block_to_section
@@ -228,17 +256,23 @@ class ImageCardTemplatesTest(unittest.TestCase):
         # Unbound items stay query-shaped for the resolver.
         self.assertIn("query", content["items"][1]["image"])
 
-    def test_query_less_items_backfill_from_titles_and_still_get_image_cards(self):
-        # The LLM forgot every image_query → each card falls back to its title
-        # as the stock search, so the photo-topped grid still wins (site
-        # policy: cards always lead with an image, stock when necessary).
+    def test_query_less_items_backfill_from_titles_but_no_longer_force_photos(self):
+        """The LLM forgot every image_query, so each card falls back to its
+        title as the stock search — that keeps a photo layout *available*.
+
+        It no longer forces one. A source site with no feature photography
+        would otherwise have every features grid filled with stock images
+        searched on phrases like "24/7 Support", and every text layout was
+        unreachable as a result."""
         from app.services.section_content import block_to_section
 
         template, content = block_to_section(
             self._services_block(with_images=False), mood="modern"
         )
-        self.assertEqual(template["id"], "services-image-cards")
+        # The backfill still happens, so the photo variant stays feasible…
         self.assertEqual(content["items"][0]["image"]["query"], "Kindergarten")
+        # …but it is not what the section is forced onto.
+        self.assertNotEqual(template["id"], "services-image-cards")
 
     def test_image_cards_beat_an_explicit_text_grid_pick(self):
         # The design-brain may explicitly pick the text-only grid; the

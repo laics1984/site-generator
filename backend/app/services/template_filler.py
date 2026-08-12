@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from app.models.builder_schema import BuilderElement, BuilderElementContent
+from app.services.icons import icon_data_url
 from app.services.image_styling import HeroAnchor
 from app.services.media import monogram_avatar_url
 
@@ -136,9 +137,21 @@ async def _resolve_image(
     # locally in the brand's colours; never resolved to a stock photo.
     if not src and value.get("monogram"):
         return {"src": _monogram_src(str(value["monogram"]), theme), "alt": alt}
+    # {"icon": name} — a curated glyph, coloured HERE rather than in the mapper
+    # because only fill time knows the theme. An unknown name yields no src, so
+    # _bind_slot's caller drops the node instead of drawing a broken image.
+    if not src and value.get("icon"):
+        return {"src": _icon_src(str(value["icon"]), theme) or "", "alt": alt}
     if not src and value.get("query"):
         src, _avg = await resolve_image(value["query"])
     return {"src": src or "", "alt": alt}
+
+
+def _icon_src(name: str, theme: ThemeColors | None) -> str | None:
+    """A curated glyph in the brand's ink. `secondary` is the palette's ink
+    token — the same colour the tile's heading uses — so an icon reads as part
+    of the type, not as a second accent competing with the CTA."""
+    return icon_data_url(name, theme.get("secondary", "#0f172a") if theme else "#0f172a")
 
 
 def _monogram_src(name: str, theme: ThemeColors | None) -> str:

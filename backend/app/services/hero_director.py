@@ -282,12 +282,16 @@ def plan_site_heroes(
     industry: str | None,
     has_source_background: bool,
     seed: str,
+    hero_height: HeroBackgroundHeight = "full",
 ) -> dict[str, HeroDirective]:
     """Assign every page a HeroDirective, keyed by slug.
 
     ``has_source_background``: the source site led with a CSS background image
     — the homepage is forced full-bleed and pins it, whatever the spec says.
     ``seed`` (brand/site name) keeps the interior rotation stable per site.
+    ``hero_height``: the site-wide photo-hero height (theme.hero_background_height).
+    "banded" is a SHORTER PHOTO HERO, so it selects the background treatment —
+    see the policy branch below.
     """
     spec = _INDUSTRY_SPECS.get((industry or "").strip().lower())
     if spec is None:
@@ -301,7 +305,18 @@ def plan_site_heroes(
     # fallbacks (and the compact-hero degrade when nothing genuine resolves)
     # are handled downstream by _apply_hero_directive; that degrade also keeps
     # the header solid on such a page, so readability never regresses.
-    if settings.hero_fullbleed_all_pages:
+    #
+    # A "banded" site takes the same branch, because banded means a bounded-height
+    # full-bleed PHOTO hero (models/brand.py) — the height decision and the
+    # template decision were made independently, and every mood/industry that
+    # defaults to banded (modern, technical / saas, consultancy, …) also leads
+    # with a split or gradient hero, so choosing "Banded" used to produce a flat
+    # COLOUR hero and nothing else: `hero-background-bold` is the only catalog
+    # hero that reads --builder-hero-min-height, so the 460px token it emitted
+    # was read by no template on the page. Banded is also self-justifying against
+    # the "interiors stay compact" rule that keeps the full-bleed hero out of the
+    # rotations: at 460px this IS the compact variant.
+    if settings.hero_fullbleed_all_pages or hero_height == "banded":
         directives = {
             page.slug: (
                 HeroDirective(

@@ -279,20 +279,30 @@ class ProfileBlockTest(unittest.TestCase):
         self.assertNotIn("images.example", rendered)
 
     def test_mood_picks_the_variant(self):
-        # Through the real path: block_to_section applies the content
-        # preference and the mood gate together.
+        """Through the real path: block_to_section applies the content
+        preference and the mood gate together.
+
+        These are the generator's actual BrandMood values. The test used to pass
+        "bold"/"classic"/"elegant"/"minimal", which the catalog declared but the
+        generator never produces — so it exercised the gating mechanism while
+        profile-centered was unreachable on every real site."""
         block = self._block()
         picks = {
             mood: block_to_section(block, mood=mood)[0]["id"]
-            for mood in ("bold", "modern", "classic", "elegant", "minimal")
+            for mood in ("modern", "playful", "friendly", "editorial", "luxury", "technical")
         }
 
-        self.assertEqual(picks["bold"], "profile-banner")
-        self.assertEqual(picks["modern"], "profile-banner")
-        self.assertEqual(picks["classic"], "profile-centered")
-        self.assertEqual(picks["elegant"], "profile-centered")
-        # The split declares no moods, so it catches every other brand.
-        self.assertEqual(picks["minimal"], "profile-portrait-split")
+        # Expressive moods take the brand-coloured banner…
+        for mood in ("modern", "playful", "friendly"):
+            self.assertEqual(picks[mood], "profile-banner", mood)
+        # …restrained ones the formal, institutional centred layout.
+        for mood in ("editorial", "luxury", "technical"):
+            self.assertEqual(picks[mood], "profile-centered", mood)
+
+    def test_the_split_catches_a_brand_with_no_mood(self):
+        # The split declares no moods, so it is the ungated default.
+        block = self._block()
+        self.assertEqual(block_to_section(block, mood=None)[0]["id"], "profile-portrait-split")
 
     def test_contactless_profile_drops_the_link_row(self):
         rendered = str(self._fill("profile-centered", self._block(contacts=[])).model_dump())

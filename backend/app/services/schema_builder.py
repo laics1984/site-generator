@@ -3765,6 +3765,7 @@ async def block_to_element(
     mapped = block_to_section(
         block,
         mood=ctx.theme.mood,
+        industry=ctx.industry,
         is_homepage=is_homepage,
         hero_scroll_target_kind=hero_scroll_target_kind,
         explicit_id=explicit_template_id,
@@ -4342,7 +4343,10 @@ async def plan_to_site(
             return await generate_site_design_recipe(
                 mood=effective_brand.mood,
                 industry=plan.industry_category,
-                pages=[[b.kind for b in p.blocks] for p in plan.pages],
+                # Whole blocks, not just kinds: the menu is filtered by
+                # is_feasible, which reads the content (a two-item features
+                # section can't use the three-tile bento).
+                pages=[list(p.blocks) for p in plan.pages],
             )
 
     _, site_design_recipe = await asyncio.gather(_prewarm(), _design_recipe())
@@ -4358,6 +4362,10 @@ async def plan_to_site(
         industry=plan.industry_category,
         has_source_background=resolver.strongest_source_background() is not None,
         seed=effective_brand.name or plan.site_name,
+        # A banded site is a shorter PHOTO hero, not a colour one — the height
+        # has to reach the template picker or it lands on a hero that neither
+        # shows a photo nor reads the banded min-height token.
+        hero_height=theme.hero_background_height,
     )
     # With every page on the same full-bleed template, how each hero is COMPOSED
     # is the only axis of variety left — planned site-wide so consecutive pages

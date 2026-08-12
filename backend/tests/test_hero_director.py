@@ -181,6 +181,71 @@ class FullBleedEverywhereTest(unittest.TestCase):
         self.assertEqual(self._plan(), self._plan())
 
 
+class BandedIsAPhotoBandTest(_LegacyRotationCase):
+    """"banded" is a bounded-height full-bleed PHOTO hero, so it selects the
+    background treatment even with the site-wide full-bleed policy off.
+
+    Before this, the height and the template were decided independently: every
+    mood/industry that defaults to banded (modern, technical / saas,
+    consultancy, …) also leads with a split or gradient hero, so a banded site
+    opened on a flat COLOUR hero — and since `hero-background-bold` is the only
+    catalog hero reading --builder-hero-min-height, the 460px token the theme
+    emitted was read by no template on the page. The choice did nothing at all.
+    """
+
+    def _plan(self, *, hero_height, has_source_background=False):
+        return plan_site_heroes(
+            _nonprofit_site(),
+            mood="modern",
+            industry="saas",
+            has_source_background=has_source_background,
+            seed="Acme",
+            hero_height=hero_height,
+        )
+
+    def test_banded_directs_every_page_to_the_photo_background(self):
+        for slug, d in self._plan(hero_height="banded").items():
+            self.assertEqual(d.template_id, "hero-background-bold", slug)
+            self.assertEqual(d.layout, "background", slug)
+
+    def test_banded_beats_the_mood_split_lead(self):
+        """Modern's own spec leads with hero-modern-split — a colour hero."""
+        self.assertEqual(
+            self._plan(hero_height="full")["home"].template_id, "hero-modern-split"
+        )
+        self.assertEqual(
+            self._plan(hero_height="banded")["home"].template_id, "hero-background-bold"
+        )
+
+    def test_full_keeps_the_legacy_rotation(self):
+        ids = {d.template_id for d in self._plan(hero_height="full").values()}
+        self.assertNotIn("hero-background-bold", ids)
+
+    def test_full_is_the_default_so_existing_callers_are_unchanged(self):
+        self.assertEqual(
+            plan_site_heroes(
+                _nonprofit_site(), mood="modern", industry="saas",
+                has_source_background=False, seed="Acme",
+            ),
+            self._plan(hero_height="full"),
+        )
+
+    def test_banded_still_pins_the_source_background_on_the_homepage_only(self):
+        directives = self._plan(hero_height="banded", has_source_background=True)
+        self.assertTrue(directives["home"].pin_source_background)
+        for slug, d in directives.items():
+            if slug != "home":
+                self.assertFalse(d.pin_source_background, slug)
+
+    def test_banded_heroes_are_centred_so_height_and_composition_agree(self):
+        """The composition planner already forces centre at 460px; the two
+        decisions now describe the same hero."""
+        comps = plan_site_compositions(
+            _nonprofit_site(), seed="Acme", hero_height="banded"
+        )
+        self.assertEqual({c.anchor for c in comps.values()}, {"center"})
+
+
 class DirectiveShapeTest(_LegacyRotationCase):
     def test_imageless_ids_never_pin_or_wash(self):
         directives = plan_site_heroes(

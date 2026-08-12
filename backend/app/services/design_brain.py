@@ -22,6 +22,14 @@ doesn't belong to the section's type or isn't feasible for its content
 choice can never break a page — it just gets silently discarded. A failed
 LLM call (timeout, invalid JSON, disabled) returns an empty recipe, which
 is a no-op: generation proceeds exactly as it did before this pass existed.
+
+But safe-when-ignored is not the same as useful. The menu is therefore built
+from `section_content.selectable_templates` — the same function selection
+consults — so the model is never offered a variant that is infeasible for the
+section's content or already fixed by content policy. Those picks used to be
+accepted by the prompt and dropped by the selector, leaving the section on its
+deterministic default: the exact convergence above, invisible in the output.
+Every id offered here is one the pick can actually land on.
 """
 
 from __future__ import annotations
@@ -34,8 +42,8 @@ from app.config import settings
 from app.models.brand import BrandMood, HeroBackgroundHeight
 from app.services.industry_personality import personality_for
 from app.services.llm import LlmError, LlmClient, get_reasoning_llm
-from app.services.section_content import mood_allows
-from app.services.template_filler import templates_for_type
+from app.models.content_blocks import ContentBlock
+from app.services.section_content import selectable_templates
 
 logger = logging.getLogger(__name__)
 
@@ -119,18 +127,29 @@ def _variant_label(template: dict) -> str:
     return f"{layout}/{style}".strip("/") or template.get("id", "")
 
 
-def _section_options(kind: str, mood: BrandMood | None = None) -> list[str] | None:
-    """The indented "- id (variant)" lines for a section kind, or None when the
-    kind has fewer than two templates (nothing to choose — skip it). Mood-gated
-    templates the brand can't use are never offered (see mood_allows)."""
-    options = [t for t in templates_for_type(kind) if mood_allows(t, mood)]
+def _section_options(
+    block: ContentBlock,
+    mood: BrandMood | None = None,
+    industry: str | None = None,
+) -> list[str] | None:
+    """The indented "- id (variant)" lines for one section, or None when there
+    are fewer than two real choices (nothing to decide — skip it).
+
+    The candidate list comes from `selectable_templates`, the SAME function
+    selection uses, so every id offered here is one the pick can actually land
+    on. Listing anything else makes the model choose something we then discard
+    in silence."""
+    options = selectable_templates(block, mood=mood, industry=industry)
     if len(options) < 2:
         return None
     return [f'    - "{t["id"]}" ({_variant_label(t)})' for t in options]
 
 
 def _page_blurb(
-    page_index: int, section_kinds: list[str], mood: BrandMood | None = None
+    page_index: int,
+    blocks: list[ContentBlock],
+    mood: BrandMood | None = None,
+    industry: str | None = None,
 ) -> str | None:
     """One page's section/option listing, or None when no section on the page
     has more than one template to choose between.
@@ -139,13 +158,13 @@ def _page_blurb(
     director (services/hero_director.py) — letting the LLM also pick one caused
     every page to converge on the same split hero."""
     lines: list[str] = []
-    for s_idx, kind in enumerate(section_kinds):
-        if kind == "hero":
+    for s_idx, block in enumerate(blocks):
+        if block.kind == "hero":
             continue
-        opts = _section_options(kind, mood)
+        opts = _section_options(block, mood, industry)
         if opts is None:
             continue
-        lines.append(f'  Section {s_idx} ("{kind}"):\n' + "\n".join(opts))
+        lines.append(f'  Section {s_idx} ("{block.kind}"):\n' + "\n".join(opts))
     if not lines:
         return None
     return f"Page {page_index}:\n" + "\n".join(lines)
@@ -155,24 +174,28 @@ async def generate_site_design_recipe(
     *,
     mood: BrandMood | None,
     industry: str | None,
-    pages: list[list[str]],
+    pages: list[list[ContentBlock]],
     llm: LlmClient | None = None,
 ) -> SiteDesignRecipe:
     """Pick a template variant per section for the WHOLE site in one LLM call.
 
-    `pages` is one list of section kinds per page, in page order. Returns an
-    empty recipe (a safe no-op — every lookup yields None, so selection falls
-    back to the deterministic mood-ordered choice) on a disabled design brain,
-    on any LLM failure, or when no section on any page has more than one
-    template to choose from. Per-section feasibility is still enforced
+    `pages` is one list of content blocks per page, in page order. The blocks
+    themselves are needed, not just their kinds: feasibility depends on the
+    content (a two-item features section cannot use the three-tile bento), and
+    a menu built without it offers picks that selection then discards.
+
+    Returns an empty recipe (a safe no-op — every lookup yields None, so
+    selection falls back to the deterministic mood-ordered choice) on a disabled
+    design brain, on any LLM failure, or when no section on any page has more
+    than one template to choose from. Per-section feasibility is still enforced
     downstream, so an unfit or hallucinated pick can never break a page."""
     if not settings.design_brain_enabled:
         return SiteDesignRecipe()
 
     blurbs = [
         blurb
-        for p_idx, kinds in enumerate(pages)
-        if (blurb := _page_blurb(p_idx, kinds, mood)) is not None
+        for p_idx, blocks in enumerate(pages)
+        if (blurb := _page_blurb(p_idx, blocks, mood, industry)) is not None
     ]
     if not blurbs:
         return SiteDesignRecipe()
