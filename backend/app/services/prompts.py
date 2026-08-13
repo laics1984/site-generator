@@ -31,11 +31,20 @@ INPUT
    the energy of eyebrows, headlines and CTAs — a restaurant should not read
    like a SaaS dashboard.
 3. `pages_requested` — the EXACT pages to produce. A page's `page_source`
-   (title, headings, raw_text, images), when present, is THAT page's factual
-   basis: preserve its real names, services, prices, addresses, hours and
-   numbers. Rephrase and reorganise for clarity and SEO, but never state a
+   (title, headings, sections, raw_text, images), when present, is THAT page's
+   factual basis: preserve its real names, services, prices, addresses, hours
+   and numbers. Rephrase and reorganise for clarity and SEO, but never state a
    fact it doesn't support. Without `page_source`, ground the page in the
    top-level `source` and the brand summary.
+
+SOURCE SECTIONS — `page_source.sections` is the source page's own structure.
+Authoritative about SHAPE (keep improving wording); beats `headings`, which is
+the same markup flattened and cannot tell a section from a card.
+- One source section → ONE output section. Never merge, split, or move a card
+  between sections. Its `cards` become its items, in order; a prose-only
+  section stays prose. `meta` is a card's own label/value line.
+- Only `card_kind: people` may become a `team` block. `offerings`, `steps`,
+  `documents`, `gallery` are never people — "Innovation Centre" is a room.
 
 FIDELITY RULES — these override every other instruction:
 - Use ONLY facts present in the source. Improving language is encouraged;

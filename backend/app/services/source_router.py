@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
-from app.models.content_blocks import ImageMetadata, SourceContent
+from app.models.content_blocks import ImageMetadata, SectionCandidate, SourceContent
 from app.models.industry import PageScaffold
 
 logger = logging.getLogger(__name__)
@@ -336,6 +336,39 @@ def _image_prompt_entry(ref: int, meta: ImageMetadata) -> dict[str, object]:
     return entry
 
 
+# Per-section caps for the prompt tree. A section is a summary of the source's
+# shape, not a transcript — the full text is still in raw_text underneath.
+_PROMPT_MAX_SECTIONS = 12
+_PROMPT_MAX_CARDS = 12
+_PROMPT_CARD_BODY_CHARS = 200
+_PROMPT_SECTION_PROSE_CHARS = 400
+
+
+def _section_prompt_entry(section: SectionCandidate) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "heading": section.heading,
+        "level": section.level,
+    }
+    if section.prose:
+        entry["prose"] = section.prose[:_PROMPT_SECTION_PROSE_CHARS]
+    if section.cards:
+        entry["card_kind"] = section.card_kind
+        entry["cards"] = [
+            {
+                k: v
+                for k, v in (
+                    ("title", card.title),
+                    ("body", card.body[:_PROMPT_CARD_BODY_CHARS]),
+                    ("meta", card.meta or None),
+                    ("has_image", bool(card.image_url) or None),
+                )
+                if v
+            }
+            for card in section.cards[:_PROMPT_MAX_CARDS]
+        ]
+    return entry
+
+
 def excerpt_for_prompt(
     source: SourceContent,
     *,
@@ -351,6 +384,14 @@ def excerpt_for_prompt(
     page (from :func:`split_raw_text`) verbatim, bypassing the ``max_chars`` cut
     — the chunk is already budgeted, so re-truncating it would drop content.
 
+    ``sections`` is the page's own structure (services/section_extraction.py):
+    which heading opens a section, and which cards sit inside it. Without it the
+    model sees only ``headings`` — a flat, level-less list in which an h2 that
+    spans four cards and an h3 that titles one of them are indistinguishable —
+    and it has to rebuild the tree by guesswork. That guesswork is what merged
+    Glorykids' six sections into one. ``raw_text`` stays as the full-fidelity
+    fallback for pages whose markup yields no tree.
+
     Returns a JSON-serialisable dict.
     """
     raw_text = source.raw_text or ""
@@ -362,6 +403,11 @@ def excerpt_for_prompt(
         "raw_text": body,
         "raw_text_char_count": len(raw_text),
     }
+    sections = source.section_candidates or []
+    if sections:
+        payload["sections"] = [
+            _section_prompt_entry(s) for s in sections[:_PROMPT_MAX_SECTIONS]
+        ]
     images = promptable_images(source)
     if images:
         payload["images"] = [

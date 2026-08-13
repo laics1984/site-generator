@@ -3574,6 +3574,23 @@ async def _apply_hero_directive(
         if abstract is not None:
             block.image_query = abstract_query
             return abstract, None
+        # Nothing genuine AND no colour-matched abstract: the page opens on a
+        # flat colour hero. Logged because this degrade is otherwise invisible —
+        # the page renders fine, it just silently lost its photograph, and the
+        # only symptom is a hero that looks like a coloured band (the contact
+        # page is the usual victim: it is content-sparse, so its query is the
+        # weakest, and it is generated last, so the stock pool is most picked
+        # over by the time it asks).
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Hero on '%s' degraded to a flat colour band: no genuine photo for "
+            "%r and no colour-matched abstract for %r. Check PEXELS_API_KEY "
+            "reaches the app and that the page's image_query is not empty.",
+            ctx.current_page_slug or "?",
+            block.image_query,
+            abstract_query,
+        )
         block.layout = "split"  # compact gradient hero, not an empty full-bleed
         block.image_query = None
         return None, None

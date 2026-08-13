@@ -1292,6 +1292,17 @@ class SourceContent(BaseModel):
             "continue to validate unchanged."
         ),
     )
+    section_candidates: list["SectionCandidate"] = Field(
+        default_factory=list,
+        description=(
+            "The page's own section tree, recovered from heading rank by "
+            "services/section_extraction.py. The planner is grounded on THIS "
+            "rather than re-deriving boundaries from flat text, so one source "
+            "section maps to one output section and a card never migrates "
+            "between them. Additive and optional: a page whose markup carries "
+            "no usable headings yields [] and the flat raw_text path applies."
+        ),
+    )
     document_cards: list["DocumentCardCandidate"] = Field(
         default_factory=list,
         description=(
@@ -1424,6 +1435,71 @@ class ProfileCandidate(BaseModel):
         ),
     )
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+# What a card GROUP is. Deliberately coarse: these are the distinctions the
+# source markup can actually support. "offerings" covers services, programmes,
+# rooms and features alike — whether a card carries a photo is already visible
+# in `image_urls`, and splitting on that alone produced a "facilities" category
+# that meant nothing more than "has an image".
+SourceCardKind = Literal[
+    "people",
+    "offerings",
+    "steps",
+    "documents",
+    "gallery",
+    "prose",
+]
+
+
+class SourceCard(BaseModel):
+    """One card inside a source section's repeated group.
+
+    Deliberately kind-agnostic: the same shape carries a person, a programme, a
+    room and a downloadable brochure. What it IS is the enclosing
+    ``SectionCandidate.card_kind``, decided over the whole group — a card in
+    isolation cannot be classified, which is the mistake that turned Glorykids'
+    facility grid into a team roster.
+    """
+
+    title: str
+    body: str = ""
+    image_url: str | None = None
+    image_alt: str = ""
+    link: str | None = None
+    meta: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Short label/value lines the card carries beside its body — "
+            "'Full Programme : 8:30 am - 3:00 pm', a price, an age badge. Kept "
+            "separate from `body` so a mapper can render them as badges rather "
+            "than prose, and so they never read as a person's job title."
+        ),
+    )
+
+
+class SectionCandidate(BaseModel):
+    """One section of the SOURCE page, as the source's own markup declares it.
+
+    The unit the source page is actually built from, recovered from heading
+    rank: a heading owns everything until the next heading of same-or-higher
+    rank, so an h3 card title nests inside the h2 section above it. This is the
+    structure that ``headings`` (a flat, level-less, deduped list) and
+    ``raw_text`` (newline-joined lines) each destroy — leaving the LLM to
+    rebuild a tree from a list, which is why six sections arrived as one.
+
+    Advisory, never binding: the planner is told to preserve these boundaries,
+    but a page whose markup carries no usable headings simply yields none and
+    the flat text path still applies.
+    """
+
+    heading: str
+    level: int = Field(ge=1, le=6)
+    subheading: str = ""
+    prose: str = ""
+    cards: list[SourceCard] = Field(default_factory=list)
+    card_kind: SourceCardKind = "prose"
+    image_urls: list[str] = Field(default_factory=list)
 
 
 class DocumentCardLink(BaseModel):

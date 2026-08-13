@@ -474,6 +474,20 @@ class ScraperImageExtractionTest(unittest.TestCase):
             "Building Futures",
             "Clean Water",
             "Best Practice",
+            # Facility / offering labels. A photo + two capitalised words + a
+            # paragraph is the same markup a team card uses, so the trailing
+            # noun is the only thing that says "room", not "person". These six
+            # are Glorykids' /school-life verbatim: they cleared the old test,
+            # hit DIRECTORY_MIN_PROFILES exactly, and coerced the page type to
+            # `team` — the programme content never rendered.
+            "Innovation Centre",
+            "Science Centre",
+            "ICT Centre",
+            "Domestic-Science Centre",
+            "Full Programme :",
+            "Basic Programme :",
+            "Holiday Workshop",
+            "Opening Hours:",
         ]
         accepted = [
             "Dr Aisha Rahman",
@@ -481,12 +495,51 @@ class ScraperImageExtractionTest(unittest.TestCase):
             "Siti binti Rahman",
             "Jan van der Berg",
             "MARCUS ONG",
+            # Surnames that are also facility nouns. The tail set must never
+            # grow to cover these — dropping a real person from a roster is the
+            # worse failure.
+            "Melissa Hall",
+            "Andrew Cook",
+            "Rachel Park",
+            "Colleen Camp",
         ]
 
         for value in rejected:
             self.assertFalse(scraper._looks_like_person_name(value), value)
         for value in accepted:
             self.assertTrue(scraper._looks_like_person_name(value), value)
+
+    def test_facility_card_grid_is_not_a_profile_roster(self):
+        """A room/programme grid must yield no profile candidates.
+
+        End-to-end over the extractor rather than the name predicate alone:
+        `page_inference._coerce_directory_type` reads the COUNT, so anything
+        that lets these cards through retypes the whole page as `team`.
+        """
+        cards = "".join(
+            f"""
+            <div class="card">
+              <img src="/img/{n}.jpg" alt="{t}" width="400" height="400">
+              <h3>{t}</h3>
+              <p>Here, our students will learn and explore together.</p>
+            </div>
+            """
+            for n, t in enumerate(
+                [
+                    "Innovation Centre",
+                    "Science Centre",
+                    "ICT Centre",
+                    "Domestic-Science Centre",
+                    "Full Programme :",
+                    "Basic Programme :",
+                ]
+            )
+        )
+        soup = BeautifulSoup(f"<html><body>{cards}</body></html>", "lxml")
+
+        found = scraper._extract_profile_candidates(soup, "https://example.com/school-life")
+
+        self.assertEqual([c.name for c in found], [])
 
     def test_extract_profile_candidates_links_committee_portrait_to_profile_text(self):
         extractor = getattr(scraper, "_extract_profile_candidates", None)

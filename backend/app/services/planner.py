@@ -377,7 +377,8 @@ def _scaffold_num_ctx() -> int:
 #   _TOK_BRAND_SOURCE   brand dict + entry-page text  ≈ 600 tokens
 #
 # Per-page input overhead (added once per page in the batch):
-#   _TOK_PER_PAGE_STUB    slug + title + sections list ≈ 100 tokens
+#   _TOK_PER_PAGE_STUB    slug + title + requested-sections list ≈ 100 tokens
+#   _TOK_PER_SOURCE_SECTION  the source's own section tree, per section
 #   page source           estimated from the page's ACTUAL text length, capped at
 #                         settings.multipass_max_chars_per_call, at _CHARS_PER_TOKEN
 #                         chars/token (small pages cost less; large pages are
@@ -395,6 +396,13 @@ _TOK_PER_PAGE_STUB = 100
 _TOK_PER_SECTION_OUT = 230
 # One page_source.images entry ({ref, alt, role, near}) costs ~30 tokens.
 _TOK_PER_IMAGE = 30
+# One page_source.sections entry — heading + level + capped prose + up to a
+# dozen cards ({title, body, meta}). Bigger than an image entry by an order of
+# magnitude, so it has to be costed: source_router caps the tree at 12 sections
+# with 12 cards each, which is exactly the shape that would otherwise overflow
+# num_ctx and buy a truncation retry.
+_TOK_PER_SOURCE_SECTION = 120
+_MAX_COSTED_SOURCE_SECTIONS = 12
 _INPUT_SHARE = 0.48          # fraction of num_ctx reserved for input tokens
 _CHARS_PER_TOKEN = 4          # rough English chars→tokens ratio for estimates
 # CJK text has no spaces and tokenises far denser — roughly one token per
@@ -486,10 +494,14 @@ def _build_batches(
             else ""
         )
         image_count = len(promptable_images(source_map[s.slug])) if has_source else 0
+        section_count = (
+            len(source_map[s.slug].section_candidates or []) if has_source else 0
+        )
         page_input = (
             _TOK_PER_PAGE_STUB
             + _estimate_tokens(src_text)
             + image_count * _TOK_PER_IMAGE
+            + min(section_count, _MAX_COSTED_SOURCE_SECTIONS) * _TOK_PER_SOURCE_SECTION
         )
         page_output = len(s.sections) * _TOK_PER_SECTION_OUT
         page_sections = len(s.sections)

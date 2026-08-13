@@ -44,6 +44,7 @@ from app.models.content_blocks import (
     ImageMetadata,
     NavLink,
     ProfileCandidate,
+    SectionCandidate,
     SourceContent,
 )
 from app.services.url_guard import UnsafeUrlError, assert_public_url, is_public_url
@@ -66,6 +67,7 @@ from app.services.nav_extraction import (
     social_links_from_anchors,
     strip_chrome_lines,
 )
+from app.services.section_extraction import extract_section_candidates
 from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
 
 logger = logging.getLogger(__name__)
@@ -534,6 +536,36 @@ _NON_NAME_LEAD_TOKENS = {
     # Adjectives that open section headings ("Good Food", "Best Practice").
     "good", "great", "best", "new", "fresh", "clean", "latest",
     "upcoming", "featured", "popular", "top", "free",
+}
+
+# A real name never ENDS in a facility/offering noun. The mirror of the lead
+# set above, and the only defence against the card grid that is structurally
+# indistinguishable from a team grid: a photo, a two-capitalised-word label and
+# a paragraph describe "Innovation Centre" and "Marcus Ong" identically, so the
+# noun at the end of the label is the sole evidence separating a room or a
+# programme from a person. Glorykids' /school-life shipped as a six-person team
+# roster on the strength of "Innovation Centre", "Science Centre", "ICT Centre",
+# "Domestic-Science Centre" and two "… Programme :" labels — six candidates,
+# exactly DIRECTORY_MIN_PROFILES, so page_inference coerced the whole page type
+# to `team` and the real programme content never rendered.
+#
+# Nouns that double as common surnames are deliberately ABSENT (Hall, Cook,
+# Church, Field, Park, Green, Bishop, Marshall, Rivers, Banks, Camp): a false
+# positive here deletes a real person from a roster, which is the worse error.
+_NON_NAME_TAIL_TOKENS = {
+    "centre", "centres", "center", "centers",
+    "programme", "programmes", "program", "programs",
+    "academy", "kindergarten", "preschool", "nursery", "daycare",
+    "curriculum", "syllabus", "timetable", "schedule",
+    "classroom", "classrooms", "class", "classes",
+    "course", "courses", "lesson", "lessons",
+    "workshop", "workshops", "session", "sessions",
+    "package", "packages", "plan", "plans", "tier", "tiers",
+    "facility", "facilities", "department", "laboratory", "lab",
+    "studio", "gallery", "library", "playground", "canteen",
+    "admission", "admissions", "enrolment", "enrollment",
+    "trip", "trips", "excursion", "activity", "activities",
+    "fees", "policy", "policies",
 }
 
 # Lowercase tokens allowed inside a capitalised name ("Siti binti Rahman",
@@ -1060,7 +1092,8 @@ def _text_lines(tag: Tag) -> list[str]:
 
 
 def _looks_like_person_name(value: str) -> bool:
-    text = _clean_line(value).strip(" :|-")
+    raw = _clean_line(value)
+    text = raw.strip(" :|-")
     if not text:
         return False
     low = text.lower()
@@ -1068,10 +1101,17 @@ def _looks_like_person_name(value: str) -> bool:
         return False
     if "@" in text or "http" in low:
         return False
+    # A trailing colon introduces a value ("Full Programme :", "Opening Hours:")
+    # — the card is a label/value pair, not a name plaque. Read off the RAW text
+    # because the strip above erases exactly this evidence.
+    if raw.endswith(":"):
+        return False
     tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
     if len(tokens) < 2 or len(tokens) > 7:
         return False
     if tokens[0].lower() in _NON_NAME_LEAD_TOKENS:
+        return False
+    if tokens[-1].lower() in _NON_NAME_TAIL_TOKENS:
         return False
     # Every token must be capitalised (or a known name particle): rejects
     # sentence fragments like "Serving Penang since 1998" while keeping
@@ -1611,6 +1651,45 @@ def _profile_card_link(img: Tag, container: Tag, base_url: str) -> str | None:
             continue
         return normalized
     return None
+
+
+def _confirm_profiles_against_sections(
+    profiles: list[ProfileCandidate], sections: list["SectionCandidate"]
+) -> list[ProfileCandidate]:
+    """Drop candidates the section classifier says are not people.
+
+    ``_extract_profile_candidates`` decides one card at a time, from one
+    portrait and the text beside it — and at that range a facility card and a
+    staff card are the same object: a square photo, a short capitalised title,
+    a paragraph. The group is what disambiguates, and only the section pass sees
+    the group.
+
+    So the two are composed rather than duplicated: the portrait walk proposes,
+    the group-level classifier confirms. A candidate whose name is a card title
+    inside a section classified anything other than ``people`` is overruled.
+    Candidates that match no card title are left alone — a loose portrait, or
+    the whole-page subject fallback, was never a group member to begin with.
+    """
+    if not profiles or not sections:
+        return profiles
+    rejected: set[str] = set()
+    for section in sections:
+        if section.card_kind == "people":
+            continue
+        for card in section.cards:
+            title = " ".join(card.title.split()).strip(" :").lower()
+            if title:
+                rejected.add(title)
+    if not rejected:
+        return profiles
+    kept = [p for p in profiles if " ".join(p.name.split()).strip(" :").lower() not in rejected]
+    if len(kept) != len(profiles):
+        logger.info(
+            "Section classifier overruled %d portrait-anchored profile(s): "
+            "their cards belong to a non-people group",
+            len(profiles) - len(kept),
+        )
+    return kept
 
 
 def _extract_profile_candidates(
@@ -2289,6 +2368,15 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
     image_candidates = _extract_images(soup, final_url)
     profile_candidates = _extract_profile_candidates(soup, final_url)
     document_cards = _extract_document_cards(soup, final_url)
+    # The page's own section tree. `headings` above is the flat, level-less
+    # version of the same markup — kept for the callers that only want a
+    # keyword bag, while the planner is grounded on the tree.
+    section_candidates = extract_section_candidates(
+        soup, final_url, person_name=_looks_like_person_name
+    )
+    profile_candidates = _confirm_profiles_against_sections(
+        profile_candidates, section_candidates
+    )
     if document_cards:
         # Claim the cards' text before the LLM ever sees it — otherwise it
         # narrates the same titles into an invented, disconnected section.
@@ -2344,6 +2432,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
             for c in image_candidates
         ],
         profile_candidates=profile_candidates,
+        section_candidates=section_candidates,
         document_cards=document_cards,
     )
     return _ParsedPage(
