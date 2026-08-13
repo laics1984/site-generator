@@ -4,6 +4,8 @@ from app.models.content_blocks import (
     ImageMetadata,
     NavLink,
     ProfileCandidate,
+    SectionCandidate,
+    SourceCard,
     SourceContent,
 )
 from app.services.page_inference import (
@@ -641,6 +643,137 @@ class StoryPageRhythmTest(unittest.TestCase):
         scaffolds = infer_page_scaffolds(source, industry="childcare")
         contact = next(s for s in scaffolds if s.slug == "contact")
         self.assertLessEqual(contact.sections.count("about"), 1)
+
+
+class SectionTreeRhythmTest(unittest.TestCase):
+    """A page whose markup declares its own sections gets a scaffold shaped like
+    that markup — a card block per card group, an `about` per prose section.
+
+    Without this the planner prompt asks for one output section per source
+    section while `required_sections` still comes from the URL slug. On
+    Glorykids' /school-life that meant six source sections against a five-kind
+    `services` recipe, and the model padded with the one schema always in the
+    prompt: six consecutive `about` blocks, with four age-group cards flattened
+    into one of their body strings as a fake bullet list.
+    """
+
+    @staticmethod
+    def _page(sections: list[SectionCandidate], slug: str = "school-life") -> SourceContent:
+        return SourceContent(
+            source_kind="url",
+            source_ref=f"https://example.my/{slug}",
+            title="School Life",
+            raw_text="School life content for this page.",
+            url_path=f"/{slug}",
+            headings=[s.heading for s in sections],
+            section_candidates=sections,
+        )
+
+    @staticmethod
+    def _cards(n: int) -> list[SourceCard]:
+        return [
+            SourceCard(title=f"Card {i}", body="Some descriptive body text here.")
+            for i in range(n)
+        ]
+
+    def _scaffold_for(self, page: SourceContent, slug: str = "school-life"):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[page],
+        )
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        return next(s for s in scaffolds if s.slug == slug)
+
+    def _glorykids_tree(self) -> list[SectionCandidate]:
+        """The real /school-life shape: prose, cards, prose, prose, cards, prose."""
+        return [
+            SectionCandidate(heading="Curriculum", level=1, prose="Our curriculum text."),
+            SectionCandidate(
+                heading="School Life", level=2, card_kind="offerings", cards=self._cards(4)
+            ),
+            SectionCandidate(heading="Full Programme", level=2, prose="After-school text."),
+            SectionCandidate(heading="Extended Programme", level=2, prose="Daycare text."),
+            SectionCandidate(
+                heading="Centres", level=2, card_kind="offerings", cards=self._cards(4)
+            ),
+            SectionCandidate(heading="Field Trip", level=2, prose="Field trip text."),
+        ]
+
+    def test_card_groups_get_card_blocks_not_about(self):
+        scaffold = self._scaffold_for(self._page(self._glorykids_tree()))
+
+        self.assertEqual(
+            scaffold.sections,
+            ["hero", "about", "services", "about", "about", "features", "about", "cta"],
+        )
+
+    def test_every_card_group_gets_a_block_that_has_items(self):
+        """The regression that matters: a card group must never land in `about`,
+        whose body is a single string."""
+        sections = self._scaffold_for(self._page(self._glorykids_tree())).sections
+        item_blocks = {"services", "features", "team", "process", "gallery", "downloads"}
+
+        card_groups = sum(1 for s in self._glorykids_tree() if s.cards)
+        self.assertEqual(sum(1 for s in sections if s in item_blocks), card_groups)
+
+    def test_card_kind_picks_the_matching_block(self):
+        tree = [
+            SectionCandidate(heading="Intro", level=1, prose="Intro text."),
+            SectionCandidate(
+                heading="Our Team", level=2, card_kind="people", cards=self._cards(3)
+            ),
+            SectionCandidate(
+                heading="How It Works", level=2, card_kind="steps", cards=self._cards(3)
+            ),
+            SectionCandidate(
+                heading="Our Work", level=2, card_kind="gallery", cards=self._cards(4)
+            ),
+        ]
+
+        sections = self._scaffold_for(self._page(tree)).sections
+
+        self.assertIn("team", sections)
+        self.assertIn("process", sections)
+        self.assertIn("gallery", sections)
+
+    def test_tree_respects_the_page_section_ceiling(self):
+        tree = [
+            SectionCandidate(heading=f"Section {i}", level=2, prose="Body text here.")
+            for i in range(14)
+        ]
+
+        sections = self._scaffold_for(self._page(tree)).sections
+
+        self.assertLessEqual(len(sections), _MAX_PAGE_SECTIONS)
+        self.assertEqual(sections[0], "hero")
+        self.assertEqual(sections[-1], "cta")
+
+    def test_a_thin_tree_falls_back_to_the_page_type_recipe(self):
+        """Two headings say too little to override the industry rhythm.
+
+        The recipe's own spine must survive — the tree would have produced
+        exactly ["hero", "about", "about", "cta"], which is what we must NOT
+        see. (The recipe may still weave an about of its own; that is the
+        photo-weaving path, not the tree.)"""
+        tree = [
+            SectionCandidate(heading="Intro", level=1, prose="Intro text."),
+            SectionCandidate(heading="More", level=2, prose="More text."),
+        ]
+
+        sections = self._scaffold_for(self._page(tree)).sections
+
+        self.assertIn("services", sections)
+        self.assertNotEqual(sections, ["hero", "about", "about", "cta"])
+
+    def test_no_tree_leaves_existing_behaviour_untouched(self):
+        page = self._page([])
+        page.section_candidates = []
+
+        sections = self._scaffold_for(page).sections
+
+        self.assertIn("services", sections)
 
 
 class PhotoSectionWeavingTest(unittest.TestCase):

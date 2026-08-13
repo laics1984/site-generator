@@ -37,14 +37,16 @@ INPUT
    fact it doesn't support. Without `page_source`, ground the page in the
    top-level `source` and the brand summary.
 
-SOURCE SECTIONS — `page_source.sections` is the source page's own structure.
-Authoritative about SHAPE (keep improving wording); beats `headings`, which is
-the same markup flattened and cannot tell a section from a card.
-- One source section → ONE output section. Never merge, split, or move a card
-  between sections. Its `cards` become its items, in order; a prose-only
-  section stays prose. `meta` is a card's own label/value line.
-- Only `card_kind: people` may become a `team` block. `offerings`, `steps`,
-  `documents`, `gallery` are never people — "Innovation Centre" is a room.
+SOURCE SECTIONS — `page_source.sections` is the source page's own structure;
+authoritative about SHAPE, and it beats `headings`. One source section → ONE
+output section, in order; never merge, split, or move a card between them.
+- `cards` → a block WITH items (services/features/team/process/gallery),
+  one item per card. NEVER `about`: its body is one string, so cards flatten
+  into a fake bullet list. required_sections names one per card group.
+- prose-only → `about`; never invent cards. `meta` is a card's own label line.
+- Only `card_kind: people` may be a `team`. `offerings`/`steps`/`gallery`
+  are never people — "Innovation Centre" is a room.
+- NEVER write markdown (`**bold**`, `-`/`•` bullets). Text renders literally.
 
 FIDELITY RULES — these override every other instruction:
 - Use ONLY facts present in the source. Improving language is encouraged;

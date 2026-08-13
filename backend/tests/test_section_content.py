@@ -430,5 +430,50 @@ class MonogramAvatarTest(unittest.TestCase):
         )
 
 
+class MarkdownBackstopTest(unittest.TestCase):
+    """`innerText` is plain text — TextBlock renders it verbatim — so markdown
+    the model writes reaches the visitor as literal asterisks and bullets.
+
+    Seen live: with no card block available for four facility cards, the model
+    packed them into an `about` body as "• **Innovation Centre:** Develops…".
+    The real fix is upstream (the cards get their own block now); this stops the
+    failure from also looking broken.
+    """
+
+    def test_bold_markers_are_removed_but_the_words_stay(self):
+        from app.services.schema_builder import _strip_markdown
+
+        self.assertEqual(
+            _strip_markdown("**Innovation Centre:** Develops language skills."),
+            "Innovation Centre: Develops language skills.",
+        )
+
+    def test_leading_bullets_are_removed(self):
+        from app.services.schema_builder import _strip_markdown
+
+        self.assertEqual(
+            _strip_markdown("• Full Programme: 8:30 am\n• Extended: 5:30 pm"),
+            "Full Programme: 8:30 am\nExtended: 5:30 pm",
+        )
+
+    def test_ordinary_prose_is_untouched(self):
+        from app.services.schema_builder import _strip_markdown
+
+        for text in (
+            "Open 8:30 am - 3:00 pm daily.",
+            "Ages 4-6 * subject to availability",
+            "Mathematics, Art & Craft and Physical Development.",
+            "",
+        ):
+            self.assertEqual(_strip_markdown(text), text, text)
+
+    def test_text_elements_are_sanitised_at_construction(self):
+        from app.services.schema_builder import _text
+
+        el = _text("**Bold** heading")
+
+        self.assertEqual(el.content.innerText, "Bold heading")
+
+
 if __name__ == "__main__":
     unittest.main()

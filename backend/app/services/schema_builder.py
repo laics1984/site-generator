@@ -962,6 +962,28 @@ def _uid() -> str:
     return str(uuid4())
 
 
+# Markdown emphasis the renderer cannot honour. `innerText` is plain text —
+# TextBlock.vue prints it verbatim — so a model that reaches for **bold** ships
+# the asterisks to the visitor. Paired markers only: a lone `*` is a footnote
+# marker or a multiplication sign in real copy.
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
+_MD_LEADING_BULLET_RE = re.compile(r"^[ \t]*[•*\-•]\s+", re.M)
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove markdown the plain-text renderer would print literally.
+
+    A backstop, not a licence: a model reaching for bullets inside a prose
+    field is usually a signal that the CONTENT is card-shaped and landed in the
+    wrong block (see page_inference._sections_from_tree). Cleaning the string
+    keeps that failure from also looking broken, but the fix is upstream.
+    """
+    if not text or ("*" not in text and "•" not in text):
+        return text
+    cleaned = _MD_BOLD_RE.sub(r"\1", text)
+    return _MD_LEADING_BULLET_RE.sub("", cleaned)
+
+
 def _text(
     inner: str,
     *,
@@ -974,7 +996,7 @@ def _text(
         name=name,
         type="text",
         styles={"width": "100%", **(styles or {})},
-        content=BuilderElementContent(innerText=inner),
+        content=BuilderElementContent(innerText=_strip_markdown(inner)),
         responsiveStyles=ResponsiveStyles(mobile=mobile) if mobile else None,
     )
 

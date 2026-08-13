@@ -377,6 +377,58 @@ def _story_sections(story_count: int) -> list[SectionType]:
     return ["hero", *(["about"] * n), "cta"]
 
 
+# What a source card group becomes. `offerings` alternates services/features so
+# a page with two card racks doesn't render the same layout family twice —
+# they're both card sections, but they draw from different template pools.
+_CARD_KIND_SECTIONS: dict[str, SectionType] = {
+    "people": "team",
+    "steps": "process",
+    "gallery": "gallery",
+    "documents": "downloads",
+}
+
+# Below this the tree says too little to be worth overriding the page-type
+# recipe with — a two-heading page is better served by its industry rhythm.
+_TREE_MIN_SECTIONS = 3
+
+
+def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
+    """The section list the SOURCE dictates, or None to fall back to the recipe.
+
+    Same override as ``_story_sections`` above, generalised: instead of assuming
+    every source section is an image+text split, each one becomes the block kind
+    its cards actually justify.
+
+    This is the half of the section-tree work without which the other half
+    misfires. The planner prompt tells the model "one source section → one
+    output section", but ``required_sections`` was still derived from the URL
+    slug — so on a page with six source sections and a five-kind recipe the
+    model had nowhere to put the extras, and fell back to the one schema that is
+    always in the prompt and accepts arbitrary prose: `about`. Glorykids'
+    /school-life came out as six consecutive about blocks with four age-group
+    cards flattened into one of their body strings.
+    """
+    tree = page.section_candidates if page else None
+    if not tree or len(tree) < _TREE_MIN_SECTIONS:
+        return None
+
+    body: list[SectionType] = []
+    offerings_seen = 0
+    for section in tree:
+        if not section.cards:
+            body.append("about")
+        elif section.card_kind == "offerings":
+            body.append("services" if offerings_seen % 2 == 0 else "features")
+            offerings_seen += 1
+        else:
+            body.append(_CARD_KIND_SECTIONS.get(section.card_kind, "about"))
+
+    # hero and cta bracket the page; the source's own sections are trimmed to
+    # fit between them rather than displacing them.
+    body = body[: max(0, _MAX_PAGE_SECTIONS - 2)]
+    return ["hero", *body, "cta"]
+
+
 def _content_photo_count(page: SourceContent | None) -> int:
     """Content-grade photos on the page (logos/decorations excluded)."""
     if page is None:
@@ -450,6 +502,14 @@ def _sections_for(
     # even for sub-pages (which would otherwise get the generic detail rhythm).
     if page_type == "team" and _looks_like_directory_page(page):
         return _augment_sections(list(_TOP_SECTIONS["team"]), page_type, page)
+    # The source's own section tree outranks every fixed rhythm below, and the
+    # story heuristic above it: the story rule infers "this page is a sequence
+    # of image+text sections" from photo COUNT, while the tree reads the actual
+    # markup and knows which of those sections carry cards.
+    if page_type not in _STORY_INELIGIBLE_TYPES:
+        from_tree = _sections_from_tree(page)
+        if from_tree is not None:
+            return _augment_sections(from_tree, page_type, page)
     # Story pages override the fixed rhythms: the source itself dictates the
     # section list (a photo-and-heading section sequence), not the page type.
     if page_type not in _STORY_INELIGIBLE_TYPES:
