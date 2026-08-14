@@ -85,6 +85,16 @@ modules — the largest are `schema_builder.py` 4.5k, `scraper.py` 2.6k,
    generic image. `header_footer.py` defaults `name="Brand Logo"`. Footer logos
    get no native sizing — they need explicit `width:150px` (not `auto`, which
    collapses to 0), `height:40px`, `minHeight:0`, `objectFit:contain`.
+   **Gate rendering on `brand.logo_render_ok`, never on `logo_url`.** Detection
+   lives in `services/logo_extraction.py`, which ranks a real mark (header
+   `<img>`, inline header `<svg>`, logo-named `<img>`) above a declared icon and
+   keeps `og:image` as a **palette source only** — provenance rides along as
+   `BrandIdentity.logo_source`. The old order checked apple-touch-icon *first*
+   and the actual logo *fourth*, so any site with a touch icon or a social card
+   — most sites — rendered its favicon as the brand mark. `_build_brand_candidate`
+   sets `logo_render_ok` from the **decoded** pixel size (a `sizes` attribute is
+   a claim, not a measurement). Header, footer, `Organization.logo` in the
+   JSON-LD, and the push-time media upload all honour it.
 4. **Preview renderer is a port, not a rewrite.** `frontend/src/preview/` mirrors
    `webtree-public`'s renderer. **Don't fix bugs there** — a preview that renders
    better than the live site is still a defect. Fix upstream, then mirror.

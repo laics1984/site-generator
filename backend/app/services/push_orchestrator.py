@@ -650,8 +650,10 @@ async def _upload_media(
     if req.site.footer_schema:
         _collect_image_srcs(req.site.footer_schema, sources)
         _collect_document_hrefs(req.site.footer_schema, documents)
-    # And the brand logo (it's pulled into the header but defensive doesn't hurt)
-    if req.site.brand:
+    # And the brand logo (it's pulled into the header but defensive doesn't hurt).
+    # Skipped when the mark failed the render gate — nothing references it, so
+    # uploading would just park a favicon in the tenant's media library.
+    if req.site.brand and getattr(req.site.brand, "logo_render_ok", True):
         logo_url = getattr(req.site.brand, "logo_url", None) or getattr(
             req.site.brand, "logo_data_url", None
         )

@@ -1,7 +1,7 @@
 import unittest
 
 from app.models.brand import BrandIdentity
-from app.services.header_footer import build_header
+from app.services.header_footer import build_footer, build_header
 from app.services.theme import _hex_to_rgb, build_theme
 
 
@@ -485,3 +485,49 @@ class FloatingPillGeometryTest(unittest.TestCase):
 
 def _px(value):
     return float(str(value).replace("px", ""))
+
+
+class LogoRenderGateTest(unittest.TestCase):
+    """A mark that failed the render gate (an og:image, or a favicon too small
+    for the 52px lockup) seeds the palette but must never be drawn. Both
+    surfaces fall back to the typographic wordmark instead."""
+
+    def _brand(self, *, render_ok):
+        return BrandIdentity(
+            name="Acme",
+            logo_url="https://example.com/favicon.ico",
+            logo_data_url="data:image/png;base64,abc",
+            extracted_palette=["#2563eb"],
+            logo_source="icon",
+            logo_render_ok=render_ok,
+        )
+
+    def test_header_falls_back_to_the_wordmark(self):
+        theme = build_theme("#2563eb")
+
+        header = build_header(self._brand(render_ok=False), theme, nav_items=[])
+
+        self.assertIsNone(_find(header, "Brand Logo"))
+        self.assertIsNotNone(_find(header, "Wordmark"))
+        self.assertIsNotNone(_find(header, "Monogram"))
+
+    def test_header_still_renders_a_mark_that_passed(self):
+        theme = build_theme("#2563eb")
+
+        header = build_header(self._brand(render_ok=True), theme, nav_items=[])
+
+        self.assertIsNotNone(_find(header, "Brand Logo"))
+
+    def test_footer_falls_back_to_the_wordmark(self):
+        theme = build_theme("#2563eb")
+
+        footer = build_footer(self._brand(render_ok=False), theme, nav_items=[])
+
+        self.assertIsNone(_find(footer, "Brand Logo"))
+
+    def test_footer_still_renders_a_mark_that_passed(self):
+        theme = build_theme("#2563eb")
+
+        footer = build_footer(self._brand(render_ok=True), theme, nav_items=[])
+
+        self.assertIsNotNone(_find(footer, "Brand Logo"))

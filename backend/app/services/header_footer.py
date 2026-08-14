@@ -219,7 +219,10 @@ def _logo_mark(
     too close to the logo's own brightness. `ink` colours the typographic
     wordmark so it matches the header's menu ink (falls back to secondary).
     """
-    if brand.logo_url or brand.logo_data_url:
+    # `logo_render_ok`, not the URL: the scraper keeps an og:image or an
+    # undersized favicon as a palette source, and either one rendered at 52px is
+    # worse than the typographic mark below. See services/logo_extraction.py.
+    if brand.logo_render_ok and (brand.logo_url or brand.logo_data_url):
         # The logo IS the home link — standard convention, and it lets the
         # primary menu drop the redundant "Home" item entirely.
         img = _image(
@@ -525,7 +528,9 @@ def build_footer(
     # theme tokens. When a usable logo exists we show it alone (mirroring the
     # header); the text wordmark appears only when there is no logo, or the
     # logo would vanish into the footer band (dark on dark / light on light).
-    logo_src = brand.logo_url or brand.logo_data_url
+    # Same gate as the header (_logo_mark): a mark the header declined is not
+    # good enough for the footer either.
+    logo_src = (brand.logo_url or brand.logo_data_url) if brand.logo_render_ok else None
     show_wordmark = (not logo_src) or (
         brand.logo_is_light is (False if footer_is_dark else True)
     )

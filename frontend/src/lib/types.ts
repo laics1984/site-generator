@@ -139,6 +139,10 @@ export type HeroHeight = 'full' | 'banded'
  * the brand's mood and industry (backend: resolve_hero_height). */
 export type HeroHeightChoice = 'auto' | HeroHeight
 
+/** Where a scraped brand mark came from. 'og-image' is a palette source only —
+ * mirrors LogoSource in backend/app/models/brand.py. */
+export type LogoSource = 'logo' | 'icon' | 'og-image'
+
 export interface BrandIdentity {
   name: string
   tagline?: string | null
@@ -146,6 +150,10 @@ export interface BrandIdentity {
   logo_data_url?: string | null
   extracted_palette: string[]
   logo_is_light?: boolean | null
+  logo_source?: LogoSource | null
+  /** False when the mark may seed the palette but must not be drawn as the
+   * brand logo (a social card, or a favicon too small for the header lockup). */
+  logo_render_ok?: boolean
   mood?: BrandMood | null
   color_scheme?: ColorScheme | null
   industry?: string | null

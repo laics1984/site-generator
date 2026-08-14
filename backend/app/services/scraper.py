@@ -22,6 +22,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 import time
@@ -55,6 +56,24 @@ from app.services.fast_fetch import (
     try_fast_fetch,
 )
 from app.services.image_evidence import ImageEvidence, classify_role, parse_evidence
+from app.services.image_urls import (
+    _BAD_IMG_HINTS,
+    _IMG_EXT_OK,
+    _LOGO_HINTS,
+    absolute_url as _absolute_url,
+    best_srcset_candidate as _best_srcset_candidate,
+    image_src_from_tag as _image_src_from_tag,
+    iter_srcset_candidates as _iter_srcset_candidates,
+    looks_like_icon as _looks_like_icon,
+    looks_like_logo_url as _looks_like_logo_url,
+    tag_classes as _tag_classes,
+    upgrade_source_image_url as _upgrade_source_image_url,
+)
+from app.services.logo_extraction import (
+    LogoCandidate,
+    extract_logo,
+    is_renderable,
+)
 from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
 from app.services.profile_text import has_contact_token, is_boilerplate_line
 from app.services.logo import extract_palette_from_image_bytes
@@ -410,18 +429,6 @@ async def _fetch_rendered_html(
 # --- HTML parsing ---------------------------------------------------------------
 
 
-_IMG_EXT_OK = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")
-_LOGO_HINTS = ("logo", "brandmark", "wordmark", "header-logo")
-_BAD_IMG_HINTS = (
-    "tracking",
-    "pixel",
-    "spacer",
-    "blank",
-    "sprite",
-    "1x1",
-    "loader",
-    "loading",
-)
 _PROFILE_CONTAINER_HINTS = (
     "team",
     "member",
@@ -588,197 +595,11 @@ _BG_URL_RE = re.compile(
 )
 
 
-# Wix bakes the image transform into the URL PATH, e.g.
-#   …/media/{id}/v1/fill/w_119,h_79,al_c,q_80,…,blur_2,enc_avif,quality_auto/{file}
-# so a scraped <img src> (or srcset entry) frequently points at a tiny, blurred
-# blur-up placeholder rather than the real photo. We rewrite it to a crisp,
-# high-res variant with the blur removed. The media id encodes the original
-# dimensions (…_d_{W}_{H}…), so we can cap the long edge while preserving aspect
-# — the untransformed original can be 20 MB+, which would blow the CMS upload cap.
-_WIX_MEDIA_RE = re.compile(
-    r"^(https?://static\.wixstatic\.com/media/([^/?#]+))(?:/v1/[^?#]*)?",
-    re.IGNORECASE,
-)
-_WIX_DIMS_RE = re.compile(r"_d_(\d+)_(\d+)")
-_WIX_MAX_EDGE = 2560
-
-
-def _upgrade_source_image_url(url: str) -> str:
-    """Rewrite known image-CDN transform URLs to a crisp, full-size variant.
-
-    Only matches unambiguous image-CDN transform URLs, so it is a no-op for page
-    links — safe to run on every absolutized URL.
-    """
-    m = _WIX_MEDIA_RE.match(url)
-    if not m:
-        return url
-    base, media_id = m.group(1), m.group(2)
-    dims = _WIX_DIMS_RE.search(media_id)
-    if dims:
-        ow, oh = int(dims.group(1)), int(dims.group(2))
-        if ow > 0 and oh > 0:
-            # Cap the long edge and derive the short edge by FLOOR division —
-            # Wix validates the requested dims against the original aspect and
-            # 403s if the short edge doesn't match its own floor(…) computation.
-            if ow >= oh:
-                tw = min(ow, _WIX_MAX_EDGE)
-                th = max(1, oh * tw // ow)
-            else:
-                th = min(oh, _WIX_MAX_EDGE)
-                tw = max(1, ow * th // oh)
-            return f"{base}/v1/fill/w_{tw},h_{th},al_c,q_90/{media_id}"
-    # Original dimensions unknown → bare original (Wix serves it; usually small).
-    return base
-
-
-def _absolute_url(base: str, src: str) -> str | None:
-    if not src or src.startswith("data:"):
-        return None
-    return _upgrade_source_image_url(urljoin(base, src))
-
-
-def _looks_like_icon(url: str, alt: str) -> bool:
-    low = url.lower()
-    if any(h in low for h in _BAD_IMG_HINTS):
-        return True
-    if "favicon" in low:
-        return True
-    if alt and len(alt) > 0 and alt.lower() in {"icon", "logo icon"}:
-        return True
-    return False
-
-
-def _looks_like_logo_url(url: str) -> bool:
-    """True when the file NAME says logo (assets/logo.png, site-logo.svg).
-
-    Filename only — a path segment like /logos/ marks a partner-logo gallery,
-    and the query string could be anything.
-    """
-    basename = urlparse(url).path.rsplit("/", 1)[-1].lower()
-    return "logo" in basename
-
-
 def _parse_int(value: str | None) -> int | None:
     if not value:
         return None
     m = re.search(r"\d+", value)
     return int(m.group(0)) if m else None
-
-
-def _iter_srcset_candidates(srcset: str):
-    """Yield (url, descriptor) pairs from a srcset string.
-
-    A srcset URL may itself contain commas — Wix bakes its transform into the
-    path (``…/v1/fill/w_461,h_161,al_c,q_85,…/file.png``) and data URIs are
-    comma-heavy — so a naive ``split(",")`` shatters them and yields a garbage
-    trailing fragment. Per the HTML grammar, a candidate URL is a run of
-    non-whitespace and the (optional) descriptor follows after whitespace, with
-    candidates separated by commas; tokenize accordingly.
-    """
-    i, n = 0, len(srcset)
-    while i < n:
-        # Skip separators (whitespace and the commas between candidates).
-        while i < n and (srcset[i].isspace() or srcset[i] == ","):
-            i += 1
-        if i >= n:
-            break
-        # URL: everything up to the next whitespace (internal commas kept).
-        start = i
-        while i < n and not srcset[i].isspace():
-            i += 1
-        url = srcset[start:i]
-        descriptor = ""
-        if url.endswith(","):
-            # No descriptor — the comma directly separates candidates.
-            url = url.rstrip(",")
-        else:
-            while i < n and srcset[i].isspace():
-                i += 1
-            dstart = i
-            while i < n and srcset[i] != ",":
-                i += 1
-            descriptor = srcset[dstart:i].strip()
-            if i < n and srcset[i] == ",":
-                i += 1
-        if url:
-            yield url, descriptor
-
-
-def _best_srcset_candidate(srcset: str | None) -> tuple[str | None, float]:
-    """Return the highest-density/width URL from a srcset string and its score.
-
-    The score is the winning ``w``/``x`` descriptor (``x`` scaled by 1000 so any
-    density beats any raw width). A score of ``1.0`` means the winning candidate
-    carried no real descriptor, so callers can treat it as "no measured size
-    advantage" and keep a good base ``src``.
-    """
-    if not srcset:
-        return None, -1.0
-    best_url: str | None = None
-    best_score = -1.0
-    for url, descriptor in _iter_srcset_candidates(srcset):
-        descriptor = descriptor.lower()
-        score = 1.0
-        try:
-            if descriptor.endswith("w"):
-                score = float(descriptor[:-1])
-            elif descriptor.endswith("x"):
-                score = float(descriptor[:-1]) * 1000.0
-        except ValueError:
-            score = 1.0
-        if score > best_score:
-            best_score = score
-            best_url = url
-    return best_url, best_score
-
-
-def _image_src_from_tag(img: Tag) -> str | None:
-    """Prefer real responsive image URLs over placeholders."""
-    src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-    if isinstance(src, list):
-        src = src[0] if src else None
-    src = src if isinstance(src, str) else None
-
-    srcset = (
-        img.get("srcset")
-        or img.get("data-srcset")
-        or img.get("data-lazy-srcset")
-    )
-    if isinstance(srcset, list):
-        srcset = srcset[0] if srcset else None
-    srcset = srcset if isinstance(srcset, str) else None
-    srcset_candidate, srcset_score = _best_srcset_candidate(srcset)
-
-    source = img.find_previous_sibling("source")
-    if source is None and isinstance(img.parent, Tag) and img.parent.name == "picture":
-        sources = [s for s in img.parent.find_all("source") if isinstance(s, Tag)]
-        source = sources[-1] if sources else None
-    if isinstance(source, Tag):
-        source_srcset = source.get("srcset") or source.get("data-srcset")
-        if isinstance(source_srcset, list):
-            source_srcset = source_srcset[0] if source_srcset else None
-        picture_candidate, picture_score = _best_srcset_candidate(
-            source_srcset if isinstance(source_srcset, str) else None
-        )
-        if picture_candidate:
-            srcset_candidate, srcset_score = picture_candidate, picture_score
-
-    src_low = (src or "").lower().split("?", 1)[0]
-    if srcset_candidate and (
-        not src
-        or _looks_like_icon(src, "")
-        or src_low.endswith(".svg")
-        or "placeholder" in src_low
-    ):
-        return srcset_candidate
-    # A responsive <img> usually keeps a small/medium fallback in `src` while the
-    # full-resolution variants live only in `srcset`. Prefer the largest srcset
-    # candidate so figure images are captured at full size — but only when it
-    # carries a real width/density descriptor (score > 1); a descriptor-less
-    # 1-URL srcset is no better than `src`, so keep the base then.
-    if srcset_candidate and srcset_score > 1.0:
-        return srcset_candidate
-    return src or srcset_candidate
 
 
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
@@ -802,12 +623,6 @@ def _image_context(tag: Tag) -> tuple[str, str]:
         if isinstance(figcaption, Tag):
             caption = figcaption.get_text(" ", strip=True)[:160]
     return heading, caption
-
-
-def _tag_classes(tag: Tag) -> str:
-    return " ".join(
-        tag.get("class") if isinstance(tag.get("class"), list) else []
-    ).lower()
 
 
 def _bg_about_hint(tag: Tag) -> bool:
@@ -2052,70 +1867,12 @@ def _promote_hero_by_evidence(candidates: list[ImageCandidate]) -> None:
     best.intent = "hero"
 
 
-def _extract_logo_candidate(soup: BeautifulSoup, base_url: str) -> str | None:
-    """
-    Try in this order:
-    1. <link rel="apple-touch-icon"> (usually 180x180+)
-    2. <link rel="icon"> with sizes >= 96
-    3. <meta property="og:image">
-    4. <img> with class/alt/src containing "logo"
-    """
-    # apple-touch-icon
-    apple = soup.find("link", rel=lambda v: v and "apple-touch-icon" in v)
-    if isinstance(apple, Tag):
-        href = apple.get("href")
-        if isinstance(href, str):
-            return _absolute_url(base_url, href)
-
-    # link rel="icon" with biggest sizes
-    icon_tags = soup.find_all("link", rel=lambda v: v and "icon" in v)
-    best_icon: tuple[int, str] | None = None
-    for tag in icon_tags:
-        if not isinstance(tag, Tag):
-            continue
-        sizes = tag.get("sizes")
-        href = tag.get("href")
-        if not isinstance(href, str):
-            continue
-        size_n = 0
-        if isinstance(sizes, str) and "x" in sizes:
-            try:
-                size_n = int(sizes.split("x")[0])
-            except ValueError:
-                size_n = 0
-        if best_icon is None or size_n > best_icon[0]:
-            best_icon = (size_n, href)
-    if best_icon and best_icon[0] >= 96:
-        return _absolute_url(base_url, best_icon[1])
-
-    # og:image (carries brand colour even if not strictly a logo)
-    og = soup.find("meta", attrs={"property": "og:image"})
-    if isinstance(og, Tag):
-        content = og.get("content")
-        if isinstance(content, str):
-            return _absolute_url(base_url, content)
-
-    # <img> tags containing "logo"
-    for img in soup.find_all("img"):
-        if not isinstance(img, Tag):
-            continue
-        haystack = " ".join(
-            v
-            for v in (
-                str(img.get("src") or ""),
-                str(img.get("alt") or ""),
-                str(img.get("class") or ""),
-            )
-        ).lower()
-        if any(h in haystack for h in _LOGO_HINTS):
-            src = img.get("src") or img.get("data-src")
-            if isinstance(src, str):
-                return _absolute_url(base_url, src)
-
-    # Final fallback — favicon
-    if best_icon:
-        return _absolute_url(base_url, best_icon[1])
-    return None
+def _extract_logo_candidate(
+    soup: BeautifulSoup, base_url: str, *, site_name: str | None = None
+) -> LogoCandidate | None:
+    """The page's brand mark, with provenance. See services/logo_extraction.py —
+    a real logo outranks a favicon, and an og:image is a palette source only."""
+    return extract_logo(soup, base_url, site_name=site_name)
 
 
 # Block-level tags whose text we keep in the structural fallback pass. These
@@ -2286,39 +2043,68 @@ def _extract_meta_string(soup: BeautifulSoup, *names: str) -> str | None:
 
 async def _build_brand_candidate(
     site_name: str | None,
-    logo_url: str | None,
+    logo: LogoCandidate | None,
 ) -> BrandIdentity | None:
-    if not logo_url:
-        return None
-    if not await is_public_url(logo_url):
-        logger.warning("Refusing to fetch logo from non-public URL %s", logo_url)
-        return None
-    try:
-        async with httpx.AsyncClient(
-            timeout=settings.robots_fetch_timeout_seconds,
-            follow_redirects=True,
-            headers={"User-Agent": USER_AGENT},
-        ) as client:
-            resp = await client.get(logo_url)
-            resp.raise_for_status()
-            image_bytes = resp.content
-    except httpx.HTTPError as exc:
-        logger.warning("Failed to fetch logo %s: %s", logo_url, exc)
-        return None
+    """Fetch the detected mark, read its palette, and decide whether it may be
+    rendered as the brand logo.
+
+    Every failure past this point degrades to a name-only brand rather than
+    None: the scraped site name is worth keeping even when the logo 404s, and
+    losing it used to force the generator back onto the LLM's guess.
+    """
+    name_only = (
+        BrandIdentity(name=site_name, mood=None) if site_name else None
+    )
+    if logo is None:
+        return name_only
+
+    if logo.data_url and not logo.url:
+        # Inline <svg> — already in hand, nothing to fetch.
+        image_bytes = base64.b64decode(logo.data_url.split(",", 1)[1])
+    else:
+        logo_url = logo.url or ""
+        if not await is_public_url(logo_url):
+            logger.warning("Refusing to fetch logo from non-public URL %s", logo_url)
+            return name_only
+        try:
+            async with httpx.AsyncClient(
+                timeout=settings.robots_fetch_timeout_seconds,
+                follow_redirects=True,
+                headers={"User-Agent": USER_AGENT},
+            ) as client:
+                resp = await client.get(logo_url)
+                resp.raise_for_status()
+                image_bytes = resp.content
+        except httpx.HTTPError as exc:
+            logger.warning("Failed to fetch logo %s: %s", logo_url, exc)
+            return name_only
 
     try:
         # PIL decode + quantize is CPU-bound — keep it off the event loop.
         extraction = await asyncio.to_thread(extract_palette_from_image_bytes, image_bytes)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to extract palette from %s: %s", logo_url, exc)
-        return None
+        logger.warning("Failed to extract palette from %s: %s", logo.ref, exc)
+        return name_only
+
+    render_ok = is_renderable(
+        logo.source, size=extraction.size, is_vector=extraction.is_vector
+    )
+    logger.info(
+        "Brand mark: source=%s size=%s render_ok=%s ref=%s",
+        logo.source,
+        extraction.size or ("vector" if extraction.is_vector else "?"),
+        render_ok,
+        (logo.url or "inline-svg"),
+    )
 
     return BrandIdentity(
         name=site_name or "Untitled",
-        logo_url=logo_url,
+        logo_url=logo.url,
         logo_data_url=extraction.logo_data_url,
         extracted_palette=extraction.palette,
         logo_is_light=extraction.logo_is_light,
+        logo_source=logo.source,
+        logo_render_ok=render_ok,
         mood=None,
     )
 
@@ -2334,7 +2120,7 @@ class _ParsedPage:
     site_name: str | None
     source_content: SourceContent
     image_candidates: list[ImageCandidate]
-    logo_url: str | None
+    logo: LogoCandidate | None
 
 
 def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True) -> _ParsedPage:
@@ -2398,7 +2184,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
             if candidate.url in profile_photo_urls and candidate.role == "unknown":
                 candidate.role = "portrait"
     links = _extract_links(soup, final_url)
-    logo_url = _extract_logo_candidate(soup, final_url)
+    logo = _extract_logo_candidate(soup, final_url, site_name=site_name)
     nav_links = extract_nav_links(soup, final_url)
     body_link_clusters = extract_body_link_clusters(soup, final_url)
     social_links = extract_social_links(soup, final_url)
@@ -2440,7 +2226,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         site_name=site_name,
         source_content=source_content,
         image_candidates=image_candidates,
-        logo_url=logo_url,
+        logo=logo,
     )
 
 
@@ -3029,7 +2815,7 @@ async def scrape_url(
             await browser.close()
 
     brand_candidate = await _build_brand_candidate(
-        entry.site_name, entry.logo_url
+        entry.site_name, entry.logo
     )
 
     return ScrapeResult(

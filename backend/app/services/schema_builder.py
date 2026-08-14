@@ -4791,7 +4791,12 @@ async def plan_to_site(
                 page_plan=page_plan,
                 site_name=plan.site_name,
                 brand_name=effective_brand.name or plan.site_name,
-                logo_url=effective_brand.logo_url,
+                # schema.org Organization.logo must be the real mark — a social
+                # card or a favicon fails Google's rich-result check. Same gate
+                # the header uses (services/logo_extraction.py).
+                logo_url=(
+                    effective_brand.logo_url if effective_brand.logo_render_ok else None
+                ),
                 industry_category=plan.industry_category,
                 contact=contact,
                 breadcrumb_slugs=bc_chain,

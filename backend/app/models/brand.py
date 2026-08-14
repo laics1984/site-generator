@@ -24,6 +24,11 @@ BrandMood = Literal[
 ]
 
 
+# Where a scraped brand mark came from. Ranked best-first by
+# services/logo_extraction.py; "og-image" is a palette source only.
+LogoSource = Literal["logo", "icon", "og-image"]
+
+
 PageWidthMode = Literal["contained", "full"]
 
 # Mirrors MotionIntensity in webtree/builder/src/lib/site-navigation.ts. The
@@ -319,6 +324,25 @@ class BrandIdentity(BaseModel):
         description=(
             "Whether the visible logo mark itself is predominantly light-colored. "
             "Used to choose a contrast-safe header background."
+        ),
+    )
+    logo_source: LogoSource | None = Field(
+        default=None,
+        description=(
+            "Where the logo came from: a real mark ('logo'), a declared favicon / "
+            "touch icon ('icon'), or the og:image social card ('og-image'). "
+            "None for an uploaded logo. Provenance is kept separate from the URL "
+            "because the palette extractor can use a source the header must not "
+            "render — see `logo_render_ok`."
+        ),
+    )
+    logo_render_ok: bool = Field(
+        default=True,
+        description=(
+            "Whether this logo may be drawn as the header/footer brand mark. "
+            "False for an og:image or an icon too small to survive the header's "
+            "52px lockup; those still seed the palette. Uploaded logos default "
+            "True. Header and footer must gate on THIS, not on logo_url."
         ),
     )
     mood: BrandMood | None = None
