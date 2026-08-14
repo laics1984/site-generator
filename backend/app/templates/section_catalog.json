@@ -17089,7 +17089,7 @@
       "layoutVariant": "floating-pill",
       "styleVariant": "chrome",
       "label": "Header — floating-pill",
-      "description": "An inset rounded bar floating over the page; the page background shows around it. Overlay-native: floats over full-bleed heroes with its own chrome — no ink markers, no background reveal on scroll.",
+      "description": "An inset rounded frosted-glass bar floating over the page; the page shows around AND through it. Overlay-native: floats over full-bleed heroes with its own translucent chrome — no ink markers, no background reveal on scroll.",
       "tags": [
         "Chrome",
         "Header"
@@ -17122,8 +17122,8 @@
           "position": "sticky",
           "top": "0",
           "zIndex": "50",
-          "paddingTop": "14px",
-          "paddingBottom": "14px",
+          "paddingTop": "10px",
+          "paddingBottom": "10px",
           "paddingLeft": "24px",
           "paddingRight": "24px"
         },
@@ -17132,26 +17132,27 @@
             "name": "Header bar",
             "type": "container",
             "headerBar": true,
+            "backgroundTexture": "flat",
             "styles": {
               "display": "flex",
               "flexDirection": "row",
               "width": "100%",
               "alignItems": "center",
               "justifyContent": "space-between",
-              "maxWidth": "{{pill.maxWidthPx}}",
+              "maxWidth": "{{page.maxWidthPx}}",
               "marginLeft": "auto",
               "marginRight": "auto",
-              "paddingLeft": "24px",
-              "paddingRight": "24px",
-              "paddingTop": "12px",
-              "paddingBottom": "12px",
+              "paddingLeft": "20px",
+              "paddingRight": "20px",
+              "paddingTop": "8px",
+              "paddingBottom": "8px",
               "gap": "24px",
-              "backgroundColor": "{{header.bg@88}}",
-              "backdropFilter": "blur(12px) saturate(150%)",
-              "WebkitBackdropFilter": "blur(12px) saturate(150%)",
+              "backgroundColor": "{{glass.tint}}",
+              "backdropFilter": "{{glass.filter}}",
+              "WebkitBackdropFilter": "{{glass.filter}}",
               "border": "1px solid {{header.fg@10}}",
               "borderRadius": "{{pill.radiusPx}}",
-              "boxShadow": "0 2px 4px rgba(15,23,42,0.06), 0 12px 28px rgba(15,23,42,0.10)"
+              "boxShadow": "0 2px 4px rgba(0,0,0,0.05), 0 12px 28px rgba(0,0,0,0.09)"
             },
             "content": [
               {
@@ -17167,7 +17168,7 @@
                   "width": "100%",
                   "flex": "1 1 0%",
                   "color": "{{header.fg}}",
-                  "fontSize": "15px"
+                  "fontSize": "14px"
                 },
                 "content": {
                   "slot": "primary",
@@ -17182,16 +17183,17 @@
                 "styles": {
                   "backgroundColor": "{{buttons.bg}}",
                   "color": "{{buttons.fg}}",
-                  "paddingTop": "10px",
-                  "paddingBottom": "10px",
-                  "paddingLeft": "20px",
-                  "paddingRight": "20px",
+                  "paddingTop": "8px",
+                  "paddingBottom": "8px",
+                  "paddingLeft": "18px",
+                  "paddingRight": "18px",
                   "borderRadius": "{{buttons.radiusPx}}",
                   "fontWeight": 600,
-                  "fontSize": "14px",
+                  "fontSize": "13px",
                   "textDecoration": "none",
                   "display": "inline-flex",
-                  "alignItems": "center"
+                  "alignItems": "center",
+                  "whiteSpace": "nowrap"
                 },
                 "$slot": "cta"
               }

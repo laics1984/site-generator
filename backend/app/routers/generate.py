@@ -1402,6 +1402,26 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
                 )
             )
 
+    # Legal pages from boilerplate. Built BEFORE the site so plan_to_site sees
+    # the complete page list: it appends them to site.pages itself (still out of
+    # the page tree and primary nav), and a chrome archetype whose contract
+    # covers every page — the floating pill, which needs a photo hero
+    # everywhere — can hold them to it too.
+    contact_email = (
+        payload.legal_contact_email
+        or (payload.contact or {}).get("email")
+        or "hello@example.com"
+    )
+    jurisdiction = payload.jurisdiction or "your country / state"
+    legal_builders = {"privacy": build_privacy_page, "terms": build_terms_page}
+    legal_page_list = [
+        legal_builders[legal.page_type](
+            plan.site_name, theme, contact_email=contact_email, jurisdiction=jurisdiction
+        )
+        for legal in legal_scaffolds
+        if legal.page_type in legal_builders
+    ]
+
     market_cue, place_cue = _market_cues_for(payload.source)
     collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
     site = await plan_to_site(
@@ -1413,6 +1433,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         page_images=page_images,
         contact=payload.contact,
         extra_footer_nav=extra_footer_nav,
+        extra_pages=legal_page_list,
         market_cue=market_cue,
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
@@ -1421,27 +1442,6 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         footer_override=payload.footer_archetype,
     )
     site.collections = await collections_task
-
-    # Bolt on legal pages from boilerplate
-    contact_email = (
-        payload.legal_contact_email
-        or (payload.contact or {}).get("email")
-        or "hello@example.com"
-    )
-    jurisdiction = payload.jurisdiction or "your country / state"
-    for legal in legal_scaffolds:
-        if legal.page_type == "privacy":
-            site.pages.append(
-                build_privacy_page(
-                    plan.site_name, theme, contact_email=contact_email, jurisdiction=jurisdiction
-                )
-            )
-        elif legal.page_type == "terms":
-            site.pages.append(
-                build_terms_page(
-                    plan.site_name, theme, contact_email=contact_email, jurisdiction=jurisdiction
-                )
-            )
 
     return site
 

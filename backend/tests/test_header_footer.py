@@ -2,7 +2,7 @@ import unittest
 
 from app.models.brand import BrandIdentity
 from app.services.header_footer import build_header
-from app.services.theme import build_theme
+from app.services.theme import _hex_to_rgb, build_theme
 
 
 class HeaderContrastTest(unittest.TestCase):
@@ -205,3 +205,283 @@ def _find_type(node, type_name):
             if found is not None:
                 return found
     return None
+
+
+class FloatingPillGlassTest(unittest.TestCase):
+    """The pill's bar is frosted glass, permanently.
+
+    It is the one header that never solidifies (`revealBackgroundOnScroll:
+    false`), so its background is what the visitor sees at every scroll
+    position — over the hero photo it floats on AND over whatever section it
+    later drifts across. The chrome lives on the inner `headerBar` container,
+    not the transparent root: that split is what lets both renderers strip the
+    root during overlay while leaving the bar alone, and what the builder's
+    right panel points its appearance controls at.
+    """
+
+    def _pill(self, scheme):
+        theme = build_theme("#0e7490", mood="playful", color_scheme=scheme)
+        header = build_header(
+            BrandIdentity(name="GloryKids", mood="playful"),
+            theme,
+            nav_items=[],
+            primary_cta=("Schedule a Tour", "/contact"),
+            overlay=True,
+            archetype="floating-pill",
+        )
+        return theme, header, header.content[0]
+
+    def test_bar_is_translucent_and_the_root_is_not_painted(self):
+        from app.services.header_footer import GLASS_ALPHA
+
+        for scheme in ("light", "dark"):
+            with self.subTest(scheme=scheme):
+                _, header, bar = self._pill(scheme)
+                self.assertEqual(header.styles["backgroundColor"], "transparent")
+                self.assertEqual(bar.styles["backgroundColor"][:5], "rgba(")
+                self.assertAlmostEqual(_alpha(bar.styles["backgroundColor"]), GLASS_ALPHA)
+                self.assertIn("blur(", bar.styles["backdropFilter"])
+                self.assertIn("blur(", bar.styles["WebkitBackdropFilter"])
+
+    def test_the_glass_carries_no_colour_of_its_own(self):
+        # Clear glass is achromatic: the brand hue belongs to the page showing
+        # THROUGH the pane, not to the pane. The palette's near-black in a dark
+        # scheme is navy — the veil built from it must not be.
+        for scheme in ("light", "dark"):
+            with self.subTest(scheme=scheme):
+                _, _, bar = self._pill(scheme)
+                r, g, b, _a = _channels(bar.styles["backgroundColor"])
+                self.assertEqual({r, g, b}, {r}, bar.styles["backgroundColor"])
+                # Nor may the shadow reintroduce one.
+                self.assertNotIn("rgba(15", bar.styles["boxShadow"])
+
+    def test_the_filter_desaturates_the_backdrop_instead_of_boosting_it(self):
+        # A translucent pane is only as colourless as what shows THROUGH it.
+        # `saturate()` — the glassmorphism idiom — makes the backdrop's colour
+        # pop through, which is what turns the bar into a visible gradient over
+        # a hero photo or a tinted band. Frosted glass does the opposite.
+        _, _, bar = self._pill("light")
+        for prop in ("backdropFilter", "WebkitBackdropFilter"):
+            with self.subTest(prop=prop):
+                self.assertIn("grayscale(", bar.styles[prop])
+                self.assertNotIn("saturate(", bar.styles[prop])
+
+    def test_nothing_of_the_backdrop_s_colour_survives_the_pane(self):
+        """Desaturation has to be TOTAL, not merely strong.
+
+        The blur flattens the backdrop into one large even wash before the eye
+        gets to it, so a residual fraction of hue does not read as "a hint of
+        colour" — it reads as a solid tinted panel, which is the whole
+        complaint. A hero carrying the brand's cast came through a
+        `grayscale(0.8)` pane as a blue-grey; only full desaturation is neutral.
+        """
+        import colorsys
+
+        _, _, bar = self._pill("light")
+        amount = _grayscale_amount(bar)
+        self.assertEqual(amount, 1.0)
+        for backdrop in ("#3d5a80", "#b08050", "#0e7490"):  # brand cast, warm, teal
+            with self.subTest(backdrop=backdrop):
+                seen = _composite(
+                    bar.styles["backgroundColor"], _grayscale(backdrop, amount)
+                )
+                r, g, b = (c / 255 for c in _hex_to_rgb(seen))
+                self.assertAlmostEqual(colorsys.rgb_to_hls(r, g, b)[2], 0.0, places=2)
+
+    def test_desaturating_the_backdrop_costs_no_nav_contrast(self):
+        # grayscale() is a luma projection, so it moves a backdrop's luminance
+        # barely at all — which is why the pane can neutralise colour without
+        # eating into GLASS_ALPHA's readability bound.
+        from app.services.theme import _contrast
+
+        _, _, bar = self._pill("light")
+        ink = _find_type(bar, "menu").styles["color"]
+        amount = _grayscale_amount(bar)
+        for backdrop in ("#0e7490", "#20262f", "#b0b4bc", "#fdf0dd"):
+            with self.subTest(backdrop=backdrop):
+                plain = _contrast(ink, _composite(bar.styles["backgroundColor"], backdrop))
+                grey = _contrast(
+                    ink,
+                    _composite(bar.styles["backgroundColor"], _grayscale(backdrop, amount)),
+                )
+                self.assertAlmostEqual(plain, grey, delta=0.25)
+                self.assertGreaterEqual(grey, 4.5)
+
+    def test_bar_opts_out_of_the_theme_s_decorative_section_texture(self):
+        """The pane must stay glass, not become a brand-tinted panel.
+
+        The renderers live-recompute a grain/mesh `backgroundImage` for any
+        `container` whose background resolves to a plain theme colour, and give
+        it the theme's `backgroundTexture` default. The pill's veil resolves to
+        exactly `palette.background`, so it reads as a plain section and gets
+        the site's aurora mesh painted ON it — four brand-hued radial gradients
+        that `backdrop-filter` cannot touch, because the filter only affects
+        what is BEHIND an element, never its own background-image.
+
+        The gate that was supposed to keep chrome out excludes header/footer
+        ROOTS by node type; the pill is the one archetype whose painted surface
+        is a plain container child, so it walked straight through. An explicit
+        `flat` override wins over the theme default in all three renderers
+        (`resolveSectionBackgroundImage`), which strip the image outright.
+        """
+        for scheme in ("light", "dark"):
+            with self.subTest(scheme=scheme):
+                theme, _, bar = self._pill(scheme)
+                # The default this is opting out of is real, not hypothetical.
+                self.assertEqual(theme.to_builder_styles()["backgroundTexture"], "mesh")
+                self.assertEqual(bar.backgroundTexture, "flat")
+                self.assertEqual(bar.model_dump(mode="json")["backgroundTexture"], "flat")
+                # And the generator bakes no image of its own either.
+                self.assertNotIn("backgroundImage", bar.styles)
+
+    def test_bar_carries_the_headerBar_marker(self):
+        # Rides the catalog field whitelist: dropped by _base_fields, the
+        # renderers stop recognising which node paints the chrome and the
+        # builder falls back to matching the bar by its name.
+        _, _, bar = self._pill("light")
+        self.assertIs(bar.headerBar, True)
+        self.assertIs(bar.model_dump(mode="json")["headerBar"], True)
+
+    def test_nav_ink_holds_AA_over_every_backdrop_the_pill_reaches(self):
+        """The glass is as thin as this bound allows — so hold the bound.
+
+        The pill never solidifies, so it is sticky over the WHOLE page and its
+        nav has to survive every surface underneath: the hero's scrimmed photo,
+        an unscrimmed photo mid-page, and the theme's own bands. Those bands
+        are read off the palette rather than assumed — a dark-scheme site has
+        no white section for the bar to cross, so testing one would be
+        inventing a failure mode instead of covering a real one.
+        """
+        from app.services.theme import _contrast
+
+        SCRIMMED_HERO = "#20262f"  # photo under the hero's legibility overlay
+        BRIGHT_PHOTO = "#b0b4bc"  # the brightest an in-page photo tends to run
+
+        for scheme in ("light", "dark"):
+            theme, _, bar = self._pill(scheme)
+            ink = _find_type(bar, "menu").styles["color"]
+            backdrops = (
+                SCRIMMED_HERO,
+                BRIGHT_PHOTO,
+                theme.palette.background,
+                theme.palette.surface,
+            )
+            for backdrop in backdrops:
+                with self.subTest(scheme=scheme, backdrop=backdrop):
+                    surface = _composite(bar.styles["backgroundColor"], backdrop)
+                    self.assertGreaterEqual(_contrast(ink, surface), 4.5)
+
+    def test_reveal_style_archetypes_are_untouched(self):
+        # glass-blur paints its own translucency on the ROOT (it solidifies on
+        # scroll); only the pill moved.
+        theme = build_theme("#0e7490", mood="modern")
+        header = build_header(
+            BrandIdentity(name="Acme", mood="modern"), theme,
+            nav_items=[], overlay=True, archetype="glass-blur",
+        )
+        self.assertAlmostEqual(_alpha(header.styles["backgroundColor"]), 0.72)
+        self.assertIsNone(getattr(header.content[0], "headerBar", None))
+
+
+def _channels(rgba):
+    """(r, g, b, alpha) out of an `rgba(...)` string."""
+    import re
+
+    r, g, b, a = (float(v) for v in re.findall(r"[\d.]+", rgba))
+    return int(r), int(g), int(b), a
+
+
+def _alpha(rgba):
+    return _channels(rgba)[3]
+
+
+def _grayscale_amount(node):
+    """The `grayscale(x)` amount out of an element's backdropFilter."""
+    return float(node.styles["backdropFilter"].split("grayscale(")[1].split(")")[0])
+
+
+def _grayscale(hex_color, amount):
+    """CSS `grayscale(amount)`: interpolate toward the luma projection, on the
+    gamma-encoded channels, exactly as the filter spec defines it."""
+    from app.services.theme import _hex_to_rgb, _rgb_to_hex
+
+    r, g, b = _hex_to_rgb(hex_color)
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return _rgb_to_hex(*[round(c + (luma - c) * amount) for c in (r, g, b)])
+
+
+def _composite(rgba, backdrop_hex):
+    """`rgba` painted over an opaque backdrop, as the browser would blend it."""
+    from app.services.theme import _hex_to_rgb, _rgb_to_hex
+
+    r, g, b, a = _channels(rgba)
+    under = _hex_to_rgb(backdrop_hex)
+    return _rgb_to_hex(*[round(a * c + (1 - a) * u) for c, u in zip((r, g, b), under)])
+
+
+class FloatingPillGeometryTest(unittest.TestCase):
+    """The pill is a slim capsule that tracks the page's content column.
+
+    Two things it must not do: float at its own inset width (it read as a
+    stray widget unrelated to the page below it), and inherit the industry's
+    oversized brand mark (the logo is the tallest thing in the bar, so it — not
+    the padding — sets the bar's height).
+    """
+
+    def _header(self, archetype, theme):
+        return build_header(
+            BrandIdentity(
+                name="GloryKids", mood="playful",
+                logo_data_url="data:image/png;base64,abc",
+            ),
+            theme,
+            nav_items=[],
+            primary_cta=("Schedule a Tour", "/contact"),
+            overlay=True,
+            industry="childcare",
+            archetype=archetype,
+        )
+
+    def test_pill_spans_the_same_column_as_the_content(self):
+        theme = build_theme("#0284c7", mood="playful", industry="childcare")
+        bar = self._header("floating-pill", theme).content[0]
+        self.assertEqual(bar.styles["maxWidth"], f"{theme.page.max_width}px")
+        # Same column every other header bar uses — not an inset of its own.
+        classic_bar = self._header("classic", theme).content[0]
+        self.assertEqual(bar.styles["maxWidth"], classic_bar.styles["maxWidth"])
+        # It still clears the viewport edges: the transparent root keeps gutters
+        # so the capsule never touches the screen on a narrow window.
+        root = self._header("floating-pill", theme).styles
+        self.assertEqual(root["paddingLeft"], "24px")
+        self.assertEqual(root["paddingRight"], "24px")
+
+    def test_pill_caps_the_logo_that_other_archetypes_keep(self):
+        from app.services.header_footer import (
+            _LOGO_HEIGHT_BY_INDUSTRY,
+            _SELF_CHROME_LOGO_HEIGHT,
+        )
+
+        theme = build_theme("#0284c7", mood="playful", industry="childcare")
+        pill_logo = _find(self._header("floating-pill", theme), "Brand Logo")
+        classic_logo = _find(self._header("classic", theme), "Brand Logo")
+
+        self.assertEqual(pill_logo.styles["height"], _SELF_CHROME_LOGO_HEIGHT)
+        # Childcare's deliberately large mark survives everywhere else — the cap
+        # is the pill's, not a downgrade of the industry brief.
+        self.assertEqual(classic_logo.styles["height"], _LOGO_HEIGHT_BY_INDUSTRY["childcare"])
+        self.assertLess(_px(pill_logo.styles["height"]), _px(classic_logo.styles["height"]))
+
+    def test_pill_is_the_most_compact_bar(self):
+        theme = build_theme("#0284c7", mood="playful", industry="childcare")
+        pill = self._header("floating-pill", theme).content[0].styles
+        classic = self._header("classic", theme).content[0].styles
+        self.assertLess(_px(pill["paddingTop"]), _px(classic["paddingTop"]))
+        self.assertLess(_px(pill["paddingLeft"]), _px(classic["paddingLeft"]))
+        # Bar height is driven by its tallest child, so the capped logo is what
+        # actually makes it compact — assert the whole stack, not just padding.
+        logo = _px(_find(self._header("floating-pill", theme), "Brand Logo").styles["height"])
+        self.assertLessEqual(logo + 2 * _px(pill["paddingTop"]), 60)
+
+
+def _px(value):
+    return float(str(value).replace("px", ""))

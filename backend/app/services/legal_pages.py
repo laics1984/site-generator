@@ -122,6 +122,33 @@ def _h1(text: str, theme: ThemeTokens) -> BuilderElement:
     return el
 
 
+def drop_page_title(page: GeneratedPage) -> bool:
+    """Strip the body's own ``<h1>`` heading. Returns True if one was removed.
+
+    Called when a hero is prepended to a legal page (see schema_builder's
+    self-chrome hero pass): the hero headline becomes the page's single ``<h1>``,
+    and repeating the same title as the first line of the body below it reads as
+    a stutter. Exactly one ``h1`` per page is an audit rule — see
+    ux_audit.py — so leaving both would fail it.
+    """
+    removed = False
+
+    def _walk(elements: list[BuilderElement]) -> list[BuilderElement]:
+        nonlocal removed
+        kept: list[BuilderElement] = []
+        for el in elements:
+            if el.name == "H1":
+                removed = True
+                continue
+            if isinstance(el.content, list):
+                el.content = _walk(el.content)
+            kept.append(el)
+        return kept
+
+    page.body_schema.elements = _walk(page.body_schema.elements)
+    return removed
+
+
 def _h2(text: str, theme: ThemeTokens) -> BuilderElement:
     el = _text(
         text,

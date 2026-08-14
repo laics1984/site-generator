@@ -45,6 +45,49 @@ def _rgba(hex_color: str, alpha: float) -> str:
     b = int(hex_color[5:7], 16)
     return f"rgba({r}, {g}, {b}, {alpha})"
 
+
+# The floating pill's glass. Alpha is the LOWEST that keeps the nav readable
+# (AA 4.5:1) in the worst position the pill reaches — and it reaches every
+# position, because it is the one header that never solidifies: a light-scheme
+# bar ends up over the hero's dark scrim, a dark-scheme one over a bright photo.
+# Below this the ink starts failing over the hero; going further would mean
+# giving the pill adaptive ink, which is exactly the transparent-phase
+# machinery self-chrome archetypes opt out of.
+GLASS_ALPHA = 0.20
+# Frosted glass, not "glassmorphism". The pane has no colour of its own, but a
+# translucent pane is only as colourless as what shows through it: over a hero
+# photo or a tinted band, whatever is behind reads as a colour smear ACROSS the
+# pill and the bar stops looking like glass and starts looking like a gradient.
+#
+# So the filter DESATURATES the backdrop instead of boosting it. A saturate()
+# boost is the opposite move — it makes the backdrop's colour pop through, which
+# is the glassmorphism idiom and precisely the "coloured gradient" look this
+# must not have. grayscale() preserves luminance by construction (it is a luma
+# projection), so it costs nothing in nav contrast: see GLASS_ALPHA's bound.
+#
+# FULL desaturation, not partial. A partial pass keeps a fraction of the
+# backdrop's hue, and the blur has already flattened that backdrop into one
+# large even wash — so what survives is not "a hint of colour", it is a solid
+# tinted panel. At 0.8 a hero carrying the brand's blue cast still came through
+# as #a8abaf, a blue-grey pane; at 1 the same backdrop reads #ababab, neutral.
+# Small residual saturation is very visible over a flat area.
+GLASS_FILTER = "blur(20px) grayscale(0)"
+
+
+def _glass_tint(hex_color: str) -> str:
+    """`hex_color` stripped of hue and saturation, keeping only its lightness.
+
+    The pill reads as clear glass, so its veil must be achromatic — the brand
+    hue belongs to the page showing through it, not to the pane. In a light
+    scheme the header background is already pure white and this is a no-op; in
+    a dark one it turns the palette's navy-black into a neutral black.
+    """
+    from app.services.theme import _hex_to_rgb, _rgb_to_hex, _rgb_to_hls
+
+    lightness = _rgb_to_hls(*_hex_to_rgb(hex_color))[1]
+    value = round(max(0.0, min(1.0, lightness)) * 255)
+    return _rgb_to_hex(value, value, value)
+
 # The builder's HeaderSettings "Divider" control is a boxShadow preset on the
 # __header root element. This is the exact "Subtle" preset value
 # (HEADER_SHADOW_PRESETS in builder src/lib/site-navigation.ts) — emitting the
@@ -55,6 +98,14 @@ HEADER_DIVIDER_SUBTLE = "0 1px 3px 0 rgba(15, 23, 42, 0.06)"
 # prominent mark (childcare: warm, friendly, front-and-centre for parents).
 _DEFAULT_LOGO_HEIGHT = "52px"
 _LOGO_HEIGHT_BY_INDUSTRY: dict[str, str] = {"childcare": "68px"}
+
+# The floating pill overrides both. The logo is the tallest thing in the bar, so
+# it — not the padding — sets the bar's height: childcare's 68px mark alone
+# makes the pill half again as tall as the compact floating bar the archetype is
+# supposed to be. A self-chrome pill is a slim capsule over the hero, not a
+# brand banner, so it caps the mark and lets the industry keep its bigger logo
+# on every other archetype (where the bar spans the full width and can carry it).
+_SELF_CHROME_LOGO_HEIGHT = "45px"
 
 # Industries whose logo must never get the contrast "chip" (a boxed background
 # behind the mark) — it reads as an unwanted border against their light chrome.
@@ -351,7 +402,11 @@ def build_header(
         theme,
         lockup=logo_lockup,
         ink=header_fg,
-        logo_height=_LOGO_HEIGHT_BY_INDUSTRY.get(norm_industry, _DEFAULT_LOGO_HEIGHT),
+        logo_height=(
+            _SELF_CHROME_LOGO_HEIGHT
+            if archetype in SELF_CHROME_HEADERS
+            else _LOGO_HEIGHT_BY_INDUSTRY.get(norm_industry, _DEFAULT_LOGO_HEIGHT)
+        ),
     )
     if archetype not in SELF_CHROME_HEADERS:
         logo.classes = "wt-header-ink"
@@ -379,10 +434,18 @@ def build_header(
 def _header_tokens(
     theme: ThemeTokens, header_bg: str, header_fg: str
 ) -> dict[str, str]:
-    """The header half of the chrome token contract (see template_filler)."""
+    """The header half of the chrome token contract (see template_filler).
+
+    Mirrored by HEADER_TOKENS in builder/src/lib/chrome-archetypes.ts (as
+    `color-mix` against the live CSS vars) — a token added here and not there
+    ships as a literal `{{...}}` string in the editor. Keep the two in lockstep.
+    """
     return {
         "header.bg": header_bg,
         "header.fg": header_fg,
+        # The floating pill's glass: achromatic, and as thin as AA allows.
+        "glass.tint": _rgba(_glass_tint(header_bg), GLASS_ALPHA),
+        "glass.filter": GLASS_FILTER,
         "header.bg@72": _rgba(header_bg, 0.72),
         "header.bg@88": _rgba(header_bg, 0.88),
         "header.fg@10": _rgba(header_fg, 0.10),
@@ -393,7 +456,9 @@ def _header_tokens(
         "buttons.fg": theme.buttons.text,
         "buttons.radiusPx": f"{theme.buttons.radius}px",
         "pill.radiusPx": f"{max(20, theme.buttons.radius + 14)}px",
-        "pill.maxWidthPx": f"{max(720, theme.page.max_width - 240)}px",
+        # No pill.maxWidthPx: the pill spans `page.maxWidthPx`, the same column
+        # every other header bar and every content section uses, so it lines up
+        # with the page instead of floating at its own inset width.
         "page.maxWidthPx": f"{theme.page.max_width}px",
         "font.heading": theme.typography.heading_font,
         "font.body": theme.typography.body_font,

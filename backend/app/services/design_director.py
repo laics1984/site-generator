@@ -218,6 +218,57 @@ async def compose_design_manifest(
     return manifest
 
 
+def demote_self_chrome_header(manifest: DesignManifest, *, reason: str) -> bool:
+    """Swap a self-chrome header (the floating pill) for the best non-self-chrome
+    archetype in the same fit list. Returns True when the manifest changed.
+
+    The pill is only honest over a photo hero: it floats with its own chrome and
+    never solidifies, so on a page that opens with a flat band it reads as a
+    stray widget sitting on the page background. plan_to_site therefore GIVES
+    every page a photo hero (legal pages included) rather than dropping the
+    pill — and calls this only when a page still couldn't resolve one, i.e. the
+    invariant is genuinely unreachable for this site.
+
+    An explicit caller pin is demoted too: a pinned archetype the site cannot
+    render correctly is worse than the next-best fit, and the swap is recorded
+    in the decision log with its reason.
+    """
+    if manifest.header_archetype not in SELF_CHROME_HEADERS:
+        return False
+    candidates, _pinned = _fit_candidates(
+        manifest.mood,  # type: ignore[arg-type]
+        manifest.industry,
+        _HEADER_FIT,
+        _HEADER_FIT_BY_INDUSTRY,
+    )
+    # Best fit first, self-chrome removed. "classic" backstops a fit list that
+    # somehow held nothing else — it is never wrong, merely never interesting.
+    fallback: HeaderArchetype = next(
+        (c for c in candidates if c not in SELF_CHROME_HEADERS), "classic"
+    )
+    previous = manifest.header_archetype
+    manifest.header_archetype = fallback
+    # Replace rather than append: decision_for() returns the FIRST match per
+    # area, so a stale "header"/"header-overlay" entry would out-rank the swap.
+    manifest.decisions = [
+        d for d in manifest.decisions if d.area not in ("header", "header-overlay")
+    ]
+    manifest.decisions.insert(
+        0,
+        DesignDecision(
+            area="header",
+            choice=fallback,
+            rationale=(
+                f"'{previous}' demoted — {reason}; next non-self-chrome archetype "
+                "in the fit list"
+            ),
+            confidence=0.9,
+        ),
+    )
+    logger.info("Header archetype demoted: %s -> %s (%s)", previous, fallback, reason)
+    return True
+
+
 # Decision areas that feed the diversity history. Chrome comes from the
 # manifest's own fields; the rest are decision-log entries appended by
 # plan_to_site (palette hex, homepage hero template). Interior heroes and

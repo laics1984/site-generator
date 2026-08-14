@@ -111,6 +111,10 @@ def _base_fields(node: dict[str, Any], styles: dict[str, Any]) -> dict[str, Any]
         out["motion"] = node["motion"]
     if node.get("lightbox") is not None:
         out["lightbox"] = node["lightbox"]
+    if node.get("headerBar") is not None:
+        out["headerBar"] = node["headerBar"]
+    if node.get("backgroundTexture") is not None:
+        out["backgroundTexture"] = node["backgroundTexture"]
     return out
 
 

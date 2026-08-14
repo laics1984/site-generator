@@ -27,7 +27,12 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from app.models.brand import BrandIdentity, BrandMood, ThemeTokens
+from app.models.brand import (
+    HERO_BANDED_MIN_HEIGHT,
+    BrandIdentity,
+    BrandMood,
+    ThemeTokens,
+)
 from app.models.builder_schema import (
     BodySchema,
     BuilderElement,
@@ -68,6 +73,7 @@ from app.models.content_blocks import (
     TimelineBlock,
 )
 from app.models.design_manifest import (
+    SELF_CHROME_HEADERS,
     DesignDecision,
     DesignManifest,
     FooterArchetype,
@@ -76,6 +82,7 @@ from app.models.design_manifest import (
 from app.services.design_brain import DesignRecipe, generate_site_design_recipe
 from app.services.design_director import (
     compose_design_manifest,
+    demote_self_chrome_header,
     record_manifest_choices,
 )
 from app.services.hero_director import (
@@ -87,6 +94,7 @@ from app.services.hero_director import (
     plan_site_heroes,
 )
 from app.services.header_footer import build_footer, build_header
+from app.services.legal_pages import drop_page_title
 from app.services.image_match import SlotUsage
 from app.services.media import ImageIntent, ImageResolver, monogram_avatar_url
 from app.services.timing import log_elapsed, stage
@@ -4235,6 +4243,78 @@ def _resolve_block_cta_hrefs(
                 setattr(target, label_field, "")
 
 
+# Height of a hero prepended to a page outside the plan (privacy / terms). The
+# var is only defined on a "banded" site, so the literal fallback bands the hero
+# either way — a legal page has nothing to sell and must not open on a full
+# screen of photography. Keeping the var IN the expression also preserves the
+# renderers' legacy full-bleed-hero signature (PreviewSiteShell's
+# heroIsBackgroundLayout matches on the token name).
+_EXTRA_PAGE_HERO_MIN_HEIGHT = f"var(--builder-hero-min-height, {HERO_BANDED_MIN_HEIGHT})"
+
+
+async def _prepend_photo_hero(
+    page: GeneratedPage,
+    *,
+    theme: ThemeTokens,
+    resolver: ImageResolver,
+    styles: StyleTokens,
+    industry: str | None,
+    seed: str,
+) -> bool:
+    """Give a page built outside the plan (privacy / terms) a banded photo hero.
+
+    Legal pages are assembled straight from boilerplate (services/legal_pages.py)
+    and have always opened on a flat band of body copy. That is fine under a
+    header that carries its own solid chrome, but not under the floating pill,
+    which never solidifies — so when the pill is in play every page needs a
+    photo hero, these included.
+
+    Returns True only when the hero rendered a GENUINE photo (i.e. came back
+    `headerOverlaySafe`). A degraded hero is discarded rather than shipped: a
+    flat colour band under the pill is exactly the look this exists to prevent,
+    and the caller demotes the archetype instead. So a page is either left
+    byte-identical to its pre-hero self, or gains a hero the pill can float over.
+    """
+    ctx = RenderContext(
+        theme=theme,
+        resolver=resolver,
+        styles=styles,
+        industry=industry,
+        current_page_slug=page.slug,
+        variety_seed=seed,
+    )
+    block = HeroBlock(
+        headline=page.title,
+        subheadline=page.seo.description or page.description,
+        layout="background",
+    )
+    hero = await block_to_element(
+        block,
+        ctx,
+        # Not the homepage and no section to scroll to: apply_hero_cta_policy
+        # strips the hero's CTAs, which is what a legal page wants — its one
+        # job is to carry the title over a photograph.
+        is_homepage=False,
+        hero_scroll_target_kind=None,
+        hero_directive=HeroDirective("hero-background-bold", "background"),
+        hero_comp=HeroComposition("center"),
+    )
+    if getattr(hero, "headerOverlaySafe", False) is not True:
+        return False
+    hero.styles = {**(hero.styles or {}), "minHeight": _EXTRA_PAGE_HERO_MIN_HEIGHT}
+    enforce_text_contrast([hero], theme)
+    # The hero headline becomes the page's single <h1>; the body's own title
+    # heading goes, so the page neither repeats itself nor ships two h1s.
+    apply_heading_levels([hero])
+    drop_page_title(page)
+    page.body_schema.elements.insert(0, hero)
+    if settings.seo_enabled and not page.seo.ogImage:
+        page.seo.ogImage = _extract_og_image_safe([hero])
+        if page.seo.ogImage:
+            page.seo.twitterCard = "summary_large_image"
+    return True
+
+
 async def plan_to_site(
     plan: SitePlan,
     *,
@@ -4245,6 +4325,7 @@ async def plan_to_site(
     page_images: dict[str, list[ImageMetadata]] | None = None,
     contact: dict[str, str] | None = None,
     extra_footer_nav: list[tuple[str, str]] | None = None,
+    extra_pages: list[GeneratedPage] | None = None,
     market_cue: str | None = None,
     place_cue: str | None = None,
     social_links: list[tuple[str, str]] | None = None,
@@ -4264,8 +4345,14 @@ async def plan_to_site(
       image_query instead of round-robin. Falls back to `scraped_images` if
       only bare URLs are available.
     - `extra_footer_nav` lets the caller add pages that aren't in plan.pages
-      yet (e.g. legal pages that will be appended after this call) so they
-      still appear in the footer navigation.
+      (e.g. the boilerplate legal pages) so they still appear in the footer
+      navigation.
+    - `extra_pages` are already-built pages outside the plan (again: privacy /
+      terms). They are appended to `site.pages` here rather than by the caller
+      so the site-wide chrome rules can see the WHOLE page list: the floating
+      pill header needs a photo hero on every page, legal ones included, and
+      this function is where that hero gets prepended. They stay out of
+      `page_tree` / primary nav exactly as before.
     """
     effective_brand = brand or BrandIdentity(
         name=plan.site_name,
@@ -4322,6 +4409,20 @@ async def plan_to_site(
         )
     else:
         manifest = DesignManifest(seed=effective_brand.name or plan.site_name)
+
+    # A self-chrome header (the floating pill) never solidifies: it floats over
+    # the first section with its own chrome at every scroll position. That only
+    # reads as designed over a photo hero — full-screen or banded — so the pill
+    # imposes ONE invariant on the whole site: every page, legal pages included,
+    # opens with a full-bleed photo hero. The invariant is met by GIVING pages
+    # that hero (forced directives below + the legal-page hero pass further
+    # down), not by quietly skipping the archetype; only a page that still can't
+    # resolve a genuine photo demotes it (see the audit before build_header).
+    wants_self_chrome = (
+        settings.design_engine_enabled
+        and settings.header_overlay_enabled
+        and manifest.header_archetype in SELF_CHROME_HEADERS
+    )
 
     styles = make_style_tokens(theme)
     resolver = ImageResolver(
@@ -4405,6 +4506,10 @@ async def plan_to_site(
         # has to reach the template picker or it lands on a hero that neither
         # shows a photo nor reads the banded min-height token.
         hero_height=theme.hero_background_height,
+        # The floating pill needs something to float over on EVERY page, so it
+        # overrides the per-mood interior rotation (which leads with compact
+        # splits) even when the site-wide full-bleed policy is off.
+        force_background=wants_self_chrome,
     )
     # With every page on the same full-bleed template, how each hero is COMPOSED
     # is the only axis of variety left — planned site-wide so consecutive pages
@@ -4717,6 +4822,49 @@ async def plan_to_site(
         )
     log_elapsed("page_render", _render_start)
 
+    # Pages from outside the plan (privacy / terms). They render last, so the
+    # stock pool is at its most picked-over by the time they ask for a photo —
+    # which is exactly why their hero is built here, against the same resolver,
+    # rather than by the caller with no image pipeline in hand.
+    # Its return value is deliberately not read: whether the hero stuck is
+    # re-established for every page at once by the audit below.
+    outside_pages = list(extra_pages or [])
+    if wants_self_chrome:
+        for _extra in outside_pages:
+            await _prepend_photo_hero(
+                _extra,
+                theme=theme,
+                resolver=resolver,
+                styles=styles,
+                industry=plan.industry_category,
+                seed=manifest.seed,
+            )
+
+    # Self-chrome audit. The pill floats over the first section on EVERY page
+    # with no solid phase to fall back on, so one page that opens on a flat band
+    # invalidates the archetype for the whole site. Every page has been given a
+    # photo hero by now (forced directives + the pass above); a page that STILL
+    # isn't overlay-safe never resolved a genuine photo, and no amount of
+    # art direction can fix that here — so the pill steps aside for a header
+    # that chromes itself. The demotion lands on the manifest, which is what
+    # every downstream reader (build_header, build_layout_payload, the pushed
+    # designManifest) takes its archetype from.
+    if wants_self_chrome:
+        _unsafe = [
+            p.slug or "/"
+            for p in [*pages, *outside_pages]
+            if getattr(_first_content_section(p), "headerOverlaySafe", False) is not True
+        ]
+        if _unsafe:
+            demote_self_chrome_header(
+                manifest,
+                reason=(
+                    "no photo hero on "
+                    + ", ".join(f"'{s}'" for s in _unsafe[:3])
+                    + (f" (+{len(_unsafe) - 3} more)" if len(_unsafe) > 3 else "")
+                ),
+            )
+
     page_tree = _build_page_tree(pages)
     nav_items = _nav_items_from_pages(pages)
     footer_nav = list(nav_items)
@@ -4815,7 +4963,9 @@ async def plan_to_site(
         tagline=plan.tagline,
         primary_color=theme.palette.primary,
         secondary_color=theme.palette.secondary,
-        pages=pages,
+        # Legal pages ride along in `pages` but not in `page_tree`/nav — they
+        # reach the footer through `extra_footer_nav`, as they always have.
+        pages=[*pages, *outside_pages],
         page_tree=page_tree,
         media_credits=resolver.attributions,
         social_links=social_links or [],

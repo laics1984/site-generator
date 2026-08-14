@@ -58,7 +58,7 @@ Header archetypes — different **layout philosophies**, not recolours:
 |------------------|---------------------------------------------------------------|---------------|
 | `classic`        | logo · inline nav · solid CTA on solid chrome (legacy)        | reveal |
 | `glass-blur`     | classic bar on translucent frosted chrome (backdrop blur)     | reveal |
-| `floating-pill`  | inset rounded bar floating over the page                      | **self-chrome** |
+| `floating-pill`  | inset rounded frosted-glass bar floating over the page        | **self-chrome** |
 | `centered-stack` | brand mark centered over a slim nav row (editorial/luxury)    | reveal |
 | `minimal-line`   | hairline-ruled bar, ghost CTA, extra air (technical/quiet)    | reveal |
 
@@ -69,6 +69,110 @@ overlay-native: it floats over the hero with its own bar chrome from scroll 0
 — its nodes carry no ink markers and the layout payload emits
 `revealBackgroundOnScroll: false`, so renderers never solidify it
 (`SELF_CHROME_HEADERS` in `models/design_manifest.py`).
+
+#### The pill is frosted glass, permanently
+
+Its chrome sits on the inner `headerBar` container (`glass.tint` +
+`glass.filter`), never on the `__header` root, which stays `transparent`. That
+split is the whole mechanism: both renderers strip the ROOT during overlay and
+never touch the bar, so the bar's translucency is what the visitor sees at
+every scroll position — over the hero it floats on and over whatever section it
+later drifts across.
+
+The pane carries **no colour of its own**: `_glass_tint` strips the hue and
+saturation off the header background and keeps only its lightness, so the veil
+is pure white in a light scheme and a neutral black in a dark one (the
+palette's near-black is navy — that tint is what made the pill read as a
+*panel* rather than as glass).
+
+But a translucent pane is only as colourless as what shows THROUGH it, and
+that is the half that actually shows: over a hero photo or a tinted band, the
+backdrop reads as a colour smear across the bar and the pill stops looking like
+glass and starts looking like a gradient. So `glass.filter` is
+`blur(28px) grayscale(1)` — it **fully desaturates** the backdrop. A `saturate()`
+boost is the opposite move (the glassmorphism idiom, which deliberately makes
+the backdrop's colour pop) and is exactly the look this must not have. The
+desaturation is free: `grayscale()` is a luma projection, so it shifts a
+backdrop's luminance by under 0.2 of a contrast point even at full strength —
+measured across brand, photo and band colours in
+`test_desaturating_the_backdrop_costs_no_nav_contrast` — and cannot eat into
+the readability bound below.
+
+`GLASS_ALPHA = 0.5` is a **floor, not a taste** — the thinnest veil that keeps
+the nav at AA 4.5:1 in the worst position the pill reaches, and being sticky
+and never-solidifying it reaches every position. The binding cases are a
+light-scheme bar over the hero's dark scrim (5.7:1) and a dark-scheme bar over
+a bright in-page photo (5.0:1). Thinner needs adaptive ink — the transparent
+phase that self-chrome archetypes deliberately opt out of — not a smaller
+number. `test_header_footer.FloatingPillGlassTest` pins the bound, reading the
+theme's own bands rather than assuming them.
+
+It is a plain element style, not renderer CSS, so the builder's right panel
+edits it directly — its appearance controls (background hex + opacity, blur,
+shadow) target the `headerBar` element precisely so the user styles "the
+header" without seeing the root/bar split. Generation sets the default; the
+editor owns it after that.
+
+The builder's own `HEADER_TOKENS` mirror (used when a user swaps to the pill
+inside the editor) resolves `glass.tint` as `color-mix(page-background 50%,
+transparent)`: identical in a light scheme, where that background is already
+pure white, and a near-black navy rather than a near-black neutral in a dark
+one. CSS cannot desaturate a var without relative-colour syntax, and at 50% the
+two are the same value to the eye — worth more than a syntax that degrades to
+no pane at all where it isn't supported.
+
+The marker rides the catalog field whitelist (`_base_fields` in
+`template_filler.py`, `baseFields` + `CatalogNode` in
+`builder/src/lib/section-catalog.ts`, and `BuilderElement` on both sides) — it
+was missing from all four and silently dropped, so the builder was matching the
+bar by its name string instead.
+
+**The bar also declares `backgroundTexture: "flat"`, and must keep it.** All
+three renderers live-recompute a grain/mesh `backgroundImage` for any
+`container` whose background resolves to a plain theme colour, handing it the
+theme's `backgroundTexture` default (`ThemeTokens.background_strategy`, often
+`mesh`). The pill's veil resolves to exactly `palette.background` — so without
+the override it reads as a plain section and gets the site's aurora mesh
+painted **on** it: four brand-hued radial gradients that no amount of
+`backdrop-filter` tuning can remove, because the filter only touches what is
+BEHIND an element, never its own background-image. The eligibility gate
+(`TEXTURE_ELIGIBLE_TYPES` in each `ContainerBlock`) was written to keep chrome
+out and excludes header/footer ROOTS by node type; the pill is the one
+archetype whose painted surface is a plain container *child*, so it walked
+straight through. An explicit value wins over the theme default in
+`resolveSectionBackgroundImage`, and `flat` resolves to null, which the
+renderers strip outright — one declarative line instead of a patch in three
+renderers.
+
+#### The pill's site-wide contract: a photo hero on every page
+
+Because the pill never solidifies, it has nothing to fall back on over a page
+that opens on a flat band — it reads as a stray widget on the page background.
+So the archetype carries one invariant across the WHOLE site: every page opens
+with a full-bleed photo hero (full-screen or banded — both are the same
+`hero-background-bold` template, `theme.hero_background_height` picks the
+height).
+
+`plan_to_site` meets the invariant by **giving** pages that hero rather than
+skipping the archetype:
+
+* `plan_site_heroes(force_background=True)` overrides the per-mood interior
+  rotation (which leads with compact splits) even when
+  `hero_fullbleed_all_pages` is off;
+* privacy / terms — assembled from boilerplate, historically no hero at all —
+  get a **banded** one prepended by `schema_builder._prepend_photo_hero`. They
+  are passed into `plan_to_site` as `extra_pages` for exactly this reason: the
+  hero needs the site's `ImageResolver`, and the audit below needs the complete
+  page list. The hero headline becomes the page's single `<h1>` and
+  `legal_pages.drop_page_title` removes the body's own, so the one-h1 rule holds.
+
+Only then, if a page STILL isn't `headerOverlaySafe` — no genuine photo
+resolved, and no art direction can fix that — does
+`design_director.demote_self_chrome_header` swap the pill for the next
+non-self-chrome archetype in the same fit list, recording the reason in the
+decision log. An explicit caller pin is demoted too: a pinned archetype the
+site cannot render correctly is worse than the next-best fit. Tests:
+`test_floating_pill_heroes.py`.
 
 Footer archetypes:
 

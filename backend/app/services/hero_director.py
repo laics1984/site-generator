@@ -283,6 +283,7 @@ def plan_site_heroes(
     has_source_background: bool,
     seed: str,
     hero_height: HeroBackgroundHeight = "full",
+    force_background: bool = False,
 ) -> dict[str, HeroDirective]:
     """Assign every page a HeroDirective, keyed by slug.
 
@@ -292,6 +293,12 @@ def plan_site_heroes(
     ``hero_height``: the site-wide photo-hero height (theme.hero_background_height).
     "banded" is a SHORTER PHOTO HERO, so it selects the background treatment —
     see the policy branch below.
+    ``force_background``: the site's chrome REQUIRES a photo hero on every page
+    (the floating-pill header: it floats over the first section with its own
+    chrome, and only a full-screen or banded photo hero gives it something to
+    float over). Takes the site-wide branch below whatever the settings say —
+    the caller demotes the header archetype if a page still can't resolve a
+    genuine photo. See schema_builder's self-chrome audit.
     """
     spec = _INDUSTRY_SPECS.get((industry or "").strip().lower())
     if spec is None:
@@ -316,7 +323,7 @@ def plan_site_heroes(
     # was read by no template on the page. Banded is also self-justifying against
     # the "interiors stay compact" rule that keeps the full-bleed hero out of the
     # rotations: at 460px this IS the compact variant.
-    if settings.hero_fullbleed_all_pages or hero_height == "banded":
+    if settings.hero_fullbleed_all_pages or hero_height == "banded" or force_background:
         directives = {
             page.slug: (
                 HeroDirective(

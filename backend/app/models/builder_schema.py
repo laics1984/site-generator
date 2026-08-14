@@ -201,6 +201,13 @@ class BuilderElement(BaseModel):
     # builder canvas ignores it; renderers that don't know the field degrade to
     # plain, non-interactive tiles.
     lightbox: bool | None = None
+    # Marks the inner bar of a SELF-CHROME header (the floating pill): the
+    # `__header` root is transparent and this container paints the visible
+    # chrome. Renderers read it to know the root is not the painted surface —
+    # they strip the root during overlay but never this bar, they aim the
+    # scroll-shrink padding here, and the builder's right panel points its
+    # appearance controls (background + opacity, blur, shadow) at this element.
+    headerBar: bool | None = None
 
 
 BuilderElement.model_rebuild()
