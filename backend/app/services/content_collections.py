@@ -32,6 +32,7 @@ from app.models.content_blocks import (
     PageType,
     SourceContent,
 )
+from app.services.browser import render_url
 from app.services.fast_fetch import FastFetchResult, try_fast_fetch
 from app.services.page_inference import _infer_page_type
 
@@ -456,10 +457,11 @@ async def _fetch_html(url: str, render_budget: list[int]) -> str | None:
         return None
     render_budget[0] -= 1
     try:
-        from app.services.scraper import _fetch_rendered_html
-
-        html, _final = await _fetch_rendered_html(url)
-        return html
+        # This used to import scraper._fetch_rendered_html and unpack its bare
+        # tuple as `html, _final` — but it returned (final_url, html), so every
+        # render-fallback page here parsed a URL string as markup and found
+        # nothing. The named result makes that unpack impossible to get wrong.
+        return (await render_url(url)).html
     except Exception as exc:  # noqa: BLE001 — one bad page never kills the batch
         logger.warning("collections: render fallback failed for %s: %s", url, exc)
         return None

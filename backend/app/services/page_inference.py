@@ -938,6 +938,8 @@ def infer_page_scaffolds(
     *,
     industry: IndustryCategory,
     site_name: str | None = None,
+    single_page: bool = False,
+    homepage_sections_override: list[str] | None = None,
 ) -> list[PageScaffold]:
     """Build the inferred scaffold tree.
 
@@ -947,9 +949,31 @@ def infer_page_scaffolds(
     Non-empty crawl → derive scaffolds from the discovered URL structure,
     merging in core pages the source doesn't expose (about/contact often live
     in the footer; we add them so the generated site is complete).
+
+    ``single_page`` returns just the homepage plus the template's legal pages,
+    skipping the fan-out entirely. A source that carries one page's worth of
+    grounded facts — a Facebook Page, say — would otherwise get the industry
+    template's four or five pages, which the fidelity net then strips back to
+    almost nothing. ``homepage_sections_override`` lets that caller supply a
+    section list gated on the facts it actually holds, so no section is ever
+    *requested* that the source can't ground.
     """
     template = get_template(industry)
     evidence = _gather_nav_evidence(source.nav_links)
+
+    if single_page:
+        sections = homepage_sections_override or homepage_sections(
+            industry, seed=site_name
+        )
+        home = _home_scaffold(source, industry, seed=site_name).model_copy(
+            update={"sections": sections}
+        )
+        legal = [s for s in template.core_pages if s.is_legal]
+        logger.info(
+            "Single-page source — homepage (%d sections) + %d legal page(s)",
+            len(sections), len(legal),
+        )
+        return [home, *legal]
 
     if not source.discovered_pages:
         # Thin site or crawl disabled: return the industry template's

@@ -41,7 +41,10 @@ from app.models.content_blocks import (
     TeamBlock,
     TeamMember,
 )
+from app.models.facebook import FacebookPage
 from app.models.industry import PageScaffold
+from app.services.facebook_authority import enforce_facebook_facts
+from app.services.facebook_source import to_contact_dict
 from app.services.industry_templates import get_template
 from app.services.design_brain import generate_design_language
 from app.services.translations import build_translated_pages
@@ -1152,6 +1155,11 @@ class GenerateWithPagesRequest(BaseModel):
     # pick (see design_director.compose_design_manifest). None → let it decide.
     header_archetype: HeaderArchetype | None = None
     footer_archetype: FooterArchetype | None = None
+    # The Facebook Page this site was read from, round-tripped from the preview.
+    # It is the authority on its own contact details, hours, reviews and counts:
+    # `facebook_authority.enforce_facebook_facts` rewrites those blocks from it
+    # after the LLM and the grounding net have both run. See services/facebook_source.py.
+    facebook_facts: FacebookPage | None = None
 
 
 @router.post("/with-pages", response_model=GeneratedSite)
@@ -1174,6 +1182,14 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             status_code=400,
             detail="At least one non-legal page (e.g. Home) must be selected.",
         )
+
+    # A Facebook read hands us structured contact details, so fill the dict the
+    # caller left empty. It feeds the homepage's JSON-LD (an address promotes it
+    # to LocalBusiness) and the legal pages' contact address — neither of which
+    # the LLM ever gets to write.
+    contact = payload.contact
+    if not contact and payload.facebook_facts is not None:
+        contact = to_contact_dict(payload.facebook_facts) or None
 
     # Skip the second LLM call if the frontend already gave us the detection
     # from /api/pages/recipe. Falls back to the cached detector — if the recipe
@@ -1384,6 +1400,14 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # against the pages the site actually ships.
     _prune_dead_profile_links(plan)
 
+    # The Facebook Page is the authority on its own facts. This runs after the
+    # LLM AND after align_page_to_scaffold's grounding net, so it has the last
+    # word: verified contact details, hours, reviews and counts replace whatever
+    # the model wrote, and anything the Page never stated is dropped rather than
+    # left standing because no rule happened to catch it.
+    if payload.facebook_facts is not None:
+        plan.pages = enforce_facebook_facts(plan.pages, payload.facebook_facts)
+
     # Resolve LLM-bound image refs (block.image_ref → block.image_url) against
     # the same per-page photo lists the planner prompt showed the model.
     bound_image_urls = bind_image_refs(plan.pages, source_map)
@@ -1409,7 +1433,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # everywhere — can hold them to it too.
     contact_email = (
         payload.legal_contact_email
-        or (payload.contact or {}).get("email")
+        or (contact or {}).get("email")
         or "hello@example.com"
     )
     jurisdiction = payload.jurisdiction or "your country / state"
@@ -1431,7 +1455,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
         page_images=page_images,
-        contact=payload.contact,
+        contact=contact,
         extra_footer_nav=extra_footer_nav,
         extra_pages=legal_page_list,
         market_cue=market_cue,

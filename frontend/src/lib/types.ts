@@ -1,4 +1,5 @@
-export type SourceKind = 'url' | 'pdf' | 'docx'
+/** Mirrors the backend Literal on SourceContent.source_kind — change both together. */
+export type SourceKind = 'url' | 'pdf' | 'docx' | 'facebook'
 
 export interface ImageMetadata {
   url: string
@@ -333,6 +334,68 @@ export interface ImageCandidate {
   intent: 'hero' | 'about' | 'logo' | 'generic'
 }
 
+export interface FacebookHours {
+  day: string
+  opens: string
+  closes: string
+}
+
+export interface FacebookPost {
+  message?: string | null
+  created_time?: string | null
+  image_url?: string | null
+  permalink?: string | null
+}
+
+export interface FacebookReview {
+  text: string
+  author: string
+  rating?: number | null
+  created_time?: string | null
+}
+
+/**
+ * Everything we read off the Page, and the only thing the site is allowed to
+ * claim about the business. Round-tripped opaquely from the preview into
+ * /api/generate/with-pages, where the backend rewrites the contact, hours,
+ * locations, testimonials and stats blocks from these values.
+ */
+export interface FacebookFacts {
+  name: string
+  canonical_url: string
+  page_id?: string | null
+  username?: string | null
+  category?: string | null
+  categories?: string[]
+  about?: string | null
+  description?: string | null
+  mission?: string | null
+  products?: string | null
+  founded?: string | null
+  price_range?: string | null
+  phone?: string | null
+  emails?: string[]
+  website?: string | null
+  single_line_address?: string | null
+  street?: string | null
+  city?: string | null
+  state?: string | null
+  zip_code?: string | null
+  country?: string | null
+  hours?: FacebookHours[]
+  fan_count?: number | null
+  rating_count?: number | null
+  overall_star_rating?: number | null
+  reviews?: FacebookReview[]
+  profile_picture_url?: string | null
+  cover_photo_url?: string | null
+  posts?: FacebookPost[]
+  fetched_via: 'graph' | 'render'
+  /** Some fields couldn't be read — the UI offers a token to fill the gaps. */
+  partial?: boolean
+  missing_fields?: string[]
+}
+
 export interface ScrapePreview {
   url: string
   final_url: string
@@ -345,6 +408,11 @@ export interface ScrapePreview {
   /** URLs the BFS frontier had queued but didn't process. Powers "Crawl N more". */
   unvisited_urls?: string[]
   unvisited_count?: number
+  /** Present only on a Facebook read. Additive — the rest of the shape is identical. */
+  facebook_facts?: FacebookFacts
+  facebook_contact?: Record<string, string>
+  facebook_industry?: IndustryCategory
+  facebook_sections?: string[]
 }
 
 export interface SitemapProbeResult {
@@ -373,6 +441,8 @@ export interface CrawlJobProgress {
   pages_estimate?: number
   current_url?: string
   current_step?: string
+  /** Facebook reads have no page count — they report a percentage instead. */
+  percent?: number
 }
 
 export interface CrawlJob {

@@ -7,7 +7,7 @@ from unittest.mock import patch
 from bs4 import BeautifulSoup
 from PIL import Image
 
-from app.services import scraper
+from app.services import brand_candidate, scraper
 from app.services.logo_extraction import LogoCandidate, extract_logo, is_renderable
 
 BASE = "https://example.com/"
@@ -327,12 +327,12 @@ class BrandCandidateGateTest(unittest.IsolatedAsyncioTestCase):
 
     async def _build(self, candidate, image_bytes):
         with (
-            patch.object(scraper, "is_public_url", return_value=True),
+            patch.object(brand_candidate, "is_public_url", return_value=True),
             patch.object(
-                scraper.httpx, "AsyncClient", lambda **kw: _FakeClient(image_bytes)
+                brand_candidate.httpx, "AsyncClient", lambda **kw: _FakeClient(image_bytes)
             ),
         ):
-            return await scraper._build_brand_candidate("Acme", candidate)
+            return await brand_candidate.build_brand_candidate("Acme", candidate)
 
     async def test_small_icon_seeds_the_palette_but_is_not_renderable(self):
         brand = await self._build(
@@ -373,9 +373,9 @@ class BrandCandidateGateTest(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch.object(
-            scraper, "is_public_url", side_effect=AssertionError("should not fetch")
+            brand_candidate, "is_public_url", side_effect=AssertionError("should not fetch")
         ):
-            brand = await scraper._build_brand_candidate("Acme", candidate)
+            brand = await brand_candidate.build_brand_candidate("Acme", candidate)
 
         self.assertTrue(brand.logo_render_ok)
         self.assertIsNone(brand.logo_url)
@@ -386,15 +386,15 @@ class BrandCandidateResilienceTest(unittest.IsolatedAsyncioTestCase):
     """A dead logo used to discard the scraped site name along with it."""
 
     async def test_no_logo_still_keeps_the_site_name(self):
-        brand = await scraper._build_brand_candidate("Acme", None)
+        brand = await brand_candidate.build_brand_candidate("Acme", None)
 
         self.assertEqual(brand.name, "Acme")
         self.assertIsNone(brand.logo_url)
         self.assertIsNone(brand.logo_source)
 
     async def test_unfetchable_logo_still_keeps_the_site_name(self):
-        with patch.object(scraper, "is_public_url", return_value=False):
-            brand = await scraper._build_brand_candidate(
+        with patch.object(brand_candidate, "is_public_url", return_value=False):
+            brand = await brand_candidate.build_brand_candidate(
                 "Acme", LogoCandidate(source="logo", url="http://127.0.0.1/logo.png")
             )
 
@@ -402,7 +402,7 @@ class BrandCandidateResilienceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(brand.logo_url)
 
     async def test_nothing_at_all_is_still_none(self):
-        self.assertIsNone(await scraper._build_brand_candidate(None, None))
+        self.assertIsNone(await brand_candidate.build_brand_candidate(None, None))
 
 
 if __name__ == "__main__":

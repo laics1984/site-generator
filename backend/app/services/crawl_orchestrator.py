@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import asdict
 from typing import Any
 
 from app.services.crawl_jobs import CrawlJobManager, get_manager
 from app.services.scraper import ScrapeError, scrape_url
+from app.services.source_preview import source_preview_payload
 
 logger = logging.getLogger(__name__)
 
@@ -97,24 +97,18 @@ async def run_crawl_job(job_id: str) -> None:
 
 
 def _result_to_payload(result) -> dict[str, Any]:
-    """The canonical scrape-result payload shape.
+    """A crawl's `ScrapeResult` in the shared preview shape.
 
-    The frontend's ScrapePreview type hydrates straight from this, and
-    routers/document.py mirrors it for uploads, so this function is where the
-    shape is defined. (It was previously defined by POST /api/scrape/preview,
-    which has since been deleted.)"""
-    return {
-        "url": result.url,
-        "final_url": result.final_url,
-        "source_content": result.source_content.model_dump(mode="json"),
-        "brand_candidate": (
-            result.brand_candidate.model_dump(mode="json")
-            if result.brand_candidate
-            else None
-        ),
-        "image_candidates": [asdict(c) for c in result.image_candidates],
-        "fetched_at": result.fetched_at,
-        "discovered_count": len(result.source_content.discovered_pages),
-        "unvisited_urls": result.unvisited_urls,
-        "unvisited_count": len(result.unvisited_urls),
-    }
+    The shape itself lives in services/source_preview.py, where the document
+    and Facebook readers build the same one — it used to be defined here and
+    hand-copied by the others, which meant a new field reached one reader and
+    silently not the rest."""
+    return source_preview_payload(
+        url=result.url,
+        final_url=result.final_url,
+        source_content=result.source_content,
+        brand_candidate=result.brand_candidate,
+        image_candidates=result.image_candidates,
+        fetched_at=result.fetched_at,
+        unvisited_urls=result.unvisited_urls,
+    )

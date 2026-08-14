@@ -75,6 +75,28 @@ def _offline_ocr():
 
 
 @pytest.fixture(autouse=True)
+def _offline_facebook():
+    """Keep the Facebook reader off the network for every test.
+
+    A real ``FACEBOOK_ACCESS_TOKEN`` in ``.env`` makes ``default_fetchers``
+    build a Graph client, so any test that reaches ``fetch_facebook_page``
+    without injecting fetchers would call graph.facebook.com for real. Nulling
+    the token AND disabling the render fallback leaves an empty chain, which
+    fails loudly instead of quietly doing I/O — tests that want a read inject
+    their own fetcher, which bypasses both.
+    """
+    original_token = settings.facebook_access_token
+    original_fallback = settings.facebook_render_fallback_enabled
+    settings.facebook_access_token = None
+    settings.facebook_render_fallback_enabled = False
+    try:
+        yield
+    finally:
+        settings.facebook_access_token = original_token
+        settings.facebook_render_fallback_enabled = original_fallback
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_diversity():
     """Disable the diversity engine's SQLite history for every test.
 

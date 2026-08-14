@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import asdict, dataclass
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -30,6 +29,7 @@ from app.services.doc_parser import (
 from app.services.doc_structure import DocImageRef, split_into_pages
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.page_inference import infer_page_scaffolds
+from app.services.source_preview import ImageCandidate, source_preview_payload
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +38,6 @@ router = APIRouter(prefix="/api/document", tags=["document"])
 _DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
-
-
-@dataclass
-class _ImageCandidate:
-    """Mirror of scraper.ImageCandidate so the frontend ImageCandidate type
-    works for both sources without changes."""
-
-    url: str
-    alt: str
-    width: int | None
-    height: int | None
-    intent: str
 
 
 _FILE_SIZE_LIMIT = 20 * 1024 * 1024  # 20 MB
@@ -81,13 +69,13 @@ def _is_feature_sized(img: DocImage) -> bool:
     return min(img.width, img.height) >= _MIN_FEATURE_SHORT_SIDE
 
 
-def _candidates_from_source(source: SourceContent) -> list["_ImageCandidate"]:
+def _candidates_from_source(source: SourceContent) -> list[ImageCandidate]:
     """Flatten placed per-page image metadata into the preview's candidate list."""
-    out: list[_ImageCandidate] = []
+    out: list[ImageCandidate] = []
     for page in [source, *source.discovered_pages]:
         for meta in page.image_metadata:
             out.append(
-                _ImageCandidate(
+                ImageCandidate(
                     url=meta.url,
                     alt=meta.alt,
                     width=meta.width,
@@ -159,17 +147,14 @@ async def document_preview(file: UploadFile = File(...)) -> dict:
     source_content = split_into_pages(parsed, images=feature_refs)
     image_candidates = _candidates_from_source(source_content)
 
-    return {
-        "url": file.filename,
-        "final_url": file.filename,
-        "source_content": source_content.model_dump(mode="json"),
-        "brand_candidate": (
-            brand_candidate.model_dump(mode="json") if brand_candidate else None
-        ),
-        "image_candidates": [asdict(c) for c in image_candidates],
-        "fetched_at": 0.0,
-        "discovered_count": len(source_content.discovered_pages),
-    }
+    return source_preview_payload(
+        url=file.filename,
+        final_url=file.filename,
+        source_content=source_content,
+        brand_candidate=brand_candidate,
+        image_candidates=image_candidates,
+        fetched_at=0.0,
+    )
 
 
 class ExportRequest(BaseModel):

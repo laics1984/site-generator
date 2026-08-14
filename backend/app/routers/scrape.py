@@ -30,8 +30,15 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.services.crawl_jobs import get_manager
 from app.services.crawl_orchestrator import run_crawl_job
+from app.services.facebook_orchestrator import (
+    forget_token,
+    run_facebook_job,
+    stash_token,
+)
+from app.services.facebook_urls import FacebookUrlError, parse_ref
 from app.services.scraper import ScrapeError, extend_crawl
 from app.services.sitemap import probe_sitemap
+from app.services.source_detect import detect
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
@@ -88,39 +95,70 @@ async def scrape_extend(payload: ExtendCrawlRequest) -> dict[str, Any]:
 
 
 class StartCrawlRequest(BaseModel):
-    """Async crawl kickoff. Returns a job_id; poll /api/scrape/jobs/{id}."""
+    """Async source-read kickoff. Returns a job_id; poll /api/scrape/jobs/{id}."""
 
     url: str
     respect_robots: bool = True
     crawl: bool = True
     crawl_max_pages: int = Field(default=20, ge=0, le=40)
     crawl_max_depth: int = Field(default=3, ge=1, le=4)
+    # Optional Facebook Page access token. Request-scoped: held in memory for
+    # the life of the job and never written to the jobs table. Ignored for
+    # non-Facebook URLs.
+    access_token: str | None = None
 
 
 @router.post("/start")
 async def start_crawl(payload: StartCrawlRequest) -> dict[str, Any]:
     """
-    Kick off a crawl as a background task. Returns immediately with a job_id.
-    Frontend polls GET /api/scrape/jobs/{id} for status + progress + result.
+    Kick off a source read as a background task. Returns immediately with a
+    job_id. Frontend polls GET /api/scrape/jobs/{id} for status + progress +
+    result.
 
-    An identical crawl (same URL, same options) that finished within
+    **This endpoint dispatches on the link.** A Facebook URL is read by the
+    Facebook reader (About, contacts, hours, posts, profile mark), anything
+    else by the HTML crawler — see services/source_detect.py. There is
+    deliberately no second endpoint and no UI mode: the user pastes a link and
+    the backend works out how to read it, so `curl` and the web app behave
+    identically. Detection must run BEFORE the robots check below, because
+    facebook.com/robots.txt would otherwise refuse the URL outright.
+
+    An identical read (same URL, same options) that finished within
     `scrape_cache_ttl_seconds` is handed straight back instead of re-run. A
     crawl is the most expensive thing this service does, and a double-click,
     a browser Back, or a regeneration would otherwise re-render every page.
     The response is shape-identical, so the frontend polls the returned id
     exactly as it would a fresh one and gets `status: "done"` on its first tick.
     """
-    try:
-        await assert_public_url(payload.url)
-    except UnsafeUrlError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    handler = detect(payload.url)
+
+    if handler == "facebook":
+        # Validate the shape now so a group/event/profile link fails instantly
+        # with a specific message instead of after a job round-trip.
+        try:
+            parse_ref(payload.url)
+        except FacebookUrlError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    else:
+        try:
+            await assert_public_url(payload.url)
+        except UnsafeUrlError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     mgr = get_manager()
-    options = {
-        "respect_robots": payload.respect_robots,
-        "crawl": payload.crawl,
-        "crawl_max_pages": payload.crawl_max_pages,
-        "crawl_max_depth": payload.crawl_max_depth,
-    }
+    options: dict[str, Any] = (
+        # The token itself is deliberately absent — only the fact that one was
+        # supplied, so `find_reusable` doesn't hand a tokenless (thinner) result
+        # back to a caller who supplied one.
+        {"source": "facebook", "has_token": bool((payload.access_token or "").strip())}
+        if handler == "facebook"
+        else {
+            "respect_robots": payload.respect_robots,
+            "crawl": payload.crawl,
+            "crawl_max_pages": payload.crawl_max_pages,
+            "crawl_max_depth": payload.crawl_max_depth,
+        }
+    )
 
     # Housekeeping on the cheapest possible trigger: fail rows a dead process
     # left mid-flight, then drop results past the retention window.
@@ -138,7 +176,11 @@ async def start_crawl(payload: StartCrawlRequest) -> dict[str, Any]:
         return {"job_id": reusable.id, "status": reusable.status, "reused": True}
 
     job = await mgr.create(payload.url, options=options)
-    task = asyncio.create_task(run_crawl_job(job.id))
+    if handler == "facebook":
+        stash_token(job.id, payload.access_token)
+        task = asyncio.create_task(run_facebook_job(job.id))
+    else:
+        task = asyncio.create_task(run_crawl_job(job.id))
     mgr.register_task(job.id, task)
     return {"job_id": job.id, "status": job.status, "reused": False}
 
@@ -174,6 +216,9 @@ async def cancel_job(job_id: str) -> dict[str, Any]:
             status_code=409,
             detail="Job not found or already terminal.",
         )
+    # A cancelled Facebook job may never reach its own cleanup, so drop any
+    # stashed token here too — it must not outlive the request that supplied it.
+    forget_token(job_id)
     return {"job_id": job_id, "status": "cancelling"}
 
 
@@ -186,6 +231,7 @@ async def delete_job(job_id: str) -> dict[str, Any]:
             status_code=409,
             detail="Job not found or still running.",
         )
+    forget_token(job_id)
     return {"job_id": job_id, "status": "deleted"}
 
 

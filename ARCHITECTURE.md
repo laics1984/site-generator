@@ -28,8 +28,9 @@ site-generator/
 ## Generation pipeline
 
 ```
-URL or Document
+URL, Document or Facebook Page
    │  scraper.py (httpx fast-path → Playwright fallback) / doc_parser.py
+   │  / facebook_source.py (Graph API → public render)
    ▼
 SourceContent            normalized text + headings + image metadata
    │  planner.py + LLM    brand detection → scaffolded content blocks
@@ -50,10 +51,40 @@ deeply-nested `BuilderElement` JSON (7–9B models drift on long schemas). The
 deterministic mapper in `schema_builder.py` owns all styles/layout, so the look
 stays consistent across model swaps and is unit-testable as pure functions.
 
+**One link field, several readers.** `POST /api/scrape/start` is the only entry
+for a link: `source_detect.py` inspects the URL and dispatches to the HTML
+crawler or the Facebook reader, so the frontend never picks an endpoint and
+`curl` behaves identically. Adding a reader (Instagram, Google Business Profile)
+is one entry in `_HANDLERS` plus an orchestrator — no router or UI change.
+
+**What readers share, and what they don't.** Three small modules hold everything
+more than one reader needs, so no reader imports another:
+
+| Module | Owns |
+|---|---|
+| `browser.py` | Chromium lifecycle + one rendered URL. `browser_context()`, `rendered_page()`, `render_url() -> RenderedPage`. |
+| `brand_candidate.py` | `LogoCandidate → BrandIdentity` — fetch, palette, `logo_render_ok` from decoded pixels. |
+| `source_preview.py` | `ImageCandidate` + `source_preview_payload()` — the pre-LLM shape the preview UI hydrates from. |
+
+Everything else stays private to its reader: `scraper.py` keeps the autoscroll
+and render-evidence stamping its image pipeline depends on, `doc_parser.py` keeps
+its outline model, the Facebook modules keep theirs. Each of those three modules
+replaced a duplicate or a cross-module reach into a private name — the browser
+setup was copied three times inside `scraper.py`, and both `content_collections`
+and the Facebook reader imported `scraper._fetch_rendered_html`.
+
 ### Notable service groups
 - **Scraping:** `scraper.py`, `fast_fetch.py` (httpx-first), `sitemap.py`,
   `polite.py`, `nav_extraction.py`, `crawl_orchestrator.py` + `crawl_jobs.py`
-  (durable, cancellable background crawls), `url_guard.py` (SSRF guard).
+  (durable, cancellable background crawls), `url_guard.py` (SSRF guard),
+  `source_detect.py` (which reader handles a link).
+- **Facebook:** `facebook_urls.py` (link normalization + shape classification),
+  `facebook_graph.py` (Graph API, tolerant field groups), `facebook_render.py`
+  (public-page fallback + login-wall detection), `facebook_source.py` (fetch
+  chain + the deterministic `FacebookPage → SourceContent` mapper),
+  `facebook_authority.py` (post-LLM fact override), `facebook_orchestrator.py`
+  (job runner, in-memory token). See the Facebook section in
+  [CLAUDE.md](CLAUDE.md) for the anti-fabrication contract.
 - **Rendering:** `schema_builder.py` (tree assembly) + `style_tokens.py` (pure
   style helpers), `section_content.py`, `hero_director.py`, `theme.py`,
   `template_filler.py`, `header_footer.py`, `menu_builder.py`.

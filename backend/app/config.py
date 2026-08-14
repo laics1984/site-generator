@@ -435,5 +435,31 @@ class Settings(BaseSettings):
     cms_timeout_seconds: float = 30.0
     cms_media_upload_timeout_seconds: float = 120.0
 
+    # --- Facebook -----------------------------------------------------------
+    # Reading a Facebook business Page (About, contacts, hours, posts, profile
+    # mark) as a generation source. Routed to automatically when the pasted link
+    # is a Facebook URL — see services/source_detect.py.
+    facebook_graph_base_url: str = "https://graph.facebook.com"
+    facebook_graph_version: str = "v21.0"
+    # Optional default Page access token. The Graph path is the sanctioned one
+    # and yields structured hours/emails/posts; without it the reader falls back
+    # to rendering the public Page, which is best-effort. A per-request token
+    # (never persisted) overrides this.
+    facebook_access_token: str | None = None
+    facebook_timeout_seconds: float = 15.0
+    facebook_max_posts: int = 25
+    facebook_max_reviews: int = 12
+    # Floor below which a Page has too little to build from. Higher than the
+    # document path's 80 because Facebook ALWAYS yields a name plus a category
+    # (~40 chars), which would sail past 80 and produce a padded site.
+    facebook_min_raw_text_chars: int = 200
+    # Public-page render when no token is available. Fragile by nature (Facebook
+    # changes its markup without notice); set false to require a token.
+    facebook_render_fallback_enabled: bool = True
+    # Ask the vision judge whether the profile picture is a real mark or a
+    # photograph, and demote it to palette-only when it's a photo. No-op unless
+    # llm_vision_model is configured.
+    facebook_logo_vision_check: bool = True
+
 
 settings = Settings()

@@ -49,7 +49,7 @@ Playwright for render checks: `backend/.venv/bin/playwright install chromium`.
 ## Pipeline (detail in [ARCHITECTURE.md](ARCHITECTURE.md))
 
 ```
-URL / document → scraper.py | doc_parser.py → SourceContent
+URL / document / FB Page → scraper.py | doc_parser.py | facebook_source.py → SourceContent
   → planner.py + LLM        → SitePlan (semantic ContentBlocks: hero/features/cta/…)
   → schema_builder.py       → BuilderElement tree   (deterministic; owns ALL styling)
   → push_orchestrator.py    → CMS (pages, media, menus, header/footer, styles, publish)
@@ -152,6 +152,74 @@ to the whole section type it silently killed 4 of 6 features layouts and 3 of 6
 services layouts. The friendly/playful `services-programs-age` rule is more
 specific and stays absolute, since no other variant declares its age badge, and
 it now also requires the items to actually carry one (`_items_have_audience`).
+
+## Facebook Page ingest
+
+A third source, routed **automatically**: `POST /api/scrape/start` calls
+`source_detect.detect(url)` and dispatches a Facebook link to
+`facebook_orchestrator.run_facebook_job` instead of `run_crawl_job`. There is no
+new endpoint and no UI mode — "read a website" and "read a Facebook Page" are
+one intent with different plumbing, so making the user classify their own link
+would be making them learn the architecture. `frontend/src/lib/sourceDetect.ts`
+mirrors the predicate for the inline badge/helper/button only; the backend
+decides. **Detection must run before the robots check** — facebook.com/robots.txt
+refuses unknown agents, so the URL would never reach the reader otherwise.
+
+Fetch chain (`facebook_source.fetch_facebook_page`, injectable for tests):
+Graph API when a token exists → public Playwright render. Graph fields are
+requested in **tolerant groups**, because Graph fails the *whole* request when
+one field is not permitted — a missing `pages_read_engagement` would otherwise
+turn a missing `emails` into total failure. A denied optional group records
+itself in `missing_fields` and sets `partial`; the render path is always
+`partial`. A login wall raises 422 rather than returning a thin Page.
+
+**`models/facebook.py::FacebookPage` is the anti-hallucination boundary** — a
+fact that isn't a field there cannot reach the site. Three layers enforce it:
+
+1. `facebook_source.build_raw_text` writes every retrieved fact, labelled and
+   verbatim, into `SourceContent.raw_text`. That string is the haystack
+   `scaffold_enforcement.is_grounded_in_source` matches claims against, so it
+   defines exactly what the model may say. Absent fields emit **no label** — a
+   bare `Phone:` line would let the model treat the label as its own grounding.
+2. `homepage_sections_for` gates each section on its own evidence (no `gallery`
+   under 4 photos, no `testimonials` without reviews, no `locations` without an
+   address). A section that can't be grounded is never *requested*, so the model
+   is never put in the position of padding one.
+3. `facebook_authority.enforce_facebook_facts` runs **after** the LLM and after
+   `align_page_to_scaffold`, rewriting contact/locations/testimonials/stats from
+   the Page and **nulling what the Page never stated**. Same precedent as the
+   profile refill in `routers/generate.py` ("the scraped card is the authority").
+   It is the answer to a fluent invention that looks grounded enough to survive.
+
+One landing page: `infer_page_scaffolds(..., single_page=True)` returns home +
+legal only. The template fan-out would hand back ~5 pages the fidelity net then
+strips to nothing.
+
+Other contracts: `source_kind` Literal is mirrored in
+`models/content_blocks.py` **and** `frontend/src/lib/types.ts` — change both.
+The profile picture is the brand mark (`LogoCandidate(source="logo")` →
+`_build_brand_candidate`); the **cover photo never is** (banner with baked-in
+text), and a vision judge demotes a photographic avatar to `og-image`, for which
+`is_renderable` returns False so the header falls back to the wordmark. Posts are
+grounding text plus photos, never a rendered dated feed. Access tokens live in
+`facebook_orchestrator._TOKENS` in memory, are popped on every exit path, and are
+redacted from Graph errors — `options_json` records only `has_token`.
+
+Category → `IndustryCategory` uses whole-word/stem matching, not substrings:
+`"pub"` inside `"Public Figure"` filed a musician's Page as a restaurant.
+
+**The Facebook modules import nothing from `scraper.py` or `doc_parser.py`, and
+neither imports them.** What genuinely is shared lives in three neutral modules
+that all readers depend on instead: `browser.py` (Chromium lifecycle +
+`render_url`), `brand_candidate.py` (`LogoCandidate → BrandIdentity`) and
+`source_preview.py` (`ImageCandidate` + `source_preview_payload`). Keep it that
+way — each of those replaced a duplicate or a reach into a private name, and
+`render_url` returns a **named** `RenderedPage` because the bare
+`(final_url, html)` tuple it replaced was being unpacked backwards.
+
+Tests: `test_source_detect.py`, `test_facebook_{urls,graph,render,source,logo,authority,orchestrator,single_page}.py`.
+`conftest._offline_facebook` nulls the token and disables the render fallback, so
+the default chain is empty and no test can reach Facebook.
 
 ## Gallery lightbox
 

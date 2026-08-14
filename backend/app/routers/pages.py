@@ -34,6 +34,12 @@ router = APIRouter(prefix="/api/pages", tags=["pages"])
 class RecipeRequest(BaseModel):
     source: SourceContent
     industry_override: IndustryCategoryLiteral | None = None
+    # A source that only justifies one page (a Facebook Page read). Returns the
+    # homepage plus legal pages instead of the industry template's fan-out.
+    single_page: bool = False
+    # Section list gated on the facts the source actually holds, so no section
+    # is requested that it can't ground. Ignored unless `single_page`.
+    homepage_sections: list[str] | None = None
 
 
 @router.post("/recipe", response_model=PageRecipeResponse)
@@ -69,6 +75,8 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
         payload.source,
         industry=industry,
         site_name=detected.site_name if detected else None,
+        single_page=payload.single_page,
+        homepage_sections_override=payload.homepage_sections,
     )
 
     # Reshape the template surfaced to the UI: optional_pages becomes the pool

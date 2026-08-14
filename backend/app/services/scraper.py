@@ -22,7 +22,6 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import re
 import time
@@ -30,12 +29,11 @@ import urllib.robotparser
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import httpx
 import trafilatura
 from bs4 import BeautifulSoup, Tag
-from playwright.async_api import async_playwright
 
 from app.config import settings
 from app.models.brand import BrandIdentity
@@ -48,7 +46,10 @@ from app.models.content_blocks import (
     SectionCandidate,
     SourceContent,
 )
-from app.services.url_guard import UnsafeUrlError, assert_public_url, is_public_url
+from app.services.brand_candidate import build_brand_candidate
+from app.services.browser import RenderError, browser_context, rendered_page
+from app.services.source_preview import ImageCandidate
+from app.services.url_guard import UnsafeUrlError, assert_public_url
 from app.services.timing import stage
 from app.services.fast_fetch import (
     FastFetchResult,
@@ -57,26 +58,16 @@ from app.services.fast_fetch import (
 )
 from app.services.image_evidence import ImageEvidence, classify_role, parse_evidence
 from app.services.image_urls import (
-    _BAD_IMG_HINTS,
     _IMG_EXT_OK,
-    _LOGO_HINTS,
     absolute_url as _absolute_url,
-    best_srcset_candidate as _best_srcset_candidate,
     image_src_from_tag as _image_src_from_tag,
-    iter_srcset_candidates as _iter_srcset_candidates,
     looks_like_icon as _looks_like_icon,
     looks_like_logo_url as _looks_like_logo_url,
     tag_classes as _tag_classes,
-    upgrade_source_image_url as _upgrade_source_image_url,
 )
-from app.services.logo_extraction import (
-    LogoCandidate,
-    extract_logo,
-    is_renderable,
-)
+from app.services.logo_extraction import LogoCandidate, extract_logo
 from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
 from app.services.profile_text import has_contact_token, is_boilerplate_line
-from app.services.logo import extract_palette_from_image_bytes
 from app.services.nav_extraction import (
     DOCUMENT_EXTENSIONS,
     extract_body_link_clusters,
@@ -95,31 +86,9 @@ logger = logging.getLogger(__name__)
 # --- public types ---------------------------------------------------------------
 
 
-@dataclass
-class ImageCandidate:
-    """One image candidate found on the page, with an intent guess."""
-
-    url: str
-    alt: str
-    width: int | None
-    height: int | None
-    intent: str  # 'hero' | 'about' | 'logo' | 'generic'
-    # Visual role measured from render evidence (image_evidence.classify_role).
-    # 'unknown' when the page came through the httpx fast path (no stamps).
-    role: str = "unknown"
-    evidence: ImageEvidence | None = None
-    # How the source site used this image: 'css_background' when it came from a
-    # CSS background-image (stamped attr, inline style or <style> block),
-    # 'inline' for <img>/og:image. Downstream, css_background images are kept
-    # out of side/featured slots and pinned to full-bleed background slots.
-    source_usage: str = "inline"
-    # Nearest preceding heading text — ties the image back to the source
-    # section it illustrated. Feeds the planner prompt (image_ref binding)
-    # and the matcher's lexical scoring.
-    context_heading: str = ""
-    # <figcaption> text when the image sits inside a <figure>.
-    caption: str = ""
-
+# `ImageCandidate` is defined in services/source_preview.py — every reader
+# (crawl, document upload, Facebook) emits the same one. Re-exported here
+# because this module's own call sites and tests reference `scraper.ImageCandidate`.
 
 @dataclass
 class ScrapeResult:
@@ -184,50 +153,12 @@ async def _robots_allows(url: str, user_agent: str) -> bool:
 # 403 anything that looks like a bot — `WebtreeSiteGenerator/x.y` would fail on
 # the first request. We still respect robots.txt and rate limits; the UA just
 # stops naive blocklist matching from rejecting us at the door.
-# Single source of truth in config (shared with the httpx fast-fetch path).
-BROWSER_USER_AGENT = settings.http_user_agent
+# Browser identity, stealth and resource blocking now live in services/browser.py
+# — three modules need a rendered page and only one of them is this crawler.
+# Re-exported here because call sites throughout this file still read them.
 
 # Used for the robots.txt check only — that endpoint isn't gated by WAFs.
 USER_AGENT = "WebtreeSiteGenerator/0.2 (+contact: hello@example.com)"
-
-# Headers a real Chrome on macOS sends. Many WAFs flag requests missing these.
-_BROWSER_HEADERS = {
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"macOS"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-}
-
-# Patched into every page on context creation to mask the most-obvious Playwright
-# tell. Doesn't beat sophisticated stealth detection but clears most checks.
-_STEALTH_INIT_SCRIPT = """
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-Object.defineProperty(navigator, 'plugins', {
-  get: () => [1, 2, 3, 4, 5].map(() => ({}))
-});
-Object.defineProperty(navigator, 'languages', {
-  get: () => ['en-US', 'en']
-});
-window.chrome = window.chrome || { runtime: {} };
-"""
-
-
-async def _route_block_heavy(route, request) -> None:
-    """Block media/font/websocket resources to speed up renders."""
-    if request.resource_type in {"media", "font", "websocket"}:
-        await route.abort()
-    else:
-        await route.continue_()
 
 
 async def _autoscroll(page, *, max_steps: int = 12, step_px: int = 1200) -> None:
@@ -340,90 +271,25 @@ async def _stamp_render_evidence(page) -> None:
 async def _goto_and_render(
     context, url: str, *, timeout_ms: int
 ) -> tuple[str, str]:
-    """Render a single URL inside an existing browser context.
+    """Render a single URL inside an existing browser context, crawler-style.
 
     Returns (final_url, html). Raises ScrapeError for 4xx/5xx responses, or for
     a URL that fails the SSRF guard (non-public host).
+
+    The navigation itself lives in ``browser.rendered_page``; what's left here
+    is the part only the crawler wants — a scroll pass and the render-evidence
+    stamps its image pipeline reads back off the DOM.
     """
     try:
-        await assert_public_url(url)
-    except UnsafeUrlError as exc:
-        raise ScrapeError(str(exc), status=400) from exc
-    page = await context.new_page()
-    try:
-        response = await page.goto(
-            url, wait_until="domcontentloaded", timeout=timeout_ms
-        )
-        if response is None:
-            raise ScrapeError(f"No response from {url}", status=502)
-        if response.status == 403:
-            raise ScrapeError(
-                f"{url} blocked our request (403). The site has bot-detection "
-                "active and won't render in a headless browser. Try pasting the "
-                "page content into the document tab instead, or pick a different "
-                "URL on the same site that's less protected (e.g. a blog post).",
-                status=403,
-            )
-        if response.status == 401:
-            raise ScrapeError(
-                f"{url} requires authentication (401). Paste the content "
-                "directly into the document tab instead.",
-                status=401,
-            )
-        if response.status == 429:
-            raise ScrapeError(
-                f"{url} is rate-limiting us (429). Wait a minute and try again.",
-                status=429,
-            )
-        if response.status >= 400:
-            raise ScrapeError(
-                f"Page returned {response.status} for {url}", status=502
-            )
-        try:
-            await page.wait_for_load_state("networkidle", timeout=3000)
-        except Exception:
-            pass
-        # Scroll the page in steps so IntersectionObserver / lazy-load reveals
-        # below-the-fold copy before we snapshot. Without this, paragraphs that
-        # only mount on scroll never make it into page.content().
-        await _autoscroll(page)
-        await _stamp_render_evidence(page)
-        html = await page.content()
-        final_url = page.url
-    finally:
-        await page.close()
-    return final_url, html
-
-
-async def _fetch_rendered_html(
-    url: str, *, timeout_ms: int | None = None
-) -> tuple[str, str]:
-    """Single-shot render — launches its own browser. Use _fetch_many for crawls."""
-    if timeout_ms is None:
-        timeout_ms = settings.playwright_goto_timeout_ms
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ],
-        )
-        context = await browser.new_context(
-            user_agent=BROWSER_USER_AGENT,
-            viewport={"width": 1366, "height": 900},
-            ignore_https_errors=True,
-            locale="en-US",
-            extra_http_headers=_BROWSER_HEADERS,
-        )
-        await context.add_init_script(_STEALTH_INIT_SCRIPT)
-        await context.route("**/*", _route_block_heavy)
-        try:
-            return await _goto_and_render(context, url, timeout_ms=timeout_ms)
-        finally:
-            await context.close()
-            await browser.close()
+        async with rendered_page(context, url, timeout_ms=timeout_ms) as page:
+            # Scroll the page in steps so IntersectionObserver / lazy-load
+            # reveals below-the-fold copy before we snapshot. Without this,
+            # paragraphs that only mount on scroll never reach page.content().
+            await _autoscroll(page)
+            await _stamp_render_evidence(page)
+            return page.url, await page.content()
+    except RenderError as exc:
+        raise ScrapeError(str(exc), status=exc.status) from exc
 
 
 # --- HTML parsing ---------------------------------------------------------------
@@ -2041,74 +1907,6 @@ def _extract_meta_string(soup: BeautifulSoup, *names: str) -> str | None:
 # --- brand candidate -----------------------------------------------------------
 
 
-async def _build_brand_candidate(
-    site_name: str | None,
-    logo: LogoCandidate | None,
-) -> BrandIdentity | None:
-    """Fetch the detected mark, read its palette, and decide whether it may be
-    rendered as the brand logo.
-
-    Every failure past this point degrades to a name-only brand rather than
-    None: the scraped site name is worth keeping even when the logo 404s, and
-    losing it used to force the generator back onto the LLM's guess.
-    """
-    name_only = (
-        BrandIdentity(name=site_name, mood=None) if site_name else None
-    )
-    if logo is None:
-        return name_only
-
-    if logo.data_url and not logo.url:
-        # Inline <svg> — already in hand, nothing to fetch.
-        image_bytes = base64.b64decode(logo.data_url.split(",", 1)[1])
-    else:
-        logo_url = logo.url or ""
-        if not await is_public_url(logo_url):
-            logger.warning("Refusing to fetch logo from non-public URL %s", logo_url)
-            return name_only
-        try:
-            async with httpx.AsyncClient(
-                timeout=settings.robots_fetch_timeout_seconds,
-                follow_redirects=True,
-                headers={"User-Agent": USER_AGENT},
-            ) as client:
-                resp = await client.get(logo_url)
-                resp.raise_for_status()
-                image_bytes = resp.content
-        except httpx.HTTPError as exc:
-            logger.warning("Failed to fetch logo %s: %s", logo_url, exc)
-            return name_only
-
-    try:
-        # PIL decode + quantize is CPU-bound — keep it off the event loop.
-        extraction = await asyncio.to_thread(extract_palette_from_image_bytes, image_bytes)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to extract palette from %s: %s", logo.ref, exc)
-        return name_only
-
-    render_ok = is_renderable(
-        logo.source, size=extraction.size, is_vector=extraction.is_vector
-    )
-    logger.info(
-        "Brand mark: source=%s size=%s render_ok=%s ref=%s",
-        logo.source,
-        extraction.size or ("vector" if extraction.is_vector else "?"),
-        render_ok,
-        (logo.url or "inline-svg"),
-    )
-
-    return BrandIdentity(
-        name=site_name or "Untitled",
-        logo_url=logo.url,
-        logo_data_url=extraction.logo_data_url,
-        extracted_palette=extraction.palette,
-        logo_is_light=extraction.logo_is_light,
-        logo_source=logo.source,
-        logo_render_ok=render_ok,
-        mood=None,
-    )
-
-
 # --- top-level orchestration ----------------------------------------------------
 
 
@@ -2710,113 +2508,89 @@ async def scrape_url(
             status=403,
         )
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ],
-        )
-        context = await browser.new_context(
-            user_agent=BROWSER_USER_AGENT,
-            viewport={"width": 1366, "height": 900},
-            ignore_https_errors=True,
-            locale="en-US",
-            extra_http_headers=_BROWSER_HEADERS,
-        )
-        await context.add_init_script(_STEALTH_INIT_SCRIPT)
-        await context.route("**/*", _route_block_heavy)
+    async with browser_context() as context:
+        # Try httpx-first for the entry too — same speed-win as for crawl
+        # pages. Only spin up the Chromium tab when we actually need it.
+        final_url: str
+        html: str
+        fast_entry = await try_fast_fetch(url, timeout_seconds=10.0)
+        if isinstance(fast_entry, FastFetchResult):
+            final_url, html = fast_entry.final_url, fast_entry.html
+            logger.info("entry httpx-fast for %s", url)
+        else:
+            try:
+                final_url, html = await _goto_and_render(
+                    context, url, timeout_ms=15000
+                )
+            except ScrapeError:
+                raise
+            except asyncio.TimeoutError as exc:
+                raise ScrapeError(f"Timeout fetching {url}", status=408) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise ScrapeError(f"Failed to fetch {url}: {exc}", status=502) from exc
 
-        try:
-            # Try httpx-first for the entry too — same speed-win as for crawl
-            # pages. Only spin up the Chromium tab when we actually need it.
-            final_url: str
-            html: str
-            fast_entry = await try_fast_fetch(url, timeout_seconds=10.0)
-            if isinstance(fast_entry, FastFetchResult):
-                final_url, html = fast_entry.final_url, fast_entry.html
-                logger.info("entry httpx-fast for %s", url)
-            else:
-                try:
-                    final_url, html = await _goto_and_render(
-                        context, url, timeout_ms=15000
-                    )
-                except ScrapeError:
-                    raise
-                except asyncio.TimeoutError as exc:
-                    raise ScrapeError(f"Timeout fetching {url}", status=408) from exc
-                except Exception as exc:  # noqa: BLE001
-                    raise ScrapeError(f"Failed to fetch {url}: {exc}", status=502) from exc
+        entry = await asyncio.to_thread(
+            _parse_rendered_html, html, final_url, require_text=True
+        )
+        entry.source_content.url_path = None  # primary page has no path tag
 
-            entry = await asyncio.to_thread(
-                _parse_rendered_html, html, final_url, require_text=True
+        unvisited_urls: list[str] = []
+        if crawl:
+            # If the entry page IS the roster (the user pasted the committee
+            # page directly), its member links deserve the same front-of-queue
+            # treatment a roster discovered mid-crawl gets — see `priority`
+            # in _crawl_extra_pages.
+            entry_candidates = getattr(entry.source_content, "profile_candidates", None) or []
+            priority_seed_urls: set[str] | None = None
+            if len(entry_candidates) >= 2:
+                priority_seed_urls = {
+                    norm
+                    for c in entry_candidates
+                    if c.profile_url
+                    for norm in (_normalize_crawl_url(c.profile_url),)
+                    if norm
+                }
+            # The site's own inventory, as a LAST-resort seed set. The BFS
+            # only ever sees pages some crawled page links to, so anything
+            # reachable solely from a page beyond the budget — or from no
+            # page at all — was previously invisible. Advisory: any failure
+            # yields no URLs and the crawl proceeds on links alone.
+            sitemap_seeds: list[str] = []
+            if settings.crawl_seed_from_sitemap:
+                with stage("crawl_sitemap_seed"):
+                    sitemap_seeds = await _sitemap_seed_urls(final_url)
+            logger.info(
+                "crawling up to %d extra pages from %s (%d sitemap seed(s))",
+                crawl_max_pages, final_url, len(sitemap_seeds),
             )
-            entry.source_content.url_path = None  # primary page has no path tag
+            with stage("crawl_extra_pages"):
+                discovered, unvisited_urls = await _crawl_extra_pages(
+                context,
+                entry_final_url=final_url,
+                seed_links=entry.source_content.links,
+                fallback_seed_urls=sitemap_seeds,
+                max_pages=crawl_max_pages,
+                max_depth=crawl_max_depth,
+                timeout_ms=12000,
+                respect_robots=respect_robots,
+                priority_seed_urls=priority_seed_urls,
+                on_progress=on_progress,
+                is_cancelled=is_cancelled,
+            )
+            entry.source_content.discovered_pages = [
+                p.source_content for p in discovered
+            ]
+            # With the full page set known, body link clusters repeated
+            # across pages are template chrome — purge their labels from
+            # every page's raw_text so they don't read as content.
+            strip_chrome_lines(entry.source_content)
+            logger.info(
+                "crawl found %d additional pages, %d more in unvisited frontier",
+                len(discovered),
+                len(unvisited_urls),
+            )
 
-            unvisited_urls: list[str] = []
-            if crawl:
-                # If the entry page IS the roster (the user pasted the committee
-                # page directly), its member links deserve the same front-of-queue
-                # treatment a roster discovered mid-crawl gets — see `priority`
-                # in _crawl_extra_pages.
-                entry_candidates = getattr(entry.source_content, "profile_candidates", None) or []
-                priority_seed_urls: set[str] | None = None
-                if len(entry_candidates) >= 2:
-                    priority_seed_urls = {
-                        norm
-                        for c in entry_candidates
-                        if c.profile_url
-                        for norm in (_normalize_crawl_url(c.profile_url),)
-                        if norm
-                    }
-                # The site's own inventory, as a LAST-resort seed set. The BFS
-                # only ever sees pages some crawled page links to, so anything
-                # reachable solely from a page beyond the budget — or from no
-                # page at all — was previously invisible. Advisory: any failure
-                # yields no URLs and the crawl proceeds on links alone.
-                sitemap_seeds: list[str] = []
-                if settings.crawl_seed_from_sitemap:
-                    with stage("crawl_sitemap_seed"):
-                        sitemap_seeds = await _sitemap_seed_urls(final_url)
-                logger.info(
-                    "crawling up to %d extra pages from %s (%d sitemap seed(s))",
-                    crawl_max_pages, final_url, len(sitemap_seeds),
-                )
-                with stage("crawl_extra_pages"):
-                    discovered, unvisited_urls = await _crawl_extra_pages(
-                    context,
-                    entry_final_url=final_url,
-                    seed_links=entry.source_content.links,
-                    fallback_seed_urls=sitemap_seeds,
-                    max_pages=crawl_max_pages,
-                    max_depth=crawl_max_depth,
-                    timeout_ms=12000,
-                    respect_robots=respect_robots,
-                    priority_seed_urls=priority_seed_urls,
-                    on_progress=on_progress,
-                    is_cancelled=is_cancelled,
-                )
-                entry.source_content.discovered_pages = [
-                    p.source_content for p in discovered
-                ]
-                # With the full page set known, body link clusters repeated
-                # across pages are template chrome — purge their labels from
-                # every page's raw_text so they don't read as content.
-                strip_chrome_lines(entry.source_content)
-                logger.info(
-                    "crawl found %d additional pages, %d more in unvisited frontier",
-                    len(discovered),
-                    len(unvisited_urls),
-                )
-        finally:
-            await context.close()
-            await browser.close()
-
-    brand_candidate = await _build_brand_candidate(
-        entry.site_name, entry.logo
-    )
+    brand_candidate = await build_brand_candidate(entry.site_name, entry.logo)
 
     return ScrapeResult(
         url=url,
@@ -2863,39 +2637,18 @@ async def extend_crawl(
     except UnsafeUrlError as exc:
         raise ScrapeError(str(exc), status=400) from exc
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ],
+    async with browser_context() as context:
+        discovered, unvisited = await _crawl_extra_pages(
+            context,
+            entry_final_url=entry_url,
+            seed_links=[],  # primary entry not re-rendered
+            max_pages=max_more,
+            max_depth=crawl_max_depth,
+            timeout_ms=12000,
+            respect_robots=respect_robots,
+            extra_seed_urls=seed_urls,
+            already_seen=set(already_seen),
         )
-        context = await browser.new_context(
-            user_agent=BROWSER_USER_AGENT,
-            viewport={"width": 1366, "height": 900},
-            ignore_https_errors=True,
-            locale="en-US",
-            extra_http_headers=_BROWSER_HEADERS,
-        )
-        await context.add_init_script(_STEALTH_INIT_SCRIPT)
-        await context.route("**/*", _route_block_heavy)
-        try:
-            discovered, unvisited = await _crawl_extra_pages(
-                context,
-                entry_final_url=entry_url,
-                seed_links=[],  # primary entry not re-rendered
-                max_pages=max_more,
-                max_depth=crawl_max_depth,
-                timeout_ms=12000,
-                respect_robots=respect_robots,
-                extra_seed_urls=seed_urls,
-                already_seen=set(already_seen),
-            )
-        finally:
-            await context.close()
-            await browser.close()
 
     return ExtendCrawlResult(
         additional_pages=[p.source_content for p in discovered],

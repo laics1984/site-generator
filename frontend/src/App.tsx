@@ -25,6 +25,7 @@ import {
   type GeneratePayload,
   type GenerateWithPagesPayload,
 } from '@/lib/api'
+import { isFacebookUrl } from '@/lib/sourceDetect'
 import type {
   BrandIdentity,
   BrandMood,
@@ -165,11 +166,21 @@ export default function App() {
    */
   async function handleScrape(
     url: string,
-    opts: { crawl: boolean } = { crawl: true },
+    opts: { crawl: boolean; accessToken?: string } = { crawl: true },
   ) {
     setError(null)
     setScrapeResult(null)
     setPendingScope(null)
+    // A Facebook Page has no sitemap and nothing to crawl — probing it would
+    // just cost a round trip before the read the user actually asked for.
+    if (isFacebookUrl(url)) {
+      await runScrape(url, {
+        crawl: false,
+        maxPages: 0,
+        accessToken: opts.accessToken,
+      })
+      return
+    }
     if (!opts.crawl) {
       // Crawl disabled → no need to probe; go direct, single page only.
       await runScrape(url, { crawl: false, maxPages: 0 })
@@ -197,7 +208,7 @@ export default function App() {
    *  crawls don't hang the HTTP request and the user can see progress. */
   async function runScrape(
     url: string,
-    opts: { crawl: boolean; maxPages: number },
+    opts: { crawl: boolean; maxPages: number; accessToken?: string },
   ) {
     setScrapeBusy(true)
     setError(null)
@@ -209,6 +220,7 @@ export default function App() {
       started = await startCrawl(url, {
         crawl: opts.crawl,
         crawlMaxPages: opts.maxPages || undefined,
+        accessToken: opts.accessToken,
       })
       // Poll loop. 1s cadence — backend job emits progress per page.
       // Hard ceiling at 10 minutes to avoid runaway loops on stuck jobs.
@@ -410,6 +422,10 @@ export default function App() {
       color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
       hero_height: heroHeight === 'auto' ? null : heroHeight,
       detected_brand: detectedBrand,
+      // The Page stays the authority on its own contact details, hours,
+      // reviews and counts — the backend rewrites those blocks from it after
+      // the LLM has run. Riding on the payload means a regenerate keeps it too.
+      facebook_facts: scrapeResult?.facebook_facts ?? null,
     }
     setBusy(true)
     setError(null)
@@ -543,7 +559,7 @@ export default function App() {
       detail: confirmedSource
         ? sourceLabel(confirmedSource) ?? 'Confirmed'
         : mode === 'url'
-          ? 'Scrape a website'
+          ? 'Paste a website or Facebook link'
           : 'Upload a document',
       status: confirmedSource ? 'done' : 'current',
       onClick: confirmedSource ? backToSource : undefined,
@@ -640,6 +656,8 @@ export default function App() {
                     onConfirm={handlePagesConfirm}
                     onBack={backToSource}
                     busy={busy}
+                    singlePage={confirmedSource.source_kind === 'facebook'}
+                    homepageSections={scrapeResult?.facebook_sections}
                   />
                 ) : scrapeResult ? (
                   <ScrapePreview
@@ -697,6 +715,9 @@ export default function App() {
 function sourceLabel(source: SourceContent | null): string | null {
   if (!source) return null
   const ref = source.source_ref || ''
+  // A Facebook ref's host is always "facebook.com", which tells the user
+  // nothing — the Page's own name is the identifying part.
+  if (source.source_kind === 'facebook') return source.title || 'Facebook Page'
   if (!ref) return source.title || null
   if (/^https?:\/\//i.test(ref)) {
     try {

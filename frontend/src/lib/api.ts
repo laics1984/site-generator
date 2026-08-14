@@ -8,6 +8,7 @@ import type {
   CrawlJob,
   DetectedBrand,
   ExtendCrawlResult,
+  FacebookFacts,
   GeneratedSite,
   HeroHeight,
   IndustryCategory,
@@ -82,6 +83,10 @@ export interface GenerateWithPagesPayload {
   legal_contact_email?: string | null
   /** Pass the detected_brand from /api/pages/recipe to skip a duplicate LLM call. */
   detected_brand?: DetectedBrand | null
+  /** The Facebook Page this site was read from. It is the authority on its own
+   * contact details, hours, reviews and counts — the backend rewrites those
+   * blocks from it after the LLM has run. */
+  facebook_facts?: FacebookFacts | null
 }
 
 export async function generateWithPages(
@@ -93,15 +98,25 @@ export async function generateWithPages(
   })
 }
 
+export interface PageRecipeOptions {
+  industryOverride?: IndustryCategory
+  /** One landing page instead of the industry template's fan-out. */
+  singlePage?: boolean
+  /** Section list gated on the facts the source actually holds. */
+  homepageSections?: string[]
+}
+
 export async function fetchPageRecipe(
   source: SourceContent,
-  industryOverride?: IndustryCategory,
+  opts: PageRecipeOptions = {},
 ): Promise<PageRecipeResponse> {
   return jsonRequest('/api/pages/recipe', {
     method: 'POST',
     body: JSON.stringify({
       source,
-      industry_override: industryOverride ?? null,
+      industry_override: opts.industryOverride ?? null,
+      single_page: opts.singlePage ?? false,
+      homepage_sections: opts.homepageSections ?? null,
     }),
   })
 }
@@ -111,6 +126,9 @@ export interface ScrapeOptions {
   crawl?: boolean
   crawlMaxPages?: number
   crawlMaxDepth?: number
+  /** Facebook Page access token. Request-scoped — the backend holds it in
+   * memory for the life of the job and never writes it to the jobs table. */
+  accessToken?: string
 }
 
 /* `scrapeUrlPreview` (POST /api/scrape/preview) lived here. It was the original
@@ -126,7 +144,11 @@ export async function probeSitemap(url: string): Promise<SitemapProbeResult> {
   })
 }
 
-/** Async crawl kickoff — returns a job_id to poll. */
+/** Async source-read kickoff — returns a job_id to poll.
+ *
+ * One endpoint for every link. The backend inspects the URL and picks the
+ * reader (HTML crawler or Facebook Page), so there is no second function here
+ * and no mode for the caller to get wrong. */
 export async function startCrawl(
   url: string,
   opts: ScrapeOptions = {},
@@ -139,6 +161,7 @@ export async function startCrawl(
       crawl: opts.crawl ?? true,
       crawl_max_pages: opts.crawlMaxPages ?? 20,
       crawl_max_depth: opts.crawlMaxDepth ?? 3,
+      access_token: opts.accessToken?.trim() || null,
     }),
   })
 }

@@ -1252,7 +1252,8 @@ class SourceContent(BaseModel):
     only.
     """
 
-    source_kind: Literal["url", "pdf", "docx"]
+    # Mirrored by `SourceKind` in frontend/src/lib/types.ts — change both together.
+    source_kind: Literal["url", "pdf", "docx", "facebook"]
     source_ref: str
     title: str | None = None
     description: str | None = None
