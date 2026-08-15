@@ -59,6 +59,7 @@ from app.services.fast_fetch import (
 from app.services.image_evidence import ImageEvidence, classify_role, parse_evidence
 from app.services.image_urls import (
     _IMG_EXT_OK,
+    BG_URL_RE,
     absolute_url as _absolute_url,
     image_src_from_tag as _image_src_from_tag,
     looks_like_icon as _looks_like_icon,
@@ -76,8 +77,12 @@ from app.services.nav_extraction import (
     is_document_href,
     social_links_from_anchors,
     strip_chrome_lines,
+    strip_chrome_sections,
 )
-from app.services.section_extraction import extract_section_candidates
+from app.services.section_extraction import (
+    extract_section_candidates,
+    in_repeated_image_group as _in_repeated_image_group,
+)
 from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
 
 logger = logging.getLogger(__name__)
@@ -449,16 +454,9 @@ _NAME_PARTICLES = {
     "del", "della", "von", "al", "el", "le", "la", "ter", "ten",
 }
 
-# Matches background-image / background shorthand containing a url().
-# Handles quoted and unquoted URLs, with optional whitespace.
-# Examples matched:
-#   background-image: url("https://example.com/hero.jpg")
-#   background-image: url('https://example.com/hero.jpg')
-#   background: #333 url(https://example.com/banner.webp) no-repeat center
-_BG_URL_RE = re.compile(
-    r'background(?:-image)?\s*:[^;{]*url\(\s*["\']?([^"\')\s]+)["\']?\s*\)',
-    re.IGNORECASE,
-)
+# Background-image url() matcher — shared with section_extraction.py, which uses
+# it to recognise a badge tile built from a styled div. See image_urls.BG_URL_RE.
+_BG_URL_RE = BG_URL_RE
 
 
 def _parse_int(value: str | None) -> int | None:
@@ -642,6 +640,22 @@ def _extract_bg_images(
     return candidates
 
 
+_GRID_MIN_CELLS = 3
+
+
+def _in_image_grid(img: Tag, evidence: ImageEvidence | None) -> bool:
+    """True when this image is one cell of a repeating rack of images.
+
+    Rendered pages already know: the stamper counts similar-sized sibling cells
+    into ``grid_count``. The fast path has no measurements, so it asks the DOM
+    the same question. Both answers mean the same thing: this picture is one of
+    a set, so its small size is the design rather than a sign of decoration.
+    """
+    if evidence is not None:
+        return evidence.grid_count >= _GRID_MIN_CELLS
+    return _in_repeated_image_group(img, min_cells=_GRID_MIN_CELLS)
+
+
 def _extract_images(
     soup: BeautifulSoup, base_url: str
 ) -> list[ImageCandidate]:
@@ -684,8 +698,14 @@ def _extract_images(
             # never finished loading.
             width = evidence.natural_width or width or evidence.width or None
             height = evidence.natural_height or height or evidence.height or None
-        # Drop tiny declared sizes (decoration / icons)
-        if (width and width < 200) or (height and height < 120):
+        # Drop tiny declared sizes (decoration / icons) — unless the image is
+        # one cell of a repeating rack, where small IS the expected size. A
+        # logo/badge wall runs at ~150x60 per tile, so this filter deleted the
+        # entire content of every awards, accreditation and partner section it
+        # met. classify_role makes the same exception on measured geometry.
+        if (
+            (width and width < 200) or (height and height < 120)
+        ) and not _in_image_grid(img, evidence):
             continue
 
         if evidence is not None:
@@ -737,7 +757,11 @@ def _extract_images(
     # Rendered pages: hero = the measured lead visual, not DOM order.
     _promote_hero_by_evidence(candidates)
 
-    return candidates[:30]  # cap
+    # Cap. Roomier than a page's worth of photos needs, because a badge wall is
+    # legitimately image-dense — an accreditation page can carry 20+ marks on
+    # top of the site's ordinary furniture, and truncating mid-wall drops real
+    # content rather than trimming noise.
+    return candidates[:48]
 
 
 def _attr_haystack(tag: Tag) -> str:
@@ -1707,8 +1731,13 @@ def _guess_intent(img: Tag, prior: list[ImageCandidate]) -> str:
     """
     Cheap heuristic for pages without render evidence: first big image we see
     is "hero"; subsequent are "about" or "generic" based on nearby text.
+
+    One cell of a repeating rack is never the hero, however early it appears.
+    On a page whose first content is a badge wall the "first big image" rule
+    crowned an award medal, which then rendered as the page's lead visual AND
+    as a tile in its own wall.
     """
-    if not any(c.intent == "hero" for c in prior):
+    if not any(c.intent == "hero" for c in prior) and not _in_image_grid(img, None):
         return "hero"
     return "about" if _about_hint(img) else "generic"
 
@@ -2582,8 +2611,10 @@ async def scrape_url(
             ]
             # With the full page set known, body link clusters repeated
             # across pages are template chrome — purge their labels from
-            # every page's raw_text so they don't read as content.
+            # every page's raw_text so they don't read as content. Section
+            # headings repeated the same way are chrome for the same reason.
             strip_chrome_lines(entry.source_content)
+            strip_chrome_sections(entry.source_content)
             logger.info(
                 "crawl found %d additional pages, %d more in unvisited frontier",
                 len(discovered),

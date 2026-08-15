@@ -37,11 +37,13 @@ from bs4 import BeautifulSoup, Tag
 from app.models.brand import LogoSource
 from app.services.image_evidence import parse_evidence
 from app.services.image_urls import (
+    _BADGE_DIR_HINTS,
     _LOGO_HINTS,
     absolute_url,
     image_src_from_tag,
     tag_classes,
 )
+from app.services.section_extraction import in_repeated_image_group
 
 logger = logging.getLogger(__name__)
 
@@ -238,17 +240,27 @@ def _has_logo_hint(img: Tag) -> bool:
 
 
 def _in_logo_wall(img: Tag) -> bool:
-    """A tile in a partner / client logo strip, not the site's own mark.
+    """A tile in a partner / client / award strip, not the site's own mark.
 
-    Two independent signals: the URL path convention (`/logos/acme.png` — a
-    *directory* of logos, distinct from a file named `logo.png`), and measured
-    grid membership stamped by the renderer.
+    Three independent signals: the URL path convention (`/logos/acme.png` — a
+    *directory* of other people's marks, distinct from a file named
+    `logo.png`), measured grid membership stamped by the renderer, and — on the
+    fast path, where no measurement exists — the DOM's own answer to the same
+    question.
+
+    The badge directories matter as much as `/logos/`: an award file is
+    routinely NAMED for the award ("Logo of the 21st century the prestigious
+    brand.png"), which trips every logo-name hint there is. Without this the
+    medal outranked the real header mark and became the site's logo.
     """
     src = str(img.get("src") or img.get("data-src") or "").lower()
-    if "/logos/" in src or "/partners/" in src or "/clients/" in src:
+    directory = src.rsplit("/", 1)[0]
+    if "/logos/" in src or any(hint in directory for hint in _BADGE_DIR_HINTS):
         return True
     evidence = parse_evidence(img.get("data-webtree-evidence"))
-    return evidence is not None and evidence.grid_count >= _LOGO_WALL_GRID_MIN
+    if evidence is not None:
+        return evidence.grid_count >= _LOGO_WALL_GRID_MIN
+    return in_repeated_image_group(img, min_cells=_LOGO_WALL_GRID_MIN)
 
 
 def _img_url(img: Tag, base_url: str) -> str | None:

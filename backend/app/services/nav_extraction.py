@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections import Counter
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
@@ -483,6 +484,54 @@ def strip_linkbar_lines(source: SourceContent, cluster: LinkCluster) -> None:
     source.raw_text = "\n".join(
         line for line in source.raw_text.split("\n") if not _is_strap_line(line)
     )
+
+
+# A section heading seen on this many crawled pages is template furniture —
+# the same threshold, and the same reasoning, as find_repeated_cluster_keys.
+_CHROME_SECTION_MIN_PAGES = 2
+
+
+def strip_chrome_sections(source: SourceContent) -> None:
+    """Drop section candidates whose heading repeats across crawled pages.
+
+    Same reasoning as ``strip_chrome_lines``, applied to the section tree: a
+    heading that appears on every page is the template's, not the page's. The
+    tree is built per page during parsing, where the repetition is invisible —
+    and ``_in_chrome`` only recognises chrome that says so in its tags, which a
+    hand-built site whose footer is a plain ``<section>`` never does. Those
+    footer widgets then read as ordinary sections and were handed to the
+    planner as page content. Mutates in place; needs two pages to conclude
+    anything, so a single-page crawl is left alone.
+
+    Only ever removes a DUPLICATE: the heading has to appear on more than one
+    page, so a genuine section is safe even when it shares a name with one.
+    """
+    pages = [source, *source.discovered_pages]
+    if len(pages) < _CHROME_SECTION_MIN_PAGES:
+        return
+    seen: Counter[str] = Counter()
+    for page in pages:
+        for heading in {
+            section.heading.strip().lower()
+            for section in page.section_candidates
+            if section.heading.strip()
+        }:
+            seen[heading] += 1
+    chrome = {h for h, n in seen.items() if n >= _CHROME_SECTION_MIN_PAGES}
+    if not chrome:
+        return
+    for page in pages:
+        kept = [
+            section
+            for section in page.section_candidates
+            if section.heading.strip().lower() not in chrome
+        ]
+        # Never strip a page down to nothing. If every section it has looks
+        # repeated, the repetition is the page's own content being served at a
+        # second URL — an alias, a print view — and the right answer is to keep
+        # it rather than hand the planner an empty page.
+        if kept or not page.section_candidates:
+            page.section_candidates = kept
 
 
 def strip_chrome_lines(source: SourceContent) -> None:

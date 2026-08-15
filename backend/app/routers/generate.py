@@ -24,6 +24,8 @@ from app.models.content_blocks import (
     DownloadItem,
     DownloadLink,
     DownloadsBlock,
+    GalleryBlock,
+    GalleryItem,
     ImageMetadata,
     IndustryCategoryLiteral,
     industry_locked_mood,
@@ -34,6 +36,7 @@ from app.models.content_blocks import (
     ProfileBlock,
     ProfileCandidate,
     ProfileContact,
+    SectionCandidate,
     ServiceItem,
     ServicesBlock,
     SitePlan,
@@ -59,6 +62,7 @@ from app.services.planner import (
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
 from app.services.page_inference import DIRECTORY_MIN_PROFILES
+from app.services.source_path import normalize_source_slug
 from app.services.image_refs import bind_image_refs
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
@@ -180,7 +184,7 @@ def _page_images_by_slug(source: SourceContent) -> dict[str, list[ImageMetadata]
     def add_page(page: SourceContent) -> None:
         if not page.image_metadata:
             return
-        slug = (page.url_path or "").strip("/").lower()
+        slug = normalize_source_slug(page.url_path)
         out.setdefault(slug, []).extend(page.image_metadata)
 
     add_page(source)
@@ -1355,6 +1359,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     if linkbar_cluster is not None:
         _inject_linkbar(plan.pages, linkbar_cluster)
     _inject_downloads(plan.pages, payload.source)
+    # Picture racks the source stated in full — awards, accreditations, partner
+    # logos — are placed from the source rather than described by the model.
+    _inject_image_walls(plan.pages, payload.source)
 
     # Legal pages will be appended after plan_to_site, but they need to appear in
     # the footer nav. Pass their titles + slugs through.
@@ -1539,7 +1546,7 @@ def _translation_sources(source: SourceContent) -> dict[str, SourceContent]:
     in that language rather than a re-translation of our copy."""
     out: dict[str, SourceContent] = {}
     for page in source.discovered_pages:
-        slug = (page.url_path or "").strip("/").lower()
+        slug = normalize_source_slug(page.url_path)
         if slug:
             out[slug] = page
     return out
@@ -1614,7 +1621,7 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
     for source_page in [source, *source.discovered_pages]:
         if not source_page.document_cards:
             continue
-        slug = (source_page.url_path or "").strip("/").lower()
+        slug = normalize_source_slug(source_page.url_path)
         page = pages_by_path.get(slug)
         if page is None:
             continue
@@ -1637,6 +1644,81 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
         )
         insert_at = hero_index + 1 if hero_index is not None else 0
         page.blocks.insert(insert_at, DownloadsBlock(items=items))
+
+
+# Card kinds whose section IS its pictures — mirrors page_inference's set, which
+# decides the scaffold these blocks fill.
+_WALL_CARD_KINDS = frozenset({"gallery"})
+# GalleryBlock.items ceiling; every unique image is one media upload at push.
+_MAX_GALLERY_ITEMS = 24
+
+
+def _inject_image_walls(pages: list[PagePlan], source: SourceContent) -> None:
+    """Rebuild each page's picture racks from the source, verbatim.
+
+    An award / accreditation / partner-logo wall states its content entirely in
+    images: the tiles carry no prose, empty ``alt``, and often no title at all.
+    There is therefore nothing for the model to be faithful TO — asked to write
+    that section it can only invent, and the grounding net then deletes what it
+    invented, so the page ships with the section missing and the real badges
+    dropped. The images themselves are never in doubt, so they are placed here
+    rather than described.
+
+    Same precedent and placement as ``_inject_downloads``: content the source
+    stated exactly is re-attached deterministically instead of being narrated.
+    The heading is the source's own — "Winning Awards", "Registered With" — so
+    three racks stay three racks rather than merging into one gallery.
+
+    Only fills sections the scaffold already asked for, and only replaces a
+    gallery the model produced for that slot: page_inference turns a source
+    picture rack into a ``gallery`` section, so a match means this block was
+    always meant to be these images.
+    """
+    pages_by_path = _page_by_url_path(pages)
+    for source_page in [source, *source.discovered_pages]:
+        walls = [
+            section
+            for section in source_page.section_candidates
+            if section.card_kind in _WALL_CARD_KINDS and section.image_urls
+        ]
+        if not walls:
+            continue
+        page = pages_by_path.get(normalize_source_slug(source_page.url_path))
+        if page is None:
+            continue
+        slots = [i for i, b in enumerate(page.blocks) if b.kind == "gallery"]
+        for index, wall in zip(slots, walls):
+            page.blocks[index] = _wall_gallery_block(wall)
+
+
+def _wall_gallery_block(wall: SectionCandidate) -> GalleryBlock:
+    """One source picture rack → a gallery of exactly those pictures.
+
+    ``image_url`` is set directly, which is what makes this deterministic: the
+    slot is already filled, so nothing downstream resolves a stock photo for it
+    and ``image_refs.bind_image_refs`` never gets to reject a badge for being
+    the wrong shape. ``image_query`` still has to be a non-empty string for the
+    model's schema, but it is dead weight once ``image_url`` is set — see
+    ``section_content._gallery_content``, which prefers the URL.
+    """
+    captions = {card.image_url: card.title for card in wall.cards if card.image_url}
+    items: list[GalleryItem] = []
+    seen: set[str] = set()
+    for url in wall.image_urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        caption = (captions.get(url) or "").strip()
+        items.append(
+            GalleryItem(
+                title=caption or None,
+                image_query=caption or wall.heading,
+                image_url=url,
+            )
+        )
+        if len(items) >= _MAX_GALLERY_ITEMS:
+            break
+    return GalleryBlock(heading=wall.heading, items=items)
 
 
 def _ensure_hub_child_links(pages: list[PagePlan]) -> None:

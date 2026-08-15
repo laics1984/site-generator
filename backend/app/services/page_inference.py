@@ -19,7 +19,13 @@ import logging
 import re
 from urllib.parse import urlparse
 
-from app.models.content_blocks import NavLink, PageType, SectionType, SourceContent
+from app.models.content_blocks import (
+    NavLink,
+    PageType,
+    SectionCandidate,
+    SectionType,
+    SourceContent,
+)
 from app.models.industry import IndustryCategory, PageScaffold
 from app.services.industry_templates import get_template
 from app.services.landing_patterns import homepage_sections
@@ -29,6 +35,7 @@ from app.services.locale import (
     locale_segment,
 )
 from app.services.nav_extraction import find_repeated_cluster_keys
+from app.services.source_path import normalize_source_slug
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
 
 logger = logging.getLogger(__name__)
@@ -342,6 +349,27 @@ _STORY_INELIGIBLE_TYPES: frozenset[PageType] = frozenset(
 _STORY_MIN_SECTIONS = 3
 
 
+# Card kinds whose section IS its pictures. Used to tell a badge/photo wall
+# apart from a narrative section, which is the difference between "one image
+# illustrating a paragraph" and "the images are the content".
+_IMAGE_GRID_CARD_KINDS: frozenset[str] = frozenset({"gallery", "documents"})
+
+# At or above this many images under one heading, the heading is a wall rather
+# than a narrative beat — used where no section tree is available to say so.
+_WALL_MIN_IMAGES = 3
+
+
+def _grid_headings(page: SourceContent | None) -> set[str]:
+    """Lowercased headings whose section is a rack of pictures, not prose."""
+    if page is None:
+        return set()
+    return {
+        section.heading.strip().lower()
+        for section in (page.section_candidates or [])
+        if section.cards and section.card_kind in _IMAGE_GRID_CARD_KINDS
+    }
+
+
 def _story_section_count(page: SourceContent | None) -> int:
     """How many title+paragraph+photo sections the source page evidences.
 
@@ -350,20 +378,29 @@ def _story_section_count(page: SourceContent | None) -> int:
     whose context_heading matches one of the page's headings, counted over
     distinct headings. Zero on the fast path when no context was captured —
     detection degrades to the fixed rhythm, never breaks it.
+
+    A heading whose images form a WALL is not a narrative beat and must not be
+    counted. A narrative section has one photo; an awards or accreditation
+    section has a dozen — but counted per distinct heading they looked
+    identical, so an awards page with three badge racks read as a three-part
+    story and came out as three invented paragraphs.
     """
     if page is None:
         return 0
     headings = {h.strip().lower() for h in (page.headings or []) if h.strip()}
     if not headings:
         return 0
-    matched: set[str] = set()
+    walls = _grid_headings(page)
+    per_heading: dict[str, int] = {}
     for meta in page.image_metadata or []:
         if meta.role in ("logo", "decoration") or meta.intent == "logo":
             continue
         ch = (meta.context_heading or "").strip().lower()
-        if ch and ch in headings:
-            matched.add(ch)
-    return len(matched)
+        if ch and ch in headings and ch not in walls:
+            per_heading[ch] = per_heading.get(ch, 0) + 1
+    # The count is the fallback for pages with no usable section tree: several
+    # images under one heading is a wall whatever the tree did or didn't say.
+    return sum(1 for n in per_heading.values() if n < _WALL_MIN_IMAGES)
 
 
 def _story_sections(story_count: int) -> list[SectionType]:
@@ -392,6 +429,24 @@ _CARD_KIND_SECTIONS: dict[str, SectionType] = {
 _TREE_MIN_SECTIONS = 3
 
 
+def _tree_is_image_led(tree: list[SectionCandidate]) -> bool:
+    """True when every card-bearing section of the tree is a rack of pictures.
+
+    Lets the tree win below ``_TREE_MIN_SECTIONS``. The floor exists because a
+    two-heading prose page says too little to outrank its industry rhythm — but
+    that reasoning does not transfer to pictures. The single most common awards
+    page there is has ONE heading over a dozen badges, and the recipe it falls
+    back to has nowhere to put them, so the page's entire content is dropped.
+
+    Deliberately "all", not "any": a services page with one photo strip among
+    its prose sections keeps its own rhythm.
+    """
+    carded = [section for section in tree if section.cards]
+    if not carded:
+        return False
+    return all(section.card_kind in _IMAGE_GRID_CARD_KINDS for section in carded)
+
+
 def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
     """The section list the SOURCE dictates, or None to fall back to the recipe.
 
@@ -409,7 +464,9 @@ def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
     cards flattened into one of their body strings.
     """
     tree = page.section_candidates if page else None
-    if not tree or len(tree) < _TREE_MIN_SECTIONS:
+    if not tree:
+        return None
+    if len(tree) < _TREE_MIN_SECTIONS and not _tree_is_image_led(tree):
         return None
 
     body: list[SectionType] = []
@@ -627,11 +684,11 @@ def _without_section(sections: list[SectionType], section: SectionType) -> list[
 def _path_to_slug(url_path: str | None) -> str:
     """Normalize ``"/services/web-design/"`` → ``"services/web-design"``.
 
-    The empty string ⇒ homepage.
+    The empty string ⇒ homepage. A page extension is dropped, so
+    ``/about-awards.php`` and ``/about-awards`` are the same page — see
+    ``source_path`` for why all three call sites share one rule.
     """
-    if not url_path or url_path == "/":
-        return ""
-    return url_path.strip("/").lower()
+    return normalize_source_slug(url_path)
 
 
 def _humanize(slug_part: str) -> str:

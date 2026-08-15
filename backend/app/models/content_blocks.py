@@ -1463,7 +1463,11 @@ class SourceCard(BaseModel):
     facility grid into a team roster.
     """
 
-    title: str
+    # May be "": a badge/logo tile (an award, an accreditation, a partner mark)
+    # is a picture and nothing else. What the group IS still resolves, because
+    # `card_kind` is decided over the whole group — a rack of untitled pictures
+    # is exactly the `gallery` signature.
+    title: str = ""
     body: str = ""
     image_url: str | None = None
     image_alt: str = ""

@@ -66,6 +66,12 @@ _GRID_MIN = 3
 _PORTRAIT_ASPECT_RANGE = (0.6, 1.6)
 _PORTRAIT_MAX_W = 420
 
+# Floor for a grid cell, which is allowed to be far smaller than a standalone
+# content image: a logo wall runs at ~150x60 and is still the section's point.
+# Below this a "grid" is a row of UI sprites — social icons, star ratings.
+_MIN_GRID_CELL_W = 40
+_MIN_GRID_CELL_H = 24
+
 # Minimum rendered area for a standalone in-flow image to count as content.
 _CONTENT_MIN_AREA = 160 * 120
 
@@ -149,13 +155,26 @@ def parse_evidence(raw: object) -> ImageEvidence | None:
 
 def classify_role(evidence: ImageEvidence, *, is_background: bool = False) -> ImageRole:
     """Map measured geometry to a visual role. Rules are ordered: cheap
-    disqualifiers first, then the most specific positive signals."""
+    disqualifiers first, then the most specific positive signals — except for
+    grid membership, which outranks the disqualifiers. See below."""
     width, height = evidence.width, evidence.height
-
-    if width < _MIN_RENDER_W or height < _MIN_RENDER_H:
-        return "decoration"
     aspect = evidence.aspect
-    if aspect is not None and aspect >= _STRIP_ASPECT and height < _STRIP_MAX_H:
+
+    # Grid membership beats the size and strip disqualifiers, because those two
+    # describe exactly what an award badge, an accreditation seal or a partner
+    # logo looks like in isolation: small, and often wide-and-flat. Measured
+    # repetition is the thing that tells them apart from a divider — a divider
+    # does not come in a rack of similar-sized siblings. Ordered after the size
+    # tests, the pipeline threw away the images that WERE the section's content
+    # and left the page with nothing to say.
+    in_grid = evidence.grid_count >= _GRID_MIN
+    if not in_grid:
+        if width < _MIN_RENDER_W or height < _MIN_RENDER_H:
+            return "decoration"
+        if aspect is not None and aspect >= _STRIP_ASPECT and height < _STRIP_MAX_H:
+            return "decoration"
+    elif width < _MIN_GRID_CELL_W or height < _MIN_GRID_CELL_H:
+        # A floor still applies: a rack of 12×12 sprites is chrome, not a wall.
         return "decoration"
 
     if is_background and evidence.text_length >= _BG_MIN_TEXT_CHARS:

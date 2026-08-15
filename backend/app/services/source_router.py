@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 
 from app.models.content_blocks import ImageMetadata, SectionCandidate, SourceContent
 from app.models.industry import PageScaffold
+from app.services.source_path import normalize_source_slug
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +63,17 @@ _PAGE_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 
 def _normalize_slug(value: str | None) -> str:
-    """Strip slashes; lowercase. Empty string ⇒ homepage."""
-    if not value:
-        return ""
-    return value.strip("/").lower()
+    """Strip slashes; lowercase; drop a page extension. "" ⇒ homepage.
+
+    Applied to BOTH sides of the match — the scraped ``url_path`` and the
+    scaffold's own slug — because the two only meet if they normalize
+    identically. See ``source_path``.
+    """
+    return normalize_source_slug(value)
 
 
 def _path_to_slug(url_path: str | None) -> str:
-    if not url_path or url_path == "/":
-        return ""
-    return _normalize_slug(url_path)
+    return normalize_source_slug(url_path)
 
 
 def _trailing_segment(slug: str) -> str:

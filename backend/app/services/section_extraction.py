@@ -56,6 +56,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 
 from app.models.content_blocks import SectionCandidate, SourceCard, SourceCardKind
+from app.services.image_urls import BG_URL_RE as _BG_URL_RE, descriptive_name_from_url
 
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
@@ -74,6 +75,11 @@ _MAX_SECTIONS = 30
 # A repeated sibling group must actually dominate its parent — a 2-of-9
 # signature match is two similar divs in a pile of markup, not a card rack.
 _MIN_GROUP_SHARE = 0.6
+
+# How far above a heading to look for the container that holds its card rack.
+# Deep enough for the usual section > container > column nesting, shallow
+# enough that a heading cannot reach the page wrapper. See _repeated_group.
+_MAX_ANCESTOR_LOOKUP = 4
 
 _MAX_HEADING_LEN = 200
 _MAX_PROSE_CHARS = 1200
@@ -143,6 +149,80 @@ def _has_contact_link(card: Tag) -> bool:
         if isinstance(href, str) and href.strip().lower().startswith(("mailto:", "tel:")):
             return True
     return False
+
+
+def _has_image(tag: Tag) -> bool:
+    """True when a tile carries a picture of its own.
+
+    The qualifying signal for a text-free card. A badge/logo wall — awards,
+    accreditations, partner marks, press logos — is a rack of tiles whose whole
+    content is a picture: empty ``alt``, no title, no body. Every text-shaped
+    test in this module rejects those, which is why such a section produced no
+    cards at all and the page fell back to a prose rhythm that then had nothing
+    to say.
+
+    A CSS ``background-image`` counts: on page-builder markup the badge is
+    routinely a styled div rather than an ``<img>``.
+    """
+    if tag.name == "img":
+        return True
+    if any(isinstance(i, Tag) for i in tag.find_all("img")):
+        return True
+    for el in [tag, *(e for e in tag.find_all(True) if isinstance(e, Tag))]:
+        style = el.get("style")
+        if isinstance(style, str) and _BG_URL_RE.search(style):
+            return True
+    return False
+
+
+# How far above an <img> the repeating tile can sit. Hand-built and page-builder
+# markup wraps a badge in several presentational divs before reaching the cell
+# that actually repeats (img > span > filter > backdrop > card > column is a
+# real example), so a shallow walk finds nothing on exactly the markup that
+# needs this most.
+_GRID_ANCESTOR_LOOKUP = 6
+_GRID_MIN_CELLS = 3
+
+
+def in_repeated_image_group(tag: Tag, *, min_cells: int = _GRID_MIN_CELLS) -> bool:
+    """True when `tag` sits inside a repeating rack of image-bearing tiles.
+
+    The DOM answer to the question the renderer answers by measurement
+    (``ImageEvidence.grid_count``): walk up a few levels and look for an
+    ancestor whose siblings share its structure and also carry images. Shared
+    with ``scraper`` — which uses it to stop deleting badge-sized images — and
+    with ``logo_extraction``, which uses it to tell a wall of other people's
+    marks from the site's own, on the fast path where no measurement exists.
+    """
+    node: Tag | None = tag
+    for _ in range(_GRID_ANCESTOR_LOOKUP):
+        if not isinstance(node, Tag):
+            return False
+        parent = node.parent
+        if not isinstance(parent, Tag):
+            return False
+        signature = _signature(node)
+        twins = [
+            k
+            for k in parent.find_all(recursive=False)
+            if isinstance(k, Tag) and _signature(k) == signature and _has_image(k)
+        ]
+        if len(twins) >= min_cells:
+            return True
+        node = parent
+    return False
+
+
+def _background_image_url(tag: Tag, base_url: str) -> str | None:
+    """First CSS ``background-image`` url() at or under `tag`, absolutized."""
+    for el in [tag, *(e for e in tag.find_all(True) if isinstance(e, Tag))]:
+        style = el.get("style")
+        if not isinstance(style, str):
+            continue
+        match = _BG_URL_RE.search(style)
+        if match and match.group(1).strip():
+            return urljoin(base_url, match.group(1).strip())
+    return None
 
 
 def _has_document_link(card: Tag) -> bool:
@@ -230,6 +310,23 @@ def _scope(node: _Node) -> list[Tag]:
     return out
 
 
+def _own_span(node: _Node) -> list[Tag]:
+    """The part of a node's scope that belongs to IT, not to a child section.
+
+    ``_scope`` runs to the next heading of same-or-higher rank, so it swallows
+    every child section too. For anything read off a section's own body — its
+    loose images — that is the wrong span: it would let a parent claim the
+    pictures of the child sections beneath it.
+    """
+    stop = node.children[0].tag if node.children else node.stop
+    out: list[Tag] = []
+    for el in _scope(node):
+        if stop is not None and el is stop:
+            break
+        out.append(el)
+    return out
+
+
 # --- pass 2: cards --------------------------------------------------------------
 
 
@@ -250,20 +347,64 @@ def _is_label(title: str) -> bool:
 
 
 def _card_from_container(tag: Tag, base_url: str) -> tuple[SourceCard, list[Tag]] | None:
-    """A repeated sibling div, read as one card."""
+    """A repeated sibling div, read as one card.
+
+    A tile whose entire content is a picture is still a card. It gets whatever
+    name the source actually states — see ``_image_tile_title`` — which is
+    frequently nothing at all, and an untitled card is fine: ``_classify`` reads
+    the group, and a rack of pictures with no words is precisely its ``gallery``
+    signature. Requiring a title here is what made every badge wall invisible.
+    """
     heading = next(
         (h for h in tag.find_all(_HEADING_TAGS) if isinstance(h, Tag) and _text(h)), None
     )
     lines = [_clean(str(s)) for s in tag.stripped_strings if _clean(str(s))]
     if not lines:
-        return None
+        if not _has_image(tag):
+            return None
+        return _build_card(_image_tile_title(tag), [tag], base_url, own_lines=[]), [tag]
     title = _text(heading) if heading is not None else lines[0]
     if not title or len(title) > _MAX_CARD_TITLE_LEN or _is_label(title):
-        return None
+        # Text that never resolved to a usable title (a bare label, a sentence
+        # a page-builder styled as a heading) does not disqualify a picture
+        # tile — it just leaves it untitled, with its lines kept as content.
+        if not _has_image(tag):
+            return None
+        return _build_card(_image_tile_title(tag), [tag], base_url, own_lines=lines), [tag]
     card = _build_card(
         title, [tag], base_url, own_lines=[ln for ln in lines if ln != title]
     )
     return card, [tag]
+
+
+def _image_tile_title(tag: Tag) -> str:
+    """The name a picture-only tile states for itself, or "".
+
+    Ranked by how directly the source said it: ``alt`` is an authored
+    description, a caption is authored too, and the filename is the site's own
+    wording only by accident of naming — so it goes last and is held to
+    ``descriptive_name_from_url``'s conservative bar.
+
+    Never guessed from surrounding prose: an award tile inherits the section
+    heading for grouping (``context_heading``), and copying that into every
+    card would label four different awards identically.
+    """
+    img = next((i for i in tag.find_all("img") if isinstance(i, Tag)), None)
+    if img is not None:
+        alt = img.get("alt")
+        if isinstance(alt, str) and _clean(alt):
+            return _clean(alt)[:_MAX_CARD_TITLE_LEN]
+        for attr in ("title", "aria-label"):
+            value = img.get(attr)
+            if isinstance(value, str) and _clean(value):
+                return _clean(value)[:_MAX_CARD_TITLE_LEN]
+    caption = tag.find("figcaption")
+    if isinstance(caption, Tag) and _text(caption):
+        return _text(caption)[:_MAX_CARD_TITLE_LEN]
+    src = img.get("src") if img is not None else None
+    if isinstance(src, str) and src.strip():
+        return descriptive_name_from_url(src.strip())[:_MAX_CARD_TITLE_LEN]
+    return ""
 
 
 def _build_card(
@@ -302,6 +443,11 @@ def _build_card(
                 image_url = urljoin(base_url, src.strip())
                 alt = img.get("alt")
                 image_alt = alt.strip() if isinstance(alt, str) else ""
+        if image_url is None:
+            # No <img>: a page-builder badge is often a styled div. Same tile,
+            # same content — _has_image already counted it, so the card has to
+            # be able to name the picture or the group's image share is wrong.
+            image_url = _background_image_url(el, base_url)
         for anchor in el.find_all("a", href=True):
             if not isinstance(anchor, Tag) or link is not None:
                 continue
@@ -321,21 +467,50 @@ def _build_card(
     )
 
 
-def _repeated_group(scope: list[Tag]) -> list[Tag]:
-    """Largest repeated sibling group in a scope — the heading-less fallback."""
+def _repeated_group(scope: list[Tag], anchor: Tag | None = None) -> list[Tag]:
+    """Largest repeated sibling group in a scope — the heading-less fallback.
+
+    Candidate parents are taken from the scope AND from a few levels ABOVE the
+    heading, because a very common section layout makes the heading and the
+    cards siblings of one container rather than nesting the cards under it::
+
+        <div class="container">
+          <div class="col-12"><h1>Winning Awards</h1></div>
+          <div class="col-3"><img …></div>   × 4
+
+    The scope walk starts at the heading and runs forward, so that container is
+    unreachable from it — it is an ANCESTOR, not a descendant — and the rack was
+    invisible on every site that lays a section out this way. Climbing is safe
+    because membership stays confined to the heading's own span: ``scope_ids``
+    filters the children before anything is counted, so a container shared by
+    several sections cannot lend one section another's cards, and the share test
+    is measured against the span rather than the whole container.
+    """
     best: list[Tag] = []
     scope_ids = {id(el) for el in scope}
-    for parent in scope:
-        kids = [c for c in parent.find_all(recursive=False) if isinstance(c, Tag)]
+    parents: list[Tag] = list(scope)
+    if anchor is not None:
+        parent = anchor.parent
+        for _ in range(_MAX_ANCESTOR_LOOKUP):
+            if not isinstance(parent, Tag) or parent.name in ("body", "html"):
+                break
+            if parent.name in _CHROME_TAGS or _in_chrome(parent):
+                break
+            parents.append(parent)
+            parent = parent.parent
+    for parent in parents:
+        kids = [
+            c
+            for c in parent.find_all(recursive=False)
+            if isinstance(c, Tag) and id(c) in scope_ids
+        ]
         if len(kids) < _MIN_GROUP_CARDS:
             continue
         signature, hits = Counter(_signature(k) for k in kids).most_common(1)[0]
         if hits < _MIN_GROUP_CARDS or hits < len(kids) * _MIN_GROUP_SHARE:
             continue
         group = [
-            k
-            for k in kids
-            if _signature(k) == signature and _text(k) and id(k) in scope_ids
+            k for k in kids if _signature(k) == signature and (_text(k) or _has_image(k))
         ]
         if len(group) > len(best):
             best = group[:_MAX_GROUP_CARDS]
@@ -359,19 +534,72 @@ def _assign_cards(node: _Node, base_url: str) -> None:
             return
 
     if not node.children:
-        group = _repeated_group(_scope(node))
+        group = _repeated_group(_scope(node), node.tag)
         built_c = [_card_from_container(t, base_url) for t in group]
         kept_c = [res for res in built_c if res is not None]
-        # A card says something. A repeated pair of bare label/value rows — a
-        # schedule, an opening-hours table — matches the sibling signature just
-        # as well as a card rack does, and promoting it costs the SECTION ABOVE
-        # its own cards: a parent only claims child headings when they are all
-        # leaves, so one spurious group two levels down silently flattens the
-        # real one. Requiring body text is what separates the two.
+        # A card says something — in words OR in pictures. A repeated pair of
+        # bare label/value rows — a schedule, an opening-hours table — matches
+        # the sibling signature just as well as a card rack does, and promoting
+        # it costs the SECTION ABOVE its own cards: a parent only claims child
+        # headings when they are all leaves, so one spurious group two levels
+        # down silently flattens the real one.
+        #
+        # Body text separates the two, but it is not the only thing that can:
+        # a badge wall (awards, accreditations, partner logos) is all pictures
+        # and no prose, so the body test alone rejected it and the page lost
+        # its only content. A schedule row carries no image, so admitting a
+        # picture-dominated group leaves the original guard intact.
         with_body = sum(1 for card, _ in kept_c if card.body)
-        if len(kept_c) >= _MIN_GROUP_CARDS and with_body >= len(kept_c) * 0.6:
+        with_image = sum(1 for card, _ in kept_c if card.image_url)
+        if len(kept_c) >= _MIN_GROUP_CARDS and (
+            with_body >= len(kept_c) * 0.6 or with_image >= len(kept_c) * 0.8
+        ):
             node.cards = [card for card, _ in kept_c]
             node.card_scopes = [scope for _, scope in kept_c]
+            return
+
+    if not node.cards:
+        built_i = _image_only_cards(node, base_url)
+        if built_i:
+            node.cards = [card for card, _ in built_i]
+            node.card_scopes = [scope for _, scope in built_i]
+
+
+def _image_only_cards(
+    node: _Node, base_url: str
+) -> list[tuple[SourceCard, list[Tag]]]:
+    """Cards for a wordless section's loose pictures — the last resort.
+
+    Catches the two badge walls the repeated-sibling scan cannot: a section
+    holding a SINGLE award (one tile is not a repetition), and one whose tiles
+    are marked up inconsistently enough that no signature dominates. Both are
+    ordinary on hand-built sites, and both otherwise leave the section with no
+    cards and no prose, which drops it from the tree entirely.
+
+    Gated on the section having no words of its own. A picture under a heading
+    that also carries prose is that prose's illustration — the image+text split
+    the story rhythm exists to render — so turning it into a gallery tile would
+    take a narrative section apart. Silence is the whole signal here.
+    """
+    span = _own_span(node)
+    for el in span:
+        if el.name in ("p", "li", "h2", "h3", "h4", "h5", "h6") and _text(el):
+            return []
+
+    out: list[tuple[SourceCard, list[Tag]]] = []
+    seen: set[str] = set()
+    for el in span:
+        if el.name != "img":
+            continue
+        src = el.get("src")
+        if not isinstance(src, str) or not src.strip():
+            continue
+        url = urljoin(base_url, src.strip())
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append((_build_card(_image_tile_title(el), [el], base_url, own_lines=[]), [el]))
+    return out[:_MAX_GROUP_CARDS]
 
 
 # --- pass 3: classify -----------------------------------------------------------
