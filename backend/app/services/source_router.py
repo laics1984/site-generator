@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 
 from app.models.content_blocks import ImageMetadata, SectionCandidate, SourceContent
 from app.models.industry import PageScaffold
-from app.services.source_path import normalize_source_slug
+from app.services.source_path import is_record_url, normalize_source_slug
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,31 @@ def _source_haystack(page: SourceContent) -> str:
     return " ".join(parts).lower()
 
 
+def pages_by_source_slug(
+    pages: list[SourceContent],
+) -> dict[str, list[SourceContent]]:
+    """Every crawled page grouped by the slug it normalizes to, order preserved.
+
+    Normally one page per slug. Not always: a PHP album viewer serves 28 albums
+    from ``gallery-photo.php?id=NNN``, and ``url_path`` carries no query, so all
+    28 land on ``gallery-photo``. Indexing first-wins silently dropped 27 of
+    them along with every photo they held.
+
+    The representative (first element) is the query-less URL where there is one
+    — that's the page; the rest are its records. See ``source_path.is_record_url``.
+    """
+    grouped: dict[str, list[SourceContent]] = {}
+    for page in pages:
+        slug = _path_to_slug(page.url_path)
+        if slug:
+            grouped.setdefault(slug, []).append(page)
+    for group in grouped.values():
+        if len(group) > 1:
+            # Stable, so the records keep crawl order behind their page.
+            group.sort(key=lambda p: is_record_url(p.source_ref))
+    return grouped
+
+
 def match_scaffolds_to_pages(
     scaffolds: list[PageScaffold],
     primary_source: SourceContent,
@@ -112,15 +137,14 @@ def match_scaffolds_to_pages(
     discovered = primary_source.discovered_pages or []
 
     # Index discovered pages by normalized slug derived from url_path.
+    grouped = pages_by_source_slug(discovered)
     by_slug: dict[str, SourceContent] = {}
     by_trailing: dict[str, SourceContent] = {}
-    for page in discovered:
-        slug = _path_to_slug(page.url_path)
-        if slug and slug not in by_slug:
-            by_slug[slug] = page
-            trailing = _trailing_segment(slug)
-            if trailing and trailing not in by_trailing:
-                by_trailing[trailing] = page
+    for slug, pages in grouped.items():
+        by_slug[slug] = pages[0]
+        trailing = _trailing_segment(slug)
+        if trailing and trailing not in by_trailing:
+            by_trailing[trailing] = pages[0]
 
     out: dict[str, SourceContent] = {}
     for scaffold in scaffolds:
@@ -183,6 +207,30 @@ def match_scaffolds_to_pages(
                 len(extras), scaffold.slug,
             )
 
+    # A gallery's albums are served from its OWN url — gallery-photo.php?id=107
+    # — so every crawled record normalizes to the gallery's slug and only the
+    # first survived indexing. Merge them back, media included: the album titles
+    # ground the page's copy and the photos are what the page is for. Keyed on
+    # the exact slug rather than _match_by_keywords_all, because unlike FAQ
+    # content spread over /faq and /support, these are records of one page.
+    for scaffold in scaffolds:
+        if scaffold.is_legal or scaffold.page_type != "gallery":
+            continue
+        primary = out.get(scaffold.slug)
+        if primary is None:
+            continue
+        extras = [
+            page
+            for page in grouped.get(_normalize_slug(scaffold.slug), [])
+            if page is not primary
+        ]
+        if extras:
+            out[scaffold.slug] = _combine_sources(primary, extras, include_media=True)
+            logger.debug(
+                "Combined %d album record(s) into gallery scaffold %r",
+                len(extras), scaffold.slug,
+            )
+
     return out
 
 
@@ -215,11 +263,24 @@ def _match_by_keywords_all(
     return [page for page in discovered if any(kw in _source_haystack(page) for kw in keywords)]
 
 
-def _combine_sources(primary: SourceContent, extras: list[SourceContent]) -> SourceContent:
+def _combine_sources(
+    primary: SourceContent,
+    extras: list[SourceContent],
+    *,
+    include_media: bool = False,
+) -> SourceContent:
     """Merge extra pages' text into the primary source so downstream generation
     (chunking, item extraction) sees content from every matching URL as one
     page. Only raw_text/headings are combined — title/url_path/images/links
-    stay the primary's, since those describe the routed page's own identity."""
+    stay the primary's, since those describe the routed page's own identity.
+
+    ``include_media`` additionally merges image_metadata and section_candidates,
+    and is the exception that proves the rule above. A merged FAQ page's images
+    belong to a DIFFERENT page (/support has its own furniture) and would be
+    misattributed; an album page's photos are records of the page they merge
+    into — ``gallery-photo.php?id=107`` is not another page, it is the gallery
+    showing one of its albums. Its pictures ARE the gallery's content.
+    """
     raw_text = "\n\n".join(
         text for text in (primary.raw_text, *(p.raw_text for p in extras)) if text
     )
@@ -231,7 +292,21 @@ def _combine_sources(primary: SourceContent, extras: list[SourceContent]) -> Sou
             if key and key not in seen:
                 headings.append(h)
                 seen.add(key)
-    return primary.model_copy(update={"raw_text": raw_text, "headings": headings})
+    update: dict[str, object] = {"raw_text": raw_text, "headings": headings}
+    if include_media:
+        metadata = list(primary.image_metadata or [])
+        seen_urls = {meta.url for meta in metadata if meta.url}
+        for page in extras:
+            for meta in page.image_metadata or []:
+                if meta.url and meta.url not in seen_urls:
+                    metadata.append(meta)
+                    seen_urls.add(meta.url)
+        sections = list(primary.section_candidates or [])
+        for page in extras:
+            sections.extend(page.section_candidates or [])
+        update["image_metadata"] = metadata
+        update["section_candidates"] = sections
+    return primary.model_copy(update=update)
 
 
 def split_raw_text(

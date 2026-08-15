@@ -1041,3 +1041,146 @@ class RosterLinkedDetailPageTest(unittest.TestCase):
         page = next(s for s in scaffolds if s.slug == "profile/ashley")
         self.assertEqual(page.parent_slug, "profile")
         self.assertFalse(page.menu_hidden)
+
+
+class NestedSelfStructuredPageTest(unittest.TestCase):
+    """A page whose grid IS its content keeps that grid when nested.
+
+    The source's own dropdown ("GALLERY ▾ → Photos") re-parents the child, and
+    a child repeating its parent's type used to collapse to `landing` — which
+    handed a photo gallery the generic detail rhythm and, with the `gallery`
+    type gone, dropped it out of every guard keyed on that type. brightkids'
+    /gallery-photo shipped as hero/features/process/about/cta with no pictures.
+    """
+
+    @staticmethod
+    def _source(parent_label, parent_href, children, extra_pages=()):
+        nav = [
+            NavLink(label="HOME", href="index.php"),
+            NavLink(
+                label=parent_label,
+                href=parent_href,
+                children=[NavLink(label=lbl, href=href) for lbl, href in children],
+            ),
+        ]
+        discovered = [
+            SourceContent(
+                source_kind="url",
+                source_ref=f"https://example.my/{href}",
+                title=lbl,
+                raw_text=f"{lbl} page text.",
+                url_path=f"/{href}",
+            )
+            for lbl, href in [*children, *extra_pages]
+        ]
+        return SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            title="Example",
+            raw_text="Home page text.",
+            nav_links=nav,
+            discovered_pages=discovered,
+        )
+
+    def _sections(self, source, slug):
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        return next(s for s in scaffolds if s.slug == slug)
+
+    def test_a_gallery_under_a_gallery_dropdown_keeps_the_gallery_rhythm(self):
+        # The reproducer: brightkids.com.my/gallery-photo.php.
+        source = self._source(
+            "GALLERY", "#", [("Photos", "gallery-photo.php"), ("Videos", "gallery-video.php")]
+        )
+        page = self._sections(source, "gallery-photo")
+
+        self.assertEqual(page.page_type, "gallery")
+        self.assertEqual(page.parent_slug, "gallery")
+        self.assertEqual(page.sections, ["hero", "gallery", "cta"])
+        # The padding that shipped instead of the pictures.
+        for padded in ("features", "process", "about", "testimonials"):
+            self.assertNotIn(padded, page.sections)
+
+    def test_every_self_structured_type_keeps_its_rhythm_when_nested(self):
+        # The invariant is "nesting changes nothing", so the control is the
+        # SAME page read top-level — not _TOP_SECTIONS, which would miss the
+        # photo-split weaving that legitimately applies to both.
+        from app.services.page_inference import _SELF_STRUCTURED_TYPES
+
+        for page_type in sorted(_SELF_STRUCTURED_TYPES):
+            with self.subTest(page_type=page_type):
+                child = f"{page_type}-detail.php"
+                # The child's own slug has to evidence the type, as "Photos"
+                # under GALLERY ▾ does — otherwise it is a genuine detail page.
+                nested = self._sections(
+                    self._source(page_type.upper(), f"{page_type}.php", [(page_type.title(), child)]),
+                    f"{page_type}-detail",
+                )
+                flat = self._sections(
+                    self._source("HOME", "index.php", [(page_type.title(), child)]),
+                    f"{page_type}-detail",
+                )
+
+                self.assertEqual(nested.page_type, page_type)
+                self.assertEqual(nested.parent_slug, page_type)
+                self.assertEqual(nested.sections, flat.sections)
+
+    def test_a_service_detail_page_still_gets_the_subpage_rhythm(self):
+        # The guard against over-generalising: /services/web-design describes
+        # ONE service, so it must not become another services listing.
+        from app.services.page_inference import _SUBPAGE_SECTIONS
+
+        source = self._source(
+            "SERVICES", "services.php", [("Web Design", "services/web-design.php")]
+        )
+        page = self._sections(source, "services/web-design")
+
+        self.assertEqual(page.page_type, "landing")
+        self.assertEqual(page.parent_slug, "services")
+        for kind in _SUBPAGE_SECTIONS:
+            self.assertIn(kind, page.sections)
+        self.assertNotIn("services", page.sections)
+
+    def test_a_php_nav_href_finds_its_own_scaffold(self):
+        # _href_to_slug used to skip the extension strip that the scaffold
+        # index applies, so on a .php site NO nav href matched a page: dropdown
+        # nesting never applied and each href scaffolded an empty duplicate.
+        source = self._source(
+            "GALLERY", "#", [("Photos", "gallery-photo.php")], extra_pages=(("About", "about-us.php"),)
+        )
+        slugs = {s.slug for s in infer_page_scaffolds(source, industry="other")}
+
+        self.assertIn("gallery-photo", slugs)
+        self.assertNotIn("gallery-photo.php", slugs)
+        self.assertNotIn("about-us.php", slugs)
+
+    def test_the_nav_index_page_is_the_homepage_not_a_second_page(self):
+        # "index.php" in the header IS the homepage, which scaffolds as "".
+        source = self._source("GALLERY", "#", [("Photos", "gallery-photo.php")])
+        slugs = {s.slug for s in infer_page_scaffolds(source, industry="other")}
+
+        self.assertNotIn("index", slugs)
+        self.assertNotIn("index.php", slugs)
+
+
+class ChildTypeUnderTest(unittest.TestCase):
+    def test_repeating_a_plain_parent_type_collapses_to_a_detail_page(self):
+        from app.services.page_inference import _child_type_under
+
+        self.assertEqual(_child_type_under("services", "services"), "landing")
+
+    def test_repeating_a_self_structured_type_keeps_it(self):
+        from app.services.page_inference import _child_type_under
+
+        self.assertEqual(_child_type_under("gallery", "gallery"), "gallery")
+        self.assertEqual(_child_type_under("menu", "menu"), "menu")
+
+    def test_a_differing_type_is_never_touched(self):
+        from app.services.page_inference import _child_type_under
+
+        self.assertEqual(_child_type_under("gallery", "about"), "gallery")
+        self.assertEqual(_child_type_under("services", "about"), "services")
+
+    def test_a_child_with_no_parent_is_never_collapsed(self):
+        from app.services.page_inference import _child_type_under
+
+        self.assertEqual(_child_type_under("services", None), "services")

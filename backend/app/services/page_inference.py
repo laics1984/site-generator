@@ -35,7 +35,7 @@ from app.services.locale import (
     locale_segment,
 )
 from app.services.nav_extraction import find_repeated_cluster_keys
-from app.services.source_path import normalize_source_slug
+from app.services.source_path import is_record_url, normalize_source_slug
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
 
 logger = logging.getLogger(__name__)
@@ -349,6 +349,32 @@ _STORY_INELIGIBLE_TYPES: frozenset[PageType] = frozenset(
 _STORY_MIN_SECTIONS = 3
 
 
+# Page types whose STRUCTURE is their content: the grid/list IS the page. A
+# sub-page repeating its parent's type is normally a detail page — /services/
+# web-design describes one service rather than listing them again — but these
+# are not. "Photos" under a GALLERY ▾ dropdown is still a gallery, and a
+# "Lunch" page under MENU ▾ is still a menu. Collapsing them to `landing`
+# handed them _SUBPAGE_SECTIONS and, with the type gone, dropped them out of
+# every guard keyed on it (_STORY_INELIGIBLE_TYPES,
+# _PHOTO_SECTION_INELIGIBLE_TYPES) — a photo gallery shipped as
+# hero/features/process/about/cta with no pictures on it at all.
+#
+# `team` is deliberately absent: it has the evidence-gated rule in
+# _sections_for below (_looks_like_directory_page), and an unconditional entry
+# here would take _TEAM_SUBPAGE_SECTIONS away from a single person's bio page.
+_SELF_STRUCTURED_TYPES: frozenset[PageType] = frozenset(
+    {"gallery", "menu", "pricing", "faq", "testimonials"}
+)
+
+
+def _child_type_under(sub_type: PageType, parent_type: PageType | None) -> PageType:
+    """A child repeating its parent's type is a detail page — unless that
+    type's own structure is the page's content."""
+    if sub_type == parent_type and sub_type not in _SELF_STRUCTURED_TYPES:
+        return "landing"
+    return sub_type
+
+
 # Card kinds whose section IS its pictures. Used to tell a badge/photo wall
 # apart from a narrative section, which is the difference between "one image
 # illustrating a paragraph" and "the images are the content".
@@ -575,6 +601,14 @@ def _sections_for(
             return _augment_sections(_story_sections(story_count), page_type, page)
     if parent_type is None:
         base = list(_TOP_SECTIONS.get(page_type, _TOP_SECTIONS["services"]))
+    elif page_type in _SELF_STRUCTURED_TYPES:
+        # The grid IS the page: a gallery/menu/pricing/FAQ/testimonials page
+        # nested under a dropdown keeps its own rhythm rather than the generic
+        # detail rhythm, exactly as a team directory does above. Set `base`
+        # rather than returning early so the tail below still runs — that is
+        # what keeps the invented `about` off a gallery page, since `gallery`
+        # is in _PHOTO_SECTION_INELIGIBLE_TYPES.
+        base = list(_TOP_SECTIONS[page_type])
     elif parent_type == "work":
         base = list(_WORK_SUBPAGE_SECTIONS)
     elif parent_type == "team":
@@ -841,14 +875,28 @@ def _is_explicit_listing(slug: str) -> bool:
     return "/" not in slug and _explicit_page_type(slug) in _LISTING_TYPES
 
 
+# Filenames that name a directory rather than a page of its own. ``index.php``
+# in the header IS the homepage, which already scaffolds as "".
+_INDEX_NAMES = frozenset({"index", "default", "home"})
+
+
 def _href_to_slug(href: str) -> str | None:
-    """Nav href → page slug. ``"/"`` ⇒ ``""`` (home); pure anchors ⇒ None."""
+    """Nav href → page slug. ``"/"`` ⇒ ``""`` (home); pure anchors ⇒ None.
+
+    Normalized exactly as ``url_path`` is, via ``normalize_source_slug`` — the
+    scaffold index this feeds is keyed that way. While it wasn't, every nav
+    href on a .php site missed its own scaffold: dropdown nesting was never
+    applied, and each unmatched href scaffolded a second, empty copy of a page
+    the crawl had already read ("about-us.php" beside "about-us").
+    """
     path = href.split("#", 1)[0]
     if "#" in href and path in ("", "/"):
         return None  # same-page anchor, not a page
     if not path or path == "/":
         return ""
-    return path.strip("/").lower()
+    slug = normalize_source_slug(path)
+    head, _, tail = slug.rpartition("/")
+    return head if tail in _INDEX_NAMES else slug
 
 
 class _NavEvidence:
@@ -1088,7 +1136,15 @@ def infer_page_scaffolds(
     by_slug: dict[str, SourceContent] = {"": source}
     for page in source.discovered_pages:
         slug = _path_to_slug(page.url_path)
-        if slug and slug not in by_slug:
+        if not slug:
+            continue
+        # Several crawled URLs can share a slug — an album viewer serves every
+        # album from gallery-photo.php?id=NNN. The query-less URL is the page;
+        # the rest are its records, and letting one of those win would title
+        # /gallery-photo after whichever album was crawled first.
+        if slug not in by_slug or (
+            is_record_url(by_slug[slug].source_ref) and not is_record_url(page.source_ref)
+        ):
             by_slug[slug] = page
 
     # Titles/headings the source template repeats across pages — they can't
@@ -1209,9 +1265,9 @@ def infer_page_scaffolds(
                 continue
             sub_type = _infer_page_type(slug, title)
             # Sub-pages typically aren't another listing of the parent — coerce
-            # services/x → landing detail unless title looks like a real category.
-            if sub_type == parent_type:
-                sub_type = "landing"
+            # services/x → landing detail unless title looks like a real category,
+            # or the type's own structure is the page (gallery/x is still a gallery).
+            sub_type = _child_type_under(sub_type, parent_type)
             sub_type = _coerce_directory_type(sub_type, page)
             linked_from_roster = parent_slug == linked_parent
             scaffolds.append(
@@ -1308,8 +1364,7 @@ def infer_page_scaffolds(
         if parent.parent_slug or parent_slug in forced_parent:
             continue  # keep the tree one level deep — no chained nesting
         child.parent_slug = parent_slug
-        if child.page_type == parent.page_type:
-            child.page_type = "landing"
+        child.page_type = _child_type_under(child.page_type, parent.page_type)
         child.sections = _sections_for(
             child.page_type, parent_type=parent.page_type, page=by_slug.get(child_slug)
         )

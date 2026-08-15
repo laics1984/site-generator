@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from collections import Counter
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
@@ -40,6 +41,7 @@ from app.models.content_blocks import (
     ServiceItem,
     ServicesBlock,
     SitePlan,
+    SourceCard,
     SourceContent,
     TeamBlock,
     TeamMember,
@@ -1000,6 +1002,38 @@ def _drop_hollow_team_pages(plan: SitePlan) -> None:
     plan.pages = [page for page in plan.pages if page.slug in keep_slugs]
 
 
+def _drop_unbound_gallery_items(pages: list[PagePlan]) -> None:
+    """Drop every gallery tile the source didn't supply a photo for.
+
+    A gallery asserts "these are our photos". A tile left holding only an LLM
+    ``image_query`` asserts it falsely: ``media.ImageResolver.resolve`` falls
+    through the scraped pool to Pexels, and a photo grid is the one place a
+    stranger's stock image reads as a lie about the client rather than as
+    decoration. A childcare site's "gallery" of stock children is worse than no
+    gallery, so an unbacked tile goes and an empty block goes with it — the rule
+    ``prompts.py`` states for the model ("a shorter honest page beats a padded
+    one"), enforced where the model can't be trusted to apply it.
+
+    Runs LAST, and that placement is the point. Alignment can't judge this: it
+    precedes ``_inject_image_walls``, which is what fills a gallery slot from
+    the source, and ``bind_image_refs``, which is what turns an ``image_ref``
+    into a URL — a ref the binder rejects (out of range, already used, wrong
+    shape) is indistinguishable from a good one until then. Only here is "this
+    tile has nothing behind it" actually true. Same shape as
+    ``_drop_hollow_team_pages``.
+    """
+    for page in pages:
+        kept: list = []
+        for block in page.blocks:
+            if not isinstance(block, GalleryBlock):
+                kept.append(block)
+                continue
+            items = [item for item in block.items if (item.image_url or "").strip()]
+            if items:
+                kept.append(block.model_copy(update={"items": items}))
+        page.blocks = kept
+
+
 async def _safe_extract_collections(source: SourceContent):
     """Blog/event entry extraction (content migration) — advisory, never
     load-bearing: any failure just means the site ships without migrated
@@ -1360,8 +1394,17 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         _inject_linkbar(plan.pages, linkbar_cluster)
     _inject_downloads(plan.pages, payload.source)
     # Picture racks the source stated in full — awards, accreditations, partner
-    # logos — are placed from the source rather than described by the model.
-    _inject_image_walls(plan.pages, payload.source)
+    # logos, photo albums — are placed from the source rather than described by
+    # the model. Gated on the scaffolds that asked for a gallery, so an album
+    # index can gain the albums it needs without a photo-rich services page
+    # growing one it didn't ask for.
+    _inject_image_walls(
+        plan.pages,
+        payload.source,
+        gallery_section_slugs={
+            s.slug for s in content_scaffolds if "gallery" in s.sections
+        },
+    )
 
     # Legal pages will be appended after plan_to_site, but they need to appear in
     # the footer nav. Pass their titles + slugs through.
@@ -1418,6 +1461,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # Resolve LLM-bound image refs (block.image_ref → block.image_url) against
     # the same per-page photo lists the planner prompt showed the model.
     bound_image_urls = bind_image_refs(plan.pages, source_map)
+    # A gallery ref the binder rejected has nothing behind it — drop the tile
+    # rather than let it resolve a stock photo at render time.
+    _drop_unbound_gallery_items(plan.pages)
 
     # Translated mirrors clone their counterpart HERE — after image refs are
     # bound and the roster/team passes have run — so a clone inherits the exact
@@ -1651,9 +1697,211 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
 _WALL_CARD_KINDS = frozenset({"gallery"})
 # GalleryBlock.items ceiling; every unique image is one media upload at push.
 _MAX_GALLERY_ITEMS = 24
+# Photos under one heading before it counts as an album rather than an
+# illustrated paragraph — mirrors page_inference._WALL_MIN_IMAGES.
+_MIN_ALBUM_PHOTOS = 3
+# Albums placed on one page. hero + 6 + cta = 8, inside _MAX_PAGE_SECTIONS (9),
+# so a spliced gallery page stays within the ceiling the scaffold respects.
+_MAX_GALLERY_BLOCKS = 6
+# Photos across all of a page's albums. Every unique image is one media upload
+# at push time, so an unbounded album index is a real cost, not just a long page.
+_MAX_PAGE_GALLERY_IMAGES = 48
+# Roles that are never a page's own photography. `portrait` is deliberately
+# absent: image_evidence.classify_role types any grid cell with a portraitish
+# aspect under 420px as one, which is exactly the shape of a gallery thumbnail
+# — the same misread that hides these photos from the planner prompt. Excluding
+# it here would drop the pictures this fallback exists to rescue, and on a page
+# the scaffold designated a gallery a photo of people IS the content.
+_NON_PHOTO_ROLES = frozenset({"logo", "decoration"})
+# Pages a URL must appear on before it reads as template chrome.
+_CHROME_IMAGE_MIN_PAGES = 2
 
 
-def _inject_image_walls(pages: list[PagePlan], source: SourceContent) -> None:
+def _repeated_image_urls(source: SourceContent) -> set[str]:
+    """Image URLs appearing on 2+ crawled pages — template chrome, not content.
+
+    Same reasoning as ``nav_extraction.strip_chrome_sections``, applied to
+    pictures: a footer photo strip and a row of social icons are the template's,
+    and they are indistinguishable from content until the crawl finishes. On
+    brightkids the footer strip is the ONLY thing the section tree offers the
+    gallery page, so without this the "photo gallery" is six copies of the
+    site's footer furniture.
+
+    Counted per SLUG, not per crawled record. Several records routinely share
+    one slug — a paginated album serves ?id=107 and ?id=107&gspg=2 from the
+    same path — and counting those as two pages would let an album's own photos
+    look repeated, which is precisely backwards: they are one page's content
+    appearing on one page.
+
+    Needs two pages to conclude anything; a single-page crawl is left alone.
+    """
+    by_slug: dict[str, set[str]] = {}
+    for page in [source, *source.discovered_pages]:
+        urls = by_slug.setdefault(normalize_source_slug(page.url_path), set())
+        urls.update(meta.url for meta in page.image_metadata or [] if meta.url)
+    if len(by_slug) < _CHROME_IMAGE_MIN_PAGES:
+        return set()
+    seen: Counter[str] = Counter()
+    for urls in by_slug.values():
+        seen.update(urls)
+    return {url for url, n in seen.items() if n >= _CHROME_IMAGE_MIN_PAGES}
+
+
+def _without_chrome(
+    wall: SectionCandidate, chrome: set[str]
+) -> SectionCandidate | None:
+    """A picture rack minus the template's own furniture; None if nothing is left.
+
+    A site-wide footer photo strip parses as a perfectly good picture rack —
+    tiles, no prose, empty alt — and on brightkids' gallery page it is the ONLY
+    rack the section tree offers, so the "photo gallery" shipped as six copies
+    of the footer. Real racks are unaffected: an awards page's badges live on
+    the awards page, so they are never repeated enough to look like chrome.
+    """
+    kept = [url for url in wall.image_urls if url not in chrome]
+    if not kept:
+        return None
+    if len(kept) == len(wall.image_urls):
+        return wall
+    return wall.model_copy(update={"image_urls": kept})
+
+
+def _photo_walls_from_metadata(
+    page: SourceContent, chrome: set[str]
+) -> list[SectionCandidate]:
+    """Albums the source states as photos-under-a-heading.
+
+    A PHP album viewer (``gallery-photo.php?id=107``) puts its ``<h3>`` in one
+    grid column and its tiles in bare sibling ``<div>``s, so
+    ``section_extraction``'s card scan reads the page's own SIDEBAR as the card
+    group and demotes the album title to a card whose body is a footer widget.
+    There is no rack in the tree for ``_inject_image_walls`` to place, and the
+    model cannot fill the gap either: those tiles declare ``width="100%;"``,
+    which ``scraper._parse_int`` reads as 100, so ``source_router``'s 200px
+    floor hides every album photo from the prompt.
+
+    The pictures themselves are never in doubt. ``scraper._image_context``
+    already attaches each one to its nearest preceding heading, and on an album
+    page that heading IS the album title — so the grouping is read off the
+    source rather than inferred. Used only where the tree yields nothing, so an
+    awards page keeps its own racks.
+    """
+    by_heading: dict[str, list[ImageMetadata]] = {}
+    for meta in page.image_metadata or []:
+        heading = (meta.context_heading or "").strip()
+        if not heading or not meta.url or meta.url in chrome:
+            continue
+        if meta.role in _NON_PHOTO_ROLES or meta.intent == "logo":
+            continue
+        by_heading.setdefault(heading, []).append(meta)
+
+    walls: list[SectionCandidate] = []
+    for heading, metas in by_heading.items():
+        if len(metas) < _MIN_ALBUM_PHOTOS:
+            continue
+        walls.append(
+            SectionCandidate(
+                heading=heading,
+                level=3,
+                card_kind="gallery",
+                cards=[
+                    SourceCard(
+                        title=(meta.alt or meta.caption or "").strip(),
+                        body="",
+                        image_url=meta.url,
+                    )
+                    for meta in metas
+                ],
+                image_urls=[meta.url for meta in metas],
+            )
+        )
+    return walls
+
+
+def _merge_album_walls(walls: list[SectionCandidate]) -> list[SectionCandidate]:
+    """Fold walls sharing a heading into one, deduping URLs across the page.
+
+    An album is often paginated (``?id=107`` and ``?id=107&gspg=2``), and every
+    page of it normalizes to the same slug — so the same album arrives as
+    several walls. Merging on the heading keeps it one section rather than two
+    called the same thing.
+    """
+    merged: dict[str, SectionCandidate] = {}
+    seen_urls: set[str] = set()
+    for wall in walls:
+        key = wall.heading.strip().lower()
+        fresh = [url for url in wall.image_urls if url not in seen_urls]
+        if not fresh:
+            continue
+        seen_urls.update(fresh)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = wall.model_copy(update={"image_urls": fresh})
+            continue
+        existing.image_urls = [*existing.image_urls, *fresh]
+        existing.cards = [*existing.cards, *wall.cards]
+    return list(merged.values())
+
+
+def _place_walls(page: PagePlan, walls: list[SectionCandidate], *, gated: bool) -> None:
+    """Fill a page's gallery slots with source racks, splicing any surplus.
+
+    Replacing is the original behaviour and keeps an awards page's three racks
+    in their scaffolded slots. Splicing is what lets ONE scaffolded gallery
+    slot carry an album index's several albums — the album count isn't knowable
+    at scaffold time (it depends on the crawl budget and on how many pages an
+    album is paginated across), and asking the scaffold for N would only invite
+    N invented sections from a model that cannot see these photos anyway.
+
+    Replacing in place also preserves the scaffold's ORDER, which is why the
+    gallery grounding check is deferred to after this pass rather than run at
+    alignment: an awards page reads hero/gallery×3/about/gallery, and dropping
+    its unfilled slots first would stack all four racks above the narrative
+    they follow in the source.
+
+    ``gated`` means the scaffold asked this page for a gallery. Only then may a
+    rack be spliced — inserted where the scaffold left no slot at all, which is
+    what an album index needs when the model honestly omitted a section it had
+    nothing to write.
+    """
+    if not walls:
+        return
+    budget = _MAX_PAGE_GALLERY_IMAGES
+    blocks: list[GalleryBlock] = []
+    for wall in walls[:_MAX_GALLERY_BLOCKS]:
+        if budget <= 0:
+            break
+        block = _wall_gallery_block(wall, limit=min(_MAX_GALLERY_ITEMS, budget))
+        if not block.items:
+            continue
+        budget -= len(block.items)
+        blocks.append(block)
+    if not blocks:
+        return
+
+    slots = [i for i, b in enumerate(page.blocks) if b.kind == "gallery"]
+    if not slots:
+        if not gated:
+            return
+        # Right after the hero — same placement rule as _inject_downloads. The
+        # pictures ARE the page, so they lead it.
+        hero_index = next((i for i, b in enumerate(page.blocks) if b.kind == "hero"), None)
+        insert_at = hero_index + 1 if hero_index is not None else 0
+        page.blocks[insert_at:insert_at] = blocks
+        return
+    for index, block in zip(slots, blocks):
+        page.blocks[index] = block
+    surplus = blocks[len(slots):]
+    if surplus and gated:
+        page.blocks[slots[-1] + 1: slots[-1] + 1] = surplus
+
+
+def _inject_image_walls(
+    pages: list[PagePlan],
+    source: SourceContent,
+    *,
+    gallery_section_slugs: set[str] | None = None,
+) -> None:
     """Rebuild each page's picture racks from the source, verbatim.
 
     An award / accreditation / partner-logo wall states its content entirely in
@@ -1673,25 +1921,49 @@ def _inject_image_walls(pages: list[PagePlan], source: SourceContent) -> None:
     gallery the model produced for that slot: page_inference turns a source
     picture rack into a ``gallery`` section, so a match means this block was
     always meant to be these images.
+
+    Walls are ACCUMULATED per generated page before being placed, because
+    several source pages routinely share one slug: a PHP album viewer serves
+    every album from ``gallery-photo.php?id=NNN``, and ``url_path`` carries no
+    query, so 28 albums normalize to ``gallery-photo``. Placing each source
+    page as it was read overwrote the same slot 28 times and shipped one album.
+
+    ``gallery_section_slugs`` — the scaffolds that asked for a gallery — gates
+    everything the original behaviour did not do: splicing a surplus album, and
+    inserting where alignment left no slot. Without it a photo-rich programmes
+    page would grow a gallery nobody asked for.
     """
+    gated_slugs = gallery_section_slugs or set()
     pages_by_path = _page_by_url_path(pages)
+    chrome = _repeated_image_urls(source)
+    walls_by_slug: dict[str, list[SectionCandidate]] = {}
     for source_page in [source, *source.discovered_pages]:
+        slug = normalize_source_slug(source_page.url_path)
+        if slug not in pages_by_path:
+            continue
         walls = [
-            section
+            stripped
             for section in source_page.section_candidates
             if section.card_kind in _WALL_CARD_KINDS and section.image_urls
+            if (stripped := _without_chrome(section, chrome)) is not None
         ]
-        if not walls:
-            continue
-        page = pages_by_path.get(normalize_source_slug(source_page.url_path))
-        if page is None:
-            continue
-        slots = [i for i, b in enumerate(page.blocks) if b.kind == "gallery"]
-        for index, wall in zip(slots, walls):
-            page.blocks[index] = _wall_gallery_block(wall)
+        if not walls and slug in gated_slugs:
+            # A gallery page whose tree offered no rack — read the albums off
+            # the image metadata instead. Gated, so this never fires on a page
+            # that merely happens to be photo-rich.
+            walls = _photo_walls_from_metadata(source_page, chrome)
+        if walls:
+            walls_by_slug.setdefault(slug, []).extend(walls)
+
+    for slug, walls in walls_by_slug.items():
+        _place_walls(
+            pages_by_path[slug], _merge_album_walls(walls), gated=slug in gated_slugs
+        )
 
 
-def _wall_gallery_block(wall: SectionCandidate) -> GalleryBlock:
+def _wall_gallery_block(
+    wall: SectionCandidate, *, limit: int = _MAX_GALLERY_ITEMS
+) -> GalleryBlock:
     """One source picture rack → a gallery of exactly those pictures.
 
     ``image_url`` is set directly, which is what makes this deterministic: the
@@ -1700,6 +1972,11 @@ def _wall_gallery_block(wall: SectionCandidate) -> GalleryBlock:
     the wrong shape. ``image_query`` still has to be a non-empty string for the
     model's schema, but it is dead weight once ``image_url`` is set — see
     ``section_content._gallery_content``, which prefers the URL.
+
+    The album name falls through to ``caption``, never ``title``:
+    ``_gallery_content`` reads either as alt text, but ``schema_builder._build_
+    gallery`` runs ``_match_child_by_title`` on ``title``, so putting one album
+    name on nine tiles would link all nine at a child page.
     """
     captions = {card.image_url: card.title for card in wall.cards if card.image_url}
     items: list[GalleryItem] = []
@@ -1712,11 +1989,12 @@ def _wall_gallery_block(wall: SectionCandidate) -> GalleryBlock:
         items.append(
             GalleryItem(
                 title=caption or None,
+                caption=caption or wall.heading or None,
                 image_query=caption or wall.heading,
                 image_url=url,
             )
         )
-        if len(items) >= _MAX_GALLERY_ITEMS:
+        if len(items) >= limit:
             break
     return GalleryBlock(heading=wall.heading, items=items)
 

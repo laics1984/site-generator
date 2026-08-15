@@ -27,7 +27,7 @@ from app.models.content_blocks import (
     SourceContent,
 )
 from app.models.industry import PageScaffold
-from app.routers.generate import _inject_image_walls
+from app.routers.generate import _drop_unbound_gallery_items, _inject_image_walls
 from app.services import page_inference as pi
 from app.services.image_evidence import classify_role, parse_evidence
 from app.services.image_urls import descriptive_name_from_url, looks_like_logo_url
@@ -558,6 +558,329 @@ class InjectImageWallsTest(unittest.TestCase):
         _inject_image_walls([page], source)
 
         self.assertIs(page.blocks[1], before)
+
+
+# A PHP album viewer: the album <h3> sits in its own grid column, a SIBLING of
+# the tiles, and each tile is a bare <div> of <a><img width="100%;">. The card
+# scan therefore reads the page's SIDEBAR as the card group and demotes the
+# album title to a card — so the section tree offers no rack at all, and the
+# model can't fill the gap either (width="100%;" parses as 100, below
+# source_router's 200px floor, so these photos are never in the prompt).
+ALBUM_VIEWER_HTML = """
+<html><body>
+<section>
+  <h1 class="subtitle">PHOTO GALLERY</h1>
+  <div class="grid grid_4">
+    <h5>Kindergarten Gallery</h5>
+    <p><ul><li><a href="gallery-photo.php?id=107">Mid Year Party</a></li></ul></p>
+    <p><ul><li><a href="gallery-photo.php?id=106">Teachers Day</a></li></ul></p>
+  </div>
+  <div class="grid grid_8">
+    <div class="grid grid_8"><h3>Mid Year Party</h3></div>
+    <div class="grid grid_8">
+      <div class="grid grid_2"><a href="p/1.jpg"><img src="photo/107/small/a1.jpg" width="100%;"></a></div>
+      <div class="grid grid_2"><a href="p/2.jpg"><img src="photo/107/small/a2.jpg" width="100%;"></a></div>
+      <div class="grid grid_2"><a href="p/3.jpg"><img src="photo/107/small/a3.jpg" width="100%;"></a></div>
+      <div class="grid grid_2"><a href="p/4.jpg"><img src="photo/107/small/a4.jpg" width="100%;"></a></div>
+    </div>
+  </div>
+</section>
+<footer>
+  <h4>BRIGHT KIDS GALLERY</h4>
+  <div class="grid"><img src="img/footer/f1.jpg"><img src="img/footer/f2.jpg"><img src="img/footer/f3.jpg"></div>
+</footer>
+</body></html>
+"""
+
+
+def _album_source(album_pages, *, extra_pages=()):
+    """A crawl where every album record reports the SAME url_path.
+
+    That collision is the defect under test: gallery-photo.php?id=107 and
+    ?id=106 are distinct crawl URLs, but url_path carries no query, so both
+    normalize to "gallery-photo" and first-wins indexing dropped all but one.
+    """
+    discovered = []
+    for ref, heading in album_pages:
+        html = ALBUM_VIEWER_HTML.replace("Mid Year Party", heading).replace(
+            "photo/107/small/a", f"photo/{heading[:3].lower()}/small/a"
+        )
+        page = _parse_rendered_html(html, ref, require_text=False).source_content
+        page.url_path = "/gallery-photo.php"
+        discovered.append(page)
+    for ref, path, html in extra_pages:
+        page = _parse_rendered_html(html, ref, require_text=False).source_content
+        page.url_path = path
+        discovered.append(page)
+    return SourceContent(
+        source_kind="url",
+        source_ref="https://example.com/",
+        title="Home",
+        raw_text="Home",
+        discovered_pages=discovered,
+    )
+
+
+def _gallery_page(slug="gallery-photo", *, with_slot=False):
+    """A gallery page as alignment leaves it.
+
+    By default there is NO gallery block: _sanitize_gallery_block drops the
+    model's stock-only gallery, and alignment runs before injection.
+    """
+    blocks = [HeroBlock(headline="Always Bright Memories", subheadline="", image_query="children")]
+    if with_slot:
+        blocks.append(
+            GalleryBlock(heading="Our Gallery", items=[GalleryItem(image_query="happy children")])
+        )
+    blocks.append(CtaBlock(headline="Visit us", button_text="Contact", button_href="/contact"))
+    return PagePlan(title="Photo Gallery", slug=slug, page_type="gallery", blocks=blocks)
+
+
+class AlbumIndexGalleryTest(unittest.TestCase):
+    """A gallery page whose photos live behind album links still gets them."""
+
+    def test_photos_group_into_albums_by_their_context_heading(self):
+        # The fallback for a real album viewer, whose <h3> is a SIBLING of the
+        # tiles: section_extraction reads the page's sidebar as the card group
+        # and finds no rack, and the model can't help either — width="100%;"
+        # parses as 100, under source_router's 200px prompt floor. What is
+        # never in doubt is which heading each photo sits under, because
+        # scraper._image_context already recorded it.
+        from app.routers.generate import _photo_walls_from_metadata
+
+        page = _parse_rendered_html(
+            ALBUM_VIEWER_HTML,
+            "https://example.com/gallery-photo.php?id=107",
+            require_text=False,
+        ).source_content
+
+        walls = _photo_walls_from_metadata(page, chrome=set())
+
+        by_heading = {w.heading: w for w in walls}
+        self.assertIn("Mid Year Party", by_heading)
+        self.assertTrue(
+            all("photo/" in u for u in by_heading["Mid Year Party"].image_urls)
+        )
+        self.assertTrue(all(w.card_kind == "gallery" for w in walls))
+
+    def test_a_group_below_the_album_floor_is_not_an_album(self):
+        # Two photos under a heading is an illustrated paragraph, not a rack.
+        from app.routers.generate import _MIN_ALBUM_PHOTOS, _photo_walls_from_metadata
+
+        html = ALBUM_VIEWER_HTML
+        for i in range(_MIN_ALBUM_PHOTOS, 5):
+            html = html.replace(
+                f'<div class="grid grid_2"><a href="p/{i}.jpg">'
+                f'<img src="photo/107/small/a{i}.jpg" width="100%;"></a></div>',
+                "",
+            )
+        page = _parse_rendered_html(
+            html, "https://example.com/gallery-photo.php?id=107", require_text=False
+        ).source_content
+
+        walls = _photo_walls_from_metadata(page, chrome=set())
+
+        self.assertNotIn("Mid Year Party", {w.heading for w in walls})
+
+    def test_a_paginated_album_is_not_mistaken_for_chrome(self):
+        # Chrome is counted per SLUG. Counting per crawled record would make a
+        # paginated album's own photos look repeated — one page's content
+        # appearing on one page.
+        from app.routers.generate import _repeated_image_urls
+
+        source = _album_source([
+            ("https://example.com/gallery-photo.php?id=107", "Mid Year Party"),
+            ("https://example.com/gallery-photo.php?id=107&gspg=2", "Mid Year Party"),
+        ])
+
+        chrome = _repeated_image_urls(source)
+
+        self.assertEqual([u for u in chrome if "photo/" in u], [])
+
+    def test_every_album_sharing_a_slug_lands_on_the_one_page(self):
+        # The regression test for first-wins indexing: 27 of 28 albums were
+        # silently dropped, and the surviving slot was overwritten repeatedly.
+        source = _album_source([
+            ("https://example.com/gallery-photo.php?id=107", "Mid Year Party"),
+            ("https://example.com/gallery-photo.php?id=106", "Teachers Day"),
+            ("https://example.com/gallery-photo.php?id=104", "Art And Craft"),
+        ])
+        page = _gallery_page()
+
+        _inject_image_walls([page], source, gallery_section_slugs={"gallery-photo"})
+
+        galleries = [b for b in page.blocks if isinstance(b, GalleryBlock)]
+        self.assertEqual(
+            [g.heading for g in galleries],
+            ["Mid Year Party", "Teachers Day", "Art And Craft"],
+        )
+        urls = [i.image_url for g in galleries for i in g.items]
+        self.assertEqual(len(urls), len(set(urls)))
+        self.assertTrue(all(u and "photo/" in u for u in urls))
+
+    def test_the_albums_lead_the_page_and_the_cta_still_closes_it(self):
+        # The pictures ARE the page, so they sit under the hero — not below an
+        # invented paragraph, and never after the closing CTA.
+        source = _album_source([
+            ("https://example.com/gallery-photo.php?id=107", "Mid Year Party"),
+        ])
+        page = _gallery_page()
+
+        _inject_image_walls([page], source, gallery_section_slugs={"gallery-photo"})
+
+        self.assertEqual([b.kind for b in page.blocks], ["hero", "gallery", "cta"])
+
+    def test_a_paginated_album_merges_into_one_block(self):
+        # ?id=107 and ?id=107&gspg=2 are two crawl URLs of ONE album.
+        source = _album_source([
+            ("https://example.com/gallery-photo.php?id=107", "Mid Year Party"),
+            ("https://example.com/gallery-photo.php?id=107&gspg=2", "Mid Year Party"),
+        ])
+        page = _gallery_page()
+
+        _inject_image_walls([page], source, gallery_section_slugs={"gallery-photo"})
+
+        galleries = [b for b in page.blocks if isinstance(b, GalleryBlock)]
+        self.assertEqual(len(galleries), 1)
+        self.assertEqual(galleries[0].heading, "Mid Year Party")
+
+    def test_the_repeated_footer_strip_is_never_the_gallery(self):
+        # The footer strip parses as a perfectly good rack — tiles, no prose,
+        # empty alt — and was the ONLY rack the gallery page's tree offered.
+        source = _album_source([
+            ("https://example.com/gallery-photo.php?id=107", "Mid Year Party"),
+            ("https://example.com/gallery-photo.php?id=106", "Teachers Day"),
+        ])
+        page = _gallery_page()
+
+        _inject_image_walls([page], source, gallery_section_slugs={"gallery-photo"})
+
+        urls = [
+            i.image_url
+            for b in page.blocks
+            if isinstance(b, GalleryBlock)
+            for i in b.items
+        ]
+        self.assertTrue(urls)
+        self.assertEqual([u for u in urls if "img/footer" in (u or "")], [])
+
+    def test_a_page_the_scaffold_never_gated_gains_nothing(self):
+        # Without the gate, any photo-rich page would grow a gallery nobody
+        # asked for — a programmes page with six classroom photos, say.
+        source = _album_source([
+            ("https://example.com/gallery-photo.php?id=107", "Mid Year Party"),
+        ])
+        page = _gallery_page()
+        before = list(page.blocks)
+
+        _inject_image_walls([page], source, gallery_section_slugs=set())
+
+        self.assertEqual(page.blocks, before)
+
+    def test_an_existing_slot_is_replaced_before_any_splicing(self):
+        source = _album_source([
+            ("https://example.com/gallery-photo.php?id=107", "Mid Year Party"),
+            ("https://example.com/gallery-photo.php?id=106", "Teachers Day"),
+        ])
+        page = _gallery_page(with_slot=True)
+
+        _inject_image_walls([page], source, gallery_section_slugs={"gallery-photo"})
+
+        self.assertEqual([b.kind for b in page.blocks], ["hero", "gallery", "gallery", "cta"])
+
+    def test_caps_bound_the_blocks_and_the_total_uploads(self):
+        from app.routers.generate import _MAX_GALLERY_BLOCKS, _MAX_PAGE_GALLERY_IMAGES
+
+        source = _album_source([
+            (f"https://example.com/gallery-photo.php?id={i}", f"Album Number {i}")
+            for i in range(_MAX_GALLERY_BLOCKS + 4)
+        ])
+        page = _gallery_page()
+
+        _inject_image_walls([page], source, gallery_section_slugs={"gallery-photo"})
+
+        galleries = [b for b in page.blocks if isinstance(b, GalleryBlock)]
+        self.assertLessEqual(len(galleries), _MAX_GALLERY_BLOCKS)
+        total = sum(len(g.items) for g in galleries)
+        self.assertLessEqual(total, _MAX_PAGE_GALLERY_IMAGES)
+
+    def test_the_album_name_rides_on_caption_not_title(self):
+        # schema_builder._build_gallery matches child pages on item.title, so
+        # one album name across nine tiles would link all nine at a child page.
+        source = _album_source([
+            ("https://example.com/gallery-photo.php?id=107", "Mid Year Party"),
+        ])
+        page = _gallery_page()
+
+        _inject_image_walls([page], source, gallery_section_slugs={"gallery-photo"})
+
+        gallery = next(b for b in page.blocks if isinstance(b, GalleryBlock))
+        self.assertTrue(all(i.caption == "Mid Year Party" for i in gallery.items))
+        self.assertTrue(all(not i.title for i in gallery.items))
+
+
+class UnboundGalleryItemsTest(unittest.TestCase):
+    """Where the "no stock in a gallery" guarantee actually becomes true.
+
+    Alignment leaves a gallery alone so _inject_image_walls can fill it in its
+    scaffolded position. This runs after that AND after bind_image_refs, which
+    is the first moment "this tile has no photo behind it" is knowable — a ref
+    the binder rejects (out of range, already used, wrong shape) leaves an item
+    with nothing, and it would resolve a Pexels photo at render.
+    """
+
+    @staticmethod
+    def _page(items):
+        return PagePlan(
+            title="Photo Gallery",
+            slug="gallery-photo",
+            page_type="gallery",
+            blocks=[
+                HeroBlock(headline="Memories", subheadline="", image_query="children"),
+                GalleryBlock(heading="Moments", items=items),
+                CtaBlock(headline="Visit", button_text="Contact", button_href="/contact"),
+            ],
+        )
+
+    def test_a_stock_only_gallery_is_dropped(self):
+        page = self._page([
+            GalleryItem(image_query="happy children playing"),
+            GalleryItem(image_query="children painting"),
+        ])
+
+        _drop_unbound_gallery_items([page])
+
+        self.assertEqual([b.kind for b in page.blocks], ["hero", "cta"])
+
+    def test_a_ref_that_never_bound_is_dropped_with_the_rest(self):
+        page = self._page([
+            GalleryItem(image_query="real", image_url="https://x.test/photo/1.jpg"),
+            GalleryItem(image_query="rejected ref"),
+        ])
+
+        _drop_unbound_gallery_items([page])
+
+        gallery = next(b for b in page.blocks if isinstance(b, GalleryBlock))
+        self.assertEqual([i.image_url for i in gallery.items], ["https://x.test/photo/1.jpg"])
+
+    def test_injected_albums_are_untouched(self):
+        page = self._page([
+            GalleryItem(image_query="album", image_url=f"https://x.test/photo/{i}.jpg")
+            for i in range(3)
+        ])
+        before = [i.image_url for i in page.blocks[1].items]
+
+        _drop_unbound_gallery_items([page])
+
+        gallery = next(b for b in page.blocks if isinstance(b, GalleryBlock))
+        self.assertEqual([i.image_url for i in gallery.items], before)
+
+    def test_other_block_kinds_are_never_touched(self):
+        page = self._page([GalleryItem(image_query="stock")])
+
+        _drop_unbound_gallery_items([page])
+
+        self.assertEqual([b.kind for b in page.blocks], ["hero", "cta"])
 
 
 if __name__ == "__main__":

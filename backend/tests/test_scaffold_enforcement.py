@@ -5,6 +5,8 @@ from app.models.content_blocks import (
     AwardsBlock,
     ClientItem,
     ClientsBlock,
+    GalleryBlock,
+    GalleryItem,
     HeroBlock,
     PagePlan,
     StatItem,
@@ -679,6 +681,81 @@ class TeamMemberDetailSanitizationTest(unittest.TestCase):
         # No team block survives; align_page_to_scaffold's "never emit a blank
         # page" rule then backfills a hero.
         self.assertNotIn("team", [b.kind for b in aligned.blocks])
+
+
+class GallerySanitizationTest(unittest.TestCase):
+    """A gallery asserts "these are our photos" — so it has to be ours.
+
+    Gallery was the one card kind with no grounding check, so an LLM
+    image_query survived to render and resolved through media.ImageResolver to
+    a Pexels photo. A childcare site then shipped a "gallery" of stock children
+    presented as its own, which is worse than shipping no gallery.
+
+    In the SCAFFOLDED flow the rule runs late, in
+    routers.generate._drop_unbound_gallery_items — see
+    tests/test_image_walls.py. Alignment deliberately leaves the block alone so
+    _inject_image_walls can fill it in its scaffolded position first.
+    """
+
+    SCAFFOLD = PageScaffold(
+        page_type="gallery",
+        slug="gallery",
+        title="Gallery",
+        sections=["hero", "gallery", "cta"],
+    )
+
+    @staticmethod
+    def _page(items):
+        return PagePlan(
+            title="Gallery",
+            slug="gallery",
+            page_type="gallery",
+            blocks=[
+                HeroBlock(headline="Our Gallery", subheadline="", image_query="children"),
+                GalleryBlock(heading="Moments", items=items),
+            ],
+        )
+
+    def test_alignment_keeps_the_slot_for_the_injector(self):
+        # Dropping it here would cost the page its position: an awards page
+        # reads hero/gallery x3/about/gallery, and re-inserting the racks
+        # afterwards would stack all four above the narrative they follow.
+        aligned = align_page_to_scaffold(
+            self._page([GalleryItem(image_query="happy children playing")]),
+            self.SCAFFOLD,
+            brand_name="Bright Kids",
+            source_text="Some text.",
+        )
+
+        self.assertEqual([b.kind for b in aligned.blocks], ["hero", "gallery", "cta"])
+
+    def test_the_from_source_flow_drops_a_stock_only_gallery(self):
+        # That flow has no injection or ref-binding pass to defer to, so the
+        # same rule has to run here.
+        blocks = sanitize_blocks_against_source(
+            [GalleryBlock(heading="Moments", items=[GalleryItem(image_query="stock children")])],
+            source_text="Some text.",
+        )
+
+        self.assertEqual(blocks, [])
+
+    def test_the_from_source_flow_keeps_backed_tiles(self):
+        blocks = sanitize_blocks_against_source(
+            [
+                GalleryBlock(
+                    heading="Moments",
+                    items=[
+                        GalleryItem(image_query="album", image_url="https://x.test/1.jpg"),
+                        GalleryItem(image_query="classroom", image_ref=0),
+                        GalleryItem(image_query="invented"),
+                    ],
+                )
+            ],
+            source_text="Some text.",
+        )
+
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(len(blocks[0].items), 2)
 
 
 if __name__ == "__main__":

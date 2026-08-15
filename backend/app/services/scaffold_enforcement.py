@@ -27,6 +27,7 @@ from app.models.content_blocks import (
     ContactBlock,
     ContentBlock,
     CtaBlock,
+    GalleryBlock,
     HeroBlock,
     PagePlan,
     StatsBlock,
@@ -434,6 +435,37 @@ def _sanitize_stats_block(
     return block.model_copy(update={"items": items})
 
 
+def _sanitize_gallery_block(block: GalleryBlock) -> GalleryBlock | None:
+    """Keep only tiles the SOURCE supplied a photo for.
+
+    A gallery asserts "these are our photos". A tile resolved from an LLM
+    ``image_query`` asserts it falsely: ``media.ImageResolver.resolve`` falls
+    through the scraped pool to Pexels, and a documentary photo grid is the one
+    place a stranger's stock photo reads as a lie about the client rather than
+    as decoration. A childcare site's "gallery" of stock children is worse than
+    no gallery, so an unbacked tile goes and an empty block goes with it — the
+    same rule ``prompts.py`` states for the model ("a shorter honest page beats
+    a padded one"), enforced where the model can't be trusted to apply it.
+
+    Unlike its siblings this takes no ``source_text``: the test is structural,
+    not lexical. Backing is an ``image_ref`` (bound to a URL later, by
+    ``image_refs.bind_image_refs``) or an ``image_url`` already set by a
+    deterministic injection. An ``image_query`` alone is not backing.
+
+    Used by the scaffold-free ``/from-source`` flow, which has no injection or
+    ref-binding pass to defer to. The scaffolded flow runs the same rule later
+    instead, in ``routers.generate._drop_unbound_gallery_items`` — see the note
+    in ``align_page_to_scaffold``.
+    """
+    items = [
+        item for item in block.items
+        if item.image_ref is not None or (item.image_url or "").strip()
+    ]
+    if not items:
+        return None
+    return block.model_copy(update={"items": items})
+
+
 # Page-type-aware fallback stock phrase for a hero the LLM left blank. Keyed
 # by the SCAFFOLD's page_type (deterministic — see industry_templates.py),
 # not PagePlan.page_type, which the LLM merely echoes and can drift (see
@@ -514,6 +546,8 @@ def sanitize_blocks_against_source(
             result = _sanitize_clients_block(block, source_text)
         elif kind == "stats" and isinstance(block, StatsBlock):
             result = _sanitize_stats_block(block, source_text)
+        elif kind == "gallery" and isinstance(block, GalleryBlock):
+            result = _sanitize_gallery_block(block)
         if result is not None:
             sanitized.append(result)
     return sanitized
@@ -595,6 +629,15 @@ def align_page_to_scaffold(
                     omitted.append(kind)
                     continue
                 block = sanitized
+            # `gallery` is deliberately NOT sanitized here. Its grounding runs
+            # after ``routers.generate._inject_image_walls`` has had its turn to
+            # fill the slot from the source, and after image refs are bound —
+            # only then is "this tile has no photo behind it" actually true.
+            # Dropping the block at this point would also cost the page its
+            # scaffolded POSITION: an awards page reads
+            # hero/gallery×3/about/gallery, and re-inserting the racks later
+            # would stack all four above the narrative they follow in the
+            # source. See routers.generate._drop_unbound_gallery_items.
             elif kind == "hero" and isinstance(block, HeroBlock):
                 block = _backfill_hero_image_query(
                     block, page_type=scaffold.page_type, brand_name=brand_name

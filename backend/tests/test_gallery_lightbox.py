@@ -122,5 +122,51 @@ class GalleryCapacityTest(unittest.TestCase):
             _gallery_block(25)
 
 
+class PerAlbumLightboxGroupTest(unittest.TestCase):
+    """An album index ships several galleries — each browses on its own.
+
+    routers.generate._inject_image_walls turns one source album into one
+    GalleryBlock, so a page can carry several. Because each becomes its own
+    catalog section instance, each gets its own marked grid — which is what
+    makes the arrows walk one album rather than all of them at once.
+    """
+
+    def test_each_album_is_its_own_lightbox_group(self):
+        albums = [
+            GalleryBlock(
+                heading=heading,
+                items=[
+                    GalleryItem(
+                        image_query=heading,
+                        caption=heading,
+                        image_url=f"https://cdn.example/{slug}/{i}.jpg",
+                    )
+                    for i in range(1, 4)
+                ],
+            )
+            for heading, slug in [("Sports Day", "sports"), ("Art & Craft", "art")]
+        ]
+
+        marked_per_album = []
+        for block in albums:
+            template, content = block_to_section(block)
+            element = _fill(template, content)
+            marked = _find(element, lambda e: getattr(e, "lightbox", None) is True)
+            self.assertEqual(len(marked), 1)
+            marked_per_album.append(marked[0])
+
+        # Two groups, and no image belongs to both — otherwise "next" would
+        # walk out of one album into another.
+        def _srcs(node):
+            return {
+                e.content.src
+                for e in _find(node, lambda e: getattr(e.content, "src", None))
+            }
+
+        first, second = (_srcs(node) for node in marked_per_album)
+        self.assertTrue(first and second)
+        self.assertEqual(first & second, set())
+
+
 if __name__ == "__main__":
     unittest.main()
