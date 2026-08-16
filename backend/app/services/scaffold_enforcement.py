@@ -21,6 +21,7 @@ import logging
 import re
 
 from app.models.content_blocks import (
+    DETERMINISTIC_SECTION_KINDS,
     AboutBlock,
     AwardsBlock,
     ClientsBlock,
@@ -581,8 +582,18 @@ def align_page_to_scaffold(
     """
     required_kinds = list(scaffold.sections)
     by_kind: dict[str, list[ContentBlock]] = {}
+    discarded: list[str] = []
     for blk in page.blocks:
-        by_kind.setdefault(_block_kind(blk), []).append(blk)
+        kind = _block_kind(blk)
+        if kind in DETERMINISTIC_SECTION_KINDS:
+            # The model was never shown these (planner strips them from
+            # `required_sections`), but it can still volunteer one: the block is
+            # in the ContentBlock union, so a guessed shape validates. Dropping
+            # it here is the half that does not depend on the model behaving —
+            # the source-injected version is attached later by routers.generate.
+            discarded.append(kind)
+            continue
+        by_kind.setdefault(kind, []).append(blk)
 
     aligned_blocks: list[ContentBlock] = []
     structural_filled: list[str] = []
@@ -665,6 +676,13 @@ def align_page_to_scaffold(
             "Page '%s' filled structural section(s) %s with placeholder defaults.",
             page.title,
             ", ".join(structural_filled),
+        )
+    if discarded:
+        logger.info(
+            "Page '%s' discarded LLM-authored deterministic section(s) %s — these "
+            "carry facts with external referents and are injected from the source.",
+            page.title,
+            ", ".join(sorted(set(discarded))),
         )
 
     dropped_kinds = {k: len(v) for k, v in by_kind.items() if v}

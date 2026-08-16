@@ -32,6 +32,7 @@ from pydantic import (
 )
 
 from app.models.content_blocks import (
+    DETERMINISTIC_SECTION_KINDS,
     BrandMood,
     ContentBlock,
     IndustryCategoryLiteral,
@@ -298,7 +299,14 @@ def _scaffolds_to_prompt_payload(
             "slug": s.slug,
             "title": s.title,
             "is_homepage": s.is_homepage,
-            "required_sections": s.sections,
+            # Deterministic kinds are withheld from the prompt entirely. Naming
+            # one here invites the model to write it, and it CAN — the block is
+            # in the ContentBlock union, so a guessed shape validates even
+            # though no schema was shown. See DETERMINISTIC_SECTION_KINDS; the
+            # matching discard lives in scaffold_enforcement.align_page_to_scaffold.
+            "required_sections": [
+                k for k in s.sections if k not in DETERMINISTIC_SECTION_KINDS
+            ],
         }
         if s.parent_slug is not None:
             entry["parent_slug"] = s.parent_slug

@@ -188,9 +188,15 @@ async def _bind_slot(
         img = await _resolve_image(value, resolve_image, theme)
         return BuilderElementContent(**{**base, "src": img["src"], "alt": img["alt"]})
     if node_type == "video":
-        # Raw iframe embed (maps, players): value is {src} or a bare URL string.
-        src = value.get("src") if isinstance(value, dict) else value
-        return BuilderElementContent(**{**base, "src": str(src or "")})
+        # Raw iframe embed (maps, players): value is {src, title?} or a bare URL
+        # string. `title` becomes the frame's accessible name — the renderer
+        # falls back to "Embedded video", which is wrong for a map.
+        v = value if isinstance(value, dict) else {}
+        src = v.get("src") if isinstance(value, dict) else value
+        out = {**base, "src": str(src or "")}
+        if v.get("title"):
+            out["title"] = str(v["title"])
+        return BuilderElementContent(**out)
     return BuilderElementContent(**{**base, "innerText": str(value)})
 
 

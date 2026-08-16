@@ -55,7 +55,7 @@ class DropEmptyBlocksTest(unittest.TestCase):
 
     def test_derived_map_covers_newer_kinds(self):
         # Regression guard: these were silently missing before and caused 502s.
-        for kind in ("awards", "clients", "stats", "timeline", "linkbar"):
+        for kind in ("awards", "clients", "stats", "timeline", "linkbar", "video"):
             self.assertIn(kind, _REQUIRED_LIST_FIELDS)
         self.assertEqual(_REQUIRED_LIST_FIELDS["clients"][1], 2)
 

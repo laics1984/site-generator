@@ -1282,6 +1282,23 @@ def _extract_og_image_safe(elements: list[BuilderElement]) -> str | None:
         return None
 
 
+def _first_video_thumbnail(blocks: list[Any]) -> str | None:
+    """The page's first video poster, for use as og:image. Advisory, never raises."""
+    try:
+        from app.services.seo import extract_video_items
+
+        return next(
+            (
+                item.thumbnail_url
+                for item in extract_video_items(blocks)
+                if getattr(item, "thumbnail_url", None)
+            ),
+            None,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _breadcrumb_slug_chain(
     slug: str, title_map: dict[str, str]
 ) -> list[tuple[str, str]]:
@@ -4784,6 +4801,11 @@ async def plan_to_site(
         elif page_plan.page_type == "events":
             elements.append(_cms_list_element("events"))
         og_image = _extract_og_image_safe(elements) if settings.seo_enabled else None
+        if settings.seo_enabled and not og_image:
+            # A video page can legitimately carry no photography at all — its
+            # content is players. The first video's poster is a real image OF
+            # the real content, which beats shipping no social card.
+            og_image = _first_video_thumbnail(page_plan.blocks)
         structured = None
         if settings.seo_enabled and settings.seo_structured_data_enabled:
             bc_chain = _breadcrumb_slug_chain(page_plan.slug, page_title_by_slug)

@@ -20039,6 +20039,1297 @@
       ]
     },
     {
+      "id": "video-grid",
+      "sectionType": "video",
+      "layoutVariant": "grid",
+      "styleVariant": "players",
+      "label": "Video Grid",
+      "description": "A grid of embedded video players, each with its own caption. Best for a video gallery, recorded events, or a set of programme clips. Two across, because a 16:9 player needs width to stay watchable.",
+      "tags": [
+        "Video",
+        "Media",
+        "Gallery"
+      ],
+      "thumbnail": "video-grid",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 2,
+          "item": [
+            {
+              "id": "video",
+              "kind": "video"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Videos",
+        "heading": "See us in action.",
+        "subheading": "A few moments from our programmes.",
+        "items": [
+          {
+            "video": {
+              "src": "https://www.youtube.com/embed/dQw4w9WgXcQ"
+            },
+            "caption": "Video 1"
+          },
+          {
+            "video": {
+              "src": "https://www.youtube.com/embed/aqz-KE-bpKQ"
+            },
+            "caption": "Video 2"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Video - Grid",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Video Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "2Col",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "24px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {
+                "gap": "20px"
+              }
+            },
+            "content": [
+              {
+                "name": "Video Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "12px",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "10px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Video Player",
+                    "type": "video",
+                    "$slot": "video",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "aspectRatio": "16 / 9",
+                      "display": "block",
+                      "border": "none",
+                      "borderRadius": "16px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(148,163,184,0.16)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": {}
+                  },
+                  {
+                    "name": "Video Caption",
+                    "type": "text",
+                    "$slot": "caption",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ],
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "video-feature",
+      "sectionType": "video",
+      "layoutVariant": "feature",
+      "styleVariant": "player",
+      "label": "Featured Video",
+      "description": "One embedded video at full width, with an optional heading above it. Best for a single introduction, tour, or showreel.",
+      "tags": [
+        "Video",
+        "Media",
+        "Feature"
+      ],
+      "thumbnail": "video-feature",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "video",
+              "kind": "video"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Watch",
+        "heading": "Take a look inside.",
+        "subheading": null,
+        "items": [
+          {
+            "video": {
+              "src": "https://www.youtube.com/embed/dQw4w9WgXcQ"
+            },
+            "caption": "Video 1"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Video - Feature",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Video Feature",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "24px",
+              "maxWidth": "900px",
+              "marginLeft": "auto",
+              "marginRight": "auto"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Video Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "12px",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "10px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Video Player",
+                    "type": "video",
+                    "$slot": "video",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "aspectRatio": "16 / 9",
+                      "display": "block",
+                      "border": "none",
+                      "borderRadius": "16px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(148,163,184,0.16)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": {}
+                  },
+                  {
+                    "name": "Video Caption",
+                    "type": "text",
+                    "$slot": "caption",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "map-grid",
+      "sectionType": "map",
+      "layoutVariant": "grid",
+      "styleVariant": "embeds",
+      "label": "Map Grid",
+      "description": "A grid of embedded maps, each with its own caption. Best for a business with several branches. Two across, because a map needs width before its street names are legible.",
+      "tags": [
+        "Map",
+        "Location",
+        "Branches"
+      ],
+      "thumbnail": "map-grid",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 2,
+          "item": [
+            {
+              "id": "map",
+              "kind": "video"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Find us",
+        "heading": "Come and see us.",
+        "subheading": null,
+        "items": [
+          {
+            "map": {
+              "src": "https://maps.google.com/maps?q=Metro+Prima+Kepong+Kuala+Lumpur&output=embed",
+              "title": "Map: Kepong branch"
+            },
+            "caption": "Kepong branch"
+          },
+          {
+            "map": {
+              "src": "https://maps.google.com/maps?q=Bandar+Menjalara+Kuala+Lumpur&output=embed",
+              "title": "Map: Menjalara branch"
+            },
+            "caption": "Menjalara branch"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Map - Grid",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Map Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "2Col",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "24px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {
+                "gap": "20px"
+              }
+            },
+            "content": [
+              {
+                "name": "Map Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "12px",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "10px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Map Frame",
+                    "type": "video",
+                    "$slot": "map",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "aspectRatio": "16 / 9",
+                      "display": "block",
+                      "border": "none",
+                      "borderRadius": "16px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(148,163,184,0.16)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": {}
+                  },
+                  {
+                    "name": "Map Caption",
+                    "type": "text",
+                    "$slot": "caption",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ],
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "map-feature",
+      "sectionType": "map",
+      "layoutVariant": "feature",
+      "styleVariant": "embed",
+      "label": "Location Map",
+      "description": "One embedded map at full width, with an optional heading above it. Best for a single address, campus, or head office.",
+      "tags": [
+        "Map",
+        "Location",
+        "Contact"
+      ],
+      "thumbnail": "map-feature",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "map",
+              "kind": "video"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Find us",
+        "heading": "Come and see us.",
+        "subheading": null,
+        "items": [
+          {
+            "map": {
+              "src": "https://maps.google.com/maps?q=Metro+Prima+Kepong+Kuala+Lumpur&output=embed",
+              "title": "Map: Kepong branch"
+            },
+            "caption": "Kepong branch"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Map - Feature",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Map Feature",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "24px",
+              "maxWidth": "900px",
+              "marginLeft": "auto",
+              "marginRight": "auto"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Map Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "12px",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "10px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Map Frame",
+                    "type": "video",
+                    "$slot": "map",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "aspectRatio": "16 / 9",
+                      "display": "block",
+                      "border": "none",
+                      "borderRadius": "16px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(148,163,184,0.16)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": {}
+                  },
+                  {
+                    "name": "Map Caption",
+                    "type": "text",
+                    "$slot": "caption",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "stats-bento",
       "sectionType": "stats",
       "layoutVariant": "bento",

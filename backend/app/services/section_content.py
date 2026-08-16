@@ -37,6 +37,7 @@ from app.models.content_blocks import (
     GalleryBlock,
     HeroBlock,
     LocationsBlock,
+    MapBlock,
     MenuBlock,
     PricingBlock,
     ProcessBlock,
@@ -44,6 +45,7 @@ from app.models.content_blocks import (
     ServicesBlock,
     TeamBlock,
     TestimonialsBlock,
+    VideoBlock,
     VisualPolicy,
 )
 from app.services.icons import icons_for_items
@@ -351,6 +353,54 @@ def _gallery_content(b: GalleryBlock) -> dict[str, Any]:
     }
 
 
+def _video_content(b: VideoBlock) -> dict[str, Any]:
+    """Videos → catalog slots. The one mapper with nothing to resolve.
+
+    ``embed_url`` is already canonical (services.video_embed), so the `{src}`
+    goes straight into the video node — the same path locations-map-cards uses
+    for its Google Map. Nothing here falls back to a stock query, because there
+    is no stock equivalent of a specific video: an item with no embed simply
+    does not exist (VideoItem.embed_url is required).
+    """
+    return {
+        "eyebrow": "Videos",
+        "heading": b.heading,
+        "subheading": b.subheading,
+        "items": [
+            {
+                "video": {"src": i.embed_url, "title": i.title or "Embedded video"},
+                "caption": i.title or None,
+            }
+            for i in b.items
+        ],
+    }
+
+
+def _map_content(b: MapBlock) -> dict[str, Any]:
+    """Maps → catalog slots. Nothing to resolve, same as `_video_content`.
+
+    ``title`` rides along into the iframe's accessible name. Without it every
+    map on the published site announces itself as "Embedded video" — the
+    renderer's default, which is correct for the element type and wrong for
+    this use of it.
+    """
+    return {
+        "eyebrow": "Find us",
+        "heading": b.heading,
+        "subheading": b.subheading,
+        "items": [
+            {
+                "map": {
+                    "src": i.embed_url,
+                    "title": f"Map: {i.title}" if i.title else "Location map",
+                },
+                "caption": i.title or None,
+            }
+            for i in b.items
+        ],
+    }
+
+
 def _process_content(b: ProcessBlock) -> dict[str, Any]:
     return {
         "eyebrow": "Process",
@@ -401,7 +451,16 @@ def _clients_content(b: Any) -> dict[str, Any]:
 def maps_embed_url(name: str, address: str) -> str:
     """Keyless Google Maps embed URL for a branch (renders via the video/iframe
     element — see the locations catalog template). Name + address together give
-    the place search its best chance of pinning the exact business."""
+    the place search its best chance of pinning the exact business.
+
+    A SEARCH, not a pin: this is the best available when the only input is prose
+    the model wrote. When the source page framed its own map, that URL is the
+    more precise artefact and is replayed instead — see ``MapBlock``.
+
+    ``quote_plus`` also encodes the comma between name and address, which
+    matters downstream: the CMS splits any ``src`` on top-level commas to
+    support multi-layer CSS backgrounds (``MediaUrlResolver::normalize``).
+    """
     return f"https://maps.google.com/maps?q={quote_plus(f'{name}, {address}')}&output=embed"
 
 
@@ -435,7 +494,10 @@ def _locations_content(b: LocationsBlock) -> dict[str, Any]:
                 if i.phone
                 else None,
                 "whatsapp_cta": _link("WhatsApp us", wa) if wa else None,
-                "map": {"src": maps_embed_url(i.name, i.address)},
+                "map": {
+                    "src": maps_embed_url(i.name, i.address),
+                    "title": f"Map: {i.name}",
+                },
             }
         )
     return {
@@ -477,6 +539,8 @@ _MAPPERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "profile": _profile_content,
     "team": _team_content,
     "gallery": _gallery_content,
+    "video": _video_content,
+    "map": _map_content,
     "process": _process_content,
     "menu": _menu_content,
     "pricing": _pricing_content,

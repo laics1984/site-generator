@@ -28,7 +28,7 @@ import time
 import urllib.robotparser
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
 import httpx
@@ -41,10 +41,12 @@ from app.models.content_blocks import (
     DocumentCardCandidate,
     DocumentCardLink,
     ImageMetadata,
+    MapEmbed,
     NavLink,
     ProfileCandidate,
     SectionCandidate,
     SourceContent,
+    VideoEmbed,
 )
 from app.services.brand_candidate import build_brand_candidate
 from app.services.browser import RenderError, browser_context, rendered_page
@@ -68,6 +70,8 @@ from app.services.image_urls import (
 )
 from app.services.logo_extraction import LogoCandidate, extract_logo
 from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
+from app.services.map_embed import ParsedMap, parse_map_src
+from app.services.video_embed import ParsedVideo, parse_video_src
 from app.services.profile_text import has_contact_token, is_boilerplate_line
 from app.services.nav_extraction import (
     DOCUMENT_EXTENSIONS,
@@ -762,6 +766,287 @@ def _extract_images(
     # top of the site's ordinary furniture, and truncating mid-wall drops real
     # content rather than trimming noise.
     return candidates[:48]
+
+
+# Embed boilerplate, not a caption. YouTube's own iframe snippet ships
+# title="YouTube video player" on every player ever pasted, so without this every
+# video on a site gets the same meaningless heading. Sibling of
+# _DOCUMENT_CARD_TITLE_STOPWORDS: a card with no real title gets none.
+_VIDEO_TITLE_STOPWORDS = frozenset(
+    {
+        "youtube video player",
+        "youtube video",
+        "vimeo video player",
+        "vimeo video",
+        "embedded video",
+        "video player",
+        "video",
+    }
+)
+
+# Attributes a lazy-loading shim parks the real src in. Plain `src` is checked
+# first; these are what WP Rocket / LiteSpeed / lozad rewrite it to.
+_EMBED_SRC_ATTRS = ("src", "data-src", "data-lazy-src", "data-litespeed-src")
+
+# Ancestors to climb looking for an embed's own caption before giving up.
+_EMBED_TITLE_MAX_DEPTH = 4
+
+# Boundaries neither the caption nor the group-heading search may cross. Outside
+# the embed's own section, any heading belongs to unrelated content.
+_EMBED_SCOPE_TAGS = ("section", "article", "main", "body", "html")
+
+# Player embeds carrying all of these are a muted looping backdrop, not content.
+_VIDEO_BACKDROP_PARAMS = ("autoplay=1", "mute=1")
+
+# Embeds of one kind kept per page. Roomier than any real gallery needs.
+_MAX_PAGE_VIDEOS = 24
+
+# Maps kept per page. A branch directory legitimately pins several; past this
+# the page is a store locator, which a generated site serves as a list.
+_MAX_PAGE_MAPS = 8
+
+# Elements that can hold a third-party embed. `lite-youtube` and `<embed>` are
+# facade/legacy players; a map only ever arrives as a real `<iframe>`, but the
+# walk is shared so the whitelists — not the tag names — do the deciding.
+_EMBED_TAGS = ["iframe", "lite-youtube", "embed"]
+
+
+def _is_hidden_embed(tag: Tag) -> bool:
+    """True for a frame the page never shows the reader.
+
+    Tag managers and conversion pixels ship as 0x0 `display:none` iframes inside
+    `<noscript>`; brightkids' homepage carries two of them. They are not video,
+    but a whitelist alone would not stop a hidden *YouTube* frame either, and a
+    player nobody can see is not this page's content.
+    """
+    style = (tag.get("style") or "")
+    if isinstance(style, str):
+        flat = style.replace(" ", "").lower()
+        if "display:none" in flat or "visibility:hidden" in flat:
+            return True
+    for attr in ("width", "height"):
+        raw = tag.get(attr)
+        if isinstance(raw, str):
+            try:
+                if int(raw.strip().rstrip("px") or 0) <= 2:
+                    return True
+            except ValueError:
+                pass
+    return tag.find_parent("noscript") is not None
+
+
+def _is_backdrop_embed(src: str) -> bool:
+    """True for a hero background player — decoration, not a watchable item.
+
+    A muted autoplaying loop behind a headline is styling. Promoting it into a
+    video section would put a controls-less, silent clip in a grid of things the
+    reader is invited to watch.
+    """
+    low = src.lower()
+    if not all(param in low for param in _VIDEO_BACKDROP_PARAMS):
+        return False
+    return "loop=1" in low or "controls=0" in low
+
+
+def _embed_title(tag: Tag) -> str:
+    """The source's own caption for one embed, or "" — never a guess.
+
+    Deliberately NOT ``_image_context``. That takes the nearest PRECEDING
+    heading, which is right for an image (captions sit under figures) and wrong
+    here: a video card puts its caption AFTER the player, so every embed but the
+    first would inherit its predecessor's title. Verified on brightkids, where
+    that misattribution shifted all four gallery captions by one.
+
+    Instead climb to the smallest ancestor that holds a heading and no OTHER
+    iframe — that container is the card, and its heading is this video's. An
+    embed standing alone in a section with no heading gets "", which is correct:
+    a wrong caption is worse than none.
+    """
+    for attr in ("title", "aria-label"):
+        raw = tag.get(attr)
+        if isinstance(raw, str) and raw.strip():
+            if raw.strip().lower() not in _VIDEO_TITLE_STOPWORDS:
+                return raw.strip()[:160]
+
+    node: Tag = tag
+    for _ in range(_EMBED_TITLE_MAX_DEPTH):
+        parent = node.parent
+        if not isinstance(parent, Tag) or parent.name in _EMBED_SCOPE_TAGS:
+            # Never climb out of the embed's own section. Past that boundary the
+            # next heading belongs to different content entirely — a video in an
+            # unheaded section would take the PRECEDING section's title.
+            break
+        if len(parent.find_all("iframe")) > 1:
+            # A container shared with other players — its heading names the
+            # group, not this video.
+            break
+        for heading in parent.find_all(_HEADING_TAGS):
+            text = heading.get_text(" ", strip=True)
+            if text:
+                return text[:160]
+        node = parent
+
+    figure = tag.find_parent("figure")
+    if isinstance(figure, Tag):
+        figcaption = figure.find("figcaption")
+        if isinstance(figcaption, Tag):
+            return figcaption.get_text(" ", strip=True)[:160]
+    return ""
+
+
+def _embed_context_heading(tag: Tag, card_titles: set[str]) -> str:
+    """The heading naming the GROUP this embed belongs to, or "".
+
+    Not ``_image_context`` either, and for the same reason one step up: the
+    nearest PRECEDING heading is usually the previous card's caption, so
+    grouping on it splits one "Super ESP" video wall into four groups of one.
+
+    Two bounds make this honest:
+
+    - **Scoped to the embed's own ``<section>``.** Walking back arbitrarily far
+      always finds *some* heading, and on a page whose video sits in an
+      unheaded section that heading belongs to unrelated content further up —
+      brightkids' homepage video would have been filed under "Announcement".
+      No section-like ancestor, or no heading in it, means "".
+    - **Card captions are skipped**, since a card's own title names one video,
+      not the group.
+    """
+    scope = next(
+        (
+            parent
+            for parent in tag.parents
+            if isinstance(parent, Tag) and parent.name in _EMBED_SCOPE_TAGS
+        ),
+        None,
+    )
+    if scope is None or scope.name in ("body", "html"):
+        return ""
+    for heading in scope.find_all(_HEADING_TAGS):
+        text = heading.get_text(" ", strip=True)
+        if text and text.strip().lower() not in card_titles:
+            return text[:120]
+    return ""
+
+
+def _embed_src(tag: Tag) -> str | None:
+    """The URL one embed element points at, lazy-loading shims included."""
+    raw = next(
+        (
+            value
+            for attr in _EMBED_SRC_ATTRS
+            if isinstance(value := tag.get(attr), str) and value.strip()
+        ),
+        None,
+    )
+    if raw is not None:
+        return raw
+    # <lite-youtube videoid="ID"> — a facade widget, no src at all.
+    videoid = tag.get("videoid") or tag.get("data-video-id")
+    return f"https://www.youtube.com/embed/{videoid}" if videoid else None
+
+
+@dataclass
+class _PageEmbeds:
+    """Third-party frames one page carries, split by what they turned out to be."""
+
+    videos: list["VideoEmbed"] = field(default_factory=list)
+    maps: list["MapEmbed"] = field(default_factory=list)
+
+
+def _extract_embeds(soup: BeautifulSoup, base_url: str) -> _PageEmbeds:
+    """Every renderable third-party frame the page embeds, in DOM order.
+
+    ONE walk, two whitelists. A page's `<iframe>`s are overwhelmingly trackers,
+    chat widgets and social plugins — brightkids' homepage carries four, of
+    which three are Google Tag Manager and a Facebook like-box — so each frame
+    is offered to ``parse_video_src`` and then ``parse_map_src``, and anything
+    neither claims is dropped. Adding a third kind of embed is a parser module
+    and a branch here, not another traversal: the hidden/chrome/caption rules
+    below are the expensive part and they are kind-agnostic.
+
+    Runs on whatever markup the caller parsed — static HTML or the Playwright
+    render — so a JS-injected embed is covered without special handling: an
+    ``<iframe>`` is a `sub_frame` request, which ``browser.block_heavy_resources``
+    does not abort, and ``page.content()`` serializes the main frame's DOM
+    whether or not the child frame ever loaded.
+
+    Chrome is stripped the same way ``_extract_document_cards`` strips it: a
+    promo reel in the site-wide footer is the template's, not this page's. For
+    videos that is belt-and-braces with ``source_injection.repeated_across_slugs``;
+    for maps it is the ONLY chrome rule, because a map repeated across pages is
+    usually the business's own address rather than furniture (see
+    ``routers.generate._inject_maps``).
+    """
+    work = BeautifulSoup(str(soup), "lxml")
+    for tag in work.find_all(("header", "nav", "footer", "script", "style")):
+        tag.decompose()
+
+    # Pass 1 — which embeds survive, what kind each is, and what each card calls
+    # itself.
+    videos: list[tuple[Tag, ParsedVideo, str]] = []
+    maps: list[tuple[Tag, ParsedMap, str]] = []
+    seen: set[str] = set()
+    for tag in work.find_all(_EMBED_TAGS):
+        if not isinstance(tag, Tag) or _is_hidden_embed(tag):
+            continue
+        raw = _embed_src(tag)
+        if not raw:
+            continue
+        if not _is_backdrop_embed(raw) and len(videos) < _MAX_PAGE_VIDEOS:
+            video = parse_video_src(raw, base_url)
+            if video is not None:
+                if video.embed_url in seen:
+                    continue
+                seen.add(video.embed_url)
+                videos.append((tag, video, _embed_title(tag)))
+                continue
+        if len(maps) < _MAX_PAGE_MAPS:
+            pin = parse_map_src(raw, base_url)
+            if pin is not None and pin.embed_url not in seen:
+                seen.add(pin.embed_url)
+                maps.append((tag, pin, _embed_title(tag) or pin.place or ""))
+
+    # Pass 2 — group headings, which need every card's title first so a card's
+    # own caption is never mistaken for the heading naming the whole group.
+    # Scoped per kind: a video's caption must not suppress a map's heading.
+    video_titles = _card_titles(videos)
+    map_titles = _card_titles(maps)
+    return _PageEmbeds(
+        videos=[
+            VideoEmbed(
+                provider=parsed.provider,  # type: ignore[arg-type]
+                video_id=parsed.video_id,
+                embed_url=parsed.embed_url,
+                thumbnail_url=parsed.thumbnail_url,
+                title=title,
+                context_heading=_embed_context_heading(tag, video_titles),
+            )
+            for tag, parsed, title in videos
+        ],
+        maps=[
+            MapEmbed(
+                provider=parsed.provider,  # type: ignore[arg-type]
+                embed_url=parsed.embed_url,
+                title=title,
+                context_heading=_embed_context_heading(tag, map_titles),
+            )
+            for tag, parsed, title in maps
+        ],
+    )
+
+
+def _card_titles(found: list[tuple[Tag, Any, str]]) -> set[str]:
+    return {title.strip().lower() for _, _, title in found} - {""}
+
+
+def _extract_videos(soup: BeautifulSoup, base_url: str) -> list["VideoEmbed"]:
+    """Every YouTube/Vimeo player the page embeds, in DOM order."""
+    return _extract_embeds(soup, base_url).videos
+
+
+def _extract_maps(soup: BeautifulSoup, base_url: str) -> list["MapEmbed"]:
+    """Every embedded map the page carries, in DOM order."""
+    return _extract_embeds(soup, base_url).maps
 
 
 def _attr_haystack(tag: Tag) -> str:
@@ -1981,6 +2266,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
     image_candidates = _extract_images(soup, final_url)
     profile_candidates = _extract_profile_candidates(soup, final_url)
     document_cards = _extract_document_cards(soup, final_url)
+    embeds = _extract_embeds(soup, final_url)
     # The page's own section tree. `headings` above is the flat, level-less
     # version of the same markup — kept for the callers that only want a
     # keyword bag, while the planner is grounded on the tree.
@@ -2047,6 +2333,8 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         profile_candidates=profile_candidates,
         section_candidates=section_candidates,
         document_cards=document_cards,
+        video_embeds=embeds.videos,
+        map_embeds=embeds.maps,
     )
     return _ParsedPage(
         final_url=final_url,

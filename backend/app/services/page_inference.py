@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 from app.models.content_blocks import (
@@ -618,7 +619,35 @@ def _sections_for(
     # Below the story threshold, an image-rich page still gets its matched
     # photos as image+text splits woven into the fixed rhythm.
     base = _weave_photo_sections(base, page_type, page)
+    base = _swap_unfillable_gallery_for_video(base, page)
     return _augment_sections(base, page_type, page)
+
+
+def _swap_unfillable_gallery_for_video(
+    sections: list[SectionType], page: SourceContent | None
+) -> list[SectionType]:
+    """A video gallery's "photos" are videos — ask for the section it can fill.
+
+    ``/gallery-video`` types as `gallery`, whose recipe asks for a photo wall the
+    page cannot supply: its content is in ``<iframe>``s, so there are no content
+    photos, ``_drop_unbound_gallery_items`` rightly deletes the empty block, and
+    the page ships as hero + generic cta. That is exactly what brightkids
+    shipped — a video gallery rendered as stock imagery under invented headings.
+
+    Requires BOTH conditions, so this never fires on a page that merely happens
+    to have a video: the page must carry embeds AND have no content photography
+    of its own. A gallery page with both keeps its gallery and gains a video
+    section through the ordinary signal path.
+
+    Applied only to the fixed-rhythm tail — never to the `_sections_from_tree`
+    or story early-returns above, where a `gallery` means the source's markup
+    actually offered a picture rack.
+    """
+    if page is None or not page.video_embeds:
+        return sections
+    if "gallery" not in sections or _content_photo_count(page) > 0:
+        return sections
+    return ["video" if section == "gallery" else section for section in sections]
 
 
 # --- content-signal detection (timeline / awards / clients / stats) -------------
@@ -665,6 +694,25 @@ _SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
     "clients": frozenset({"home", "work"}),
     "stats": frozenset({"home", "about"}),
     "locations": frozenset({"home", "about", "contact"}),
+    "video": frozenset(
+        {"home", "about", "services", "gallery", "work", "landing", "process"}
+    ),
+    # Wider than any other signal, and legitimately so: this fires only when the
+    # page DEMONSTRABLY framed a map, and a business that pins its address on a
+    # franchise or admissions page meant it to be there. Excluded only where a
+    # map is never the point — a menu, a price list, a FAQ.
+    "map": frozenset(
+        {
+            "home",
+            "about",
+            "contact",
+            "services",
+            "landing",
+            "work",
+            "process",
+            "gallery",
+        }
+    ),
 }
 
 _MAX_EXTRA_SECTIONS = 2  # quality cap — don't let a page balloon past its rhythm
@@ -680,7 +728,18 @@ _MAX_PAGE_SECTIONS = 9
 def _detect_content_signals(page: SourceContent) -> list[SectionType]:
     """Detected kinds, in `_SIGNAL_PATTERNS` order — deterministic when the cap bites."""
     haystack = " ".join([page.raw_text or "", " ".join(page.headings or [])])
-    return [kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)]
+    # Structural, not lexical, so these lead: the _SIGNAL_PATTERNS below are
+    # regexes guessing at intent from prose, while these two are the page
+    # DEMONSTRABLY carrying a player or a pin. When _MAX_EXTRA_SECTIONS bites,
+    # what the page actually contains should outrank what its wording hints at.
+    # A regex could never find either anyway — an <iframe> contributes no text.
+    detected: list[SectionType] = ["video"] if page.video_embeds else []
+    if page.map_embeds:
+        detected.append("map")
+    detected += [
+        kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)
+    ]
+    return detected
 
 
 def _augment_sections(
@@ -1146,6 +1205,30 @@ def infer_page_scaffolds(
             is_record_url(by_slug[slug].source_ref) and not is_record_url(page.source_ref)
         ):
             by_slug[slug] = page
+
+    # One representative per slug is right for titling, but wrong for evidence:
+    # the records the representative displaced carry their own embeds, and a
+    # paginated viewer (?gspg=2) can hold every one the page has. Union them so
+    # the structural signals see the whole page, matching how
+    # routers.generate._inject_videos/_inject_maps accumulate before placing.
+    #
+    # model_copy, never in-place: `source` belongs to the caller.
+    for embed_field in ("video_embeds", "map_embeds"):
+        embeds_by_slug: dict[str, list[Any]] = {}
+        for page in [source, *source.discovered_pages]:
+            slug = "" if page is source else _path_to_slug(page.url_path)
+            if slug not in by_slug:
+                continue
+            bucket = embeds_by_slug.setdefault(slug, [])
+            seen_embeds = {embed.embed_url for embed in bucket}
+            bucket.extend(
+                embed
+                for embed in getattr(page, embed_field) or []
+                if embed.embed_url not in seen_embeds
+            )
+        for slug, embeds in embeds_by_slug.items():
+            if embeds and len(embeds) != len(getattr(by_slug[slug], embed_field) or []):
+                by_slug[slug] = by_slug[slug].model_copy(update={embed_field: embeds})
 
     # Titles/headings the source template repeats across pages — they can't
     # name an individual page (see _ambiguous_page_labels).

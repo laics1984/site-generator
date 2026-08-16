@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import re
-from collections import Counter
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
@@ -33,6 +32,8 @@ from app.models.content_blocks import (
     LinkBarBlock,
     LinkBarLink,
     LinkCluster,
+    MapBlock,
+    MapItem,
     PagePlan,
     ProfileBlock,
     ProfileCandidate,
@@ -45,6 +46,8 @@ from app.models.content_blocks import (
     SourceContent,
     TeamBlock,
     TeamMember,
+    VideoBlock,
+    VideoItem,
 )
 from app.models.facebook import FacebookPage
 from app.models.industry import PageScaffold
@@ -64,6 +67,15 @@ from app.services.planner import (
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
 from app.services.page_inference import DIRECTORY_MIN_PROFILES
+from app.services.source_injection import (
+    accumulate_by_slug,
+    companion_insert_index,
+    group_by_heading,
+    hero_insert_index,
+    insert_after_hero,
+    repeated_across_slugs,
+    source_pages,
+)
 from app.services.source_path import normalize_source_slug
 from app.services.image_refs import bind_image_refs
 from app.services.scaffold_enforcement import (
@@ -1405,6 +1417,15 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             s.slug for s in content_scaffolds if "gallery" in s.sections
         },
     )
+    # Embedded players, same deal. Last of the three injectors, so on a page that
+    # has both, the videos lead the picture racks — on a video page the videos
+    # ARE the page. Runs after alignment for the same reason the others do: the
+    # model never produces this block, so the slot is always omitted and there
+    # is nothing here to replace.
+    _inject_videos(plan.pages, payload.source)
+    # Embedded maps, last: unlike the racks above it places itself relative to
+    # the contact/locations section, so it needs the page's final shape.
+    _inject_maps(plan.pages, payload.source)
 
     # Legal pages will be appended after plan_to_site, but they need to appear in
     # the footer nav. Pass their titles + slugs through.
@@ -1627,15 +1648,9 @@ def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:
     if len(links) < 2:
         return
 
-    block = LinkBarBlock(
-        label=cluster.context_label or None,
-        links=links,
+    insert_after_hero(
+        home, LinkBarBlock(label=cluster.context_label or None, links=links)
     )
-    hero_index = next(
-        (i for i, b in enumerate(home.blocks) if b.kind == "hero"), None
-    )
-    insert_at = hero_index + 1 if hero_index is not None else 0
-    home.blocks.insert(insert_at, block)
 
 
 def _page_by_url_path(pages: list[PagePlan]) -> dict[str, PagePlan]:
@@ -1664,10 +1679,9 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
     into its own services/about section, so there's nothing to duplicate).
     """
     pages_by_path = _page_by_url_path(pages)
-    for source_page in [source, *source.discovered_pages]:
-        if not source_page.document_cards:
-            continue
-        slug = normalize_source_slug(source_page.url_path)
+    for slug, cards in accumulate_by_slug(
+        source, lambda page: page.document_cards or []
+    ).items():
         page = pages_by_path.get(slug)
         if page is None:
             continue
@@ -1680,16 +1694,12 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
                     for link in card.links
                 ],
             )
-            for card in source_page.document_cards
+            for card in cards
         ]
         # Right after the hero — same placement _inject_linkbar uses — not
         # appended at the end, which would land it after an unrelated closing
         # CTA. A resources/downloads section is top-of-page content.
-        hero_index = next(
-            (i for i, b in enumerate(page.blocks) if b.kind == "hero"), None
-        )
-        insert_at = hero_index + 1 if hero_index is not None else 0
-        page.blocks.insert(insert_at, DownloadsBlock(items=items))
+        insert_after_hero(page, DownloadsBlock(items=items))
 
 
 # Card kinds whose section IS its pictures — mirrors page_inference's set, which
@@ -1718,33 +1728,20 @@ _CHROME_IMAGE_MIN_PAGES = 2
 
 
 def _repeated_image_urls(source: SourceContent) -> set[str]:
-    """Image URLs appearing on 2+ crawled pages — template chrome, not content.
+    """Image URLs appearing on 2+ crawled slugs — template chrome, not content.
 
-    Same reasoning as ``nav_extraction.strip_chrome_sections``, applied to
-    pictures: a footer photo strip and a row of social icons are the template's,
-    and they are indistinguishable from content until the crawl finishes. On
-    brightkids the footer strip is the ONLY thing the section tree offers the
-    gallery page, so without this the "photo gallery" is six copies of the
-    site's footer furniture.
-
-    Counted per SLUG, not per crawled record. Several records routinely share
-    one slug — a paginated album serves ?id=107 and ?id=107&gspg=2 from the
-    same path — and counting those as two pages would let an album's own photos
-    look repeated, which is precisely backwards: they are one page's content
-    appearing on one page.
-
-    Needs two pages to conclude anything; a single-page crawl is left alone.
+    A footer photo strip and a row of social icons are the template's, and they
+    are indistinguishable from content until the crawl finishes. On brightkids
+    the footer strip is the ONLY thing the section tree offers the gallery page,
+    so without this the "photo gallery" is six copies of the site's footer
+    furniture. The per-slug counting rule (and why it must not be per-record)
+    lives in ``source_injection.repeated_across_slugs``.
     """
-    by_slug: dict[str, set[str]] = {}
-    for page in [source, *source.discovered_pages]:
-        urls = by_slug.setdefault(normalize_source_slug(page.url_path), set())
-        urls.update(meta.url for meta in page.image_metadata or [] if meta.url)
-    if len(by_slug) < _CHROME_IMAGE_MIN_PAGES:
-        return set()
-    seen: Counter[str] = Counter()
-    for urls in by_slug.values():
-        seen.update(urls)
-    return {url for url, n in seen.items() if n >= _CHROME_IMAGE_MIN_PAGES}
+    return repeated_across_slugs(
+        source,
+        lambda page: (meta.url for meta in page.image_metadata or [] if meta.url),
+        min_slugs=_CHROME_IMAGE_MIN_PAGES,
+    )
 
 
 def _without_chrome(
@@ -1885,8 +1882,7 @@ def _place_walls(page: PagePlan, walls: list[SectionCandidate], *, gated: bool) 
             return
         # Right after the hero — same placement rule as _inject_downloads. The
         # pictures ARE the page, so they lead it.
-        hero_index = next((i for i, b in enumerate(page.blocks) if b.kind == "hero"), None)
-        insert_at = hero_index + 1 if hero_index is not None else 0
+        insert_at = hero_insert_index(page)
         page.blocks[insert_at:insert_at] = blocks
         return
     for index, block in zip(slots, blocks):
@@ -1936,8 +1932,12 @@ def _inject_image_walls(
     gated_slugs = gallery_section_slugs or set()
     pages_by_path = _page_by_url_path(pages)
     chrome = _repeated_image_urls(source)
+    # Kept as its own loop rather than routed through
+    # source_injection.accumulate_by_slug: what counts as a wall here depends on
+    # the SLUG (the gated metadata fallback below), which a per-page extractor
+    # cannot see. The accumulate-then-place rule it shares is documented there.
     walls_by_slug: dict[str, list[SectionCandidate]] = {}
-    for source_page in [source, *source.discovered_pages]:
+    for source_page in source_pages(source):
         slug = normalize_source_slug(source_page.url_path)
         if slug not in pages_by_path:
             continue
@@ -1959,6 +1959,135 @@ def _inject_image_walls(
         _place_walls(
             pages_by_path[slug], _merge_album_walls(walls), gated=slug in gated_slugs
         )
+
+
+# VideoBlock.items ceiling (mirrors the model's max_length).
+_MAX_VIDEO_ITEMS = 12
+# Distinct video groups placed on one page. A page with more headed video groups
+# than this is a listing, and the rest are better served by its own subpages.
+_MAX_VIDEO_BLOCKS = 3
+
+
+def _inject_videos(pages: list[PagePlan], source: SourceContent) -> None:
+    """Recreate each page's embedded videos as video sections, verbatim.
+
+    Same precedent and placement as ``_inject_downloads``: content the source
+    stated exactly is re-attached deterministically instead of being narrated.
+    The stakes are higher here than anywhere else in this family. A video id is
+    an opaque 11-character string with an external referent — a model asked to
+    write one cannot be faithful, only lucky, and an unlucky guess embeds a
+    stranger's video on a client's site under the client's own caption. So the
+    model is never asked; see ``DETERMINISTIC_SECTION_KINDS``.
+
+    Grouped by the source's own group heading, so a page showing "Concerts" and
+    "Open Days" ships two sections rather than one merged wall. Videos with no
+    group heading fall together under the block model's default.
+
+    ACCUMULATED per generated page before placement, and chrome-filtered across
+    slugs — a sidebar or footer promo reel is the template's, not this page's.
+    Both rules, and the bugs behind them, live in ``services.source_injection``.
+    """
+    pages_by_path = _page_by_url_path(pages)
+    chrome = repeated_across_slugs(
+        source, lambda page: (v.embed_url for v in page.video_embeds or [])
+    )
+    by_slug = accumulate_by_slug(source, lambda page: page.video_embeds or [])
+    for slug, embeds in by_slug.items():
+        page = pages_by_path.get(slug)
+        if page is None:
+            continue
+        blocks = [
+            VideoBlock(
+                # A blank group heading heals to the model's default ("Videos"),
+                # which is why heading is a plain str — see VideoBlock.
+                heading=heading,
+                items=[
+                    VideoItem(
+                        embed_url=embed.embed_url,
+                        title=embed.title or None,
+                        thumbnail_url=embed.thumbnail_url,
+                    )
+                    for embed in group
+                ],
+            )
+            for heading, group in group_by_heading(
+                embeds,
+                key_of=lambda embed: embed.embed_url,
+                heading_of=lambda embed: embed.context_heading,
+                exclude=chrome,
+                max_groups=_MAX_VIDEO_BLOCKS,
+                max_items=_MAX_VIDEO_ITEMS,
+            )
+        ]
+        if not blocks:
+            continue
+        insert_at = hero_insert_index(page)
+        page.blocks[insert_at:insert_at] = blocks
+
+
+# MapBlock.items ceiling (mirrors the model's max_length).
+_MAX_MAP_ITEMS = 8
+# Distinct map groups placed on one page. Two headed groups is already a page
+# describing two places; beyond that it is a store locator.
+_MAX_MAP_BLOCKS = 2
+
+# Sections a map annotates rather than competes with. Placed just after the last
+# of these, so the pin sits with the address that names it. `locations` is
+# deliberately absent: a page carrying one is skipped outright below, so naming
+# it here would be a branch that can never run.
+_MAP_COMPANION_KINDS = ("contact",)
+
+
+def _inject_maps(pages: list[PagePlan], source: SourceContent) -> None:
+    """Recreate each page's embedded maps as map sections, verbatim.
+
+    The map is the single most consequential fact on a page for a business with
+    a shopfront, and it is one the model cannot restate: an embed URL encodes a
+    coordinate, so a rewritten one is a different place. Same treatment as
+    videos and downloads — never asked for, always replayed.
+
+    Two rules differ from ``_inject_videos``, both deliberate:
+
+    - **No ``repeated_across_slugs`` chrome filter.** For a promo reel,
+      appearing on every page proves it is template furniture. For a map it
+      proves the opposite: one address, stated everywhere, is what a business
+      with one shopfront does. Dropping it would delete the very thing this
+      pass exists to preserve, on exactly the sites that state it most clearly.
+      The `<header>/<nav>/<footer>` strip in ``scraper._extract_embeds`` remains
+      the chrome rule, and it is the right one — a footer map is furniture, a
+      body map is content, and the markup says which.
+    - **Yields to an existing locations block.** ``locations-map-cards`` already
+      renders a map per branch, synthesized from the address the model wrote.
+      Two maps of the same place, one pinned and one searched, reads as a bug.
+      The authored section keeps the page; see MapBlock's docstring.
+    """
+    pages_by_path = _page_by_url_path(pages)
+    by_slug = accumulate_by_slug(source, lambda page: page.map_embeds or [])
+    for slug, embeds in by_slug.items():
+        page = pages_by_path.get(slug)
+        if page is None or any(block.kind == "locations" for block in page.blocks):
+            continue
+        blocks = [
+            MapBlock(
+                # A blank group heading heals to the model's default ("Find us").
+                heading=heading,
+                items=[
+                    MapItem(embed_url=embed.embed_url, title=embed.title or None)
+                    for embed in group
+                ],
+            )
+            for heading, group in group_by_heading(
+                embeds,
+                key_of=lambda embed: embed.embed_url,
+                heading_of=lambda embed: embed.context_heading,
+                max_groups=_MAX_MAP_BLOCKS,
+                max_items=_MAX_MAP_ITEMS,
+            )
+        ]
+        if not blocks:
+            continue
+        insert_at = companion_insert_index(page, _MAP_COMPANION_KINDS)
+        page.blocks[insert_at:insert_at] = blocks
 
 
 def _wall_gallery_block(

@@ -86,6 +86,8 @@ class BuilderElementContent(BaseModel):
     target: LinkTarget | None = None
     rel: str | None = None
     ariaLabel: str | None = None
+    # Accessible name for a `video` element's iframe (a player, or a map).
+    title: str | None = None
     # Menu element fields (type == "menu").
     menuId: str | None = None
     slot: MenuSlot | None = None

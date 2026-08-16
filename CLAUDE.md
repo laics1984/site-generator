@@ -242,6 +242,75 @@ Renderers: `webtree-public/lib/lightbox.ts` + `components/public/GalleryLightbox
 and a linked tile (gallery item pointing at a case-study page) keeps its link
 instead of enlarging. Tests: `lib/lightbox.test.ts`, `test_gallery_lightbox.py`.
 
+## Embedded frames (video + maps)
+
+**`video` is the builder's only iframe primitive.** There is no `iframe`, `embed`
+or `html` element type and no raw-HTML field — a YouTube player, a Vimeo player
+and a Google Map are all `type: "video"` with different `content.src`. The
+renderers accept any absolute URL through `parseVideoEmbed`'s `provider: 'other'`
+branch, so nothing downstream needs teaching about a new embed host.
+
+One DOM walk feeds both kinds: `scraper._extract_embeds` collects every
+`<iframe>/<lite-youtube>/<embed>`, strips header/nav/footer chrome, drops hidden
+trackers (`_is_hidden_embed`) and muted hero backdrops (`_is_backdrop_embed`),
+then offers each src to `video_embed.parse_video_src` and `map_embed.parse_map_src`
+in turn. **The whitelist is the feature** — most frames on a real page are Tag
+Manager, reCAPTCHA, chat widgets and like-boxes. `_extract_videos`/`_extract_maps`
+are thin wrappers over the one walk. Adding a third kind is a parser module plus
+a branch, never another traversal.
+
+Both feed source-injected blocks, so the LLM never authors either
+(`DETERMINISTIC_SECTION_KINDS`): an embed id is an opaque external referent, and
+an invented one is a stranger's video or the wrong street. The bookkeeping is
+shared in `services/source_injection.py` — `accumulate_by_slug`,
+`group_by_heading`, `hero_insert_index`/`companion_insert_index`.
+
+Two rules differ between them, both deliberate:
+
+- **Maps get no `repeated_across_slugs` chrome filter.** For a promo reel,
+  appearing on every page proves it is furniture; for a map it proves the
+  opposite — one address stated everywhere is one shopfront. The `<footer>`
+  strip is the chrome rule for maps, and the markup is the right signal.
+- **`_inject_maps` yields to an authored `locations` block.** `locations-map-cards`
+  already synthesizes a map per branch from the address the model wrote
+  (`section_content.maps_embed_url` — a *search*). A source-framed map is the
+  more precise artefact (a `pb=` payload is an exact pin), but two maps of one
+  place reads as a bug.
+
+`map_embed.parse_map_src` passes through anything already frameable
+(`/maps/embed?pb=…`, `/maps/embed/v1/…`, any `output=embed`) and rebuilds viewer
+URLs (`/maps/place/…`) into the keyless `output=embed` form — framing a viewer
+URL as-is gets a "refused to connect". **Commas are percent-encoded on the way
+out**: the CMS runs every `src` through `MediaUrlResolver::normalize`, which
+splits on top-level commas for multi-layer CSS backgrounds and drops any
+fragment that isn't a URL.
+
+`content.title` on a `video` node is the iframe's accessible name — without it
+every map announces itself as "Embedded video". It rides the same whitelist as
+`src`, so it is declared in **four** places: `_bind_slot` in `template_filler.py`,
+`bindSlotContent` in `builder/src/lib/section-catalog.ts`, and
+`BuilderElementContent` on both sides.
+
+**Editing.** A new `sectionType` is invisible in the builder until it is in
+`BodySectionType` **and** `bodySectionTypeOrder` (`body-section-templates.ts`) —
+`insertableBodySectionDefinitions` filters on that set — plus `sectionTypeLabels`
+and a `SectionThumbnail` case in `section-browser.tsx`. Because one element type
+serves both embeds, the editor's nouns come from the URL, not the type:
+`builder/src/lib/embed-kind.ts` classifies an embed and owns the copy for the
+canvas placeholder, the settings accordion and the embed panel. It is a UI
+affordance, **not** a parser — `video-embed.ts` stays the single canonicalizer
+and a strict mirror of `webtree-public/lib/videoEmbed.ts`.
+
+**Rendering needs no renderer change**, and must not get one: `parseVideoEmbed`'s
+`provider: 'other'` branch frames any absolute URL. Tighten it to a player
+whitelist and every map on every published site vanishes — `lib/videoEmbed.test.ts`
+pins that. Remember `webtree-public` serves committed `.nuxt`/`.output`, so a
+renderer edit there is inert without a build you must not run locally.
+
+Tests: `test_video_embeds.py`, `test_map_embeds.py` (deliberately parallel — they
+share a DOM walk and an injection spine); `builder/src/lib/{embed-kind,section-catalog}.test.mjs`
+(`node --test`); `webtree-public/lib/videoEmbed.test.ts` (`npm test`).
+
 ## SEO
 
 `services/seo.py` owns the **data**; the CMS renderer owns injection (it wraps

@@ -56,7 +56,34 @@ SectionType = Literal[
     "stats",
     "locations",
     "downloads",
+    "video",
+    "map",
 ]
+
+
+# Kinds re-attached from the source deterministically, never authored by the LLM.
+#
+# The model is not shown a schema for these (they're absent from
+# prompts._SCAFFOLD_BLOCK_SCHEMAS) — but that alone is NOT protection. Absence
+# from the schema list only withholds the shape; `planner._scaffold_payload`
+# still puts the kind NAME into `required_sections` in the user prompt, and
+# `PagePlan.salvage_page_content` validates each block against the whole
+# `ContentBlock` union. A model that guesses the shape produces a structurally
+# valid block that `align_page_to_scaffold` then matches to the slot, and
+# nothing errors. `downloads` already reaches `required_sections` this way, via
+# `page_inference._CARD_KIND_SECTIONS`.
+#
+# What these kinds carry is not prose but FACTS with external referents — a
+# download href, a video id, a pinned map coordinate. An invented one is not
+# vague, it is *wrong*, and it looks authoritative: a hallucinated 11-character
+# YouTube id is a stranger's video embedded on a client's site, and a guessed
+# map pin sends their customers to the wrong street. So it is enforced on both
+# sides —
+# the model is never invited (planner), and its output for these kinds is
+# discarded even if it volunteers one (scaffold_enforcement).
+DETERMINISTIC_SECTION_KINDS: frozenset[str] = frozenset(
+    {"downloads", "linkbar", "video", "map"}
+)
 
 
 PageType = Literal[
@@ -825,6 +852,95 @@ class DownloadsBlock(BaseModel):
     items: list[DownloadItem] = Field(min_length=1, max_length=12)
 
 
+class VideoItem(BaseModel):
+    """One embedded player, as the source page attached it.
+
+    ``embed_url`` is already canonical (services.video_embed.parse_video_src), so
+    nothing downstream re-parses it. There is deliberately no ``image_query``
+    field — every other media item has one so an unfilled slot can fall through
+    to stock photography, but there is no stock equivalent of a specific video.
+    A tile with no embed is not a tile.
+    """
+
+    embed_url: str
+    title: str | None = None
+    thumbnail_url: str | None = None
+
+
+class VideoBlock(BaseModel):
+    """Videos the source page embedded, replayed verbatim.
+
+    NEVER produced by the LLM — see DETERMINISTIC_SECTION_KINDS. A video id is
+    an opaque 11-character string with an external referent: invent one and you
+    have not written vague copy, you have embedded a stranger's video on a
+    client's site, captioned as if it were theirs. Injected from
+    SourceContent.video_embeds by routers.generate._inject_videos, the same
+    non-LLM pattern as DownloadsBlock and LinkBarBlock.
+
+    ``heading`` is a non-blank str rather than ``str | None`` on purpose: it
+    fills a REQUIRED text slot in the catalog templates, and
+    ``section_content.is_feasible`` rejects a required slot whose value is None
+    — which makes select_template return None and schema_builder raise for an
+    unregistered block kind. The healer below is the same guard GalleryBlock uses.
+    """
+
+    kind: Literal["video"] = "video"
+    heading: str = "Videos"
+    subheading: str | None = None
+    items: list[VideoItem] = Field(min_length=1, max_length=12)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Videos")
+
+
+class MapItem(BaseModel):
+    """One embedded map, as the source page framed it.
+
+    ``embed_url`` is already canonical (services.map_embed.parse_map_src) and,
+    like VideoItem, has no ``image_query`` sibling: there is no stock stand-in
+    for a specific place. A pin nobody supplied is not a pin.
+    """
+
+    embed_url: str
+    title: str | None = None
+
+
+class MapBlock(BaseModel):
+    """Maps the source page embedded, replayed verbatim.
+
+    NEVER produced by the LLM — see DETERMINISTIC_SECTION_KINDS. A map URL
+    encodes a coordinate: invent one and you have not written vague copy, you
+    have published the wrong address for a real business and sent its customers
+    somewhere else. Injected from SourceContent.map_embeds by
+    routers.generate._inject_maps, the same non-LLM pattern as VideoBlock.
+
+    Distinct from LocationsBlock on purpose, even though both end up rendering a
+    Google Map. ``locations`` is LLM-authored prose (branch names, hours, phone)
+    whose map is SYNTHESIZED from the address it wrote — a search for a string.
+    This is the map the site owner themself pinned, which is the more precise
+    artefact and the only one available on a page that states no address at all.
+    ``_inject_maps`` yields to a page that already has a locations block rather
+    than shipping two maps.
+
+    ``heading`` is a non-blank str rather than ``str | None`` for the reason
+    spelled out on VideoBlock: it fills a REQUIRED text slot in the catalog
+    templates, and a None there makes select_template return None and
+    schema_builder raise for an unregistered block kind.
+    """
+
+    kind: Literal["map"] = "map"
+    heading: str = "Find us"
+    subheading: str | None = None
+    items: list[MapItem] = Field(min_length=1, max_length=8)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Find us")
+
+
 class TimelineItem(BaseModel):
     year: str
     title: str
@@ -956,7 +1072,9 @@ ContentBlock = Annotated[
     | ClientsBlock
     | StatsBlock
     | LocationsBlock
-    | DownloadsBlock,
+    | DownloadsBlock
+    | VideoBlock
+    | MapBlock,
     Field(discriminator="kind"),
 ]
 
@@ -1314,6 +1432,27 @@ class SourceContent(BaseModel):
             "every card found on a page into one DownloadsBlock for that page."
         ),
     )
+    video_embeds: list["VideoEmbed"] = Field(
+        default_factory=list,
+        description=(
+            "YouTube/Vimeo players THIS page embedded, canonicalized at "
+            "extraction (scraper._extract_videos). Whitelist-only: every other "
+            "iframe on a page is a tracker, a chat widget or a social plugin. "
+            "Scoped per-page like image_metadata and document_cards — "
+            "routers.generate._inject_videos groups every embed found on a page "
+            "into one VideoBlock for that page."
+        ),
+    )
+    map_embeds: list["MapEmbed"] = Field(
+        default_factory=list,
+        description=(
+            "Maps THIS page framed (Google Maps, OpenStreetMap), canonicalized "
+            "at extraction (scraper._extract_embeds). Same whitelist discipline "
+            "as video_embeds, and scoped per-page the same way — "
+            "routers.generate._inject_maps groups every map found on a page "
+            "into one MapBlock for that page."
+        ),
+    )
     nav_links: list["NavLink"] = Field(
         default_factory=list,
         description=(
@@ -1530,6 +1669,47 @@ class DocumentCardCandidate(BaseModel):
     title: str | None = None
     image_url: str | None = None
     links: list[DocumentCardLink] = Field(min_length=1)
+
+
+class VideoEmbed(BaseModel):
+    """One playable video the SOURCE page embedded (scraper._extract_videos).
+
+    Whitelist-only (YouTube/Vimeo). Every other iframe on a real page is an ad,
+    a tracker, a chat widget or a social plugin — brightkids' homepage carries
+    four iframes, of which three are Google Tag Manager and a Facebook like-box.
+
+    ``embed_url`` is already the canonical form the renderer wants, so nothing
+    downstream re-parses a raw src. ``title`` is the source's own caption, left
+    EMPTY rather than guessed: an embed with no heading near it gets no title,
+    because a wrong caption is worse than none. ``context_heading`` is the
+    nearest preceding heading and groups several embeds under one section.
+    """
+
+    provider: Literal["youtube", "vimeo"]
+    video_id: str
+    embed_url: str
+    thumbnail_url: str | None = None
+    title: str = ""
+    context_heading: str = ""
+
+
+class MapEmbed(BaseModel):
+    """One map the SOURCE page framed (scraper._extract_embeds).
+
+    Sibling of VideoEmbed, same whitelist discipline and same caption rules:
+    ``title`` is the source's own label for this map — the DOM caption if it has
+    one, else the place the URL itself names — and is left EMPTY rather than
+    guessed. ``context_heading`` groups several pins under one section, which is
+    what turns a three-branch page into one "Our centres" map wall.
+
+    There is no ``thumbnail_url``: a map has no poster frame, so the renderer
+    always frames it directly instead of showing a click-to-load facade.
+    """
+
+    provider: Literal["google", "osm"]
+    embed_url: str
+    title: str = ""
+    context_heading: str = ""
 
 
 class NavLink(BaseModel):
