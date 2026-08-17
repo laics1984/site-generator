@@ -14,6 +14,13 @@ import type { PublicBlockNode, PublicMenu, PublicSchemaTree, PublicStyleTokens }
 import { SchemaRenderer } from './SchemaRenderer'
 import { GalleryLightbox } from './GalleryLightbox'
 import { getNodeStyles } from './lib/blockRuntime'
+import {
+  type Band,
+  inkClassForBand,
+  pickBandAtY,
+  probeY,
+  readBandRects,
+} from './lib/adaptiveInk'
 import { isFirstSectionHeaderOverlaySafe } from './lib/headerOverlay'
 import {
   collectLightboxGroupIds,
@@ -259,6 +266,14 @@ export function PreviewSiteShell({
   const [isScrolled, setIsScrolled] = useState(false)
   const [isShrunk, setIsShrunk] = useState(false)
 
+  // Adaptive ink (`behavior.adaptiveInk` — the self-chrome floating pill).
+  // That bar never solidifies, so it has no chrome of its own to stay legible
+  // against: its ink, glass tint and hairline follow whichever marked section
+  // is under it. See lib/adaptiveInk.
+  const headerAdaptiveInk = readHeaderBehavior()?.adaptiveInk === true
+  const headerRef = useRef<HTMLElement | null>(null)
+  const [inkBand, setInkBand] = useState<Band | null>(null)
+
   useEffect(() => {
     const root = scrollRoot
     if (!root) return
@@ -269,12 +284,49 @@ export function PreviewSiteShell({
       const scrollY = root.scrollTop
       setIsScrolled(scrollY > headerRevealOffset)
       setIsShrunk(headerShrinkOnScroll && scrollY > headerShrinkOffset)
+
+      const header = headerRef.current
+      setInkBand(
+        headerAdaptiveInk && header
+          ? pickBandAtY(
+              // The frame's own document, not the host page's: everything the
+              // preview renders lives inside the iframe.
+              readBandRects(root.ownerDocument),
+              probeY(header.getBoundingClientRect())
+            )
+          : null
+      )
     }
 
-    scroller.addEventListener('scroll', handleHeaderScroll, { passive: true })
+    // rAF-gated: the adaptive-ink branch measures the marked sections, which is
+    // layout work, and scroll fires far more often than a frame.
+    let frame = 0
+    const onScroll = () => {
+      if (frame) return
+      frame = scroller.requestAnimationFrame(() => {
+        frame = 0
+        handleHeaderScroll()
+      })
+    }
+
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    scroller.addEventListener('resize', onScroll, { passive: true })
     handleHeaderScroll()
-    return () => scroller.removeEventListener('scroll', handleHeaderScroll)
-  }, [scrollRoot, headerRevealOffset, headerShrinkOnScroll, headerShrinkOffset])
+    return () => {
+      scroller.removeEventListener('scroll', onScroll)
+      scroller.removeEventListener('resize', onScroll)
+      if (frame) scroller.cancelAnimationFrame(frame)
+    }
+  }, [
+    scrollRoot,
+    headerRevealOffset,
+    headerShrinkOnScroll,
+    headerShrinkOffset,
+    headerAdaptiveInk,
+    // A new page swaps the whole body for one with different bands without
+    // scrolling, so nothing else would re-measure.
+    bodySchema,
+  ])
 
   const runtimeHeaderShrink = useMemo(
     () => ({ active: isShrunk, ratio: headerShrinkRatio }),
@@ -329,6 +381,7 @@ export function PreviewSiteShell({
       ? 'wt-page-header--overlay-sticky'
       : '',
     !runtimeHeaderOverlay ? 'wt-page-header--solid' : '',
+    (headerAdaptiveInk && inkClassForBand(inkBand)) || '',
   ]
     .filter(Boolean)
     .join(' ')
@@ -347,6 +400,7 @@ export function PreviewSiteShell({
               >
                 {site.headerSchema && (
                   <header
+                    ref={headerRef}
                     className={headerClassName}
                     style={runtimeHeaderOverlay ? undefined : headerWrapperStyle}
                   >

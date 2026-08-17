@@ -624,7 +624,41 @@ body {
 }
 
 .wt-page-header {
-  transition: background-color 200ms ease, border-color 200ms ease, backdrop-filter 200ms ease;
+  transition: background-color 200ms ease, border-color 200ms ease, backdrop-filter 200ms ease,
+    color 200ms ease;
+}
+
+/* Scroll-adaptive ink, floating pill only (behavior.adaptiveInk; the class is
+   never applied without it). The generator ships the pill's ink, glass tint
+   and hairline as `var(--wt-pill-*, <built value>)`, so all these rules do is
+   DEFINE the vars — the built value stays the fallback, and a page that never
+   gets a class here renders exactly as it always did. That is also why there
+   is no !important anywhere: a custom property inherits into the schema's own
+   inline style, instead of fighting it for specificity.
+
+   Values, not tokens, because the flip has to work over a section whose colour
+   the header knows nothing about: white ink on a dark neutral glass, near-black
+   on a light one. The transition above carries both across the seam. */
+.wt-page-header--ink-light {
+  --wt-pill-ink: #ffffff;
+  --wt-pill-tint: rgba(18, 18, 20, 0.3);
+  --wt-pill-hairline: rgba(255, 255, 255, 0.16);
+}
+
+.wt-page-header--ink-dark {
+  --wt-pill-ink: #0f172a;
+  --wt-pill-tint: rgba(255, 255, 255, 0.22);
+  --wt-pill-hairline: rgba(15, 23, 42, 0.1);
+}
+
+/* A custom property is not an animatable value — what animates is each
+   property that READS it, on the element that reads it. Those are the pill's
+   descendants (nav links inherit the ink, the bar paints the tint), so the
+   transition has to live there, not only on the header. Scoped to the two
+   adaptive classes: no other header pays for it. */
+.wt-page-header--ink-light *,
+.wt-page-header--ink-dark * {
+  transition: color 200ms ease, background-color 200ms ease, border-color 200ms ease;
 }
 
 .wt-page-header--sticky {

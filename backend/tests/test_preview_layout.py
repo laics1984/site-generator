@@ -171,6 +171,25 @@ def test_pill_site_layout_disables_background_reveal():
     assert "revealBackgroundOnScroll" not in classic["header"]["behavior"]
 
 
+def test_pill_site_layout_asks_for_adaptive_ink():
+    # Same archetype set as the reveal flag, opposite sense: the bar that never
+    # solidifies is the one that must recolour itself per section. Renderers
+    # gate on this key alone, so a classic site's payload keeps no trace of it.
+    client = TestClient(app)
+
+    pill_site = _site(header_overlay=True)
+    pill_site.design_manifest = {"header_archetype": "floating-pill"}
+    pill = client.post(
+        "/api/preview/layout", json=pill_site.model_dump(mode="json")
+    ).json()
+    assert pill["header"]["behavior"]["adaptiveInk"] is True
+
+    classic = client.post(
+        "/api/preview/layout", json=_site(header_overlay=True).model_dump(mode="json")
+    ).json()
+    assert "adaptiveInk" not in classic["header"]["behavior"]
+
+
 def test_preview_layout_resolves_menu_slots():
     body = TestClient(app).post(
         "/api/preview/layout", json=_site().model_dump(mode="json")

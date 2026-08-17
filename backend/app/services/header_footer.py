@@ -50,9 +50,11 @@ def _rgba(hex_color: str, alpha: float) -> str:
 # (AA 4.5:1) in the worst position the pill reaches — and it reaches every
 # position, because it is the one header that never solidifies: a light-scheme
 # bar ends up over the hero's dark scrim, a dark-scheme one over a bright photo.
-# Below this the ink starts failing over the hero; going further would mean
-# giving the pill adaptive ink, which is exactly the transparent-phase
-# machinery self-chrome archetypes opt out of.
+# Below this the ink starts failing over the hero. It stays the floor even now
+# that the pill HAS adaptive ink (see ADAPTIVE_INK_VARS): that flip is a
+# renderer capability, so the built values must still stand on their own
+# wherever no renderer sets the vars — the builder canvas at rest, an older
+# published bundle, a screenshot.
 GLASS_ALPHA = 0.20
 # Frosted glass, not "glassmorphism". The pane has no colour of its own, but a
 # translucent pane is only as colourless as what shows through it: over a hero
@@ -72,6 +74,52 @@ GLASS_ALPHA = 0.20
 # as #a8abaf, a blue-grey pane; at 1 the same backdrop reads #ababab, neutral.
 # Small residual saturation is very visible over a flat area.
 GLASS_FILTER = "blur(20px) grayscale(0)"
+
+# The three values a renderer may flip on the floating pill as the visitor
+# scrolls from a light section to a dark one. They ship as
+# `var(--wt-pill-ink, <built value>)`: the built value stays in the fallback
+# slot, so a renderer that sets nothing paints exactly what it painted before,
+# and the whole feature is additive. Declared in the catalog
+# (chrome-header-floating-pill) except the wordmark's, which _logo_mark writes.
+ADAPTIVE_INK_VARS = ("--wt-pill-ink", "--wt-pill-tint", "--wt-pill-hairline")
+
+_ADAPTIVE_VAR_OPEN = "var(--wt-pill-"
+
+
+def built_value(css: str) -> str:
+    """An adaptive `var(--wt-pill-…, <value>)` wrap reduced to what it paints.
+
+    The canonical reader of that wire format — anything judging what the pill
+    actually shows (contrast checks, tests, tooling) goes through here rather
+    than parsing the wrapper itself. Works anywhere in the string, because one
+    of the three values is a shorthand (`1px solid var(--wt-pill-hairline, …)`),
+    and scans for the closing paren rather than regexing for it, since the
+    fallback is itself parenthesised (`rgba(…)`). Non-wrapped values, including
+    `var(--builder-*)` tokens the BUILDER resolves, pass through untouched.
+
+    Mirrored in the builder by `color-utils.unwrapCssVarFallback`, which also
+    writes back into the fallback slot so an edit in the right panel doesn't
+    strip the adaptation.
+    """
+    if not isinstance(css, str):
+        return css
+    out = css
+    while (start := out.find(_ADAPTIVE_VAR_OPEN)) != -1:
+        depth, i = 0, start + 3  # the "(" of var(
+        while i < len(out):
+            if out[i] == "(":
+                depth += 1
+            elif out[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if i >= len(out):
+            return out  # unbalanced — leave it alone rather than mangle it
+        inner = out[start + 4 : i]  # inside var( … )
+        fallback = inner.partition(",")[2]
+        out = out[:start] + fallback.strip() + out[i + 1 :]
+    return out
 
 
 def _glass_tint(hex_color: str) -> str:
@@ -211,6 +259,7 @@ def _logo_mark(
     lockup: str | None = None,
     ink: str | None = None,
     logo_height: str = "52px",
+    adaptive_ink: bool = False,
 ) -> BuilderElement:
     """
     Returns a logo BuilderElement — either the uploaded image or a typographic
@@ -218,6 +267,13 @@ def _logo_mark(
     image sits in a contrast chip so it stays legible on header chrome that is
     too close to the logo's own brightness. `ink` colours the typographic
     wordmark so it matches the header's menu ink (falls back to secondary).
+
+    `adaptive_ink` (self-chrome archetypes) writes that wordmark colour as
+    `var(--wt-pill-ink, <ink>)` so a renderer can flip it with the pill's menu
+    as the page scrolls — the built value stays the fallback, so nothing changes
+    where no renderer sets the var. Only the wordmark: a bitmap logo cannot be
+    recoloured (it gets the `lockup` chip instead) and the monogram circle is
+    its own painted surface.
     """
     # `logo_render_ok`, not the URL: the scraper keeps an og:image or an
     # undersized favicon as a palette source, and either one rendered at 52px is
@@ -293,7 +349,11 @@ def _logo_mark(
                     "fontFamily": theme.typography.heading_font,
                     "fontWeight": 700,
                     "fontSize": "18px",
-                    "color": ink or theme.palette.secondary,
+                    "color": (
+                        f"var(--wt-pill-ink, {ink or theme.palette.secondary})"
+                        if adaptive_ink
+                        else (ink or theme.palette.secondary)
+                    ),
                     "textDecoration": "none",
                 },
                 content=BuilderElementContent(
@@ -399,7 +459,9 @@ def build_header(
     # an overlay header is transparent the renderer forces `wt-header-ink`
     # elements to white (.wt-page-header--overlay .wt-header-ink). Self-chrome
     # archetypes (floating pill) skip the marker — their bar chromes itself
-    # during overlay, so a white flip would break on the light pill.
+    # during overlay, so a white flip would break on the light pill. They take
+    # the `--wt-pill-ink` var instead, which flips with the section under them
+    # rather than with the header's own transparency.
     logo = _logo_mark(
         brand,
         theme,
@@ -410,6 +472,7 @@ def build_header(
             if archetype in SELF_CHROME_HEADERS
             else _LOGO_HEIGHT_BY_INDUSTRY.get(norm_industry, _DEFAULT_LOGO_HEIGHT)
         ),
+        adaptive_ink=archetype in SELF_CHROME_HEADERS,
     )
     if archetype not in SELF_CHROME_HEADERS:
         logo.classes = "wt-header-ink"

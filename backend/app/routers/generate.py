@@ -1962,7 +1962,14 @@ def _inject_image_walls(
 
 
 # VideoBlock.items ceiling (mirrors the model's max_length).
-_MAX_VIDEO_ITEMS = 12
+_MAX_VIDEO_ITEMS = 24
+# A video must be on MOST of the site before it reads as template furniture.
+# The flat two-slug rule that works for photos is wrong for video: a video index
+# re-shows what its topic pages show, and the entry page is itself crawled twice
+# (`/` and `/index.php`), so two slugs is the NORMAL count for real content.
+# See source_injection.repeated_across_slugs for what this cost.
+_VIDEO_CHROME_MIN_SLUGS = 3
+_VIDEO_CHROME_MIN_SHARE = 0.5
 # Distinct video groups placed on one page. A page with more headed video groups
 # than this is a listing, and the rest are better served by its own subpages.
 _MAX_VIDEO_BLOCKS = 3
@@ -1989,13 +1996,23 @@ def _inject_videos(pages: list[PagePlan], source: SourceContent) -> None:
     """
     pages_by_path = _page_by_url_path(pages)
     chrome = repeated_across_slugs(
-        source, lambda page: (v.embed_url for v in page.video_embeds or [])
+        source,
+        lambda page: (v.embed_url for v in page.video_embeds or []),
+        min_slugs=_VIDEO_CHROME_MIN_SLUGS,
+        min_share=_VIDEO_CHROME_MIN_SHARE,
     )
     by_slug = accumulate_by_slug(source, lambda page: page.video_embeds or [])
     for slug, embeds in by_slug.items():
         page = pages_by_path.get(slug)
         if page is None:
             continue
+        # A sitewide video is DEMOTED to the homepage, not deleted. Plenty of
+        # small businesses embed one promo clip on every page; treating that as
+        # furniture everywhere loses the site's only video — the same "no videos
+        # at all" outcome the chrome rule itself caused on brightkids. On the
+        # homepage it is almost certainly the intro it was meant to be, and every
+        # other page is spared the repetition.
+        excluded = frozenset() if page.is_homepage else chrome
         blocks = [
             VideoBlock(
                 # A blank group heading heals to the model's default ("Videos"),
@@ -2014,7 +2031,7 @@ def _inject_videos(pages: list[PagePlan], source: SourceContent) -> None:
                 embeds,
                 key_of=lambda embed: embed.embed_url,
                 heading_of=lambda embed: embed.context_heading,
-                exclude=chrome,
+                exclude=excluded,
                 max_groups=_MAX_VIDEO_BLOCKS,
                 max_items=_MAX_VIDEO_ITEMS,
             )

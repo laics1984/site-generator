@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Container, Hashable, Iterable
+from math import ceil
 from typing import TypeVar
 
 from app.models.content_blocks import ContentBlock, PagePlan, SourceContent
@@ -74,8 +75,9 @@ def repeated_across_slugs(
     extract: Callable[[SourceContent], Iterable[K]],
     *,
     min_slugs: int = CHROME_MIN_SLUGS,
+    min_share: float = 0.0,
 ) -> set[K]:
-    """Keys present on ``min_slugs``+ distinct SLUGS — template chrome, not content.
+    """Keys repeated across enough distinct SLUGS to be template chrome.
 
     Same reasoning as ``nav_extraction.strip_chrome_sections``, applied to media:
     a footer photo strip, a row of social icons, a sidebar promo video are the
@@ -90,19 +92,35 @@ def repeated_across_slugs(
     look repeated, which is precisely backwards: they are one page's content
     appearing on one page.
 
-    Needs ``min_slugs`` pages to conclude anything; a single-page crawl is left
-    alone.
+    ``min_share`` raises the bar PROPORTIONALLY to the size of the crawl, for
+    media where appearing on a second page is ordinary rather than suspicious.
+    Two pages is the right floor for a photo — the same picture on two pages of a
+    20-page site really is furniture. It is the wrong floor for a video, twice
+    over, and brightkids shipped both failures at once:
+
+    - An index page legitimately re-shows content that also lives on its topic
+      page. All 15 of that site's videos sat on ``/gallery-video.php`` AND on
+      their own subject page (``/testimony.php``, ``/Super_Brain.php``, …), so a
+      flat two-slug rule condemned **every video on the site**.
+    - The entry page is crawled under two slugs — ``/`` and ``/index.php``
+      normalize to ``""`` and ``index`` — so even a video that exists on exactly
+      one real page counts twice, which is what silently cost the homepage its
+      own.
+
+    A genuine sidebar or footer reel is on nearly EVERY page, so a share-based
+    threshold still catches it while leaving twice-used content alone.
     """
     by_slug: dict[str, set[K]] = {}
     for page in source_pages(source):
         keys = by_slug.setdefault(normalize_source_slug(page.url_path), set())
         keys.update(extract(page))
-    if len(by_slug) < min_slugs:
+    threshold = max(min_slugs, ceil(len(by_slug) * min_share)) if min_share else min_slugs
+    if len(by_slug) < threshold:
         return set()
     seen: Counter[K] = Counter()
     for keys in by_slug.values():
         seen.update(keys)
-    return {key for key, n in seen.items() if n >= min_slugs}
+    return {key for key, n in seen.items() if n >= threshold}
 
 
 def hero_insert_index(page: PagePlan) -> int:

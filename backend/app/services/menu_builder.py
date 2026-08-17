@@ -282,6 +282,7 @@ def wrap_header(
     shrink_on_scroll: bool = False,
     scroll_shrink_offset: int | None = None,
     shrink_amount: int | None = None,
+    adaptive_ink: bool = False,
 ) -> dict[str, Any]:
     """
     Wrap a `__header` BuilderElement into a BuilderTemplateHeader payload.
@@ -299,6 +300,12 @@ def wrap_header(
     past `scroll_shrink_offset` px, to `shrink_amount` percent of its original
     size (renderer clamps offset 0-600, amount 50-100). On overlay headers the
     renderer shares the reveal offset, so both effects fire at one scroll moment.
+    `adaptive_ink` (self-chrome archetypes again) asks the renderer to flip the
+    bar's ink/tint/hairline between light and dark as the section beneath it
+    changes: a header that never solidifies has no chrome of its own to stay
+    legible against, so its ink has to follow the page. Emitted only when True,
+    and it is the ONLY thing renderers gate that behaviour on — none of them
+    knows the string "floating-pill".
     """
     menu_ids = {m["id"] for m in menus}
     behavior: dict[str, Any] = {
@@ -315,6 +322,8 @@ def wrap_header(
             behavior["scrollShrinkOffset"] = scroll_shrink_offset
         if shrink_amount is not None:
             behavior["shrinkAmount"] = shrink_amount
+    if adaptive_ink:
+        behavior["adaptiveInk"] = True
     return {
         "elements": [header_element.model_dump(mode="json")],
         "behavior": behavior,
@@ -400,6 +409,9 @@ def build_layout_payload(site: GeneratedSite) -> LayoutPayload:
         shrink_on_scroll=settings.header_shrink_enabled,
         scroll_shrink_offset=settings.header_scroll_reveal_offset,
         shrink_amount=settings.header_shrink_amount,
+        # Same archetype set, opposite sense: the bar that never reveals a
+        # background is exactly the one that must recolour itself per section.
+        adaptive_ink=not reveal_background,
     )
     footer = wrap_footer(site.footer_schema, menus=menus)
     return LayoutPayload(menus=menus, header=header, footer=footer)

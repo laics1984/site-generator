@@ -21,6 +21,7 @@ from app.services.header_footer import (
     HEADER_DIVIDER_SUBTLE,
     build_footer,
     build_header,
+    built_value,
 )
 from app.services.theme import build_theme
 
@@ -253,7 +254,9 @@ class HeaderArchetypeTest(unittest.TestCase):
         # to its "None" preset.
         self.assertNotIn("boxShadow", header.styles)
         bar = _find(header, "Header bar")
-        self.assertTrue(bar.styles["backgroundColor"].startswith("rgba("))
+        # Through the adaptive-ink wrapper: the pane's built value is what the
+        # renderer paints until it decides to flip the pill (see built_value).
+        self.assertTrue(built_value(bar.styles["backgroundColor"]).startswith("rgba("))
         self.assertIn("borderRadius", bar.styles)
         self.assertIn("backdropFilter", bar.styles)
 

@@ -887,7 +887,12 @@ class VideoBlock(BaseModel):
     kind: Literal["video"] = "video"
     heading: str = "Videos"
     subheading: str | None = None
-    items: list[VideoItem] = Field(min_length=1, max_length=12)
+    # 24, matching GalleryBlock rather than the 12 of downloads/awards: a video
+    # index is a gallery of players, and brightkids' carries 14. Capping lower
+    # silently drops real videos, which is the failure this block exists to fix.
+    # Cheap to allow — the renderer ships click-to-load facades, and a video is
+    # hotlinked rather than uploaded to the tenant's media library.
+    items: list[VideoItem] = Field(min_length=1, max_length=24)
 
     @field_validator("heading", mode="before")
     @classmethod

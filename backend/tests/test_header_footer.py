@@ -1,7 +1,7 @@
 import unittest
 
 from app.models.brand import BrandIdentity
-from app.services.header_footer import build_footer, build_header
+from app.services.header_footer import build_footer, build_header, built_value
 from app.services.theme import _hex_to_rgb, build_theme
 
 
@@ -194,6 +194,19 @@ class HeaderOverlayTest(unittest.TestCase):
         )["behavior"]
         self.assertIs(pill["revealBackgroundOnScroll"], False)
 
+    def test_wrap_header_adaptive_ink_flag_emitted_only_for_self_chrome(self):
+        # The renderers gate the per-section ink flip on this key alone — none
+        # of them knows the archetype's name. Absent means "don't", so every
+        # other header's payload is byte-identical to before.
+        from app.services.menu_builder import wrap_header
+
+        _, header = self._header(overlay=True)
+        self.assertNotIn(
+            "adaptiveInk", wrap_header(header, menus=[], overlay=True)["behavior"]
+        )
+        pill = wrap_header(header, menus=[], overlay=True, adaptive_ink=True)
+        self.assertIs(pill["behavior"]["adaptiveInk"], True)
+
 
 def _find_type(node, type_name):
     if getattr(node, "type", None) == type_name:
@@ -205,6 +218,126 @@ def _find_type(node, type_name):
             if found is not None:
                 return found
     return None
+
+
+class FloatingPillAdaptiveInkTest(unittest.TestCase):
+    """The pill hands the renderer three knobs and keeps its own values.
+
+    A header that never solidifies has no chrome of its own to stay legible
+    against, so its ink must follow the section beneath it as the page scrolls.
+    The wire format is `var(--wt-pill-*, <built value>)`: the fallback slot is
+    exactly what the archetype painted before, so a renderer that sets nothing
+    is unaffected, and no other archetype is offered the knobs at all.
+    """
+
+    def _header(self, archetype, *, brand=None):
+        theme = build_theme("#0e7490", mood="playful")
+        return build_header(
+            brand or BrandIdentity(name="GloryKids", mood="playful"),
+            theme,
+            nav_items=[],
+            primary_cta=("Schedule a Tour", "/contact"),
+            overlay=True,
+            archetype=archetype,
+        )
+
+    def _styles(self, node):
+        yield node.styles or {}
+        if isinstance(node.content, list):
+            for child in node.content:
+                yield from self._styles(child)
+
+    def test_menu_ink_tint_and_hairline_are_all_overridable(self):
+        bar = self._header("floating-pill").content[0]
+        menu = _find_type(bar, "menu")
+        self.assertTrue(menu.styles["color"].startswith("var(--wt-pill-ink,"))
+        self.assertIn("var(--wt-pill-tint,", bar.styles["backgroundColor"])
+        self.assertIn("var(--wt-pill-hairline,", bar.styles["border"])
+
+    def test_the_fallback_is_the_value_the_archetype_used_to_paint(self):
+        # The whole flip is additive: strip the wrapper and you are back to the
+        # built site, byte for byte. That is what keeps the builder canvas at
+        # rest, an older published bundle and a screenshot all correct.
+        from app.services.header_footer import (
+            GLASS_ALPHA,
+            _glass_tint,
+            _header_chrome,
+            _rgba,
+            built_value,
+        )
+
+        brand = BrandIdentity(name="GloryKids", mood="playful")
+        theme = build_theme("#0e7490", mood="playful")
+        header_bg, header_fg, _ = _header_chrome(brand, theme)
+        bar = self._header("floating-pill").content[0]
+        menu = _find_type(bar, "menu")
+
+        self.assertEqual(built_value(menu.styles["color"]), header_fg)
+        self.assertEqual(
+            built_value(bar.styles["backgroundColor"]),
+            _rgba(_glass_tint(header_bg), GLASS_ALPHA),
+        )
+        self.assertTrue(built_value(bar.styles["border"]).startswith("1px solid rgba("))
+
+    def test_the_typographic_wordmark_flips_with_the_menu(self):
+        # It is text the renderer CAN recolour, and it sits on the same pane.
+        wordmark = _find(self._header("floating-pill"), "Wordmark")
+        menu = _find_type(self._header("floating-pill"), "menu")
+        self.assertTrue(wordmark.styles["color"].startswith("var(--wt-pill-ink,"))
+        self.assertEqual(wordmark.styles["color"], menu.styles["color"])
+
+    def test_an_image_logo_is_never_wrapped(self):
+        # A bitmap cannot be recoloured; a dark logo over a dark section is the
+        # `lockup` contrast chip's problem, not the ink var's.
+        brand = BrandIdentity(
+            name="GloryKids",
+            mood="playful",
+            logo_url="https://cdn.example/logo.png",
+            logo_render_ok=True,
+        )
+        header = self._header("floating-pill", brand=brand)
+        self.assertIsNone(_find(header, "Wordmark"))
+        logo = _find_type(header, "image")
+        self.assertIsNotNone(logo)
+        self.assertNotIn("--wt-pill-", str(logo.styles))
+
+    def test_no_other_archetype_is_offered_the_knobs(self):
+        for archetype in ("classic", "glass-blur", "centered-stack", "minimal-line"):
+            with self.subTest(archetype=archetype):
+                header = self._header(archetype)
+                for styles in self._styles(header):
+                    self.assertNotIn("--wt-pill-", str(styles))
+
+    def test_no_token_placeholder_survives_materialization(self):
+        # A token added on one side of the header_footer/chrome-archetypes pair
+        # ships as a literal "{{...}}" string. The var() wrapper is a new place
+        # for that to hide.
+        for archetype in (
+            "classic",
+            "glass-blur",
+            "floating-pill",
+            "centered-stack",
+            "minimal-line",
+        ):
+            with self.subTest(archetype=archetype):
+                for styles in self._styles(self._header(archetype)):
+                    self.assertNotIn("{{", str(styles))
+
+    def test_built_value_passes_ordinary_colours_through(self):
+        from app.services.header_footer import built_value
+
+        self.assertEqual(built_value("#0f172a"), "#0f172a")
+        self.assertEqual(built_value("rgba(15, 23, 42, 0.2)"), "rgba(15, 23, 42, 0.2)")
+        self.assertEqual(
+            built_value("var(--wt-pill-tint, rgba(15, 23, 42, 0.2))"),
+            "rgba(15, 23, 42, 0.2)",
+        )
+        # Not ours: a builder token keeps its wrapper, since the builder — not
+        # a scroll handler — is what resolves it.
+        self.assertEqual(
+            built_value("var(--builder-button-background, #2563eb)"),
+            "var(--builder-button-background, #2563eb)",
+        )
 
 
 class FloatingPillGlassTest(unittest.TestCase):
@@ -238,8 +371,10 @@ class FloatingPillGlassTest(unittest.TestCase):
             with self.subTest(scheme=scheme):
                 _, header, bar = self._pill(scheme)
                 self.assertEqual(header.styles["backgroundColor"], "transparent")
-                self.assertEqual(bar.styles["backgroundColor"][:5], "rgba(")
-                self.assertAlmostEqual(_alpha(bar.styles["backgroundColor"]), GLASS_ALPHA)
+                self.assertEqual(built_value(bar.styles["backgroundColor"])[:5], "rgba(")
+                self.assertAlmostEqual(
+                    _alpha(built_value(bar.styles["backgroundColor"])), GLASS_ALPHA
+                )
                 self.assertIn("blur(", bar.styles["backdropFilter"])
                 self.assertIn("blur(", bar.styles["WebkitBackdropFilter"])
 
@@ -250,7 +385,7 @@ class FloatingPillGlassTest(unittest.TestCase):
         for scheme in ("light", "dark"):
             with self.subTest(scheme=scheme):
                 _, _, bar = self._pill(scheme)
-                r, g, b, _a = _channels(bar.styles["backgroundColor"])
+                r, g, b, _a = _channels(built_value(bar.styles["backgroundColor"]))
                 self.assertEqual({r, g, b}, {r}, bar.styles["backgroundColor"])
                 # Nor may the shadow reintroduce one.
                 self.assertNotIn("rgba(15", bar.styles["boxShadow"])
@@ -283,7 +418,8 @@ class FloatingPillGlassTest(unittest.TestCase):
         for backdrop in ("#3d5a80", "#b08050", "#0e7490"):  # brand cast, warm, teal
             with self.subTest(backdrop=backdrop):
                 seen = _composite(
-                    bar.styles["backgroundColor"], _grayscale(backdrop, amount)
+                    built_value(bar.styles["backgroundColor"]),
+                    _grayscale(backdrop, amount),
                 )
                 r, g, b = (c / 255 for c in _hex_to_rgb(seen))
                 self.assertAlmostEqual(colorsys.rgb_to_hls(r, g, b)[2], 0.0, places=2)
@@ -295,14 +431,19 @@ class FloatingPillGlassTest(unittest.TestCase):
         from app.services.theme import _contrast
 
         _, _, bar = self._pill("light")
-        ink = _find_type(bar, "menu").styles["color"]
+        ink = built_value(_find_type(bar, "menu").styles["color"])
         amount = _grayscale_amount(bar)
         for backdrop in ("#0e7490", "#20262f", "#b0b4bc", "#fdf0dd"):
             with self.subTest(backdrop=backdrop):
-                plain = _contrast(ink, _composite(bar.styles["backgroundColor"], backdrop))
+                plain = _contrast(
+                    ink, _composite(built_value(bar.styles["backgroundColor"]), backdrop)
+                )
                 grey = _contrast(
                     ink,
-                    _composite(bar.styles["backgroundColor"], _grayscale(backdrop, amount)),
+                    _composite(
+                        built_value(bar.styles["backgroundColor"]),
+                        _grayscale(backdrop, amount),
+                    ),
                 )
                 self.assertAlmostEqual(plain, grey, delta=0.25)
                 self.assertGreaterEqual(grey, 4.5)
@@ -359,7 +500,7 @@ class FloatingPillGlassTest(unittest.TestCase):
 
         for scheme in ("light", "dark"):
             theme, _, bar = self._pill(scheme)
-            ink = _find_type(bar, "menu").styles["color"]
+            ink = built_value(_find_type(bar, "menu").styles["color"])
             backdrops = (
                 SCRIMMED_HERO,
                 BRIGHT_PHOTO,
@@ -368,7 +509,9 @@ class FloatingPillGlassTest(unittest.TestCase):
             )
             for backdrop in backdrops:
                 with self.subTest(scheme=scheme, backdrop=backdrop):
-                    surface = _composite(bar.styles["backgroundColor"], backdrop)
+                    surface = _composite(
+                        built_value(bar.styles["backgroundColor"]), backdrop
+                    )
                     self.assertGreaterEqual(_contrast(ink, surface), 4.5)
 
     def test_reveal_style_archetypes_are_untouched(self):

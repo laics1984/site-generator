@@ -221,6 +221,63 @@ Tests: `test_source_detect.py`, `test_facebook_{urls,graph,render,source,logo,au
 `conftest._offline_facebook` nulls the token and disables the render fallback, so
 the default chain is empty and no test can reach Facebook.
 
+## Scroll-adaptive header ink (floating pill)
+
+The `floating-pill` header is the one archetype with no solid phase to fall
+back on (`SELF_CHROME_HEADERS`, `revealBackgroundOnScroll: false`), so a single
+built-in ink is wrong for half the page: dark nav over a dark hero is invisible.
+It instead recolours per section as the visitor scrolls. **Only the pill** —
+every other archetype stays legible by solidifying, and is byte-identical to
+before.
+
+Three parts, each inert without the next:
+
+1. **Bands.** `schema_builder._stamp_band_markers` appends `wt-band-light` /
+   `wt-band-dark` to every top-level section's `classes`, once, after all
+   styling passes and for **all** pages (legal pages skip the per-page loop, and
+   `demote_self_chrome_header` can fire after it). `_band_class_for` reads the
+   **final** styles — `SectionBandPlan.band` is `None` for non-participants and
+   five later passes rewrite `backgroundColor`. Precedence: `headerOverlaySafe`
+   (the scrim is the surface) → photo/opaque gradient → parsed
+   `backgroundColor` composited over the page → page background.
+2. **Wire format.** The pill's ink, glass tint and hairline ship as
+   `var(--wt-pill-ink|tint|hairline, <built value>)` — catalog
+   (`chrome-header-floating-pill`) plus `_logo_mark`'s typographic wordmark.
+   **The built value stays in the fallback slot**, so a renderer that sets
+   nothing paints exactly what it painted before; `header_footer.built_value` is
+   the canonical reader (mirrored as `color-utils.unwrapCssVarFallback`). Not
+   the image logo (a bitmap can't be recoloured — that's the `lockup` chip) and
+   not the monogram circle.
+3. **Gate + flip.** `menu_builder.wrap_header(adaptive_ink=…)` emits
+   `behavior.adaptiveInk` only for `SELF_CHROME_HEADERS`; **renderers gate on
+   that key alone and never see the archetype's name.** Each shell probes the
+   band under the header's own midline on scroll and puts
+   `wt-page-header--ink-light|dark` on the `<header>`, which only *defines* the
+   three vars — no `!important`, unlike the older `wt-header-ink` overlay rule,
+   because a custom property inherits into an inline style instead of fighting
+   it.
+
+Geometry is shared (`webtree-public/lib/adaptiveInk.ts`, vendored to
+`frontend/src/preview/lib/` and mirrored as `builder/src/lib/adaptive-ink.ts`);
+measuring is not, because each shell scrolls something different: `window`, the
+iframe's `scrollRoot`, and the builder's scale-transformed
+`builder-scroll-area`. On the canvas compare **rects**, never `scrollTop` —
+header and sections share the transform, so it cancels.
+
+The CSS var block is hand-duplicated in **three** places that must stay
+identical: `PublicSiteShell.vue`'s `<style>`, `builder/src/index.css`, and the
+generated `preview.css` (regenerate, don't hand-edit). An archetype swap in the
+builder flips `adaptiveInk` with `overlay` in `headerBehaviorForArchetype` —
+two halves of one decision. Pickers re-wrap on write
+(`preserveCssVarWrapper`), or an edit to the header's text colour would
+silently disable adaptation for that site forever.
+
+Tests: `test_floating_pill_heroes.BandMarkerTest`/`BandClassificationTest`,
+`test_header_footer.FloatingPillAdaptiveInkTest`, `test_preview_layout.py`;
+`webtree-public/lib/adaptiveInk.test.ts` (vitest);
+`builder/src/lib/adaptive-ink.test.mjs` + `section-catalog.test.mjs`
+(`node --test`).
+
 ## Gallery lightbox
 
 `BuilderElement.lightbox: true` on a **tile grid** makes its descendant images
@@ -271,6 +328,14 @@ Two rules differ between them, both deliberate:
   appearing on every page proves it is furniture; for a map it proves the
   opposite — one address stated everywhere is one shopfront. The `<footer>`
   strip is the chrome rule for maps, and the markup is the right signal.
+  Videos keep the filter but on a **proportional** threshold
+  (`_VIDEO_CHROME_MIN_SLUGS`/`_MIN_SHARE` → `repeated_across_slugs(min_share=)`),
+  never the flat two-slug rule photos use. Two slugs is the NORMAL count for a
+  real video, twice over: a video index re-shows what its topic pages show, and
+  the entry page is crawled under two slugs anyway (`/` → `""`, `/index.php` →
+  `index`). At two, brightkids lost **all 15 of its videos** — the gallery
+  shipped as hero + cta, indistinguishable from no extraction at all. A genuine
+  sidebar reel is on most of the site, so a share test still catches it.
 - **`_inject_maps` yields to an authored `locations` block.** `locations-map-cards`
   already synthesizes a map per branch from the address the model wrote
   (`section_content.maps_embed_url` — a *search*). A source-framed map is the

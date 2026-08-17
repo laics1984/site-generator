@@ -116,6 +116,14 @@ def _h1_count(page):
 
 
 async def _build(*, photos, header="floating-pill", with_legal=True, **overrides):
+    return await _build_plan(
+        _plan(), photos=photos, header=header, with_legal=with_legal, **overrides
+    )
+
+
+async def _build_plan(
+    plan, *, photos, header="floating-pill", with_legal=True, **overrides
+):
     theme = build_theme("#0e7490", mood="friendly")
     originals = {k: getattr(settings, k) for k in overrides}
     settings.design_brain_enabled = False
@@ -123,7 +131,7 @@ async def _build(*, photos, header="floating-pill", with_legal=True, **overrides
         setattr(settings, key, value)
     try:
         return await plan_to_site(
-            _plan(),
+            plan,
             brand=BrandIdentity(name="Hope Foundation", mood="friendly"),
             theme=theme,
             scraped_metadata=_photos(photos),
@@ -243,6 +251,157 @@ class FloatingPillDemotionTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(site.design_manifest["header_archetype"], "floating-pill")
         self.assertFalse(site.header_overlay)
+
+
+class BandMarkerTest(unittest.IsolatedAsyncioTestCase):
+    """Every top-level section states its own luminance band.
+
+    The pill never solidifies, so its ink has to follow whatever section is
+    under it as the page scrolls. A renderer cannot work that out for itself —
+    a photo's luminance isn't in the DOM and the scrim that makes it dark is a
+    generator decision — so the generator states it, once, per section.
+    """
+
+    async def test_every_top_level_section_carries_exactly_one_band(self):
+        site = await _build(photos=6)
+
+        for page in site.pages:
+            for el in page.body_schema.elements:
+                classes = (el.classes or "").split()
+                bands = [c for c in classes if c.startswith("wt-band-")]
+                self.assertEqual(
+                    bands,
+                    [bands[0]] if bands else [],
+                    f"{page.slug}/{el.name}: {el.classes}",
+                )
+                self.assertIn(
+                    bands[0] if bands else None,
+                    ("wt-band-light", "wt-band-dark"),
+                    f"{page.slug}/{el.name} has no band",
+                )
+
+    async def test_a_photo_hero_the_header_floats_over_is_dark(self):
+        # The pill's whole reason for existing: it floats over this section,
+        # and this section carries the legibility scrim that makes white ink
+        # the right answer.
+        site = await _build(photos=6)
+
+        for page in site.pages:
+            hero = _first_section(page)
+            if getattr(hero, "headerOverlaySafe", None) is not True:
+                continue
+            self.assertIn("wt-band-dark", (hero.classes or "").split(), page.slug)
+
+    async def test_a_light_section_is_marked_light(self):
+        from app.services.image_styling import band_for_color
+        from app.services.section_content import _parse_color
+        from app.services.theme import build_theme
+
+        theme = build_theme("#0e7490", mood="friendly")
+        site = await _build(photos=6)
+        checked = 0
+        for page in site.pages:
+            for el in page.body_schema.elements:
+                styles = el.styles or {}
+                if getattr(el, "headerOverlaySafe", None) is True:
+                    continue
+                if styles.get("backgroundImage") or not styles.get("backgroundColor"):
+                    continue
+                parsed = _parse_color(styles["backgroundColor"], theme)
+                if parsed is None or parsed[1] < 0.999:
+                    continue
+                expected = "wt-band-" + band_for_color(
+                    "#%02x%02x%02x" % parsed[0]
+                )
+                self.assertIn(expected, (el.classes or "").split(), el.name)
+                checked += 1
+        self.assertGreater(checked, 0, "no flat-coloured section to check")
+
+    async def test_the_dynamic_cms_list_is_marked_from_the_page_surface(self):
+        # It is skipped by every styling pass because the CMS paints its cards,
+        # but it is still a screenful the pill scrolls across, and it sits on
+        # the page surface — so it gets that band rather than a gap, which
+        # would leave the pill holding the previous section's ink.
+        from app.models.content_blocks import PagePlan
+
+        plan = _plan()
+        plan.pages.append(
+            PagePlan(
+                page_type="blog",
+                slug="blog",
+                title="Blog",
+                blocks=list(plan.pages[0].blocks),
+                seo_title="Blog",
+                seo_description="Blog",
+            )
+        )
+        site = await _build_plan(plan, photos=8)
+
+        blog = next(p for p in site.pages if p.slug == "blog")
+        cms = blog.body_schema.elements[-1]
+        self.assertEqual(cms.type, "articlesList")
+        theme = build_theme("#0e7490", mood="friendly")
+        from app.services.image_styling import band_for_color
+
+        self.assertIn(
+            "wt-band-" + band_for_color(theme.palette.background),
+            (cms.classes or "").split(),
+        )
+
+
+class BandClassificationTest(unittest.TestCase):
+    """`_band_class_for` reads the section's FINAL styles, in that order."""
+
+    def setUp(self):
+        from app.services.theme import build_theme
+
+        self.theme = build_theme("#0e7490", mood="friendly")
+
+    def _band(self, styles, **fields):
+        from app.models.builder_schema import BuilderElement
+        from app.services.schema_builder import _band_class_for
+
+        el = BuilderElement(
+            id="x", name="Section", type="container", styles=styles, content=[], **fields
+        )
+        return _band_class_for(el, self.theme)
+
+    def test_overlay_safe_hero_beats_its_own_background_colour(self):
+        # The scrim paints over it; the colour underneath is not the surface.
+        self.assertEqual(
+            self._band({"backgroundColor": "#ffffff"}, headerOverlaySafe=True),
+            "wt-band-dark",
+        )
+
+    def test_hex_backgrounds_split_on_luminance(self):
+        self.assertEqual(self._band({"backgroundColor": "#ffffff"}), "wt-band-light")
+        self.assertEqual(self._band({"backgroundColor": "#0f172a"}), "wt-band-dark")
+
+    def test_a_translucent_colour_is_composited_over_the_page(self):
+        # 12% black over a white page is still a light band — reading the
+        # colour alone would call it dark.
+        self.assertEqual(
+            self._band({"backgroundColor": "rgba(15, 23, 42, 0.12)"}), "wt-band-light"
+        )
+
+    def test_a_photo_covers_whatever_colour_the_node_also_declares(self):
+        self.assertEqual(
+            self._band(
+                {
+                    "backgroundColor": "#ffffff",
+                    "backgroundImage": "url(https://source.example/p.jpg)",
+                }
+            ),
+            "wt-band-dark",
+        )
+
+    def test_a_bare_section_falls_back_to_the_page_background(self):
+        expected = (
+            "wt-band-light"
+            if self.theme.palette.background.lower() in ("#ffffff", "#fff")
+            else "wt-band-dark"
+        )
+        self.assertEqual(self._band({}), expected)
 
 
 if __name__ == "__main__":

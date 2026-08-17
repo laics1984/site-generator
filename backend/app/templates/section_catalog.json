@@ -17089,7 +17089,7 @@
       "layoutVariant": "floating-pill",
       "styleVariant": "chrome",
       "label": "Header — floating-pill",
-      "description": "An inset rounded frosted-glass bar floating over the page; the page shows around AND through it. Overlay-native: floats over full-bleed heroes with its own translucent chrome — no ink markers, no background reveal on scroll.",
+      "description": "An inset rounded frosted-glass bar floating over the page; the page shows around AND through it. Overlay-native: floats over full-bleed heroes with its own translucent chrome — no ink markers, no background reveal on scroll. Its ink, tint and hairline read --wt-pill-ink/-tint/-hairline with the built value as the fallback, so renderers can flip the pill light or dark to match the section under it as the page scrolls (behavior.adaptiveInk).",
       "tags": [
         "Chrome",
         "Header"
@@ -17147,10 +17147,10 @@
               "paddingTop": "8px",
               "paddingBottom": "8px",
               "gap": "24px",
-              "backgroundColor": "{{glass.tint}}",
+              "backgroundColor": "var(--wt-pill-tint, {{glass.tint}})",
               "backdropFilter": "{{glass.filter}}",
               "WebkitBackdropFilter": "{{glass.filter}}",
-              "border": "1px solid {{header.fg@10}}",
+              "border": "1px solid var(--wt-pill-hairline, {{header.fg@10}})",
               "borderRadius": "{{pill.radiusPx}}",
               "boxShadow": "0 2px 4px rgba(0,0,0,0.05), 0 12px 28px rgba(0,0,0,0.09)"
             },
@@ -17167,7 +17167,7 @@
                 "styles": {
                   "width": "100%",
                   "flex": "1 1 0%",
-                  "color": "{{header.fg}}",
+                  "color": "var(--wt-pill-ink, {{header.fg}})",
                   "fontSize": "14px"
                 },
                 "content": {

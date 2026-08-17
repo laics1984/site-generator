@@ -106,7 +106,10 @@ from app.services.section_content import (
     _SURFACE_BG,
     Band,
     SectionVisualInput,
+    _composite,
+    _has_opaque_gradient,
     _has_real_photo,
+    _parse_color,
     apply_about_zigzag,
     apply_childcare_heading_colors,
     apply_childcare_pastel_rhythm,
@@ -124,6 +127,7 @@ from app.services.section_content import (
 from app.services.template_filler import PhotoComposition, fill_template
 from app.services.image_styling import (
     _split_layers,
+    band_for_color,
     edge_fade_gradient,
     is_edge_fade_layer,
     photo_background,
@@ -1271,6 +1275,61 @@ def _first_content_section(page: GeneratedPage) -> BuilderElement | None:
             continue
         return el
     return None
+
+
+_BAND_CLASSES = {"light": "wt-band-light", "dark": "wt-band-dark"}
+
+
+def _band_class_for(el: BuilderElement, theme: ThemeTokens) -> str:
+    """The runtime-readable luminance marker for one top-level section.
+
+    Read off the section's FINAL styles rather than its `SectionBandPlan.band`:
+    that plan leaves `band is None` for every non-participant, and five later
+    passes (section rhythm, modernize, gradient caps, childcare pastels, edge
+    fades) rewrite `backgroundColor` after it runs. The final styles are the
+    only value that matches what the visitor — and the floating pill hovering
+    over this section — actually sees.
+    """
+    styles = el.styles or {}
+    # A full-bleed photo hero carries a darkening legibility scrim; that scrim,
+    # not the backgroundColor underneath it, is the surface the header sits on.
+    if getattr(el, "headerOverlaySafe", None) is True:
+        return _BAND_CLASSES["dark"]
+    # Same rule as enforce_text_contrast: a photo or an opaque gradient paints
+    # over whatever backgroundColor the node also declares, and the generator
+    # always casts those darker for white ink.
+    if _has_real_photo(styles) or _has_opaque_gradient(styles):
+        return _BAND_CLASSES["dark"]
+    parsed = _parse_color(styles.get("backgroundColor"), theme) or _parse_color(
+        styles.get("background"), theme
+    )
+    page_rgb = _hex_to_rgb(theme.palette.background)
+    if parsed is not None:
+        rgb, alpha = parsed
+        if alpha < 0.999:
+            rgb = _composite(rgb, alpha, page_rgb)
+        return _BAND_CLASSES[band_for_color(_rgb_to_hex(*rgb))]
+    return _BAND_CLASSES[band_for_color(theme.palette.background)]
+
+
+def _stamp_band_markers(elements: list[BuilderElement], theme: ThemeTokens) -> None:
+    """Mark each top-level section light or dark for the renderers.
+
+    The floating-pill header floats over the page with no chrome of its own to
+    hide behind, so its ink has to follow whatever section is under it as the
+    visitor scrolls. Renderers can't recompute the band (a photo's luminance is
+    not in the DOM), so the generator states it here, on the already-whitelisted
+    `classes` field. Inert data: only the pill's runtime rules read it, and the
+    behaviour itself is gated on `behavior.adaptiveInk` (menu_builder), never on
+    the presence of these classes.
+
+    Stamped for every archetype on purpose — `demote_self_chrome_header` can
+    still swap the pill out after this runs, and a class nothing matches costs
+    nothing.
+    """
+    for el in elements:
+        cls = _band_class_for(el, theme)
+        el.classes = " ".join(filter(None, [el.classes, cls]))
 
 
 def _extract_og_image_safe(elements: list[BuilderElement]) -> str | None:
@@ -4891,6 +4950,13 @@ async def plan_to_site(
                     + (f" (+{len(_unsafe) - 3} more)" if len(_unsafe) > 3 else "")
                 ),
             )
+
+    # Luminance markers for the renderers' scroll-adaptive header ink. Stamped
+    # here, once, for every page the site will ship: the legal pages above never
+    # went through the per-page styling loop, and the pill's prepended hero
+    # lands after it. Nothing below this point touches a body section's styles.
+    for _page in [*pages, *outside_pages]:
+        _stamp_band_markers(_page.body_schema.elements, theme)
 
     page_tree = _build_page_tree(pages)
     nav_items = _nav_items_from_pages(pages)

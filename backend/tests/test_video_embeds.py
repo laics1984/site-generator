@@ -407,18 +407,94 @@ class VideoInjectionTest(unittest.TestCase):
         self.assertEqual(len(videos), 1)
         self.assertEqual(len(videos[0].items), 3)
 
-    def test_a_video_on_every_page_is_template_chrome(self):
-        pages = [_page(""), _page("about"), _page("services")]
+    def test_a_sitewide_video_is_kept_off_every_interior_page(self):
+        """A sidebar/footer reel is on MOST of the site, not merely on two pages.
+
+        It still reaches the homepage (see the demotion test below); what the
+        chrome rule buys is that it does not repeat on all nine pages.
+        """
+        slugs = [f"p{i}" for i in range(8)]
+        pages = [_page("")] + [_page(s) for s in slugs]
         promo = _embed(9)
         source = _source("/", [promo, _embed(1)], discovered_pages=[
-            _source("/about", [promo]),
-            _source("/services", [promo]),
+            _source(f"/{s}", [promo]) for s in slugs
         ])
         _inject_videos(pages, source)
-        home_videos = [b for b in pages[0].blocks if b.kind == "video"]
-        self.assertEqual([i.embed_url for i in home_videos[0].items], [_embed(1).embed_url])
+        home_items = [
+            i.embed_url for b in pages[0].blocks if b.kind == "video" for i in b.items
+        ]
+        self.assertIn(_embed(1).embed_url, home_items)
         for page in pages[1:]:
             self.assertEqual([b for b in page.blocks if b.kind == "video"], [])
+
+    def test_one_promo_video_on_every_page_survives_on_the_homepage(self):
+        """Sitewide video is demoted, never deleted.
+
+        A small business embedding one clip on every page is common, and
+        treating it as pure furniture loses the site's ONLY video — the same
+        end state ("no videos anywhere") the chrome rule already caused once.
+        """
+        slugs = [f"p{i}" for i in range(8)]
+        promo = _embed(9, "Welcome to our school")
+        pages = [_page("")] + [_page(s) for s in slugs]
+        pages[0].is_homepage = True
+        source = _source("/", [promo], discovered_pages=[
+            _source(f"/{s}", [promo]) for s in slugs
+        ])
+        _inject_videos(pages, source)
+        home = [b for b in pages[0].blocks if b.kind == "video"]
+        self.assertEqual([i.embed_url for i in home[0].items], [promo.embed_url])
+        for page in pages[1:]:
+            self.assertEqual([b for b in page.blocks if b.kind == "video"], [])
+
+    def test_an_index_page_may_reshow_its_topic_pages_videos(self):
+        """The regression that shipped: every video on the site was deleted.
+
+        brightkids' /gallery-video.php is an index — all 14 of its videos also
+        live on the topic page they belong to (/testimony.php, /Super_Brain.php,
+        …). At a flat two-slug chrome rule every one of them counted as template
+        furniture, so the video gallery generated as hero + cta with no videos
+        at all, which is exactly what a "no videos" bug looks like from outside.
+        """
+        shared = [_embed(i, f"Clip {i}", "VIDEO GALLERY") for i in range(6)]
+        others = [_source(f"/filler{i}", []) for i in range(12)]
+        source = _source("/", [], discovered_pages=[
+            _source("/gallery-video.php", shared),
+            _source("/testimony.php", shared[:3]),
+            _source("/super-brain.php", shared[3:]),
+            *others,
+        ])
+        pages = [_page("gallery-video"), _page("testimony"), _page("super-brain")]
+        _inject_videos(pages, source)
+        gallery = [b for b in pages[0].blocks if b.kind == "video"]
+        self.assertEqual(len(gallery), 1)
+        self.assertEqual(len(gallery[0].items), 6)
+        # And the topic pages keep their own copies — those are their content too.
+        self.assertEqual(len([b for b in pages[1].blocks if b.kind == "video"]), 1)
+        self.assertEqual(len([b for b in pages[2].blocks if b.kind == "video"]), 1)
+
+    def test_the_entry_page_crawled_twice_does_not_look_repeated(self):
+        """`/` and `/index.php` normalize to "" and "index" — one page, two slugs.
+
+        That alone pushed every homepage video over a two-slug threshold, which
+        is how brightkids' homepage lost its single video as well.
+        """
+        promo = _embed(1)
+        source = _source("/", [promo], discovered_pages=[
+            _source("/index.php", [promo]),
+            *[_source(f"/p{i}", []) for i in range(6)],
+        ])
+        pages = [_page("")]
+        _inject_videos(pages, source)
+        videos = [b for b in pages[0].blocks if b.kind == "video"]
+        self.assertEqual([i.embed_url for i in videos[0].items], [promo.embed_url])
+
+    def test_a_long_video_index_is_not_truncated_to_twelve(self):
+        page = _page("gallery-video")
+        _inject_videos([page], _source("/", [], discovered_pages=[
+            _source("/gallery-video.php", [_embed(i, f"Clip {i}") for i in range(14)])
+        ]))
+        self.assertEqual(len(page.blocks[1].items), 14)
 
     def test_two_source_groups_stay_two_sections(self):
         page = _page("gallery-video")
