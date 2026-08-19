@@ -26,7 +26,7 @@ from app.models.content_blocks import (
     VideoItem,
 )
 from app.models.industry import PageScaffold
-from app.routers.generate import _inject_videos
+from app.routers.generate import _MAX_VIDEO_BLOCKS, _inject_videos
 from app.services.page_inference import _sections_for
 from app.services.scaffold_enforcement import align_page_to_scaffold
 from app.services.scraper import _extract_videos
@@ -527,6 +527,83 @@ class VideoInjectionTest(unittest.TestCase):
             _source("/nowhere", [_embed(1)])
         ]))
         self.assertEqual([b.kind for b in page.blocks], ["hero", "cta"])
+
+
+class VideoTopicRegroupingTest(unittest.TestCase):
+    """An index page borrows its sections from the topic pages it aggregates."""
+
+    def _site(self):
+        brain = [_embed(i, f"Brain {i}", "Super BRAIN") for i in range(8)]
+        press = [_embed(20 + i, f"Press {i}", "Media Interview") for i in range(3)]
+        says = [_embed(30 + i, f"Says {i}", "Testimony") for i in range(3)]
+        index = [
+            e.model_copy(update={"context_heading": "VIDEO GALLERY"})
+            for e in [*brain, *press, *says]
+        ]
+        return _source("/", [], discovered_pages=[
+            _source("/gallery-video.php", index),
+            _source("/super-brain.php", brain),
+            _source("/media-interview.php", press),
+            _source("/testimony.php", says),
+            *[_source(f"/filler{i}", []) for i in range(10)],
+        ])
+
+    def test_a_flat_index_becomes_the_topic_sections(self):
+        page = _page("gallery-video")
+        _inject_videos([page], self._site())
+        blocks = [b for b in page.blocks if b.kind == "video"]
+        self.assertEqual(
+            [(b.heading, len(b.items)) for b in blocks],
+            [("Super BRAIN", 8), ("Media Interview", 3), ("Testimony", 3)],
+        )
+
+    def test_regrouping_loses_no_videos(self):
+        page = _page("gallery-video")
+        _inject_videos([page], self._site())
+        placed = sum(len(b.items) for b in page.blocks if b.kind == "video")
+        self.assertEqual(placed, 14)
+
+    def test_a_topic_page_does_not_adopt_the_index_heading(self):
+        """The rule is symmetric, so the two pages must not relabel each other."""
+        page = _page("super-brain")
+        _inject_videos([page], self._site())
+        blocks = [b for b in page.blocks if b.kind == "video"]
+        self.assertEqual([b.heading for b in blocks], ["Super BRAIN"])
+
+    def test_a_page_that_grouped_its_own_videos_keeps_its_grouping(self):
+        page = _page("gallery-video")
+        source = _source("/", [], discovered_pages=[
+            _source("/gallery-video.php", [
+                _embed(1, "a", "Concerts"), _embed(2, "b", "Open Days"),
+            ]),
+            _source("/elsewhere.php", [
+                _embed(1, "a", "Something Else"), _embed(2, "b", "Another Thing"),
+            ]),
+            *[_source(f"/filler{i}", []) for i in range(8)],
+        ])
+        _inject_videos([page], source)
+        blocks = [b for b in page.blocks if b.kind == "video"]
+        self.assertEqual([b.heading for b in blocks], ["Concerts", "Open Days"])
+
+    def test_regrouping_declines_rather_than_drop_videos_past_the_cap(self):
+        """group_by_heading truncates, so organising must never cost content."""
+        topics = [f"Topic {i}" for i in range(_MAX_VIDEO_BLOCKS + 2)]
+        per_topic = {t: [_embed(10 * i + j, f"v{j}", t) for j in range(2)]
+                     for i, t in enumerate(topics)}
+        flat = [
+            e.model_copy(update={"context_heading": "ALL VIDEOS"})
+            for group in per_topic.values() for e in group
+        ]
+        source = _source("/", [], discovered_pages=[
+            _source("/index-page.php", flat),
+            *[_source(f"/t{i}.php", g) for i, g in enumerate(per_topic.values())],
+            *[_source(f"/filler{i}", []) for i in range(10)],
+        ])
+        page = _page("index-page")
+        _inject_videos([page], source)
+        blocks = [b for b in page.blocks if b.kind == "video"]
+        self.assertEqual([b.heading for b in blocks], ["ALL VIDEOS"])
+        self.assertEqual(sum(len(b.items) for b in blocks), len(flat))
 
 
 # --- 4. The LLM can never author one --------------------------------------------

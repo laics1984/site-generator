@@ -47,6 +47,7 @@ from app.models.content_blocks import (
     TeamBlock,
     TeamMember,
     VideoBlock,
+    VideoEmbed,
     VideoItem,
 )
 from app.models.facebook import FacebookPage
@@ -1970,9 +1971,61 @@ _MAX_VIDEO_ITEMS = 24
 # See source_injection.repeated_across_slugs for what this cost.
 _VIDEO_CHROME_MIN_SLUGS = 3
 _VIDEO_CHROME_MIN_SHARE = 0.5
-# Distinct video groups placed on one page. A page with more headed video groups
-# than this is a listing, and the rest are better served by its own subpages.
-_MAX_VIDEO_BLOCKS = 3
+# Distinct video groups placed on one page. Roomier than the source usually
+# needs, because `_topic_regrouped` turns one flat index into several real
+# sections — and `group_by_heading` DROPS groups past the cap, so a tight cap
+# here would silently lose videos that regrouping had just organised.
+_MAX_VIDEO_BLOCKS = 6
+
+
+def _topic_regrouped(
+    embeds: list[VideoEmbed], source: SourceContent, slug: str
+) -> list[VideoEmbed] | None:
+    """Re-label an index page's videos with the heading each carries elsewhere.
+
+    A video index states its structure by DELEGATION: every clip on it also
+    lives on the topic page it belongs to. brightkids' /gallery-video.php holds
+    fourteen, and the same fourteen are grouped on their own pages as "Super
+    BRAIN" (8), "Media Interview" (3) and "Testimony" (3). But group headings
+    are read from the page's own markup, and the index is one ``<section>``
+    under one ``<h1>``, so all fourteen collapse into a single undifferentiated
+    run — seven rows with no wayfinding, and the source's own taxonomy thrown
+    away even though the crawl already holds it.
+
+    The rule is symmetric, so it needs no notion of which page is "the index":
+    a page is an aggregator when its videos carry SEVERAL different headings on
+    other pages. /gallery-video sees three, so it adopts them. /super_brain sees
+    only one ("VIDEO GALLERY", from the index), so it keeps its own — which is
+    what stops the two pages from relabelling each other in a loop.
+
+    Returns None when it does not apply, and the caller keeps the page's own
+    grouping. Deliberately conservative: it also declines when the page already
+    grouped its own videos, and when regrouping would exceed
+    ``_MAX_VIDEO_BLOCKS`` — past that cap ``group_by_heading`` drops the
+    surplus, and losing videos to organise them is a bad trade.
+    """
+    if len({embed.context_heading.strip() for embed in embeds}) > 1:
+        return None  # the page grouped these itself; that is more authoritative
+
+    elsewhere: dict[str, str] = {}
+    for page in source_pages(source):
+        if normalize_source_slug(page.url_path) == slug:
+            continue
+        for embed in page.video_embeds or []:
+            heading = embed.context_heading.strip()
+            if heading and embed.embed_url not in elsewhere:
+                elsewhere[embed.embed_url] = heading
+
+    regrouped = [
+        embed.model_copy(update={"context_heading": heading})
+        if (heading := elsewhere.get(embed.embed_url))
+        else embed
+        for embed in embeds
+    ]
+    headings = {embed.context_heading.strip() for embed in regrouped}
+    if len(headings) < 2 or len(headings) > _MAX_VIDEO_BLOCKS:
+        return None
+    return regrouped
 
 
 def _inject_videos(pages: list[PagePlan], source: SourceContent) -> None:
@@ -2013,6 +2066,9 @@ def _inject_videos(pages: list[PagePlan], source: SourceContent) -> None:
         # homepage it is almost certainly the intro it was meant to be, and every
         # other page is spared the repetition.
         excluded = frozenset() if page.is_homepage else chrome
+        # An index page borrows its sections from the topic pages its clips also
+        # live on, rather than shipping one flat run of fourteen.
+        embeds = _topic_regrouped(embeds, source, slug) or embeds
         blocks = [
             VideoBlock(
                 # A blank group heading heals to the model's default ("Videos"),
