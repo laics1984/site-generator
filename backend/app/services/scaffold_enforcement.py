@@ -468,6 +468,14 @@ def _sanitize_gallery_block(block: GalleryBlock) -> GalleryBlock | None:
     ref-binding pass to defer to. The scaffolded flow runs the same rule later
     instead, in ``routers.generate._drop_unbound_gallery_items`` — see the note
     in ``align_page_to_scaffold``.
+
+    One exception, and it is the caller's to make: under stock-images-only
+    generation the site has no source photography anywhere, so "these are our
+    photos" is not a claim any section on the page is making. A query-backed
+    tile there is the requested outcome, not an unbacked one, and deleting the
+    block would silently drop a page the user asked for. Both enforcement points
+    take the same flag — ``sanitize_blocks_against_source(allow_stock_gallery=)``
+    here, the ``if not payload.stock_images_only`` guard on the scaffolded side.
     """
     items = [
         item for item in block.items
@@ -529,7 +537,10 @@ def _backfill_hero_image_query(
 
 
 def sanitize_blocks_against_source(
-    blocks: list[ContentBlock], source_text: str | None
+    blocks: list[ContentBlock],
+    source_text: str | None,
+    *,
+    allow_stock_gallery: bool = False,
 ) -> list[ContentBlock]:
     """Scaffold-free equivalent of the per-kind sanitization inside
     ``align_page_to_scaffold``, for the legacy free-form ``/from-source`` flow.
@@ -541,6 +552,11 @@ def sanitize_blocks_against_source(
     to a page's block list, dropping any block that ends up with zero
     surviving items. Structural kinds are left untouched (hero/about/cta/contact
     carry no invented facts).
+
+    ``allow_stock_gallery`` suspends the gallery rule only — see
+    ``_sanitize_gallery_block``. Set by the stock-images-only mode, where the
+    site carries no source photography at all and a query-backed tile is the
+    intended outcome rather than an unbacked one.
     """
     sanitized: list[ContentBlock] = []
     for block in blocks:
@@ -558,7 +574,11 @@ def sanitize_blocks_against_source(
             result = _sanitize_clients_block(block, source_text)
         elif kind == "stats" and isinstance(block, StatsBlock):
             result = _sanitize_stats_block(block, source_text)
-        elif kind == "gallery" and isinstance(block, GalleryBlock):
+        elif (
+            kind == "gallery"
+            and isinstance(block, GalleryBlock)
+            and not allow_stock_gallery
+        ):
             result = _sanitize_gallery_block(block)
         if result is not None:
             sanitized.append(result)

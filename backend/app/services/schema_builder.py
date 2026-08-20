@@ -4408,6 +4408,7 @@ async def plan_to_site(
     reserved_image_urls: set[str] | None = None,
     header_override: HeaderArchetype | None = None,
     footer_override: FooterArchetype | None = None,
+    stock_only: bool = False,
 ) -> GeneratedSite:
     """
     Build a complete, themed site from a SitePlan.
@@ -4429,6 +4430,11 @@ async def plan_to_site(
       pill header needs a photo hero on every page, legal ones included, and
       this function is where that hero gets prepended. They stay out of
       `page_tree` / primary nav exactly as before.
+    - `stock_only` bars every source photo from the tree, so each slot resolves
+      its image_query from Pexels. It is a brace, not the mechanism: the caller
+      has already handed us a source with no photography (see
+      services/source_images.py), and this closes the one path an empty pool
+      leaves open — an LLM-bound `pinned_url` the pool no longer contains.
     """
     effective_brand = brand or BrandIdentity(
         name=plan.site_name,
@@ -4504,6 +4510,7 @@ async def plan_to_site(
     resolver = ImageResolver(
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
+        stock_only=stock_only,
         market_cue=market_cue,
         industry_category=plan.industry_category,
         place_cue=place_cue,
@@ -4513,6 +4520,17 @@ async def plan_to_site(
     # Photos already bound to specific sections by the image_ref pass must not
     # be re-picked by free ranking for other slots (pinned resolution itself
     # bypasses the used-set, so the owning slot still renders them).
+    if stock_only and not settings.pexels_api_key:
+        # Not fatal: resolve() always succeeds, falling to the on-brand gradient
+        # placeholder. But every content image on the site becomes that gradient,
+        # which looks like a generation fault rather than a missing key — so say
+        # so once here instead of leaving the operator to infer it.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "stock_only requested but PEXELS_API_KEY is unset — every image "
+            "will render as an on-brand gradient placeholder."
+        )
     if reserved_image_urls:
         resolver.mark_used(reserved_image_urls)
 

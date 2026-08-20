@@ -648,3 +648,94 @@ class AbstractBgTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(photo)
         self.assertEqual(pexels.queries, [])
+
+
+class StockOnlyResolverTest(unittest.IsolatedAsyncioTestCase):
+    """`stock_only` bars every source photo, including a pinned one.
+
+    The mechanism for stock-images-only generation lives upstream — the handler
+    hands `plan_to_site` a SourceContent with no photography, so the pool is
+    empty. This flag is the brace for the one case an empty pool does not cover.
+    """
+
+    def _pool(self):
+        from app.models.content_blocks import ImageMetadata
+
+        return [
+            ImageMetadata(
+                url="https://source.example/our-cafe.jpg",
+                alt="our cafe interior",
+                intent="hero",
+                width=2000,
+                height=1200,
+            )
+        ]
+
+    def _pexels(self):
+        return FakePexels(
+            {"cafe interior": [_photo("https://pexels.example/cafe.jpg", "cafe interior")]}
+        )
+
+    async def test_scraped_pool_is_ignored(self):
+        pexels = self._pexels()
+        resolver = ImageResolver(
+            scraped_metadata=self._pool(),
+            pexels=pexels,
+            use_llm_tiebreaker=False,
+            stock_only=True,
+        )
+
+        photo = await resolver.resolve("cafe interior", intent="hero")
+
+        self.assertEqual(photo.source, "pexels")
+        self.assertEqual(photo.url, "https://pexels.example/cafe.jpg")
+
+    async def test_pinned_url_absent_from_pool_is_not_honoured(self):
+        """The hole the empty pool leaves open.
+
+        `resolve` looks a pinned URL up in the pool; a miss yields `meta=None`,
+        and _below_hero_bg_min / _unfit_for_background / _unfit_for_featured_pin
+        all return False for None. Without this flag the pin is returned as
+        `source="scraped"` even though the resolver has never seen the image.
+        """
+        pexels = self._pexels()
+        resolver = ImageResolver(
+            scraped_metadata=[],
+            pexels=pexels,
+            use_llm_tiebreaker=False,
+            stock_only=True,
+        )
+
+        photo = await resolver.resolve(
+            "cafe interior",
+            intent="hero",
+            pinned_url="https://source.example/bound-by-the-llm.jpg",
+        )
+
+        self.assertEqual(photo.source, "pexels")
+
+    async def test_falls_to_placeholder_never_to_scraped(self):
+        """No Pexels result ⇒ the gradient, not a source photo."""
+        resolver = ImageResolver(
+            scraped_metadata=self._pool(),
+            pexels=FakePexels({}),
+            use_llm_tiebreaker=False,
+            stock_only=True,
+        )
+
+        photo = await resolver.resolve("cafe interior", intent="hero")
+
+        self.assertEqual(photo.source, "placeholder")
+
+    async def test_default_still_prefers_the_source_photo(self):
+        """Control: the default must not silently flip."""
+        resolver = ImageResolver(
+            scraped_metadata=self._pool(),
+            pexels=self._pexels(),
+            use_llm_tiebreaker=False,
+        )
+
+        photo = await resolver.resolve("cafe interior", intent="hero")
+
+        self.assertEqual(photo.source, "scraped")
+        self.assertEqual(photo.url, "https://source.example/our-cafe.jpg")

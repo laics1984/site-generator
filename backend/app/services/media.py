@@ -187,6 +187,15 @@ class ImageResolver:
     scraped images whose heuristic match score is in the ambiguous band
     (0.30 – 0.55). Bounded: only fires when at least 2 candidates are within
     0.10 of the top score. Disable for deterministic / fast generations.
+
+    `stock_only`: never return a source photo, whatever the pool holds. The
+    mechanism for stock-images-only generation is upstream — the handler hands
+    us a SourceContent with no photography, so the pool is empty anyway (see
+    services/source_images.py) — but an empty pool does NOT close the pinned
+    branch: `resolve(pinned_url=...)` looks the URL up in the pool, finds
+    nothing, and every gate then passes a `None` meta, so the pin is honoured
+    as `source="scraped"`. This flag closes that, and makes the invariant
+    assertable here rather than only across a whole generated tree.
     """
 
     def __init__(
@@ -195,6 +204,7 @@ class ImageResolver:
         scraped_metadata: list[ImageMetadata] | None = None,
         pexels: PexelsClient | None = None,
         use_llm_tiebreaker: bool = True,
+        stock_only: bool = False,
         market_cue: str | None = None,
         industry_category: str | None = None,
         place_cue: str | None = None,
@@ -222,6 +232,7 @@ class ImageResolver:
         # differs (first use stays byte-identical, nonce 0).
         self._placeholder_seeds: dict[str, int] = {}
         self._use_llm_tiebreaker = use_llm_tiebreaker
+        self._stock_only = stock_only
         # Regional demonym (e.g. "Southeast Asian") prepended to people-likely
         # stock queries so imagery reflects the business's actual market.
         self._market_cue = (market_cue or "").strip()
@@ -365,6 +376,11 @@ class ImageResolver:
         else:
             min_long_edge = 0
 
+        if self._stock_only:
+            # A bound source photo is still a source photo. Nulled rather than
+            # branched around because everything below already handles "no pin".
+            pinned_url = None
+
         if pinned_url:
             meta = next((c for c in self._pool if c.url == pinned_url), None)
             # Honour the bound photo unless it's unfit for a full-bleed
@@ -412,7 +428,7 @@ class ImageResolver:
         orientation = _INTENT_TO_ORIENTATION[intent]
 
         # 1. Scraped pool — rank against the slot's image_query
-        if intent in _SCRAPED_ELIGIBLE_INTENTS:
+        if not self._stock_only and intent in _SCRAPED_ELIGIBLE_INTENTS:
             picked = await self._take_best_scraped(
                 query, intent, prefer=prefer, slot_usage=slot_usage,
                 min_long_edge=min_long_edge, allow_portrait=allow_portrait,

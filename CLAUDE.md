@@ -215,6 +215,78 @@ re-asking there is double jeopardy, and both had to be reverted once already.
 Tests: `test_scraper_images.CardRackIsNotARosterTest`,
 `test_directory_roster.PageScopedRosterTest`.
 
+## Stock images only
+
+A request-scoped `stock_images_only` on both generate endpoints dresses the
+whole site in Pexels and uses none of the source's photography. **The mechanism
+is a supply cut, not a filter**: `services/source_images.without_source_imagery`
+returns a copy of the `SourceContent` with `images`, `image_metadata`,
+`section_candidates[].image_urls` and `cards[].image_url` emptied, and each
+handler rebinds `payload.source` to it once. Every consumer dries up at the same
+time — the resolver pool, `_page_images_by_slug`, `promptable_images` (so the
+model is never shown an image and cannot emit an `image_ref`), and
+`_inject_image_walls`.
+
+A flag on `ImageResolver` could not have done this: five paths write a source
+URL into the tree without ever calling the resolver (`image_refs`,
+`_wall_gallery_block`, `_build_team`/`_build_profile`/`_build_downloads`, and
+`section_content`'s four `{"src": …}` values, which `template_filler` uses
+verbatim). `ImageResolver(stock_only=)` exists anyway, as a brace for the one
+hole an empty pool leaves open — `resolve(pinned_url=…)` looks the pin up in the
+pool, and a **miss** yields `meta=None`, which every gate passes, so the pin
+comes back as `source="scraped"` from a resolver that has never seen it.
+
+Three things it deliberately does NOT do:
+
+- **It never touches `profile_candidates[].photo_url`.** Both
+  `_scraped_team_members` and `_directory_roster_members` skip a candidate with
+  no photo (`if not profile.photo_url: continue`) — a photo-less candidate is
+  not a photo-less member, it is *not a member*, so cutting portraits at the
+  source empties the roster and `_drop_hollow_team_pages` then deletes the page.
+  Portraits are cut one layer later, on the finished plan, by
+  `generate._drop_person_photos`, which leaves names/roles/bios and lets all four
+  renderers take their existing `monogram_avatar_url` branch. **Never a stock
+  face under a real person's name**, in this mode least of all.
+- **It keeps artifact imagery**: the brand logo (which never rides on
+  `SourceContent` anyway), `document_cards[].image_url`, and the blog/event
+  images `content_collections` re-fetches. Each depicts one specific thing; there
+  is no stock substitute for "this PDF".
+- **It hoists `_market_cues_for` above the strip.** Image URLs are domain
+  evidence for `detect_market`, and the cues it returns are the only thing
+  keeping stock queries on-market — they matter *more* here, so they are read
+  from the source as received.
+
+Galleries are the one rule the mode suspends, at both enforcement points
+(`_drop_unbound_gallery_items` and `sanitize_blocks_against_source(
+allow_stock_gallery=)`): with no source photography anywhere on the site,
+"these are our photos" is not a claim the page is making, and dropping the block
+would silently lose a page the user picked.
+
+**`push_orchestrator` is provenance-blind** — by push time a photo is a bare
+`src` string — so the rule must have fully taken effect before `plan_to_site`
+returns. That boundary is what `test_stock_only.NoSourceUrlSurvivesTest` asserts,
+walking the finished tree with the orchestrator's own `_collect_image_srcs`.
+
+Tests: `test_stock_only.py`, `test_media.StockOnlyResolverTest`.
+
+## Generated images are percent-encoded SVG data URIs
+
+Every non-network image this repo makes is an inline SVG: `monogram_avatar_url`
+and `_placeholder_photo` emit `data:image/svg+xml;utf8,…`, `icon_data_url` emits
+`data:image/svg+xml,…`. **None of them is base64**, and `push_orchestrator`'s
+`_decode_data_url` must keep handling both encodings — RFC 2397 allows any number
+of `;parameter` segments and only `;base64` selects base64.
+
+Its pattern used to be `data:([^;,]+)(;base64)?,`, which matched neither form: a
+`;utf8` payload failed the match outright, and the icon form matched and then
+died in `b64decode`. Either way the src became a `_ResolveSkip`, joined `failed`,
+and `_strip_invalid_images` **deleted the element**. Every monogram avatar, every
+section icon and every gradient placeholder silently vanished on publish while
+rendering perfectly in the preview — which renders the pre-push tree, so the two
+never disagreed anywhere you could see it.
+
+Tests: `test_push_data_urls.py`.
+
 ## Facebook Page ingest
 
 A third source, routed **automatically**: `POST /api/scrape/start` calls

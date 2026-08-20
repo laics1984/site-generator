@@ -68,6 +68,8 @@ export default function App() {
   const [colorScheme, setColorScheme] = useState<ColorSchemeChoice>('auto')
   // Hero photo-background height, site-wide. 'full' = full-screen hero (default).
   const [heroHeight, setHeroHeight] = useState<HeroHeightChoice>('auto')
+  // Dress the whole site in Pexels stock and ignore the source's own photos.
+  const [stockImagesOnly, setStockImagesOnly] = useState(false)
   const [themePreview, setThemePreview] = useState<BuilderStylesShape | null>(null)
   const [googleFonts, setGoogleFonts] = useState<string[]>([])
 
@@ -386,6 +388,7 @@ export default function App() {
       mood_override: mood,
       color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
       hero_height: heroHeight === 'auto' ? null : heroHeight,
+      stock_images_only: stockImagesOnly,
     }
     setBusy(true)
     setError(null)
@@ -421,6 +424,7 @@ export default function App() {
       mood_override: mood,
       color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
       hero_height: heroHeight === 'auto' ? null : heroHeight,
+      stock_images_only: stockImagesOnly,
       detected_brand: detectedBrand,
       // The Page stays the authority on its own contact details, hours,
       // reviews and counts — the backend rewrites those blocks from it after
@@ -627,6 +631,8 @@ export default function App() {
                 setColorScheme={setColorScheme}
                 heroHeight={heroHeight}
                 setHeroHeight={setHeroHeight}
+                stockImagesOnly={stockImagesOnly}
+                setStockImagesOnly={setStockImagesOnly}
               />
             </div>
           </section>

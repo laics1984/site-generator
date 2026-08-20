@@ -60,6 +60,9 @@ export interface GeneratePayload {
   mood_override?: BrandMood | null
   color_scheme_override?: ColorScheme | null
   hero_height?: HeroHeight | null
+  /** Every content image comes from Pexels stock; no source photo is used.
+   * The brand logo, document thumbnails and migrated post images are unaffected. */
+  stock_images_only?: boolean
   contact?: Record<string, string> | null
 }
 
@@ -78,6 +81,9 @@ export interface GenerateWithPagesPayload {
   mood_override?: BrandMood | null
   color_scheme_override?: ColorScheme | null
   hero_height?: HeroHeight | null
+  /** Every content image comes from Pexels stock; no source photo is used.
+   * The brand logo, document thumbnails and migrated post images are unaffected. */
+  stock_images_only?: boolean
   contact?: Record<string, string> | null
   jurisdiction?: string | null
   legal_contact_email?: string | null

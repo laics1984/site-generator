@@ -35,7 +35,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -1079,19 +1079,46 @@ def _coerce_to_cms_image(
         return None
 
 
-_DATA_URL_RE = re.compile(r"data:(?P<ct>[^;,]+)(;base64)?,(?P<data>.*)", re.DOTALL)
+# RFC 2397 allows any number of `;parameter` segments between the media type and
+# the comma, and `;base64` is only ONE of them. The previous pattern accepted a
+# bare `;base64` and nothing else, so it failed to match at all on the
+# percent-encoded SVGs this repo generates — `media.monogram_avatar_url` and
+# `media._placeholder_photo` both emit `data:image/svg+xml;utf8,…`. That is a
+# _ResolveSkip, which lands the src in `failed` and has _strip_invalid_images
+# delete the element: every monogram avatar and every gradient placeholder
+# vanished from the published site while rendering correctly in the preview.
+_DATA_URL_RE = re.compile(
+    r"data:(?P<ct>[^;,]*)(?P<params>(?:;[^;,]*)*),(?P<data>.*)", re.DOTALL
+)
 
 
 def _decode_data_url(src: str) -> tuple[bytes, str, str]:
+    """Decode a data: URI into (bytes, content_type, filename).
+
+    Handles both encodings the spec allows: `;base64` payloads, and the default
+    percent-encoded text form used by our own SVG generators (`icons.icon_data_url`
+    writes no parameter at all, `monogram_avatar_url` writes `;utf8`). Only the
+    `;base64` token selects base64 — any other parameter is a charset hint.
+    """
     m = _DATA_URL_RE.match(src)
     if not m:
         raise _ResolveSkip("malformed data URL")
     content_type = m.group("ct") or "image/png"
+    params = (m.group("params") or "").lower()
     raw = m.group("data") or ""
-    try:
-        decoded = base64.b64decode(raw)
-    except Exception as exc:  # noqa: BLE001
-        raise _ResolveSkip(f"base64 decode failed: {exc}") from exc
+    if ";base64" in params:
+        try:
+            decoded = base64.b64decode(raw)
+        except Exception as exc:  # noqa: BLE001
+            raise _ResolveSkip(f"base64 decode failed: {exc}") from exc
+    else:
+        # Percent-encoded text (SVG markup). unquote, not unquote_plus: `quote`
+        # never writes `+` for a space, so treating it as one would corrupt any
+        # payload that legitimately contains a plus.
+        try:
+            decoded = unquote(raw).encode("utf-8")
+        except Exception as exc:  # noqa: BLE001
+            raise _ResolveSkip(f"data URL decode failed: {exc}") from exc
     ext = content_type.split("/")[-1] if "/" in content_type else "png"
     if ext == "svg+xml":
         ext = "svg"

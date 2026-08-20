@@ -79,6 +79,7 @@ from app.services.source_injection import (
 )
 from app.services.source_path import normalize_source_slug
 from app.services.image_refs import bind_image_refs
+from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
     looks_like_team_member_name,
@@ -120,6 +121,12 @@ class GenerateRequest(BaseModel):
     # Full-screen vs bounded photo hero, site-wide. None = "Auto": defer to the
     # design-brain pick, then the mood/industry default (see resolve_hero_height).
     hero_height: HeroBackgroundHeight | None = None
+    # Every content image comes from Pexels, matched to each section's
+    # image_query; no photo the source supplied reaches the tree. The brand
+    # logo, document-card thumbnails and migrated blog/event images are
+    # unaffected — each depicts one specific artifact, not a decorated section.
+    # Applied by services/source_images.without_source_imagery.
+    stock_images_only: bool = False
     contact: dict[str, str] | None = None
     # Explicit chrome pins — win over the design director's fit/seed/diversity
     # pick (see design_director.compose_design_manifest). None → let it decide.
@@ -1070,6 +1077,44 @@ def _drop_unbound_gallery_items(pages: list[PagePlan]) -> None:
         page.blocks = kept
 
 
+def _drop_person_photos(pages: list[PagePlan]) -> None:
+    """Strip the portraits from every team/profile block, keeping the people.
+
+    The stock-images-only counterpart to ``_drop_unbound_gallery_items``, and
+    placed for the same reason: it runs on the FINISHED plan, after
+    ``_enrich_plan_profile_photos`` and ``_ensure_scraped_team_blocks`` have
+    built the roster. Cutting the photo earlier — on the source — would delete
+    the roster itself, because both roster passes skip a candidate that has no
+    photo (``if not profile.photo_url: continue``); a photo-less candidate is
+    not a photo-less member, it is not a member at all.
+
+    Names, roles, bios and profile links all survive. With ``photo_url`` gone,
+    all four renderers take the branch they already have for a person the source
+    gave no portrait — ``schema_builder._build_team`` / ``_build_profile`` and
+    ``section_content._team_content`` / ``_profile_content`` — and draw the
+    person's initials on the brand gradient (``media.monogram_avatar_url``).
+    That is not a fallback we are settling for here, it is the rule: a Pexels
+    stranger's face captioned with a real employee's name is a misattribution,
+    and "stock images only" is no licence to commit one.
+
+    ``photo_query`` goes too. Nothing renders it (the two team renderers read
+    ``photo_url`` or draw the monogram); its only reader is
+    ``schema_builder._stock_prewarm_slots``, which would otherwise spend a
+    Pexels round trip warming portraits no slot can ever use.
+    """
+    for page in pages:
+        for block in page.blocks:
+            if isinstance(block, TeamBlock):
+                for member in block.members:
+                    member.photo_url = None
+                    member.photo_alt = None
+                    member.photo_query = None
+            elif isinstance(block, ProfileBlock):
+                block.photo_url = None
+                block.photo_alt = None
+                block.photo_query = None
+
+
 async def _safe_extract_collections(source: SourceContent):
     """Blog/event entry extraction (content migration) — advisory, never
     load-bearing: any failure just means the site ships without migrated
@@ -1092,6 +1137,16 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     LLM picks pages and sections freely. Kept for backward compatibility;
     new flows should use /with-pages for deterministic output.
     """
+    # Locale detection reads image URLs as domain evidence
+    # (_market_cues_for → detect_market), and the cues it produces steer every
+    # Pexels query toward the right market. Under stock_images_only those cues
+    # matter MORE, not less — they are the only thing keeping the imagery
+    # on-market — so they are computed from the source as RECEIVED, before the
+    # photography is cut away.
+    market_cue, place_cue = _market_cues_for(payload.source)
+    if payload.stock_images_only:
+        payload.source = without_source_imagery(payload.source)
+
     try:
         plan = await plan_site(payload.source)
     except LlmError as exc:
@@ -1107,7 +1162,9 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
                 page.model_copy(
                     update={
                         "blocks": sanitize_blocks_against_source(
-                            page.blocks, payload.source.raw_text
+                            page.blocks,
+                            payload.source.raw_text,
+                            allow_stock_gallery=payload.stock_images_only,
                         )
                     }
                 )
@@ -1179,8 +1236,9 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
     _enrich_plan_profile_photos(plan, payload.source, annotations)
     _ensure_scraped_team_blocks(plan, payload.source, annotations)
+    if payload.stock_images_only:
+        _drop_person_photos(plan.pages)
 
-    market_cue, place_cue = _market_cues_for(payload.source)
     collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
     site = await plan_to_site(
         plan,
@@ -1195,6 +1253,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         social_links=_social_links_for(payload.source),
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
+        stock_only=payload.stock_images_only,
     )
     site.collections = await collections_task
     return site
@@ -1221,6 +1280,12 @@ class GenerateWithPagesRequest(BaseModel):
     # Full-screen vs bounded photo hero, site-wide. None = "Auto": defer to the
     # design-brain pick, then the mood/industry default (see resolve_hero_height).
     hero_height: HeroBackgroundHeight | None = None
+    # Every content image comes from Pexels, matched to each section's
+    # image_query; no photo the source supplied reaches the tree. The brand
+    # logo, document-card thumbnails and migrated blog/event images are
+    # unaffected — each depicts one specific artifact, not a decorated section.
+    # Applied by services/source_images.without_source_imagery.
+    stock_images_only: bool = False
     contact: dict[str, str] | None = None
     jurisdiction: str | None = None
     legal_contact_email: str | None = None
@@ -1238,6 +1303,16 @@ class GenerateWithPagesRequest(BaseModel):
 
 @router.post("/with-pages", response_model=GeneratedSite)
 async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
+    # Locale detection reads image URLs as domain evidence
+    # (_market_cues_for → detect_market), and the cues it produces steer every
+    # Pexels query toward the right market. Under stock_images_only those cues
+    # matter MORE, not less — they are the only thing keeping the imagery
+    # on-market — so they are computed from the source as RECEIVED, before the
+    # photography is cut away.
+    market_cue, place_cue = _market_cues_for(payload.source)
+    if payload.stock_images_only:
+        payload.source = without_source_imagery(payload.source)
+
     # Split scaffolds: LLM-generated content pages vs. boilerplate legal pages.
     # Translated mirrors are held out of the content pass entirely — they're
     # cloned from their counterpart's finished plan further down, so paying the
@@ -1498,6 +1573,8 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # After the last pass that can remove a page, so a member's link is checked
     # against the pages the site actually ships.
     _prune_dead_profile_links(plan)
+    if payload.stock_images_only:
+        _drop_person_photos(plan.pages)
 
     # The Facebook Page is the authority on its own facts. This runs after the
     # LLM AND after align_page_to_scaffold's grounding net, so it has the last
@@ -1511,8 +1588,13 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # the same per-page photo lists the planner prompt showed the model.
     bound_image_urls = bind_image_refs(plan.pages, source_map)
     # A gallery ref the binder rejected has nothing behind it — drop the tile
-    # rather than let it resolve a stock photo at render time.
-    _drop_unbound_gallery_items(plan.pages)
+    # rather than let it resolve a stock photo at render time. Suspended under
+    # stock_images_only, where a stock gallery is the point rather than the
+    # failure mode: with no source photography anywhere on the site, a tile
+    # resolving its image_query is consistent with every other slot, and
+    # deleting the block instead would silently drop a page the user chose.
+    if not payload.stock_images_only:
+        _drop_unbound_gallery_items(plan.pages)
 
     # Translated mirrors clone their counterpart HERE — after image refs are
     # bound and the roster/team passes have run — so a clone inherits the exact
@@ -1548,7 +1630,6 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         if legal.page_type in legal_builders
     ]
 
-    market_cue, place_cue = _market_cues_for(payload.source)
     collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
     site = await plan_to_site(
         plan,
@@ -1566,6 +1647,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         reserved_image_urls=bound_image_urls,
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
+        stock_only=payload.stock_images_only,
     )
     site.collections = await collections_task
 
