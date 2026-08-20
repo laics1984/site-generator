@@ -89,6 +89,10 @@ def _invariants(el, errs: list[str], bento: set[str]) -> None:
             _invariants(child, errs, bento)
 
 
+# Slot kinds that carry no scalar value, so `sampleContent` cannot describe them.
+_UNSAMPLEABLE_SLOT_KINDS = frozenset({"subtree", "flag"})
+
+
 async def main() -> int:
     catalog = load_catalog()
     factories = {"contactFormDefault": lambda: {}}
@@ -108,6 +112,14 @@ async def main() -> int:
         sample = template.get("sampleContent", {})
         for slot in template.get("slots", []):
             if slot.get("optional"):
+                continue
+            # A `subtree` slot is a whole BuilderElement tree the caller injects
+            # (header_footer._logo_mark builds the brand lockup), and a `flag` is
+            # a $if condition, not content. Neither is a scalar sampleContent
+            # value, so demanding one flagged all five chrome headers for a
+            # `logo` they cannot possibly sample — the rule was written for
+            # text/link/image/list slots and never qualified.
+            if slot.get("kind") in _UNSAMPLEABLE_SLOT_KINDS:
                 continue
             if slot["id"] not in sample:
                 errs.append(f"required slot '{slot['id']}' missing from sampleContent")

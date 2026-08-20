@@ -541,6 +541,17 @@ Tests: `test_seo.py`, `test_ux_audit.py`.
   `docker compose build backend`. This burned a whole OCR feature once (silent
   no-op, one INFO line at startup). If a feature acts absent, check the container:
   `docker exec webtree-sitegen-backend python -c "import importlib.util as u; print(u.find_spec('<pkg>'))"`.
+- **A ccTLD is matched against the hostname, never the URL string.**
+  `locale._bounded` guards its left edge with `(?<![a-z])`, which is right for
+  word-shaped needles (`india` must not match `indiana`) and impossible for a
+  dotted TLD — every real domain has a letter before the dot, so `.my` failed on
+  `kopitiam.com.my` and `kopitiam.my` alike. All 36 ccTLDs were dead and the
+  `urls` argument contributed nothing to `detect_market`: a site whose copy did
+  not happen to name a city or a phone code got no market cue at all, and its
+  stock imagery came back un-localised. `_host_has_cctld` parses the host and
+  suffix-matches it. **Do not fold it back into `_bounded`** — and do not match
+  the joined URL string either, or `?user.id=3` scores Indonesia and `/a.in?x=1`
+  scores India. Tests: `test_locale.CctldFromHostnameTest`.
 - **`.env` lives at the repo root**, not `backend/.env`. pydantic's `env_file` is
   CWD-relative, so the manual `cd backend && uvicorn` path does not pick it up —
   run from the repo root or export. `PEXELS_API_KEY` is one of these.

@@ -18362,6 +18362,11 @@
           "optional": true
         },
         {
+          "id": "ghost_wordmark",
+          "kind": "text",
+          "optional": true
+        },
+        {
           "id": "tagline",
           "kind": "text",
           "optional": true

@@ -73,3 +73,68 @@ class DetectMarketTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CctldFromHostnameTest(unittest.TestCase):
+    """A ccTLD in the URL is evidence on its own.
+
+    It never used to be: `_bounded` guards its left edge with `(?<![a-z])`, and
+    every real domain has a letter immediately before the dot, so `.my` failed
+    against "kopitiam.com.my" and "kopitiam.my" alike. All 36 ccTLDs were dead
+    and the `urls` argument contributed nothing — a site whose copy happened not
+    to name a city or a phone code got no market cue, and its stock imagery came
+    back un-localised. Matching against the parsed hostname fixes that without
+    reading query strings or paths as evidence.
+    """
+
+    def test_second_level_cctld_is_confident(self):
+        market = detect_market("Fresh bread baked daily.", urls=["https://roti.com.my/"])
+
+        assert market is not None
+        self.assertEqual(market.country, "Malaysia")
+        self.assertEqual(image_query_cue(market), "Southeast Asian")
+        self.assertEqual(place_query_cue(market), "Malaysia")
+
+    def test_bare_cctld_is_confident(self):
+        market = detect_market("Book an appointment today.", urls=["https://clinic.sg/"])
+
+        assert market is not None
+        self.assertEqual(market.country, "Singapore")
+
+    def test_co_uk_is_confident(self):
+        market = detect_market("Serving brunch since 2010.", urls=["https://baker.co.uk/"])
+
+        assert market is not None
+        self.assertEqual(market.country, "United Kingdom")
+        self.assertEqual(image_query_cue(market), "European")
+
+    def test_generic_tld_is_still_no_signal(self):
+        self.assertIsNone(
+            detect_market("Serving brunch since 2010.", urls=["https://baker.com/"])
+        )
+
+    def test_query_string_is_not_evidence(self):
+        """The trap a whole-URL substring match falls into.
+
+        `?user.id=3` is a query parameter, not an Indonesian domain. Matching the
+        joined URL string scores it as one; matching the hostname does not.
+        """
+        self.assertIsNone(
+            detect_market("Generic copy.", urls=["https://cdn.example.com/i?user.id=3"])
+        )
+
+    def test_path_segment_is_not_evidence(self):
+        self.assertIsNone(
+            detect_market("Generic copy.", urls=["https://example.com/video.id"])
+        )
+        self.assertIsNone(
+            detect_market("Generic copy.", urls=["https://example.com/a.in?x=1"])
+        )
+
+    def test_longer_tld_still_does_not_bleed(self):
+        """`.ca` must not fire on `.cat`, `.in` must not fire on `.info`."""
+        self.assertIsNone(detect_market("Generic copy.", urls=["https://example.cat/"]))
+        self.assertIsNone(detect_market("Generic copy.", urls=["https://example.info/"]))
+
+    def test_unparseable_url_is_skipped(self):
+        self.assertIsNone(detect_market("Generic copy.", urls=["not a url", ""]))

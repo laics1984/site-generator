@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 # --- language directories ---------------------------------------------------------
 
@@ -218,17 +219,50 @@ def _bounded(needle: str, haystack: str) -> bool:
     return re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", haystack) is not None
 
 
+def _hostnames(urls: list[str] | None) -> list[str]:
+    """Lower-cased hostnames from a URL list; unparseable entries are skipped.
+
+    A ccTLD is a property of the HOST, so it is matched against these rather
+    than against the joined URL string. Matching the whole string reads query
+    parameters and path segments as evidence: `?user.id=3` would score
+    Indonesia and `/a.in?x=1` would score India.
+    """
+    hosts: list[str] = []
+    for url in urls or []:
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except ValueError:
+            continue
+        if host:
+            hosts.append(host)
+    return hosts
+
+
+def _host_has_cctld(hosts: list[str], tld: str) -> bool:
+    """True when any host sits under `tld` (".my" matches "roti.com.my").
+
+    Deliberately not `_bounded`: that helper is written for word-shaped needles
+    and guards its left edge with `(?<![a-z])`, which a dotted TLD can never
+    satisfy — every real domain has a letter immediately before the dot, so
+    `.my` failed against "kopitiam.com.my" and "kopitiam.my" alike. The result
+    was that ALL 36 ccTLDs were dead and the `urls` argument contributed nothing
+    to detection at all: a Malaysian site whose copy happened not to name a city
+    or a +60 number got no market cue, and its stock imagery was un-localised.
+    """
+    return any(host == tld.lstrip(".") or host.endswith(tld) for host in hosts)
+
+
 def detect_market(text: str | None, urls: list[str] | None = None) -> MarketContext | None:
     """Best-effort market detection. Returns None when there's no signal."""
     text_l = (text or "").lower()
     compact = text_l.replace(" ", "").replace("-", "")
-    urls_l = " ".join(urls or []).lower()
+    hosts = _hostnames(urls)
 
     scores: dict[str, int] = {}
     for country, sig in _MARKETS.items():
         score = 0
         for tld in sig.cctld:
-            if _bounded(tld, urls_l) or _bounded(tld, text_l):
+            if _host_has_cctld(hosts, tld) or _bounded(tld, text_l):
                 score += _STRONG
         for code in sig.phone:
             if re.search(re.escape(code), compact):
