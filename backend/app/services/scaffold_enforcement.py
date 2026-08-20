@@ -178,6 +178,11 @@ def looks_like_team_member_name(value: str | None) -> bool:
         return False
     if "@" in text or "http" in low:
         return False
+    # A name is one person; "&" and "/" join things. Mirrors the same rule in
+    # `scraper._looks_like_person_name` — unlike `_NON_PERSON_NAME_TOKENS` below
+    # it carries no industry vocabulary, so it holds on any site.
+    if "&" in text or "/" in text:
+        return False
     tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
     if len(tokens) < 2 or len(tokens) > 7:
         return False
@@ -202,6 +207,12 @@ def _sanitize_team_block(
     bad role or bio is just untrustworthy text attached to a real person — it is
     BLANKED, and the card renders with the slots it can stand behind (both are
     optional in the team-grid template).
+
+    `profile_text.roster_is_people` is deliberately NOT applied to the members
+    here. It asks whether a scraped card rack agrees that it is people, and its
+    evidence is role/bio/contact — exactly the fields the blanking above strips
+    from a REAL person whose card the model mis-transcribed. A grounded name
+    with a CTA in the role slot is a person with one bad field, not a product.
     """
     members = [
         member for member in block.members

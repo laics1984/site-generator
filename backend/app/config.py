@@ -186,15 +186,29 @@ class Settings(BaseSettings):
     # slimmed system prompt these caps (not tokens) are usually the binding
     # constraint on batch size, so on a larger model raising them here is the
     # lever that genuinely cuts the number of content calls.
-    max_sections_per_batch: int = 6
+    #
+    # At 6 this was a *per-page* cap in disguise: an inferred rhythm is 3-6
+    # sections, so nearly every batch sealed at one page while the token budgets
+    # sat two-thirds empty ("Batch sealed — pages=1 sections=6 est_input=4162"
+    # against input_budget=15084). 10 is the ceiling the costing note below
+    # names — past it the model thins each block — and it lets 6+3 / 5+5 pages
+    # share a call. It also raises _needs_section_chunking's threshold, so a
+    # 7-section page stops being split into extra calls that each re-send the
+    # whole page excerpt and the ~3k-token system prompt.
+    max_sections_per_batch: int = 10
     max_pages_per_batch: int = 4
-    # How many scaffold batches may be in flight at once. 1 (default) preserves
-    # strictly serial generation — correct for a single local GPU model, where
-    # parallel requests just queue and slow each other down. Raise it only when
-    # the LLM backend genuinely serves parallel requests (vLLM/llama-server on a
-    # big card, a hosted API); batches are grouped by page depth either way so
-    # child pages still see their parent's hero context.
-    scaffold_batch_concurrency: int = 1
+    # How many scaffold batches may be in flight at once. 1 is strictly serial.
+    # Raise it only when the LLM backend genuinely serves parallel requests —
+    # for Ollama that means OLLAMA_NUM_PARALLEL >= this value, or the requests
+    # simply queue on one slot. Mind the VRAM: Ollama sizes its KV cache as
+    # num_ctx * num_parallel, so a second slot on a model that already spills to
+    # CPU evicts more weights and runs SLOWER. Lower OLLAMA_CONTEXT_LENGTH (and
+    # llm_context_tokens with it) to keep the product flat.
+    #
+    # Work items are pulled by a sliding-window worker pool, not lockstep depth
+    # groups (see planner._run_worklist), so one slow page no longer idles the
+    # other slots.
+    scaffold_batch_concurrency: int = 2
 
     # Char cap on the raw source text sent to the LEGACY free-form planner
     # (planner._build_user_prompt, the /from-source path). The old hardcoded

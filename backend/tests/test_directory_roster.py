@@ -194,6 +194,54 @@ class DirectoryRosterFillTest(unittest.TestCase):
         self.assertEqual(len(members), 3)
 
 
+class PageScopedRosterTest(unittest.TestCase):
+    """A page's own cards outrank the site-wide pool.
+
+    ``_profile_pool_for`` flattens every crawled page, so an /about page that
+    asks for a team section used to be filled with whatever roster the crawl
+    found anywhere. On LumiBright that was product tiles scraped off
+    /SECA-TRAC; but even when every card is a real person, one department's
+    roster is not another page's team.
+    """
+
+    def test_a_page_with_its_own_roster_is_not_filled_from_elsewhere(self):
+        own = _profiles(3, last="Rahman", tag="own")
+        other = _profiles(9, last="Tanaka", tag="other")
+        about_source = _source(own, url_path="/about-us")
+        entry = _source([], discovered=[about_source, _source(other, url_path="/staff")])
+        page = _page("about-us", [], page_type="about")
+        plan = SitePlan(site_name="T", pages=[page])
+
+        _ensure_scraped_team_blocks(
+            plan,
+            entry,
+            team_section_slugs={"about-us"},
+            source_map={"about-us": about_source},
+        )
+
+        block = next(b for b in page.blocks if getattr(b, "kind", None) == "team")
+        self.assertEqual(
+            [m.name for m in block.members], [p.name for p in own]
+        )
+
+    def test_a_page_with_no_cards_of_its_own_still_gets_the_site_roster(self):
+        """The fallback the pool exists for — don't trade one bug for another."""
+        staff = _profiles(4, last="Tanaka", tag="staff")
+        entry = _source([], discovered=[_source(staff, url_path="/staff")])
+        page = _page("about-us", [], page_type="about")
+        plan = SitePlan(site_name="T", pages=[page])
+
+        _ensure_scraped_team_blocks(
+            plan,
+            entry,
+            team_section_slugs={"about-us"},
+            source_map={"about-us": _source([], url_path="/about-us")},
+        )
+
+        block = next(b for b in page.blocks if getattr(b, "kind", None) == "team")
+        self.assertEqual([m.name for m in block.members], [p.name for p in staff])
+
+
 class ProfileDetailPageTest(unittest.TestCase):
     """A committee member's own page shows that member's portrait.
 

@@ -197,6 +197,20 @@ def heal_industry_value(value: object) -> str:
     return _coerce_literal(value, frozenset(get_args(IndustryCategoryLiteral)), "other")
 
 
+def heal_optional_str_value(value: object) -> object:
+    """Map an explicit JSON `null` onto `""` for a non-nullable string field.
+
+    The model writes `"site_name": null` often enough to matter, and a bare
+    `str` annotation rejects it — which costs a FULL repair round trip in
+    `llm._validated` (it re-sends the whole prompt plus the failed response as
+    an assistant turn). At local-GPU speeds that is minutes for a field every
+    consumer already `or`-guards against an empty string. Anything that isn't
+    None passes through untouched, so a genuinely wrong TYPE still fails
+    validation and still earns its retry.
+    """
+    return "" if value is None else value
+
+
 class VisualPolicy(BaseModel):
     """
     Per-section visual INTENT, consumed by the schema_builder luminance pass.

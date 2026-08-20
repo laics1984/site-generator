@@ -529,6 +529,15 @@ def _roster_members(accepted: list[ProfileCandidate]) -> list[TeamMember]:
     Grounding is deliberately skipped here: a ``ProfileCandidate`` bio is page
     text by construction, so checking it against the page is guaranteed-true
     work — and this is the up-to-24-member path.
+
+    The group-level personhood gate deliberately does NOT run here. It is a
+    question about a card RACK — does this group agree that it is people? — and
+    the only layer that sees the rack is `scraper._extract_profile_candidates`,
+    which now answers it once for every candidate that reaches this function.
+    Re-asking it card-by-card here is double jeopardy on evidence that is no
+    longer present: a lone card on a person's own page, and a roster whose
+    markup declared itself `class="team-member"`, both arrive vetted and both
+    look bare from here.
     """
     names = tuple(p.name for p in accepted)
     # Only a ROSTER indexes people's pages. The lone card on a person's own page
@@ -813,7 +822,21 @@ def _ensure_scraped_team_blocks(
             if profile_indexes:
                 continue
 
-        if not scraped_members:
+        # A page's own cards outrank the site-wide pool. `_profile_pool_for`
+        # flattens every crawled page, so without this an /about team grid is
+        # filled from whatever roster the crawl found anywhere — which is how
+        # LumiBright's /about-us ended up showing cards scraped off /SECA-TRAC
+        # and /spill-control-absorbents. It is the same leak
+        # `_directory_roster_members` was written to stop between two listings,
+        # and nothing about it is directories-only; that function is already
+        # "this page's roster", so it is reused rather than re-spelled. The pool
+        # still covers the ordinary case: a page that asks for a team section
+        # and carries no cards of its own.
+        page_members = (
+            _directory_roster_members(sources_by_slug.get(page.slug), annotations)
+            or scraped_members
+        )
+        if not page_members:
             continue
 
         if team_indexes:
@@ -824,7 +847,7 @@ def _ensure_scraped_team_blocks(
                 page.blocks[idx] = TeamBlock(
                     heading=block.heading,
                     subheading=block.subheading,
-                    members=scraped_members,
+                    members=page_members,
                 )
             continue
 
@@ -840,7 +863,7 @@ def _ensure_scraped_team_blocks(
             TeamBlock(
                 heading="Meet the team",
                 subheading=None,
-                members=scraped_members,
+                members=page_members,
             ),
         )
 
@@ -1279,7 +1302,11 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     )
 
     brand = payload.brand or BrandIdentity(
-        name=detected.site_name,
+        # `or`-guarded like every other site_name reader below: DetectedBrand
+        # heals a null the model wrote into "", and an empty brand name would
+        # otherwise render as a blank header rather than degrade to the source's
+        # own title.
+        name=detected.site_name or payload.source.title or "Untitled",
         tagline=detected.tagline,
         mood=mood,
         industry=industry,

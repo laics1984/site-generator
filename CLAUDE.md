@@ -153,6 +153,68 @@ services layouts. The friendly/playful `services-programs-age` rule is more
 specific and stays absolute, since no other variant declares its age badge, and
 it now also requires the items to actually carry one (`_items_have_audience`).
 
+## A team grid holds people
+
+`profile_text.roster_is_people` is the one gate, applied once, at the only layer
+that can answer the question: `scraper._extract_profile_candidates`. Every
+consumer inherits it — `page_inference._looks_like_directory_page`,
+`_profile_pool_for`, `_scraped_team_members`, `_directory_roster_members`,
+`_rostered_names` — so there is no second spelling to keep in sync.
+
+**A card in isolation is unclassifiable.** A product tile, a facility card and a
+staff card are the same object at close range: a square photo, a Title-Case
+caption, maybe a paragraph. Only the group disambiguates, which is the rule
+`section_extraction`'s classifier already states and the portrait walk used to
+violate — it decides one card at a time, and
+`_confirm_profiles_against_sections` can only *veto*, so when the classifier
+finds no card group the walk's guess stands unopposed.
+
+The discriminator is what a card **says**: a job title, a sentence of prose, or a
+personal contact, on a majority of the group (0.6, mirroring `_classify`). A card
+whose markup declares itself (`_PROFILE_CONTAINER_HINTS`) needs no further
+evidence and rides the `declared` argument.
+
+**"Carries text" is not the test** — a product tile carries text. Every field is
+read through `looks_like_spec_line`, because `looks_like_team_role` accepts
+`"Size: 42 inch(H) x 48 inch(L)"` as a job title (short, no full stop, no contact
+token), and LumiBright's detail pages caption every tile that way. Specs are
+found by physical units and dimension pairs — physics, not industry vocabulary,
+the same way `has_contact_token` leans on a phone regex. A person's title does
+carry numbers ("Level 3 Coach", "Director since 1998"); it does not weld one to a
+unit. The trailing lookahead is case-sensitive inside a case-insensitive pattern
+on purpose, or `"2.5mColor"` and `"3 monkeys"` go the same way.
+
+Neither of the two obvious discriminators works:
+
+- **Geometry.** LumiBright's product tiles are 800×800, so `_has_portrait_aspect`
+  and `_measured_portrait` both wave them through.
+- **Vocabulary.** `_NON_NAME_TAIL_TOKENS` was written for a childcare site's
+  "Innovation Centre" and catches *nothing* in a safety-equipment catalogue, a
+  menu, a portfolio or a service grid — `CardRackIsNotARosterTest` pins that 0-of-4
+  measurement so nobody re-simplifies the group rule back into a denylist. Adding
+  nouns to it to fix a site is fixing that site only.
+
+Getting this wrong cost the products twice over. Three or more candidates stamp
+their photos `role="portrait"`, and `source_router._UNPROMPTABLE_ROLES` bars a
+portrait from the pool the LLM may bind to a features/services card — so every
+tile misread as a person was simultaneously withdrawn from the section that
+should have shown it. Fixing the roster gave 6 of 18 product photos per page back
+to the products.
+
+Two related rules: a name is one person, so `&` and `/` disqualify one
+(`_looks_like_person_name` + its mirror `looks_like_team_member_name` — industry-
+neutral, unlike the tail tokens). And a page's own cards outrank the site-wide
+`_profile_pool_for` flatten in `_ensure_scraped_team_blocks`; one department's
+roster is not another page's team.
+
+The gate deliberately does **not** run again downstream. `_roster_members` and
+`_sanitize_team_block` see cards one at a time, stripped of the evidence — a lone
+card on a person's own page, or a real person whose CTA role got blanked — so
+re-asking there is double jeopardy, and both had to be reverted once already.
+
+Tests: `test_scraper_images.CardRackIsNotARosterTest`,
+`test_directory_roster.PageScopedRosterTest`.
+
 ## Facebook Page ingest
 
 A third source, routed **automatically**: `POST /api/scrape/start` calls

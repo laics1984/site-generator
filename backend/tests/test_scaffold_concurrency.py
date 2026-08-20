@@ -58,13 +58,27 @@ class _RecordingClient:
             self.in_flight -= 1
 
 
+# Enough sections that any TWO pages exceed max_sections_per_batch, so each page
+# stays its own batch item and there is per-page concurrency to observe. Derived
+# from the setting rather than hardcoded: at a literal four sections these tests
+# silently stopped testing anything the moment the cap moved 6 -> 10, because all
+# four pages collapsed into one call and max_in_flight could only ever be 1.
+_SECTION_POOL = ["hero", "about", "features", "services", "process", "team",
+                 "testimonials", "faq", "pricing", "gallery", "stats", "cta"]
+
+
+def _page_sections() -> list[str]:
+    n = max(2, settings.max_sections_per_batch // 2 + 1)
+    return _SECTION_POOL[:n]
+
+
 def _scaffold(slug: str, *, parent: str | None = None, sections=None) -> PageScaffold:
     return PageScaffold(
         page_type="home" if slug == "" else "landing",  # type: ignore[arg-type]
         slug=slug,
         title=slug.split("/")[-1].replace("-", " ").title() or "Home",
         is_homepage=slug == "",
-        sections=sections or ["hero", "about", "features", "cta"],  # type: ignore[arg-type]
+        sections=sections or _page_sections(),  # type: ignore[arg-type]
         parent_slug=parent,
     )
 
@@ -78,9 +92,9 @@ def _source() -> SourceContent:
     )
 
 
-# Two depth-0 pages + two depth-1 children. Four sections per page means two
-# pages exceed max_sections_per_batch (6), so every page is its own batch item
-# → 2 items at depth 0, 2 items at depth 1.
+# Two depth-0 pages + two depth-1 children, each carrying _page_sections() so
+# two pages always exceed max_sections_per_batch → every page is its own batch
+# item: 2 items at depth 0, 2 items at depth 1.
 def _scaffolds() -> list[PageScaffold]:
     return [
         _scaffold(""),

@@ -10,6 +10,7 @@ Document endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -105,10 +106,20 @@ async def document_preview(file: UploadFile = File(...)) -> dict:
             detail=f"File too large ({len(contents) // 1024} KB). Max 20 MB.",
         )
 
+    # Every step below is blocking CPU — PyMuPDF/python-docx, a base64 pass over
+    # each image, a per-pixel palette walk, and a model_dump over the resulting
+    # base64. On the event loop a 20 MB PDF stalls every other request on this
+    # worker, /health included. Same move (and same reason) as the crawler's
+    # `asyncio.to_thread(_parse_rendered_html, ...)` in services/scraper.py.
     try:
-        parsed = parse_document(contents, file.filename)
+        return await asyncio.to_thread(_build_preview, contents, file.filename)
     except DocParseError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+def _build_preview(contents: bytes, filename: str) -> dict:
+    """The synchronous parse → split → payload pipeline, run off the loop."""
+    parsed = parse_document(contents, filename)
 
     # Separate a logo seed from feature imagery: a small cover graphic becomes the
     # brand logo (and is kept out of the hero pool), while feature-sized images
@@ -148,8 +159,8 @@ async def document_preview(file: UploadFile = File(...)) -> dict:
     image_candidates = _candidates_from_source(source_content)
 
     return source_preview_payload(
-        url=file.filename,
-        final_url=file.filename,
+        url=filename,
+        final_url=filename,
         source_content=source_content,
         brand_candidate=brand_candidate,
         image_candidates=image_candidates,
@@ -177,16 +188,21 @@ async def document_export(payload: ExportRequest) -> StreamingResponse:
     re-uploading via ``/preview`` regenerates the site from the document.
     """
     industry = payload.industry or "other"
-    scaffolds = infer_page_scaffolds(
-        payload.source, industry=industry, site_name=payload.site_name
+    # Both are pure-CPU tree walks (page inference, then a python-docx write) —
+    # off the loop for the same reason /preview's parse is.
+    scaffolds = await asyncio.to_thread(
+        infer_page_scaffolds,
+        payload.source,
+        industry=industry,
+        site_name=payload.site_name,
     )
     if not scaffolds:
         raise HTTPException(
             status_code=422, detail="No pages could be inferred from this source."
         )
 
-    docx_bytes = build_site_document(
-        payload.source, scaffolds, site_name=payload.site_name
+    docx_bytes = await asyncio.to_thread(
+        build_site_document, payload.source, scaffolds, site_name=payload.site_name
     )
     filename = _safe_filename(payload.site_name or payload.source.title or "website")
 

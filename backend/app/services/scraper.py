@@ -72,7 +72,11 @@ from app.services.logo_extraction import LogoCandidate, extract_logo
 from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
 from app.services.map_embed import ParsedMap, parse_map_src
 from app.services.video_embed import ParsedVideo, parse_video_src
-from app.services.profile_text import has_contact_token, is_boilerplate_line
+from app.services.profile_text import (
+    has_contact_token,
+    is_boilerplate_line,
+    roster_is_people,
+)
 from app.services.nav_extraction import (
     DOCUMENT_EXTENSIONS,
     extract_body_link_clusters,
@@ -1096,6 +1100,11 @@ def _looks_like_person_name(value: str) -> bool:
     # because the strip above erases exactly this evidence.
     if raw.endswith(":"):
         return False
+    # A name is one person. "&" and "/" join things — "Spill Control & Absorbent",
+    # "Parking Lock, Wheel Chock/Clamp & Fender". Unlike the tail-token denylist
+    # below this carries no industry vocabulary, so it holds on any site.
+    if "&" in text or "/" in text:
+        return False
     tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
     if len(tokens) < 2 or len(tokens) > 7:
         return False
@@ -1687,6 +1696,9 @@ def _extract_profile_candidates(
 ) -> list[ProfileCandidate]:
     """Extract likely profile cards where a portrait and nearby person text agree."""
     profiles: list[ProfileCandidate] = []
+    # Per-candidate: did the card's own markup declare itself a profile? Fed to
+    # the group gate below, where a declared card needs no further evidence.
+    declared: list[bool] = []
     seen: set[tuple[str, str | None]] = set()
     # Photos that cleared every image-level gate, for the page-subject fallback.
     portraits: list[tuple[str, str]] = []
@@ -1765,6 +1777,22 @@ def _extract_profile_candidates(
                 confidence=0.9 if role else 0.8,
             )
         )
+        declared.append(hinted)
+
+    # A roster agrees with itself. The walk above decides one card at a time, and
+    # at that range a product tile and a staff card are the same object — so the
+    # group has to earn being read as people before any of it is believed. See
+    # `profile_text.roster_is_people` for why this is neither geometry nor
+    # vocabulary. Deliberately BEFORE the subject fallback: a rejected card rack
+    # should still let a page that is genuinely about one person be recognised.
+    if profiles and not roster_is_people(profiles, declared=declared):
+        logger.info(
+            "Dropped %d portrait-anchored profile(s) on %s: the group carries no "
+            "person evidence (no role, bio or contact) — a card rack, not a roster",
+            len(profiles),
+            base_url,
+        )
+        profiles = []
 
     if not profiles:
         subject = _page_subject_profile(soup, base_url, portraits)

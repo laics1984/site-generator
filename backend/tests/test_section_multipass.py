@@ -27,36 +27,48 @@ from app.services.planner import (
 
 _MAX_SECTIONS_PER_BATCH = settings.max_sections_per_batch
 
-_NINE = ["hero", "features", "about", "services", "process",
-         "team", "testimonials", "faq", "cta"]
+# Section lists are derived from the CAP, not hardcoded: max_sections_per_batch
+# is a tuning knob (it moved 6 → 10 to pack two pages per content call), and a
+# fixture pinned to one value silently stops testing chunking the moment the cap
+# passes it — which is exactly what a literal nine-section page did.
+_POOL = ["hero", "features", "about", "services", "process", "team",
+         "testimonials", "faq", "pricing", "gallery", "stats", "awards",
+         "clients", "timeline", "cta"]
+assert len(_POOL) > _MAX_SECTIONS_PER_BATCH + 1, "pool too small to exceed the cap"
+
+# One section past the cap — the smallest page that must still be chunked.
+_OVER_CAP = _POOL[:_MAX_SECTIONS_PER_BATCH] + ["cta"]
+# Exactly the cap — the largest page that must NOT be chunked.
+_AT_CAP = _POOL[:_MAX_SECTIONS_PER_BATCH]
 
 
 class SplitPageSectionsTest(unittest.TestCase):
     def test_every_group_is_light_and_hero_anchored(self):
-        groups = _split_page_sections(_NINE, _MAX_SECTIONS_PER_BATCH)
+        groups = _split_page_sections(_OVER_CAP, _MAX_SECTIONS_PER_BATCH)
         self.assertTrue(len(groups) >= 2)
         for g in groups:
             self.assertLessEqual(len(g), _MAX_SECTIONS_PER_BATCH)
             self.assertEqual(g[0], "hero")  # anchored so each group is a valid page
 
     def test_body_sections_are_partitioned_in_order_without_loss(self):
-        groups = _split_page_sections(_NINE, _MAX_SECTIONS_PER_BATCH)
+        groups = _split_page_sections(_OVER_CAP, _MAX_SECTIONS_PER_BATCH)
         seen = []
         for g in groups:
             for s in g:
                 if s != "hero" and s not in seen:
                     seen.append(s)
-        self.assertEqual(seen, [s for s in _NINE if s != "hero"])
+        self.assertEqual(seen, [s for s in _OVER_CAP if s != "hero"])
 
     def test_a_page_that_already_fits_is_not_split(self):
-        six = ["hero", "features", "about", "services", "testimonials", "cta"]
-        self.assertEqual(_split_page_sections(six, _MAX_SECTIONS_PER_BATCH), [six])
+        self.assertEqual(
+            _split_page_sections(_AT_CAP, _MAX_SECTIONS_PER_BATCH), [_AT_CAP]
+        )
 
     def test_needs_section_chunking_triggers_only_past_the_cap(self):
         def sc(secs):
             return PageScaffold(page_type="home", slug="", title="H", sections=secs)
-        self.assertTrue(_needs_section_chunking(sc(_NINE)))
-        self.assertFalse(_needs_section_chunking(sc(_NINE[:6])))
+        self.assertTrue(_needs_section_chunking(sc(_OVER_CAP)))
+        self.assertFalse(_needs_section_chunking(sc(_AT_CAP)))
 
 
 class _FakeClient:
@@ -82,7 +94,7 @@ def _page(*blocks):
 class SectionChunkGenerationTest(unittest.TestCase):
     def test_chunks_are_generated_lightly_and_merged_into_one_page(self):
         scaffold = PageScaffold(
-            page_type="home", slug="", title="Home", is_homepage=True, sections=_NINE,
+            page_type="home", slug="", title="Home", is_homepage=True, sections=_OVER_CAP,
         )
         # Two groups → two calls. Each returns its own hero (repeated anchor) plus
         # distinct body sections; the merge must keep ONE hero and order by scaffold.
@@ -97,7 +109,7 @@ class SectionChunkGenerationTest(unittest.TestCase):
         )
 
         # One light call per section group — never a single heavy call.
-        self.assertEqual(client.calls, len(_split_page_sections(_NINE, _MAX_SECTIONS_PER_BATCH)))
+        self.assertEqual(client.calls, len(_split_page_sections(_OVER_CAP, _MAX_SECTIONS_PER_BATCH)))
         self.assertIsNotNone(merged)
         kinds = [b.kind for b in merged.blocks]
         # Distinct sections from both chunks assembled, in scaffold order.

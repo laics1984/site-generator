@@ -30,6 +30,7 @@ from app.services.planner import (
     _estimate_tokens,
     plan_site_with_scaffolds,
 )
+from app.services.planner import _LLM_ITEM_ATTEMPTS
 from app.services.polite import HostPoliteness
 from app.services.scraper import _extract_links
 
@@ -234,9 +235,17 @@ class BatchFailureDegradationTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._orig = settings.scaffold_batch_concurrency
         settings.scaffold_batch_concurrency = 1
+        # This suite is about isolation BETWEEN batches, so pin one page per
+        # batch. Left to the live cap it silently became a test of packing
+        # instead: at max_sections_per_batch=10 the homepage shares a call with
+        # /services and goes down with it, which is a property of batching, not
+        # the degradation path under test (see the packing test below).
+        self._orig_sections = settings.max_sections_per_batch
+        settings.max_sections_per_batch = 4
 
     def tearDown(self):
         settings.scaffold_batch_concurrency = self._orig
+        settings.max_sections_per_batch = self._orig_sections
 
     async def test_one_failed_batch_does_not_lose_the_others(self):
         scaffolds = [_scaffold(""), _scaffold("services"), _scaffold("about")]
@@ -251,6 +260,25 @@ class BatchFailureDegradationTest(unittest.IsolatedAsyncioTestCase):
         # in _align_pages_to_scaffolds rather than fabricated here.
         self.assertEqual(plan.degraded_slugs, ["services"])
         self.assertNotIn("services", produced)
+
+    async def test_a_failed_batch_degrades_every_page_it_carried(self):
+        """The cost of packing, stated explicitly.
+
+        Fewer, fatter calls is the whole point of a raised
+        max_sections_per_batch — but a batch is also the unit of failure, so a
+        page that shares a call with a failing one degrades WITH it. That is why
+        _run_item_safe retries behind polite.back_off before giving up: the
+        blast radius of one flaky response is now a whole batch, not one page.
+        """
+        settings.max_sections_per_batch = 12  # packs both pages into one call
+        scaffolds = [_scaffold(""), _scaffold("services")]
+        client = _FlakyClient(fail_slugs={"services"})
+
+        plan, _ = await plan_site_with_scaffolds(_source(), None, scaffolds, client)
+
+        self.assertEqual(client.calls, _LLM_ITEM_ATTEMPTS)  # retried, then degraded
+        self.assertEqual(sorted(plan.degraded_slugs), ["", "services"])
+        self.assertEqual(plan.pages, [])
 
     async def test_site_metadata_survives_when_every_batch_fails(self):
         from app.services.planner import DetectedBrand

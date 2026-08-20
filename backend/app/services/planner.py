@@ -42,6 +42,7 @@ from app.models.content_blocks import (
     SourceContent,
     heal_brand_mood_value,
     heal_industry_value,
+    heal_optional_str_value,
     industry_default_mood,
 )
 from app.config import settings
@@ -54,6 +55,7 @@ from app.services.llm import (
     get_llm,
     get_reasoning_llm,
 )
+from app.services.polite import HostPoliteness
 from app.services.prompts import (
     DETECT_BRAND_PROMPT,
     LEGACY_SYSTEM_PROMPT,
@@ -68,6 +70,14 @@ from app.services.source_router import (
 )
 
 logger = logging.getLogger(__name__)
+
+# How many times one content work item may be attempted against the AI server.
+# This is a TRANSPORT-level retry and does not overlap llm._validated's retries,
+# which cover empty streams, truncation and invalid JSON — a dropped connection
+# or a connect timeout raises LlmError straight out of them. Two attempts with
+# polite.back_off between; past that the circuit breaker is the right answer,
+# not more hammering.
+_LLM_ITEM_ATTEMPTS = 2
 
 
 # Prompt text lives in app/services/prompts.py (imported above) so prompt edits
@@ -116,6 +126,15 @@ class DetectedBrand(BaseModel):
     brand_mood: BrandMood | None = None
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
+
+    # A null site_name/brand_summary is the model's most common schema slip and
+    # it used to cost a whole repair call. Heal it here; every consumer already
+    # falls back (`scaffolded.site_name or detected.site_name`, and the
+    # BrandIdentity construction in routers/generate.py).
+    @field_validator("site_name", "brand_summary", mode="before")
+    @classmethod
+    def heal_null_strings(cls, v: object) -> object:
+        return heal_optional_str_value(v)
 
     # The LLM sometimes invents moods/industries despite the enumerated prompt.
     # A wrong adjective must never fail brand detection — degrade to defaults.
@@ -254,6 +273,15 @@ class ScaffoldedSitePlan(BaseModel):
                 continue
             kept.append(page)
         return {**data, "pages": kept}
+
+    # A null site_name/brand_summary is the model's most common schema slip and
+    # it used to cost a whole repair call. Heal it here; every consumer already
+    # falls back (`scaffolded.site_name or detected.site_name`, and the
+    # BrandIdentity construction in routers/generate.py).
+    @field_validator("site_name", "brand_summary", mode="before")
+    @classmethod
+    def heal_null_strings(cls, v: object) -> object:
+        return heal_optional_str_value(v)
 
     @field_validator("brand_mood", mode="before")
     @classmethod
@@ -1082,6 +1110,24 @@ async def plan_site_with_scaffolds(
     #    so parent hero context is available downstream. Items are tagged with
     #    their scaffold depth so the concurrent path can group them.
     concurrency = max(1, settings.scaffold_batch_concurrency)
+    # Concurrency cap + failure tracking for the AI endpoint, reusing the
+    # crawler's politeness primitive (services/polite.py): the slot cap,
+    # record_success/record_failure, the consecutive-failure circuit and its
+    # exponential back_off. min_delay_sec=0 — the crawl's pacing between
+    # requests is about not tripping someone else's WAF and means nothing to a
+    # local GPU.
+    #
+    # Built per generation rather than fetched from polite's process-wide
+    # registry: `get_politeness` is get-or-create and IGNORES its arguments when
+    # an instance already exists, so a changed scaffold_batch_concurrency would
+    # silently keep the old slot count until a restart, and one test's circuit
+    # would leak into the next. The failure this guards (a run losing three
+    # batches to `Server disconnected`) is within a single generation anyway.
+    politeness = HostPoliteness(
+        host=f"llm:{getattr(client, 'base_url', '') or 'default'}",
+        concurrency=concurrency,
+        min_delay_sec=0.0,
+    )
     worklist: list[tuple[str, object, int]] = []
     small_run: list[PageScaffold] = []
 
@@ -1178,11 +1224,23 @@ async def plan_site_with_scaffolds(
         The pages this item owned are simply not produced — alignment then
         re-materialises each from its scaffold with structural defaults, which
         is the same path a page the model silently dropped already takes.
+
+        Degrading is the LAST resort, not the first. A generation that lost
+        three batches to `Server disconnected` and `ConnectTimeout` shipped
+        three generic pages and told the user nothing was wrong, because the
+        only response to a flaky endpoint was to give up on that item. So the
+        item is retried behind `polite.back_off` first, and once the endpoint
+        has failed `DEFAULT_MAX_CONSECUTIVE_FAILURES` times in a row the circuit
+        opens and the remaining items degrade immediately instead of each
+        waiting out its own timeout — the same shape the crawler uses via
+        `_should_stop` (services/scraper.py).
+
+        `politeness.slot()` also *is* the concurrency cap, so serial and
+        concurrent runs share one code path.
         """
-        try:
-            return await _run_item(item_index, item_kind, payload)
-        except LlmError as exc:
-            slugs = _item_slugs(item_kind, payload)
+        slugs = _item_slugs(item_kind, payload)
+
+        def _degrade(reason: object) -> tuple[list[PagePlan], None]:
             degraded_slugs.extend(slugs)
             logger.warning(
                 "Content generation failed for %s (%s) — shipping %d page(s) with "
@@ -1190,9 +1248,32 @@ async def plan_site_with_scaffolds(
                 ", ".join(f"/{s}" for s in slugs) or "(homepage)",
                 item_kind,
                 len(slugs),
-                exc,
+                reason,
             )
             return [], None
+
+        for attempt in range(1, _LLM_ITEM_ATTEMPTS + 1):
+            if politeness.circuit_open:
+                return _degrade(
+                    "AI server circuit open after repeated failures — not retried"
+                )
+            try:
+                async with politeness.slot():
+                    produced = await _run_item(item_index, item_kind, payload)
+            except LlmError as exc:
+                politeness.record_failure()
+                if attempt >= _LLM_ITEM_ATTEMPTS or politeness.circuit_open:
+                    return _degrade(exc)
+                logger.warning(
+                    "Content generation attempt %d/%d failed for %s — backing off: %s",
+                    attempt, _LLM_ITEM_ATTEMPTS,
+                    ", ".join(f"/{s}" for s in slugs) or "(homepage)", exc,
+                )
+                await politeness.back_off(attempt)
+                continue
+            politeness.record_success()
+            return produced
+        return _degrade("exhausted attempts")
 
     def _absorb(produced: list[PagePlan], result: "ScaffoldedSitePlan | None") -> None:
         # Harvest parent hero context for children that come in later work items.
@@ -1213,18 +1294,17 @@ async def plan_site_with_scaffolds(
             _absorb(*await _run_item_safe(item_index, item_kind, payload))
     else:
         # Same-depth items are mutually independent (a page never parents a
-        # sibling), so run each contiguous depth group under a semaphore and
-        # harvest parent_context only after the whole group completes — the
-        # next (deeper) group then sees every parent hero. gather preserves
+        # sibling), so run each contiguous depth group together and harvest
+        # parent_context only after the whole group completes — the next
+        # (deeper) group then sees every parent hero. gather preserves
         # submission order, keeping page order and `first` deterministic.
-        sem = asyncio.Semaphore(concurrency)
-
-        async def _run_bounded(
-            item_index: int, item_kind: str, payload: object
-        ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
-            async with sem:
-                return await _run_item_safe(item_index, item_kind, payload)
-
+        #
+        # Within a group this is already a sliding window, not lockstep: every
+        # item is submitted at once and `politeness.slot()` admits them
+        # `concurrency` at a time, so a freed slot picks up the next item
+        # immediately. Only the depth BOUNDARY is a barrier, and that barrier is
+        # load-bearing — crossing it early would generate a child page before
+        # its parent's hero exists to ground it.
         pos = 0
         while pos < len(worklist):
             group_depth = worklist[pos][2]
@@ -1233,7 +1313,7 @@ async def plan_site_with_scaffolds(
                 group.append((pos, worklist[pos][0], worklist[pos][1]))
                 pos += 1
             outcomes = await asyncio.gather(
-                *(_run_bounded(i, kind, payload) for i, kind, payload in group)
+                *(_run_item_safe(i, kind, payload) for i, kind, payload in group)
             )
             for produced, result in outcomes:
                 _absorb(produced, result)

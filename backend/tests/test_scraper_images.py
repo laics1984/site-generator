@@ -1,8 +1,10 @@
 import json
+import re
 import unittest
 
 from bs4 import BeautifulSoup
 
+import app.services.profile_text as profile_text
 import app.services.scraper as scraper
 from app.services.scraper import _extract_images
 
@@ -1387,3 +1389,245 @@ class PageSubjectProfileContactsTest(unittest.TestCase):
         self.assertEqual(
             profile.social_links, [("LinkedIn", "https://www.linkedin.com/in/ashleyj")]
         )
+
+
+class CardRackIsNotARosterTest(unittest.TestCase):
+    """A card rack must EARN being read as people, on any site in any industry.
+
+    LumiBright (safety equipment) shipped its whole product catalogue under
+    "Meet the team": 24 members named "Personal Protective Equipment (PPE)",
+    "Crowd Control Barricade", "Zeosorb Absorbent Granules", each with a
+    category photo cropped into a portrait circle.
+
+    Neither defence in place at the time could see it:
+
+    * Geometry waved it through — the tiles are 800x800, so every
+      portrait-aspect test in the codebase passes them. The fixtures below
+      declare square images on purpose, so this test fails for the right
+      reason.
+    * `_NON_NAME_TAIL_TOKENS` is a childcare vocabulary, written for a previous
+      round of exactly this bug ("Innovation Centre"). Of the five racks below
+      it catches one. That contrast is the point: a denylist only ever covers
+      the industry that burned you last.
+
+    What separates the two is what a card SAYS. A job title, a sentence of
+    prose, or a personal contact is something no product tile, menu item,
+    facility card or portfolio thumbnail carries.
+    """
+
+    # The real LumiBright markup: the whole card is a link, the caption is a
+    # bare <p>, and there is no heading anywhere in the tile.
+    _TILE = (
+        '<div class="col-md-3"><a href="{href}">'
+        '<img src="{src}" width="800" height="800" alt="" />'
+        "<p><b>{title}</b></p></a></div>"
+    )
+
+    _RACKS = {
+        "product_catalogue": [
+            "Personal Protective Equipment (PPE)",
+            "Crowd Control Barricade",
+            "Zeosorb Absorbent Granules",
+            "Hazardous Material Disposal Bags",
+            "Rubber Car Stopper",
+            "Plastic Triangle Reflector",
+        ],
+        "facilities": [
+            "Innovation Centre",
+            "Science Centre",
+            "Music Studio",
+            "Reading Corner",
+        ],
+        "menu_items": [
+            "Nasi Lemak Set",
+            "Roti Canai Special",
+            "Teh Tarik Kaw",
+            "Char Kuey Teow",
+        ],
+        "portfolio": [
+            "Harbourfront Residences",
+            "Menara Tower",
+            "Riverside Pavilion",
+            "Lakeside Clubhouse",
+        ],
+        "service_tiles": [
+            "Deep Tissue Massage",
+            "Hot Stone Therapy",
+            "Aromatherapy Facial",
+            "Lymphatic Drainage",
+        ],
+    }
+
+    def _rack(self, titles):
+        tiles = "".join(
+            self._TILE.format(
+                href=f"/c/{index}", src=f"/image/catalog/{index}.png", title=title
+            )
+            for index, title in enumerate(titles)
+        )
+        return BeautifulSoup(
+            f'<html><body><div class="categories row">{tiles}</div></body></html>',
+            "lxml",
+        )
+
+    def test_no_rack_of_things_becomes_a_roster_of_people(self):
+        for label, titles in self._RACKS.items():
+            with self.subTest(rack=label):
+                profiles = scraper._extract_profile_candidates(
+                    self._rack(titles), "https://example.my/products"
+                )
+
+                self.assertEqual([p.name for p in profiles], [])
+
+    def test_a_token_denylist_sees_nothing_outside_the_industry_it_was_written_for(self):
+        """Pins WHY the group rule exists rather than more vocabulary.
+
+        `_NON_NAME_TAIL_TOKENS` was written for a childcare site. It catches
+        three of the four facility labels and — exactly — nothing anywhere else.
+        If someone later "simplifies" the group rule back to a denylist, this is
+        the record of what that costs.
+        """
+        def tail_hits(titles):
+            return sum(
+                1
+                for title in titles
+                if re.findall(r"[A-Za-z][A-Za-z'.-]*", title)[-1].lower()
+                in scraper._NON_NAME_TAIL_TOKENS
+            )
+
+        self.assertEqual(tail_hits(self._RACKS["facilities"]), 3)
+        for label, titles in self._RACKS.items():
+            if label == "facilities":
+                continue
+            with self.subTest(rack=label):
+                self.assertEqual(tail_hits(titles), 0)
+                # …and every one of them reads as a person's name.
+                self.assertTrue(all(scraper._looks_like_person_name(t) for t in titles))
+
+    def test_a_rack_whose_cards_carry_roles_is_a_roster(self):
+        """The gate is not an off switch: person evidence still earns people.
+
+        Same layout, same square photos, no hint class — one field added, the
+        job title, and the rack is people again.
+        """
+        tiles = "".join(
+            '<div class="col-md-3">'
+            f'<img src="/staff/{index}.jpg" width="800" height="800" alt="" />'
+            f"<h3>{name}</h3><p>{role}</p></div>"
+            for index, (name, role) in enumerate(
+                [
+                    ("Aisha Rahman", "Chairperson"),
+                    ("Marcus Ong", "Treasurer"),
+                    ("Siti binti Yusof", "Secretary"),
+                ]
+            )
+        )
+        soup = BeautifulSoup(
+            f'<html><body><div class="row">{tiles}</div></body></html>', "lxml"
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my/team")
+
+        self.assertEqual(
+            [p.name for p in profiles],
+            ["Aisha Rahman", "Marcus Ong", "Siti binti Yusof"],
+        )
+
+    def test_markup_that_declares_its_cards_needs_no_further_evidence(self):
+        """A site that writes `class="team-member"` has stated the kind.
+
+        Bare name, no role, no bio, no contact — the group rule must not
+        override the source saying so outright.
+        """
+        tiles = "".join(
+            '<article class="team-member">'
+            f'<img src="/staff/{index}.jpg" width="800" height="800" alt="" />'
+            f"<h3>{name}</h3></article>"
+            for index, name in enumerate(["Aisha Rahman", "Marcus Ong"])
+        )
+        soup = BeautifulSoup(
+            f'<html><body><section class="team">{tiles}</section></body></html>', "lxml"
+        )
+
+        profiles = scraper._extract_profile_candidates(soup, "https://example.my/team")
+
+        self.assertEqual([p.name for p in profiles], ["Aisha Rahman", "Marcus Ong"])
+
+    def test_a_name_is_one_person_so_conjunctions_are_not_names(self):
+        for joined in (
+            "Spill Control & Absorbent",
+            "Car Stopper & Corner Protector",
+            "Parking Lock, Wheel Chock/Clamp & Fender",
+        ):
+            with self.subTest(name=joined):
+                self.assertFalse(scraper._looks_like_person_name(joined))
+
+    def test_a_rejected_rack_keeps_its_photos_for_the_sections_they_belong_to(self):
+        """Misreading a product rack didn't just add a team grid — it also took
+        the product photos away from the products.
+
+        Three or more profile candidates stamp their photos `role="portrait"`,
+        and `source_router._UNPROMPTABLE_ROLES` bars a portrait from the pool
+        the LLM may bind to a features/services card. So every tile the walk
+        claimed was a person was simultaneously withdrawn from the section that
+        should have shown it.
+        """
+        tiles = "".join(
+            self._TILE.format(
+                href=f"/c/{index}",
+                src=f"/image/catalog/category/{index}.png",
+                title=title,
+            )
+            for index, title in enumerate(self._RACKS["product_catalogue"])
+        )
+        html = (
+            "<html><body><h1>Our products</h1>"
+            f'<div class="categories row">{tiles}</div></body></html>'
+        )
+
+        parsed = scraper._parse_rendered_html(
+            html, "https://example.my/products", require_text=False
+        )
+
+        self.assertEqual(parsed.source_content.profile_candidates, [])
+        catalog = [i for i in parsed.image_candidates if "/catalog/" in i.url]
+        self.assertEqual(len(catalog), len(self._RACKS["product_catalogue"]))
+        self.assertNotIn("portrait", {i.role for i in catalog})
+        # And the copy itself still reaches the planner.
+        self.assertIn("Crowd Control Barricade", parsed.source_content.raw_text)
+
+    def test_spec_sheets_are_not_a_persons_job_title_or_story(self):
+        """The rule is not "does this card carry text" — a product tile does.
+
+        LumiBright's detail pages caption every tile with its dimensions, and
+        `looks_like_team_role` accepts those as a job title: short, no full
+        stop, no contact token.
+        """
+        for spec in (
+            "Size: 42 inch(H) x 48 inch(L)",
+            "Weight : 8.0 kgOpen : 950mm(H) x 2300mm(L)",
+            "Length: Expand up to 2.5mColor: Yellow / BlackRed / White",
+            "Weight : 0.2 kgSize: 400mm x 400mm x 400mm",
+        ):
+            with self.subTest(spec=spec):
+                self.assertTrue(profile_text.looks_like_spec_line(spec))
+                # …and it passes the role test, which is why this exists.
+                self.assertTrue(profile_text.looks_like_team_role(spec))
+
+    def test_a_persons_details_may_carry_numbers(self):
+        """The mirror assertion — the spec rule must not eat real people.
+
+        Titles and bios do carry numbers; what they don't carry is a number
+        welded to a unit.
+        """
+        for line in (
+            "Chairperson",
+            "Head of Clinical Services",
+            "Director since 1998",
+            "Level 3 Coach",
+            "20 years' experience in paediatric care",
+            "Board member since 2015",
+            "Aisha chairs the clinical governance committee.",
+        ):
+            with self.subTest(line=line):
+                self.assertFalse(profile_text.looks_like_spec_line(line))

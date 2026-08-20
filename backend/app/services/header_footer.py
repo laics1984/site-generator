@@ -46,33 +46,38 @@ def _rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r}, {g}, {b}, {alpha})"
 
 
-# The floating pill's glass. Alpha is the LOWEST that keeps the nav readable
-# (AA 4.5:1) in the worst position the pill reaches — and it reaches every
-# position, because it is the one header that never solidifies: a light-scheme
-# bar ends up over the hero's dark scrim, a dark-scheme one over a bright photo.
-# Below this the ink starts failing over the hero. It stays the floor even now
-# that the pill HAS adaptive ink (see ADAPTIVE_INK_VARS): that flip is a
-# renderer capability, so the built values must still stand on their own
-# wherever no renderer sets the vars — the builder canvas at rest, an older
-# published bundle, a screenshot.
+# The floating pill's glass. Thin on purpose: the pane reads as glass, so the
+# backdrop comes through rather than being masked by it.
+#
+# What that alpha does and does not buy, measured on the built values:
+#
+#   light scheme, ink #0f172a   bright photo 10.1   background 17.9   surface 16.7
+#                               scrimmed hero  2.2  ← below AA
+#   dark scheme,  ink #ffffff   scrimmed hero 16.0  background 19.3   surface 17.7
+#                               bright photo   3.1  ← below AA
+#
+# So the built-value ink clears AA over every backdrop on ITS OWN side of the
+# luminance split — the theme's own bands included — and fails only against the
+# opposite side. That is not a gap to be closed by thickening the pane; it is
+# exactly what `behavior.adaptiveInk` exists to flip (see ADAPTIVE_INK_VARS and
+# CLAUDE.md's "Scroll-adaptive header ink"), and it is why adaptive ink is
+# MANDATORY for this archetype rather than an enhancement. Raising the alpha
+# until the fallback is legible on both sides costs the glass its transparency —
+# it takes ~0.45, better than twice this, to hold 4.5:1 everywhere.
 GLASS_ALPHA = 0.20
-# Frosted glass, not "glassmorphism". The pane has no colour of its own, but a
-# translucent pane is only as colourless as what shows through it: over a hero
-# photo or a tinted band, whatever is behind reads as a colour smear ACROSS the
-# pill and the bar stops looking like glass and starts looking like a gradient.
+# Frosted glass: the backdrop is blurred, NOT desaturated.
 #
-# So the filter DESATURATES the backdrop instead of boosting it. A saturate()
-# boost is the opposite move — it makes the backdrop's colour pop through, which
-# is the glassmorphism idiom and precisely the "coloured gradient" look this
-# must not have. grayscale() preserves luminance by construction (it is a luma
-# projection), so it costs nothing in nav contrast: see GLASS_ALPHA's bound.
+# A grayscale() pass was tried and reverted — the neutralised pane read worse in
+# practice than the colour it was removing, going muddy and grey over photos.
+# The original argument for full desaturation is preserved in f95e2ec if it ever
+# needs revisiting; the shipped answer is that the backdrop's own colour showing
+# through is the better of the two looks.
 #
-# FULL desaturation, not partial. A partial pass keeps a fraction of the
-# backdrop's hue, and the blur has already flattened that backdrop into one
-# large even wash — so what survives is not "a hint of colour", it is a solid
-# tinted panel. At 0.8 a hero carrying the brand's blue cast still came through
-# as #a8abaf, a blue-grey pane; at 1 the same backdrop reads #ababab, neutral.
-# Small residual saturation is very visible over a flat area.
+# The `grayscale(0)` term is a no-op kept explicitly rather than dropped: it
+# marks the amount as a deliberate 0 (see the test pinning it) instead of
+# leaving a bare blur() that invites someone to "restore" desaturation from a
+# stale comment. A saturate() boost would be the opposite move again — the
+# glassmorphism idiom, which this is not.
 GLASS_FILTER = "blur(20px) grayscale(0)"
 
 # The three values a renderer may flip on the floating pill as the visitor

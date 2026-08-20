@@ -656,7 +656,7 @@ export default function App() {
                     onConfirm={handlePagesConfirm}
                     onBack={backToSource}
                     busy={busy}
-                    singlePage={confirmedSource.source_kind === 'facebook'}
+                    singlePage={isSinglePageSource(confirmedSource)}
                     homepageSections={scrapeResult?.facebook_sections}
                   />
                 ) : scrapeResult ? (
@@ -708,6 +708,27 @@ export default function App() {
       </main>
     </div>
   )
+}
+
+/**
+ * True when the source carries one page's worth of grounded facts, so the page
+ * picker should default to home + legal instead of the industry template's
+ * fan-out.
+ *
+ * A Facebook Page always is. A document is when `split_into_pages` found no
+ * page-topic headings and handed back no `discovered_pages`: `infer_page_scaffolds`
+ * then falls into the industry-template branch and returns 7-9 scaffolds, 5-7 of
+ * them content pages that each cost an LLM call to invent material the document
+ * never described — which the fidelity net strips back to almost nothing anyway.
+ * A document that DID yield discovered pages keeps its fan-out, and the picker's
+ * optional pool still lets the user add pages back either way.
+ */
+function isSinglePageSource(source: SourceContent): boolean {
+  if (source.source_kind === 'facebook') return true
+  if (source.source_kind === 'pdf' || source.source_kind === 'docx') {
+    return (source.discovered_pages?.length ?? 0) === 0
+  }
+  return false
 }
 
 /** A short human label for where the content came from — host for scrapes,
