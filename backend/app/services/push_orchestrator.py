@@ -8,8 +8,8 @@ Steps (in order):
   1. Auth — JWT login on the CMS API
   2. Empty-entity guard — list pages, refuse if non-empty
   3. Media upload — walk every page's BuilderElement tree, find image srcs
-     that are data:image/... or external URLs, upload to /api/file/add and
-     rewrite to CDN URLs in-place
+     that are data:image/... or external URLs (and document-link hrefs, e.g.
+     scraped PDFs), upload to /api/file/add and rewrite to CDN URLs in-place
   4. Create pages — POST /pages for each generated page, capture pageId +
      draftVersion. Homepage goes first.
   5. Read first page's builder payload — captures layout.versionId for the
@@ -35,7 +35,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -117,23 +117,41 @@ class PushRequest:
 _SLUG_SEP_RE = re.compile(r"[^a-z0-9]+")
 
 
-def _cms_safe_slug(raw: str) -> str:
-    """Coerce any string into the CMS slug format ^[a-z0-9]+(?:-[a-z0-9]+)*$.
+def _cms_safe_slug(raw: str, *, keep_path: bool = False) -> str:
+    """Coerce any string into a CMS-safe slug.
 
-    Lowercase, collapse every run of non-alphanumerics to a single hyphen,
-    trim hyphens, cap at the CMS's 160-char limit. "services/web-design" →
-    "services-web-design"; "" / junk → "".
+    Lowercase, collapse every run of non-alphanumerics to a single hyphen, trim
+    hyphens, cap at the CMS's 160-char limit. "" / junk → "".
+
+    ``keep_path`` preserves ``/`` as a segment separator and sanitizes each
+    segment on its own, so "services/web-design" survives as itself instead of
+    becoming "services-web-design" — see ``_normalize_site_slugs``.
     """
+    if keep_path and "/" in (raw or ""):
+        segments = [_cms_safe_slug(part) for part in raw.split("/")]
+        return "/".join(part for part in segments if part)[:160].strip("-/")
     s = _SLUG_SEP_RE.sub("-", (raw or "").strip().lower()).strip("-")
     return s[:160].strip("-")
 
 
-def _normalize_site_slugs(site: GeneratedSite) -> dict[str, str]:
-    """Flatten every slug to the CMS's flat kebab-case format, keeping
-    parent_slug, page_tree, and all baked nav hrefs consistent.
+def _normalize_site_slugs(site: GeneratedSite, *, keep_paths: bool = False) -> dict[str, str]:
+    """Normalize every slug to a CMS-safe format, keeping parent_slug,
+    page_tree, and all baked nav hrefs consistent.
 
     Returns the {old_slug: new_slug} map of slugs that actually changed.
     Mutates `site` in place.
+
+    ``keep_paths`` preserves hierarchical slugs (``profile/ashley``) instead of
+    flattening them to ``profile-ashley``. This is what lets a migrated site
+    keep the URLs it already ranks for: the generator's slugs come from the
+    source's own paths, so preserving them means mmta.org.my/profile/ashley
+    still resolves after the switchover. The resolver has always supported it —
+    ``PublishedPageQuery::find`` matches ``ltrim(path,'/')`` against the slug
+    with no segment-count check — so only this flattening stood in the way.
+
+    Callers pass it only for a greenfield push. Re-pushing into a site that is
+    already live would otherwise rename its published pages, which is the very
+    breakage this exists to avoid.
     """
     slug_map: dict[str, str] = {}
     used: set[str] = set()
@@ -142,7 +160,11 @@ def _normalize_site_slugs(site: GeneratedSite) -> dict[str, str]:
         if page.is_homepage:
             new = ""
         else:
-            new = _cms_safe_slug(old) or _cms_safe_slug(page.title) or "page"
+            new = (
+                _cms_safe_slug(old, keep_path=keep_paths)
+                or _cms_safe_slug(page.title)
+                or "page"
+            )
             base, n = new, 2
             while new in used:
                 new = f"{base}-{n}"
@@ -156,14 +178,19 @@ def _normalize_site_slugs(site: GeneratedSite) -> dict[str, str]:
         if page.parent_slug:
             page.parent_slug = (
                 slug_map.get(page.parent_slug)
-                or _cms_safe_slug(page.parent_slug)
+                or _cms_safe_slug(page.parent_slug, keep_path=keep_paths)
                 or None
             )
 
     # page_tree mirrors `pages` — keep node slugs in lock-step.
     def _fix_node(node) -> None:
         node.slug = (
-            "" if node.is_homepage else (slug_map.get(node.slug) or _cms_safe_slug(node.slug))
+            ""
+            if node.is_homepage
+            else (
+                slug_map.get(node.slug)
+                or _cms_safe_slug(node.slug, keep_path=keep_paths)
+            )
         )
         for child in node.children:
             _fix_node(child)
@@ -235,21 +262,6 @@ def _raise_first_error(results: list) -> None:
 
 
 async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> PushReport:
-    # 0. Normalize slugs to the CMS's flat kebab-case format. The generator
-    #    emits hierarchical slugs (e.g. "services/web-design"); the CMS slug
-    #    rule is ^[a-z0-9]+(?:-[a-z0-9]+)*$ — no slashes — so we flatten every
-    #    slug + rewrite parent_slug, page_tree, and baked nav hrefs to match.
-    changed = _normalize_site_slugs(req.site)
-    if changed:
-        report.record(
-            PushStep(
-                name="normalize_slugs",
-                ok=True,
-                detail=f"Flattened {len(changed)} slug(s) to CMS format",
-                data={"renamed": changed},
-            )
-        )
-
     # 1. Auth
     try:
         await client.login(req.cms_email, req.cms_password)
@@ -306,6 +318,32 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     report.record(
         PushStep(name="guard", ok=True, detail=f"Entity has {len(existing)} existing pages")
     )
+
+    # 2b. Normalize slugs to a CMS-safe format, rewriting parent_slug, page_tree
+    #     and baked nav hrefs to match.
+    #
+    #     A greenfield entity keeps hierarchical slugs, so a migrated site is
+    #     published at the URLs the source already ranks for (/profile/ashley,
+    #     not /profile-ashley). An entity that already holds pages is being
+    #     re-pushed over a live site: flattening stays, because renaming
+    #     published pages is exactly the SEO damage this is meant to prevent.
+    #     It runs here, after the guard, because only the guard's page list can
+    #     tell the two apart.
+    greenfield = req.create_entity or not existing
+    changed = _normalize_site_slugs(req.site, keep_paths=greenfield)
+    if changed:
+        report.record(
+            PushStep(
+                name="normalize_slugs",
+                ok=True,
+                detail=(
+                    f"Normalized {len(changed)} slug(s), keeping source paths"
+                    if greenfield
+                    else f"Flattened {len(changed)} slug(s) to CMS format"
+                ),
+                data={"renamed": changed, "greenfield": greenfield},
+            )
+        )
 
     # 3. Media upload — collect unique image srcs, upload, build a rewrite map.
     #    Individual failures are non-fatal: the image is stripped from the schema
@@ -589,24 +627,33 @@ async def _upload_media(
     client: CmsClient, req: PushRequest
 ) -> tuple[dict[str, str], set[str]]:
     """
-    Walk every page's BuilderElement tree, find srcs that aren't permanent
-    webtree URLs, upload them, and return ({old_src: new_src} rewrite map,
-    {srcs that failed to resolve}).
+    Walk every page's BuilderElement tree, find image srcs and document hrefs
+    that aren't permanent webtree URLs, upload them, and return
+    ({old_src_or_href: new_url} rewrite map, {IMAGE srcs that failed to
+    resolve}). Document upload failures are not included in the failed set —
+    unlike a broken <img>, a link whose upload failed simply stays hotlinked
+    to its original source, which still works.
     """
     rewrites: dict[str, str] = {}
     # Collect unique sources first to avoid uploading the same image twice
     # (e.g. a logo that appears on every page).
     sources: dict[str, BuilderElement] = {}  # src → first element using it (for alt)
+    documents: dict[str, BuilderElement] = {}  # href → first link element using it
     for page in req.site.pages:
         for el in page.body_schema.elements:
             _collect_image_srcs(el, sources)
+            _collect_document_hrefs(el, documents)
     # Also walk header/footer if present
     if req.site.header_schema:
         _collect_image_srcs(req.site.header_schema, sources)
+        _collect_document_hrefs(req.site.header_schema, documents)
     if req.site.footer_schema:
         _collect_image_srcs(req.site.footer_schema, sources)
-    # And the brand logo (it's pulled into the header but defensive doesn't hurt)
-    if req.site.brand:
+        _collect_document_hrefs(req.site.footer_schema, documents)
+    # And the brand logo (it's pulled into the header but defensive doesn't hurt).
+    # Skipped when the mark failed the render gate — nothing references it, so
+    # uploading would just park a favicon in the tenant's media library.
+    if req.site.brand and getattr(req.site.brand, "logo_render_ok", True):
         logo_url = getattr(req.site.brand, "logo_url", None) or getattr(
             req.site.brand, "logo_data_url", None
         )
@@ -614,12 +661,13 @@ async def _upload_media(
             sources.setdefault(logo_url, _placeholder_logo_element(logo_url))
 
     uploadable = [src for src in sources if _needs_upload(src)]
-    if not uploadable:
+    uploadable_docs = [href for href in documents if _needs_upload_document(href)]
+    if not uploadable and not uploadable_docs:
         return rewrites, set()
 
-    # Resolve + upload concurrently: each image is independent, and the wait is
-    # dominated by network (download + POST). One shared download client keeps
-    # connections pooled across images from the same host.
+    # Resolve + upload concurrently: each image/document is independent, and
+    # the wait is dominated by network (download + POST). One shared download
+    # client keeps connections pooled across items from the same host.
     sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as download_client:
 
@@ -668,10 +716,42 @@ async def _upload_media(
                         return None
             return None
 
+        async def _upload_one_document(href: str) -> tuple[str, str] | None:
+            async with sem:
+                try:
+                    file_bytes, content_type, filename = await _resolve_document_to_bytes(
+                        href, download_client
+                    )
+                except _ResolveSkip as exc:
+                    logger.info("Skipping unresolvable document %s: %s", href[:80], exc)
+                    return None
+                for attempt in range(2):
+                    try:
+                        cdn_url = await client.upload_media(
+                            req.entity_token,
+                            file_bytes=file_bytes,
+                            filename=filename,
+                            content_type=content_type,
+                        )
+                        return href, cdn_url
+                    except CmsApiError as exc:
+                        if attempt == 0 and exc.status in (502, 503, 504):
+                            logger.warning(
+                                "Upload retry for %s (%s)", filename, exc
+                            )
+                            continue
+                        logger.warning(
+                            "Upload failed for %s: %s", href[:80], exc
+                        )
+                        return None
+            return None
+
         results = await asyncio.gather(
-            *(_upload_one(src) for src in uploadable), return_exceptions=True
+            *(_upload_one(src) for src in uploadable),
+            *(_upload_one_document(href) for href in uploadable_docs),
+            return_exceptions=True,
         )
-    # Individual upload failures are handled per-image above (return None);
+    # Individual upload failures are handled per-item above (return None);
     # only truly unexpected exceptions propagate here.
     for res in results:
         if isinstance(res, BaseException):
@@ -679,9 +759,11 @@ async def _upload_media(
     for res in results:
         if res is not None:
             rewrites[res[0]] = res[1]
-    # Uploadable srcs with no rewrite couldn't be fetched/stored (404, hotlink
-    # block, un-decodable) — they're dead references the caller strips so the
-    # published site never renders a broken image.
+    # Uploadable IMAGE srcs with no rewrite couldn't be fetched/stored (404,
+    # hotlink block, un-decodable) — they're dead references the caller strips
+    # so the published site never renders a broken image. Documents are
+    # deliberately excluded: an un-rehosted document link still works (it
+    # points at the original source), so it's left as-is, not stripped.
     failed = {src for src in uploadable if src not in rewrites}
     return rewrites, failed
 
@@ -747,6 +829,52 @@ def _collect_image_srcs(node: BuilderElement, out: dict[str, BuilderElement]) ->
             _collect_image_srcs(child, out)
 
 
+# webtree-cms-api's MediaController validates uploads against
+# mimes:jpg,jpeg,png,webp,avif,gif,pdf,doc,docx,xls,xlsx,odt,ods — note ppt/pptx
+# are NOT accepted there, even though nav_extraction.DOCUMENT_EXTENSIONS treats
+# them as document links for detection purposes. A link whose extension isn't
+# in this map is simply left hotlinked (see _needs_upload_document) rather than
+# fetched and rejected.
+_DOCUMENT_MIME_MAP = {
+    "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "odt": "application/vnd.oasis.opendocument.text",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet",
+}
+
+
+def _document_ext(href: str) -> str:
+    try:
+        path = urlparse(href).path.lower()
+    except ValueError:
+        return ""
+    return path.rsplit(".", 1)[-1] if "." in path else ""
+
+
+def _collect_document_hrefs(node: BuilderElement, out: dict[str, BuilderElement]) -> None:
+    """Walk a BuilderElement tree, recording every re-hostable document href.
+
+    Mirrors _collect_image_srcs but keys on ``type == "link"`` content.href —
+    a download-card button (schema_builder._build_downloads) or any other
+    link element that happens to point at a document.
+    """
+    content = node.content
+    if node.type == "link" and isinstance(content, BuilderElementContent):
+        href = content.href
+        if (
+            isinstance(href, str)
+            and _document_ext(href) in _DOCUMENT_MIME_MAP
+            and href not in out
+        ):
+            out[href] = node
+    if isinstance(content, list):
+        for child in content:
+            _collect_document_hrefs(child, out)
+
+
 def _placeholder_logo_element(src: str) -> BuilderElement:
     return BuilderElement(
         id="logo-src-placeholder",
@@ -785,6 +913,25 @@ def _needs_upload(src: str) -> bool:
     return True
 
 
+def _needs_upload_document(href: str) -> bool:
+    """True for an absolute http(s) document URL not already on the CMS."""
+    try:
+        parsed = urlparse(href)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    try:
+        cms_host = urlparse(settings.cms_api_base_url).hostname or ""
+    except ValueError:
+        cms_host = ""
+    if cms_host and parsed.hostname == cms_host:
+        return False
+    if "/storage/" in parsed.path or "/api/image/" in parsed.path:
+        return False
+    return _document_ext(href) in _DOCUMENT_MIME_MAP
+
+
 class _ResolveSkip(Exception):
     pass
 
@@ -813,6 +960,30 @@ async def _resolve_to_bytes(
         ext = path.rsplit(".", 1)[-1] if "." in path else ""
         content_type = _IMAGE_MIME_MAP.get(ext, content_type or "image/jpeg")
     filename = _filename_from_url(src) or ("image." + content_type.split("/")[-1])
+    return resp.content, content_type, filename
+
+
+async def _resolve_document_to_bytes(
+    href: str, client: httpx.AsyncClient
+) -> tuple[bytes, str, str]:
+    """Turn a document href into (bytes, content_type, filename) for /api/file/add.
+
+    Unlike _resolve_to_bytes there is no transcoding — documents are opaque
+    binary files. An extension outside _DOCUMENT_MIME_MAP is a _ResolveSkip so
+    the link stays hotlinked rather than uploaded as something the CMS
+    validator would reject.
+    """
+    try:
+        resp = await client.get(href)
+        if resp.status_code >= 400:
+            raise _ResolveSkip(f"http {resp.status_code}")
+    except httpx.HTTPError as exc:
+        raise _ResolveSkip(str(exc)) from exc
+    ext = _document_ext(href)
+    content_type = _DOCUMENT_MIME_MAP.get(ext)
+    if content_type is None:
+        raise _ResolveSkip(f"unsupported document extension: {ext!r}")
+    filename = _filename_from_url(href) or f"document.{ext}"
     return resp.content, content_type, filename
 
 
@@ -908,19 +1079,46 @@ def _coerce_to_cms_image(
         return None
 
 
-_DATA_URL_RE = re.compile(r"data:(?P<ct>[^;,]+)(;base64)?,(?P<data>.*)", re.DOTALL)
+# RFC 2397 allows any number of `;parameter` segments between the media type and
+# the comma, and `;base64` is only ONE of them. The previous pattern accepted a
+# bare `;base64` and nothing else, so it failed to match at all on the
+# percent-encoded SVGs this repo generates — `media.monogram_avatar_url` and
+# `media._placeholder_photo` both emit `data:image/svg+xml;utf8,…`. That is a
+# _ResolveSkip, which lands the src in `failed` and has _strip_invalid_images
+# delete the element: every monogram avatar and every gradient placeholder
+# vanished from the published site while rendering correctly in the preview.
+_DATA_URL_RE = re.compile(
+    r"data:(?P<ct>[^;,]*)(?P<params>(?:;[^;,]*)*),(?P<data>.*)", re.DOTALL
+)
 
 
 def _decode_data_url(src: str) -> tuple[bytes, str, str]:
+    """Decode a data: URI into (bytes, content_type, filename).
+
+    Handles both encodings the spec allows: `;base64` payloads, and the default
+    percent-encoded text form used by our own SVG generators (`icons.icon_data_url`
+    writes no parameter at all, `monogram_avatar_url` writes `;utf8`). Only the
+    `;base64` token selects base64 — any other parameter is a charset hint.
+    """
     m = _DATA_URL_RE.match(src)
     if not m:
         raise _ResolveSkip("malformed data URL")
     content_type = m.group("ct") or "image/png"
+    params = (m.group("params") or "").lower()
     raw = m.group("data") or ""
-    try:
-        decoded = base64.b64decode(raw)
-    except Exception as exc:  # noqa: BLE001
-        raise _ResolveSkip(f"base64 decode failed: {exc}") from exc
+    if ";base64" in params:
+        try:
+            decoded = base64.b64decode(raw)
+        except Exception as exc:  # noqa: BLE001
+            raise _ResolveSkip(f"base64 decode failed: {exc}") from exc
+    else:
+        # Percent-encoded text (SVG markup). unquote, not unquote_plus: `quote`
+        # never writes `+` for a space, so treating it as one would corrupt any
+        # payload that legitimately contains a plus.
+        try:
+            decoded = unquote(raw).encode("utf-8")
+        except Exception as exc:  # noqa: BLE001
+            raise _ResolveSkip(f"data URL decode failed: {exc}") from exc
     ext = content_type.split("/")[-1] if "/" in content_type else "png"
     if ext == "svg+xml":
         ext = "svg"
@@ -941,7 +1139,8 @@ def _filename_from_url(src: str) -> str | None:
 
 
 def _apply_src_rewrites(site: GeneratedSite, rewrites: dict[str, str]) -> None:
-    """Walk every BuilderElement tree on the site + rewrite image srcs in-place."""
+    """Walk every BuilderElement tree on the site + rewrite image srcs and
+    document link hrefs in-place."""
     if not rewrites:
         return
     for page in site.pages:
@@ -1019,6 +1218,10 @@ def _rewrite_srcs(node: BuilderElement, rewrites: dict[str, str]) -> None:
         src = content.src
         if isinstance(src, str) and src in rewrites:
             content.src = rewrites[src]
+    elif node.type == "link" and isinstance(content, BuilderElementContent):
+        href = content.href
+        if isinstance(href, str) and href in rewrites:
+            content.href = rewrites[href]
     # Rewrite photo URLs embedded in background styles, preserving the gradient
     # overlay + url() wrapper (substring replace of the exact collected URL).
     styles = node.styles or {}

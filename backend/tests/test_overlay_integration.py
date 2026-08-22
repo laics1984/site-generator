@@ -10,6 +10,7 @@ a compact hero WITHOUT the marker, so its header stays solid and readable.
 Runs with Pexels unconfigured, design brain off — no network, no LLM.
 """
 
+import re
 import unittest
 
 from app.config import settings
@@ -229,6 +230,195 @@ class OverlayDefaultIntegrationTest(unittest.IsolatedAsyncioTestCase):
         finally:
             settings.header_overlay_enabled = original
         self.assertFalse(site.header_overlay)
+
+
+def _cast_alpha(background_image_css: str) -> float:
+    """The brand-cast layer's opening alpha — the layer directly above the
+    photo `url(...)` — from a composited `backgroundImage` CSS string."""
+    from app.services.image_styling import _split_layers
+
+    cast_layer = _split_layers(background_image_css)[-2]
+    match = re.search(r"rgba\(\d+,\d+,\d+,([\d.]+)\)", cast_layer.replace(" ", ""))
+    assert match is not None, background_image_css
+    return float(match.group(1))
+
+
+class HomepageHeroWashTest(unittest.IsolatedAsyncioTestCase):
+    """The homepage's full-bleed hero must read as a vivid photo, not a
+    slate-tinted one — see schema_builder._HOMEPAGE_HERO_WASH_SCALE. The
+    text scrim (legibility) is untouched; only the whole-frame brand cast is
+    lightened, and only on the homepage."""
+
+    async def _build(self):
+        original = settings.design_brain_enabled
+        settings.design_brain_enabled = False
+        try:
+            return await plan_to_site(
+                _plan(),
+                brand=BrandIdentity(
+                    name="Hope Foundation", mood="friendly",
+                    extracted_palette=["#0e7490"],
+                ),
+                scraped_metadata=[m.model_copy() for m in _METADATA],
+            )
+        finally:
+            settings.design_brain_enabled = original
+
+    async def test_homepage_cast_is_lighter_than_the_pre_fix_full_wash(self):
+        import app.services.schema_builder as schema_builder_module
+
+        lightened_site = await self._build()
+        home = next(p for p in lightened_site.pages if p.is_homepage)
+        lightened_bg = _first_section(home).styles.get("backgroundImage")
+        self.assertIsInstance(lightened_bg, str)
+
+        original_scale = schema_builder_module._HOMEPAGE_HERO_WASH_SCALE
+        schema_builder_module._HOMEPAGE_HERO_WASH_SCALE = 1.0
+        try:
+            full_wash_site = await self._build()
+        finally:
+            schema_builder_module._HOMEPAGE_HERO_WASH_SCALE = original_scale
+        home2 = next(p for p in full_wash_site.pages if p.is_homepage)
+        full_bg = _first_section(home2).styles.get("backgroundImage")
+
+        lightened_cast = _cast_alpha(lightened_bg)
+        full_cast = _cast_alpha(full_bg)
+        self.assertLess(lightened_cast, full_cast)
+        self.assertAlmostEqual(
+            lightened_cast, round(full_cast * original_scale, 2), places=2
+        )
+
+    async def test_interior_hero_wash_is_unaffected(self):
+        """Only the homepage gets the lighter treatment — an interior page's
+        full-bleed hero (the same code path, same template) keeps today's
+        exact cast strength."""
+        import app.services.schema_builder as schema_builder_module
+
+        site = await self._build()
+        interior = next(
+            p
+            for p in site.pages
+            if not p.is_homepage and getattr(_first_section(p), "headerOverlaySafe", None)
+        )
+        interior_bg = _first_section(interior).styles.get("backgroundImage")
+        interior_cast = _cast_alpha(interior_bg)
+
+        original_scale = schema_builder_module._HOMEPAGE_HERO_WASH_SCALE
+        schema_builder_module._HOMEPAGE_HERO_WASH_SCALE = 0.01
+        try:
+            site2 = await self._build()
+        finally:
+            schema_builder_module._HOMEPAGE_HERO_WASH_SCALE = original_scale
+        interior2 = next(
+            p
+            for p in site2.pages
+            if not p.is_homepage and getattr(_first_section(p), "headerOverlaySafe", None)
+        )
+        interior_bg2 = _first_section(interior2).styles.get("backgroundImage")
+        self.assertEqual(interior_cast, _cast_alpha(interior_bg2))
+
+
+class ProfilePageSharesRosterHeroTest(unittest.IsolatedAsyncioTestCase):
+    """A profile page reached from a roster link (menu_hidden + parent_slug)
+    must render the exact SAME hero background as its parent roster page —
+    not just a similar mood — even when its OWN scraped page_images differ."""
+
+    def _plan(self):
+        return SitePlan(
+            site_name="Hope Foundation",
+            brand_mood="friendly",
+            industry_category="nonprofit",
+            pages=[
+                _page("home", "home", "Home", homepage=True),
+                _page("committee", "team", "Committee"),
+                PagePlan(
+                    page_type="landing",
+                    slug="committee/ashley",
+                    title="Ashley",
+                    is_homepage=False,
+                    parent_slug="committee",
+                    menu_hidden=True,
+                    blocks=[_hero("Ashley headline")],
+                    seo_title="Ashley",
+                    seo_description="Ashley",
+                ),
+                PagePlan(
+                    page_type="landing",
+                    slug="committee/dana",
+                    title="Dana",
+                    is_homepage=False,
+                    parent_slug="committee",
+                    menu_hidden=True,
+                    blocks=[_hero("Dana headline")],
+                    seo_title="Dana",
+                    seo_description="Dana",
+                ),
+            ],
+        )
+
+    _URLS = {
+        # The homepage gets its own distinct photo too, so it doesn't consume
+        # committee's preferred image from the shared pool first (images are
+        # used once site-wide) before committee gets a turn.
+        "home": "https://source.example/home.jpg",
+        "committee": "https://source.example/committee.jpg",
+        "committee/ashley": "https://source.example/ashley.jpg",
+        "committee/dana": "https://source.example/dana.jpg",
+    }
+
+    def _metadata(self):
+        # The resolver's pool is seeded from scraped_metadata (site-wide); each
+        # page's own page_images entry only RE-RANKS candidates already in
+        # that pool, so every photo must be listed here too.
+        return [
+            ImageMetadata(
+                url=url, intent="hero", role="background",
+                source_usage="css_background", width=2400, height=1400,
+            )
+            for url in self._URLS.values()
+        ]
+
+    def _page_images(self):
+        # Each page has its OWN distinct scraped photo pool — if resolution
+        # were independent per page, the roster and its two profile pages
+        # would each end up with a DIFFERENT background image.
+        return {
+            slug: [
+                ImageMetadata(
+                    url=url, intent="hero", role="background",
+                    source_usage="css_background", width=2400, height=1400,
+                )
+            ]
+            for slug, url in self._URLS.items()
+        }
+
+    async def test_profile_pages_reuse_the_roster_background_image(self):
+        original = settings.design_brain_enabled
+        settings.design_brain_enabled = False
+        try:
+            site = await plan_to_site(
+                self._plan(),
+                brand=BrandIdentity(
+                    name="Hope Foundation", mood="friendly",
+                    extracted_palette=["#0e7490"],
+                ),
+                scraped_metadata=self._metadata(),
+                page_images=self._page_images(),
+            )
+        finally:
+            settings.design_brain_enabled = original
+
+        by_slug = {p.slug: p for p in site.pages}
+        roster_bg = _first_section(by_slug["committee"]).styles.get("backgroundImage")
+        ashley_bg = _first_section(by_slug["committee/ashley"]).styles.get("backgroundImage")
+        dana_bg = _first_section(by_slug["committee/dana"]).styles.get("backgroundImage")
+
+        self.assertIsInstance(roster_bg, str)
+        self.assertIn("committee.jpg", roster_bg)
+        # Without the shared-hero fix these would carry ashley.jpg / dana.jpg
+        # instead of the roster's own photo.
+        self.assertEqual(ashley_bg, roster_bg)
+        self.assertEqual(dana_bg, roster_bg)
 
 
 if __name__ == "__main__":

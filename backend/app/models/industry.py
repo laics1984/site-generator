@@ -49,6 +49,18 @@ class PageScaffold(BaseModel):
     source_url: str | None = None   # URL the sub-page was discovered/crawled at
     nav_rank: int | None = None     # source-nav position (0-based); None ⇒ not in the source header nav
     from_source: bool = False       # page evidenced by the source (crawled / nav / strip) vs template-injected
+    # A page the reader is meant to reach from a listing, not from a menu — a
+    # committee member's own page, linked from the grid that names them. Set
+    # when a roster's link, not a URL segment, chose this page's parent
+    # (page_inference.roster_detail_links); menu_builder keeps these out of the
+    # header dropdown and the footer column, as the source site does.
+    menu_hidden: bool = False
+    # Translated mirrors (/bm/committee): the language directory this page lives
+    # under, and the slug it is a translation of ("" for the homepage). Both
+    # None on a source-language page. A translated page is never planned from
+    # scratch — it clones its counterpart's design and swaps the text.
+    locale: str | None = None
+    translation_of: str | None = None
 
 
 class IndustryTemplate(BaseModel):

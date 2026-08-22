@@ -21,12 +21,18 @@ no hardcoded brand colours. UI/UX methodology baked in:
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
-from app.models.brand import BrandIdentity, BrandMood, ThemeTokens
+from app.models.brand import (
+    HERO_BANDED_MIN_HEIGHT,
+    BrandIdentity,
+    BrandMood,
+    ThemeTokens,
+)
 from app.models.builder_schema import (
     BodySchema,
     BuilderElement,
@@ -47,6 +53,7 @@ from app.models.content_blocks import (
     ContactBlock,
     ContentBlock,
     CtaBlock,
+    DownloadsBlock,
     FaqBlock,
     FeaturesBlock,
     GalleryBlock,
@@ -57,6 +64,7 @@ from app.models.content_blocks import (
     PagePlan,
     PricingBlock,
     ProcessBlock,
+    ProfileBlock,
     ServicesBlock,
     SitePlan,
     StatsBlock,
@@ -65,6 +73,7 @@ from app.models.content_blocks import (
     TimelineBlock,
 )
 from app.models.design_manifest import (
+    SELF_CHROME_HEADERS,
     DesignDecision,
     DesignManifest,
     FooterArchetype,
@@ -73,16 +82,21 @@ from app.models.design_manifest import (
 from app.services.design_brain import DesignRecipe, generate_site_design_recipe
 from app.services.design_director import (
     compose_design_manifest,
+    demote_self_chrome_header,
     record_manifest_choices,
 )
 from app.services.hero_director import (
     IMAGELESS_HERO_IDS,
+    HeroComposition,
     HeroDirective,
+    hero_composition,
+    plan_site_compositions,
     plan_site_heroes,
 )
 from app.services.header_footer import build_footer, build_header
+from app.services.legal_pages import drop_page_title
 from app.services.image_match import SlotUsage
-from app.services.media import ImageIntent, ImageResolver
+from app.services.media import ImageIntent, ImageResolver, monogram_avatar_url
 from app.services.timing import log_elapsed, stage
 from app.services.pexels import PhotoResult
 from app.config import settings
@@ -92,12 +106,17 @@ from app.services.section_content import (
     _SURFACE_BG,
     Band,
     SectionVisualInput,
+    _composite,
+    _has_opaque_gradient,
     _has_real_photo,
+    _parse_color,
     apply_about_zigzag,
     apply_childcare_heading_colors,
     apply_childcare_pastel_rhythm,
     apply_luminance_rhythm,
     apply_section_rhythm,
+    enforce_fill_contrast,
+    polish_inset_panels,
     assign_visual_policies,
     block_to_section,
     enforce_text_contrast,
@@ -105,17 +124,21 @@ from app.services.section_content import (
     section_visual_input_for,
     style_whatsapp_links,
 )
-from app.services.template_filler import fill_template
-from app.services.image_styling import washed_photo_background
+from app.services.template_filler import PhotoComposition, fill_template
+from app.services.image_styling import (
+    _split_layers,
+    band_for_color,
+    edge_fade_gradient,
+    is_edge_fade_layer,
+    photo_background,
+    washed_photo_background,
+)
 from app.services.theme import (
     _adjust_lightness,
     _contrast,
     _ensure_contrast_against,
     _hex_to_rgb,
-    _hls_to_rgb,
-    _relative_luminance,
     _rgb_to_hex,
-    _rgb_to_hls,
     band_colors,
     build_theme,
     color_family_name,
@@ -125,14 +148,18 @@ from app.services.theme import (
 # path app.services.schema_builder.<name> is unchanged for callers and tests.
 from app.services.style_tokens import (
     StyleTokens,
+    _accent_ink_for,
     _fluid,
     _fluid_heading,
     _hairline,
     _muted,
     apply_section_decoration,
+    brand_ink,
+    emphasis_ink,
     glass_card_styles,
     grain_data_uri,
     make_style_tokens,
+    meta_ink,
     mesh_gradient,
     section_background_image,
     shadow,
@@ -176,6 +203,13 @@ class RenderContext:
     # Brand-stable seed for template-variety rotation (block_to_section's
     # variety_seed). Empty → legacy deterministic order.
     variety_seed: str = ""
+    # Transient: this page's hero photo/wash + the layout _apply_hero_directive
+    # settled on (which may have degraded from the directive's nominal layout —
+    # see IMAGELESS_HERO_IDS degrade), captured by block_to_element and read by
+    # plan_to_site right after the call so a profile page linked from a roster
+    # can reuse its parent's exact hero instead of re-resolving one. Reset per
+    # block; None for non-hero blocks or when served from cache.
+    resolved_hero_photo: tuple[PhotoResult | None, PhotoResult | None, str] | None = None
 
 
 # --- generation-time modernization pass -----------------------------------------
@@ -511,6 +545,21 @@ _DIVIDER_SHAPE_BY_INDUSTRY: dict[str, str | None] = {"childcare": "wave"}
 
 _DEFAULT_DIVIDER_COLOR = "var(--builder-page-background, #ffffff)"
 
+# The header's (and footer cta-banner's) primary CTA label, by industry —
+# an action verb relevant to how that industry actually converts, instead of
+# the generic "Get in touch" for every site. Falls back to "Get in touch" for
+# "other" and any industry without a sharper fit.
+_CTA_LABEL_BY_INDUSTRY: dict[str, str] = {
+    "restaurant": "Reserve a Table",
+    "agency": "Start a Project",
+    "saas": "Get Started",
+    "professional-services": "Schedule a Consultation",
+    "ecommerce": "Shop Now",
+    "consultancy": "Book a Consultation",
+    "nonprofit": "Get Involved",
+    "childcare": "Schedule a Tour",
+}
+
 
 def _divider_shape(mood: BrandMood | None, industry: str | None) -> str | None:
     """The shaped-edge to use for this site: the industry's signature shape when
@@ -521,6 +570,66 @@ def _divider_shape(mood: BrandMood | None, industry: str | None) -> str | None:
     return _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
 
 
+def _section_surface(section: BuilderElement) -> str:
+    """What a section paints at its own top/bottom edge: "photo", "gradient" or
+    "flat".
+
+    Reads the section ROOT's styles only, never the subtree. Every catalog
+    section roots its band on the outer container and pads its content inwards,
+    so the pixels a shaped edge sits against are always the root's. Walking
+    deeper would misread an about-split's column photo, or `cta-banner`'s inset
+    gradient card (radius 28px, well clear of the edge), as the band's surface.
+
+    Decorative mesh/grain is reported flat: it is a transparent wash over the
+    solid colour, and `apply_section_dividers` strips it from both neighbours
+    anyway. Reporting it honestly would also make this function answer
+    differently before and after `modernize_sections` decorates, and the plan
+    must not move between those two calls.
+    """
+    if getattr(section, "backgroundTexture", None) not in (None, "flat"):
+        return "flat"
+    styles = section.styles or {}
+    if _has_real_photo(styles):
+        return "photo"
+    for key in ("backgroundImage", "background"):
+        value = styles.get(key)
+        if isinstance(value, str) and "gradient(" in value:
+            return "gradient"
+    return "flat"
+
+
+def _boundary_edge(
+    sections: list[BuilderElement], upper: int, preferred: str
+) -> tuple[int, str, int] | None:
+    """Where the shaped edge goes at the boundary between ``upper`` and
+    ``upper + 1``, as ``(carrier_index, side, revealed_index)`` — or None when
+    no honest edge can render there.
+
+    The divider is a flat-filled SVG pinned INSIDE the carrier's edge (see
+    SectionDivider.tsx: a single `<path fill={color}>`), so it only reads as a
+    seam when the section it reveals is a solid colour. Hence:
+
+    - one side paints an image/gradient → that side carries the edge and the
+      flat side is revealed, so the shape cuts into the picture and is filled
+      with a colour that genuinely matches the band on the other side;
+    - both sides paint one → no flat fill can match either, so no divider (a
+      fill would land as a stripe of unrelated colour between the two — the
+      artefact this rule exists to prevent);
+    - neither does → ``preferred`` picks the carrier, keeping the hero's bottom
+      edge and the CTA's top edge where they have always been.
+    """
+    lower = upper + 1
+    rich_upper = _section_surface(sections[upper]) != "flat"
+    rich_lower = _section_surface(sections[lower]) != "flat"
+    if rich_upper and rich_lower:
+        return None
+    if rich_upper:
+        return (upper, "bottom", lower)
+    if rich_lower:
+        return (lower, "top", upper)
+    return (upper, "bottom", lower) if preferred == "bottom" else (lower, "top", upper)
+
+
 def _shaped_divider_plan(
     sections: list[BuilderElement], mood: BrandMood | None, industry: str | None = None
 ) -> list[tuple[int, str, int]]:
@@ -528,6 +637,11 @@ def _shaped_divider_plan(
     revealed_index)`` where side is "bottom"/"top". Empty when the resolved
     shape (industry override, else mood) is None or there are fewer than two
     sections.
+
+    Candidate boundaries are still the hero→content and content→CTA handoffs;
+    `_boundary_edge` then decides whether either can carry an edge at all, and
+    which side of it does. A boundary it rejects is simply skipped — no divider
+    is better than one filled with a colour that matches neither neighbour.
 
     Single source of truth for both apply_section_dividers and the modernize
     pass's "keep divider neighbours flat" rule, so the two never disagree about
@@ -538,20 +652,26 @@ def _shaped_divider_plan(
 
     plan: list[tuple[int, str, int]] = []
     hero_boundary: int | None = None
-    if sections[0].name.startswith("Hero") and sections[0].divider is None:
-        plan.append((0, "bottom", 1))
-        hero_boundary = 0
+    if (sections[0].name or "").startswith("Hero"):
+        edge = _boundary_edge(sections, 0, "bottom")
+        # Either neighbour may end up the carrier now, so both are checked for a
+        # divider they already own rather than just section 0.
+        if edge and sections[0].divider is None and sections[1].divider is None:
+            plan.append(edge)
+            hero_boundary = 0
 
     for i in range(len(sections) - 1, 0, -1):
-        if not sections[i].name.startswith("CTA"):
+        if not (sections[i].name or "").startswith("CTA"):
             continue
-        if sections[i].divider is not None:
+        if sections[i].divider is not None or sections[i - 1].divider is not None:
             break
         if hero_boundary is not None and i - 1 == hero_boundary:
             # Same boundary the hero's bottom edge already claimed (a hero
             # immediately followed by a CTA) — don't double up on one seam.
             break
-        plan.append((i, "top", i - 1))
+        edge = _boundary_edge(sections, i - 1, "top")
+        if edge is not None:
+            plan.append(edge)
         break
     return plan
 
@@ -582,29 +702,46 @@ def apply_section_dividers(
 
     A shaped seam must read against SOLID colour, so both sections bordering it
     are flattened (any decorative mesh/grain dropped) and the edge fill is the
-    neighbour's plain background colour — no texture is carried onto the seam.
-    Runs after modernize_sections (which already steers the texture accent away
-    from these neighbours; this is the enforcing safety net). Mutates in place."""
+    revealed neighbour's plain background colour — no texture is carried onto
+    the seam. `_shaped_divider_plan` has already guaranteed the revealed side is
+    a flat band and put the edge on the picture side; the flatten calls here are
+    the enforcing safety net for the decorative layer modernize_sections may
+    have added since. Mutates in place."""
     shape = _divider_shape(mood, industry)
     for carrier, side, revealed in _shaped_divider_plan(sections, mood, industry):
+        color = _section_edge_color(sections[revealed])
+        if color is None:
+            continue  # unreachable via the plan; never guess a fill
         # Shaped edges sit only against solid colour on both sides.
         _flatten_section_texture(sections[carrier])
         _flatten_section_texture(sections[revealed])
-        edge = SectionDividerEdge(
-            shape=shape, color=_section_edge_color(sections[revealed])
-        )
-        sections[carrier].divider = (
-            SectionDivider(bottom=edge) if side == "bottom" else SectionDivider(top=edge)
+        edge = SectionDividerEdge(shape=shape, color=color)
+        # Both of a page's boundaries can land on ONE carrier — a picture band
+        # between two flat ones owns the edge on each of its sides — so the two
+        # edges are merged rather than assigned, or the second would drop the
+        # first. Still two seams on the page either way.
+        existing = sections[carrier].divider
+        sections[carrier].divider = SectionDivider(
+            top=edge if side == "top" else (existing.top if existing else None),
+            bottom=edge if side == "bottom" else (existing.bottom if existing else None),
         )
 
 
-def _section_edge_color(section: BuilderElement) -> str:
-    """The color a divider should be filled with to read as "revealing" this
-    section: its own flat backgroundColor when it has one, else the page
-    background token (covers photo/gradient-background sections, which the
-    divider still renders correctly over per the SECTION_DIVIDER contract)."""
-    styles = section.styles or {}
-    bg = styles.get("backgroundColor")
+def _section_edge_color(section: BuilderElement) -> str | None:
+    """The colour a divider must be filled with to read as "revealing" this
+    section — or None when the section paints an image/gradient and no flat fill
+    can honestly match it.
+
+    Deliberately NOT "its backgroundColor, else the page background": a photo
+    band carries both (the catalog roots `hero-background-bold` and
+    `cta-background` on `--builder-color-secondary` UNDER the image), so the
+    colour alone cannot tell a solid band from a picture, and the old page-
+    background fallback painted a page-coloured stripe across whatever the
+    neighbour actually was. The surface class decides; only a genuinely flat
+    section yields a colour."""
+    if _section_surface(section) != "flat":
+        return None
+    bg = (section.styles or {}).get("backgroundColor")
     return bg if isinstance(bg, str) and bg else _DEFAULT_DIVIDER_COLOR
 
 
@@ -622,6 +759,128 @@ def _flatten_section_texture(section: BuilderElement) -> None:
         styles.pop(key, None)
     section.styles = styles
     section.backgroundTexture = "flat"
+
+
+# --- photo edge fades ---------------------------------------------------------
+
+
+def retune_photo_edge_fades(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """Point every full-bleed photo's bottom dissolve at the surface that
+    actually follows it, or drop the dissolve when nothing flat does.
+
+    `photo_background` ends its composite with `edge_fade_gradient(theme page
+    background)` so a hero doesn't stop on a ruled horizontal line. That layer
+    is written while the section is being built, before the page is assembled,
+    so it cannot know what comes next — and it is wrong whenever the next band
+    isn't the page background. Against a dark band or a childcare pastel it
+    paints a pale haze between the photo and the section below: the "extra
+    background colour" seam.
+
+    Two corrections, both needing facts only the assembled page has:
+
+    - the photo section carries a shaped bottom edge → drop the fade. The
+      divider already performs the handoff, in the neighbour's exact colour;
+      stacking a dissolve above it reads as a second, unrelated band.
+    - otherwise → refill the fade with the next section's real colour, or drop
+      it when that section paints its own picture (there is no single colour to
+      dissolve into) or when nothing follows on the page.
+
+    Runs AFTER apply_section_dividers so both are known. Mutates in place."""
+    for idx, section in enumerate(sections):
+        styles = section.styles or {}
+        image = styles.get("backgroundImage")
+        if not isinstance(image, str) or not image:
+            continue
+        layers = _split_layers(image)
+        fade_at = next(
+            (i for i, layer in enumerate(layers) if is_edge_fade_layer(layer)), None
+        )
+        if fade_at is None:
+            continue
+
+        target: str | None = None
+        divider = section.divider
+        if divider is None or divider.bottom is None:
+            following = sections[idx + 1] if idx + 1 < len(sections) else None
+            if following is not None and _section_surface(following) == "flat":
+                target = _flat_section_hex(following, theme)
+
+        if target is None:
+            _drop_background_layer(section, fade_at)
+        else:
+            layers[fade_at] = edge_fade_gradient(target)
+            section.styles = {**styles, "backgroundImage": ", ".join(layers)}
+
+
+def _drop_background_layer(section: BuilderElement, index: int) -> None:
+    """Remove one layer from a multi-layer background, keeping the parallel
+    size/repeat/position lists aligned.
+
+    `photo_background` emits four comma-joined lists of the SAME length on
+    purpose — the grain tiles at 140px while every other layer covers — so
+    dropping a layer from `backgroundImage` alone would slide every later layer
+    onto the wrong sizing. A property whose list length doesn't match is a
+    single value CSS cycles across the layers, and is left alone."""
+    styles = dict(section.styles or {})
+    layers = _split_layers(styles.get("backgroundImage") or "")
+    if index >= len(layers):
+        return
+    del layers[index]
+    styles["backgroundImage"] = ", ".join(layers)
+    for key in ("backgroundSize", "backgroundRepeat", "backgroundPosition"):
+        value = styles.get(key)
+        if not isinstance(value, str):
+            continue
+        parts = _split_layers(value)
+        if len(parts) != len(layers) + 1:
+            continue
+        del parts[index]
+        styles[key] = ", ".join(parts)
+    section.styles = styles
+
+
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+_CSS_VAR_RE = re.compile(r"^var\(\s*(--[\w-]+)\s*(?:,\s*(.*?)\s*)?\)$")
+
+
+def _flat_section_hex(section: BuilderElement, theme: ThemeTokens) -> str | None:
+    """A flat section's background as a concrete hex, or None when it isn't a
+    plain colour this theme can resolve.
+
+    Sections are painted with builder tokens as often as with literal hexes, and
+    `edge_fade_gradient` needs real channel values."""
+    value = (section.styles or {}).get("backgroundColor")
+    if not isinstance(value, str) or not value.strip():
+        # A flat section with no colour of its own sits on the page background.
+        return theme.page.background
+    return _resolve_token_hex(value.strip(), theme)
+
+
+def _resolve_token_hex(value: str, theme: ThemeTokens) -> str | None:
+    """Concrete hex for a CSS colour, resolving `var(--builder-*)` against this
+    theme (the palette holds validated hexes) and falling back to the literal
+    the token declares. None for anything else — named colours, gradients."""
+    if _HEX_COLOR_RE.match(value):
+        return value.lower()
+    match = _CSS_VAR_RE.match(value)
+    if match is None:
+        return None
+    name, fallback = match.group(1), (match.group(2) or "").strip()
+    if name == "--builder-page-background":
+        return theme.page.background
+    # Derived, not a palette field: AA-corrected primary for text printed
+    # directly in the brand hue. Checked before the generic palette lookup
+    # below, which would otherwise miss it (no `primary_ink` attribute) and
+    # fall through to the token's static fallback hex. Keep in lockstep with
+    # section_content._token_hex.
+    if name == "--builder-color-primary-ink":
+        return brand_ink(theme)
+    if name.startswith("--builder-color-"):
+        token = name[len("--builder-color-") :].replace("-", "_")
+        resolved = getattr(theme.palette, token, None)
+        if isinstance(resolved, str) and _HEX_COLOR_RE.match(resolved):
+            return resolved.lower()
+    return fallback.lower() if _HEX_COLOR_RE.match(fallback) else None
 
 
 def _children(el: BuilderElement) -> list[BuilderElement]:
@@ -715,6 +974,28 @@ def _uid() -> str:
     return str(uuid4())
 
 
+# Markdown emphasis the renderer cannot honour. `innerText` is plain text —
+# TextBlock.vue prints it verbatim — so a model that reaches for **bold** ships
+# the asterisks to the visitor. Paired markers only: a lone `*` is a footnote
+# marker or a multiplication sign in real copy.
+_MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
+_MD_LEADING_BULLET_RE = re.compile(r"^[ \t]*[•*\-•]\s+", re.M)
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove markdown the plain-text renderer would print literally.
+
+    A backstop, not a licence: a model reaching for bullets inside a prose
+    field is usually a signal that the CONTENT is card-shaped and landed in the
+    wrong block (see page_inference._sections_from_tree). Cleaning the string
+    keeps that failure from also looking broken, but the fix is upstream.
+    """
+    if not text or ("*" not in text and "•" not in text):
+        return text
+    cleaned = _MD_BOLD_RE.sub(r"\1", text)
+    return _MD_LEADING_BULLET_RE.sub("", cleaned)
+
+
 def _text(
     inner: str,
     *,
@@ -727,7 +1008,7 @@ def _text(
         name=name,
         type="text",
         styles={"width": "100%", **(styles or {})},
-        content=BuilderElementContent(innerText=inner),
+        content=BuilderElementContent(innerText=_strip_markdown(inner)),
         responsiveStyles=ResponsiveStyles(mobile=mobile) if mobile else None,
     )
 
@@ -996,11 +1277,83 @@ def _first_content_section(page: GeneratedPage) -> BuilderElement | None:
     return None
 
 
+_BAND_CLASSES = {"light": "wt-band-light", "dark": "wt-band-dark"}
+
+
+def _band_class_for(el: BuilderElement, theme: ThemeTokens) -> str:
+    """The runtime-readable luminance marker for one top-level section.
+
+    Read off the section's FINAL styles rather than its `SectionBandPlan.band`:
+    that plan leaves `band is None` for every non-participant, and five later
+    passes (section rhythm, modernize, gradient caps, childcare pastels, edge
+    fades) rewrite `backgroundColor` after it runs. The final styles are the
+    only value that matches what the visitor — and the floating pill hovering
+    over this section — actually sees.
+    """
+    styles = el.styles or {}
+    # A full-bleed photo hero carries a darkening legibility scrim; that scrim,
+    # not the backgroundColor underneath it, is the surface the header sits on.
+    if getattr(el, "headerOverlaySafe", None) is True:
+        return _BAND_CLASSES["dark"]
+    # Same rule as enforce_text_contrast: a photo or an opaque gradient paints
+    # over whatever backgroundColor the node also declares, and the generator
+    # always casts those darker for white ink.
+    if _has_real_photo(styles) or _has_opaque_gradient(styles):
+        return _BAND_CLASSES["dark"]
+    parsed = _parse_color(styles.get("backgroundColor"), theme) or _parse_color(
+        styles.get("background"), theme
+    )
+    page_rgb = _hex_to_rgb(theme.palette.background)
+    if parsed is not None:
+        rgb, alpha = parsed
+        if alpha < 0.999:
+            rgb = _composite(rgb, alpha, page_rgb)
+        return _BAND_CLASSES[band_for_color(_rgb_to_hex(*rgb))]
+    return _BAND_CLASSES[band_for_color(theme.palette.background)]
+
+
+def _stamp_band_markers(elements: list[BuilderElement], theme: ThemeTokens) -> None:
+    """Mark each top-level section light or dark for the renderers.
+
+    The floating-pill header floats over the page with no chrome of its own to
+    hide behind, so its ink has to follow whatever section is under it as the
+    visitor scrolls. Renderers can't recompute the band (a photo's luminance is
+    not in the DOM), so the generator states it here, on the already-whitelisted
+    `classes` field. Inert data: only the pill's runtime rules read it, and the
+    behaviour itself is gated on `behavior.adaptiveInk` (menu_builder), never on
+    the presence of these classes.
+
+    Stamped for every archetype on purpose — `demote_self_chrome_header` can
+    still swap the pill out after this runs, and a class nothing matches costs
+    nothing.
+    """
+    for el in elements:
+        cls = _band_class_for(el, theme)
+        el.classes = " ".join(filter(None, [el.classes, cls]))
+
+
 def _extract_og_image_safe(elements: list[BuilderElement]) -> str | None:
     try:
         from app.services.seo import extract_og_image
 
         return extract_og_image(elements)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _first_video_thumbnail(blocks: list[Any]) -> str | None:
+    """The page's first video poster, for use as og:image. Advisory, never raises."""
+    try:
+        from app.services.seo import extract_video_items
+
+        return next(
+            (
+                item.thumbnail_url
+                for item in extract_video_items(blocks)
+                if getattr(item, "thumbnail_url", None)
+            ),
+            None,
+        )
     except Exception:  # noqa: BLE001
         return None
 
@@ -1176,10 +1529,18 @@ _CHILDCARE_HERO_INKS: tuple[str, ...] = (
     "#DDD6FE",  # lavender
 )
 
-# A neutral (not theme-tinted) scrim for childcare photo heroes: the brief wants
-# the real photo colours, not a brand-colour wash. Light enough to keep the
-# photo vivid, dark enough that the light-but-vivid title inks stay legible.
-_CHILDCARE_HERO_SCRIM = "linear-gradient(rgba(15,23,42,0.28), rgba(15,23,42,0.48))"
+# A neutral (not theme-tinted) ink for childcare photo heroes: the brief wants
+# the real photo colours, not a brand-colour wash. Fed to photo_background as
+# BOTH ends of the cast, so the overlay darkens without tinting, and the layer
+# stack (grain, vignette, edge fade, framing) is identical to every other hero.
+_CHILDCARE_HERO_INK = "#0f172a"
+
+# How much of the whole-frame brand cast + vignette survives on the homepage's
+# full-bleed hero (see the `is_homepage` block in block_to_element). The text
+# scrim is untouched — legibility doesn't depend on this layer — so this only
+# lets the resolved photo's own colours read through more clearly on the page
+# that matters most for a first impression.
+_HOMEPAGE_HERO_WASH_SCALE = 0.45
 
 
 def _split_headline(headline: str, accent: str | None) -> tuple[str, str] | None:
@@ -1212,20 +1573,6 @@ def _midpoint_word_split(headline: str) -> tuple[str, str] | None:
     mid = len(head) / 2
     at = min(spaces, key=lambda s: abs(s - mid))
     return head[:at], head[at + 1:]
-
-
-def _accent_ink_for(surface: str, accent: str) -> str:
-    """Accent ink that stays recognisably the accent hue on any surface.
-
-    Light surfaces: darken the accent until AA. Dark surfaces (scrims, brand
-    gradients): a plain AA lift can bleach the accent to pure white, erasing
-    the highlight — re-emit it as a high-lightness pastel of the SAME hue
-    first, then nudge for AA."""
-    if _relative_luminance(surface) >= 0.5:
-        return _ensure_contrast_against(surface, accent, min_ratio=4.5)
-    h, _l, s = _rgb_to_hls(*_hex_to_rgb(accent))
-    pastel = _rgb_to_hex(*_hls_to_rgb(h, 0.82, min(1.0, max(s, 0.55))))
-    return _ensure_contrast_against(surface, pastel, min_ratio=4.5)
 
 
 def _hero_accent_styles(base: dict, ctx: RenderContext, *, on_photo: bool) -> dict:
@@ -1321,6 +1668,78 @@ def _find_text_by_inner(
             if found is not None:
                 return found
     return None
+
+
+# Copy-block width per anchor. Centred copy can afford the template's 760px
+# because it's symmetrical; an anchored column reads as a column only if it
+# stops well short of the frame's midline, leaving the photograph a real share
+# of the width rather than a margin.
+_ANCHORED_COPY_MAX_WIDTH = "620px"
+
+
+def _has_composable_subject(photo: PhotoResult | None) -> bool:
+    """Whether a hero background is a photo OF something, so copy can be
+    anchored off it.
+
+    Genuine provenance is necessary but not sufficient: the colour-matched
+    abstract wash is a real Pexels photo and passes `_GENUINE_PHOTO_SOURCES`,
+    but it is chosen purely on colour distance and is documented as on-brand
+    texture rather than a focal image (ImageResolver.resolve_abstract_bg).
+    """
+    return (
+        photo is not None
+        and photo.source in _GENUINE_PHOTO_SOURCES
+        and not photo.is_abstract
+    )
+
+
+def _apply_hero_composition(element: BuilderElement, comp: HeroComposition) -> None:
+    """Anchor a full-bleed hero's copy block (catalogue path).
+
+    The scrim was already built to run off this edge (image_styling), so the two
+    have to agree: an anchor here without the matching scrim would put the
+    headline on the bright side of the frame. `center` is the template's own
+    layout, so it's left untouched.
+
+    Mobile always reverts to centred. At 440px there is no open side for the
+    photograph to occupy — an anchored column just reads as text shoved against
+    the edge, and the responsive scrim covers the whole narrow frame anyway.
+    """
+    if comp.anchor == "center":
+        return
+    content = element.content[0] if isinstance(element.content, list) and element.content else None
+    if not isinstance(content, BuilderElement):
+        return
+
+    element.styles = {
+        **(element.styles or {}),
+        "alignItems": "flex-start",
+        "justifyContent": "flex-end" if comp.anchor == "bottom-left" else "center",
+    }
+    content.styles = {
+        **(content.styles or {}),
+        "textAlign": "left",
+        "alignItems": "flex-start",
+        "maxWidth": _ANCHORED_COPY_MAX_WIDTH,
+    }
+    _merge_mobile(element, {"alignItems": "center", "justifyContent": "center"})
+    _merge_mobile(
+        content, {"textAlign": "center", "alignItems": "center", "maxWidth": "100%"}
+    )
+
+
+def _merge_mobile(element: BuilderElement, mobile: dict[str, str]) -> None:
+    """Add mobile overrides in place, keeping the template's tablet rules.
+
+    `responsiveStyles` is a ResponsiveStyles model by the time it reaches here
+    (pydantic coerces the catalog's raw dict on construction), so this reads and
+    writes the `mobile` field rather than treating the whole thing as a mapping.
+    """
+    responsive = element.responsiveStyles
+    if responsive is None:
+        element.responsiveStyles = ResponsiveStyles(mobile=dict(mobile))
+        return
+    responsive.mobile = {**(responsive.mobile or {}), **mobile}
 
 
 def _apply_hero_typography(
@@ -1907,7 +2326,16 @@ async def _build_faq(block: FaqBlock, ctx: RenderContext) -> BuilderElement:
 async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
     s = ctx.styles
     photo = await ctx.resolver.resolve(
-        block.background_query, intent="cta_bg", alt_fallback=block.headline
+        block.background_query,
+        intent="cta_bg",
+        alt_fallback=block.headline,
+        # The result becomes `background_image` below — full-bleed, with this
+        # block's headline drawn over it. That is a background slot in every
+        # sense, so it has to declare itself one: slot_usage drives the
+        # text-in-image screen (scraped AND stock) and the minimum long edge.
+        # Left at the "any" default it was the one full-bleed slot in the
+        # builder with no guard against a photo that carries its own wording.
+        slot_usage="background",
     )
 
     children: list[BuilderElement] = [
@@ -1949,7 +2377,7 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
                     primary=True,
                     extra={
                         "backgroundColor": "#ffffff",
-                        "color": ctx.theme.palette.primary,
+                        "color": brand_ink(ctx.theme, "#ffffff"),
                     },
                 )
             ],
@@ -2047,7 +2475,7 @@ async def _build_pricing(block: PricingBlock, ctx: RenderContext) -> BuilderElem
                         "fontWeight": 700,
                         "letterSpacing": "0.08em",
                         "textTransform": "uppercase",
-                        "color": palette.primary,
+                        "color": emphasis_ink(ctx.theme),
                         "margin": "0 0 8px 0",
                     },
                 )
@@ -2148,10 +2576,11 @@ async def _build_pricing(block: PricingBlock, ctx: RenderContext) -> BuilderElem
     if isinstance(grid.content, list):
         for col, tier in zip(grid.content, block.tiers):
             if tier.highlighted:
+                tier_accent = emphasis_ink(ctx.theme)
                 col.styles = {
                     **col.styles,
-                    "border": f"2px solid {palette.primary}",
-                    "boxShadow": f"0 8px 24px {_hairline(palette.primary, 0.18)}",
+                    "border": f"2px solid {tier_accent}",
+                    "boxShadow": f"0 8px 24px {_hairline(tier_accent, 0.18)}",
                 }
 
     return _section(ctx, [header, grid], name="Pricing")
@@ -2182,8 +2611,19 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                 source="scraped",
             )
         else:
-            photo = await ctx.resolver.resolve(
-                member.photo_query, intent="avatar", alt_fallback=member.name
+            # Initials, not a stock face — same rule as the catalog team-grid
+            # path in section_content._team_content: never caption a stranger's
+            # portrait with a real person's name.
+            photo = PhotoResult(
+                url=monogram_avatar_url(
+                    member.name,
+                    primary_hex=ctx.theme.palette.primary,
+                    secondary_hex=ctx.theme.palette.secondary,
+                ),
+                alt=member.photo_alt or member.name,
+                photographer=None,
+                photographer_url=None,
+                source="placeholder",
             )
         card: list[BuilderElement] = [
             _image_from_photo(
@@ -2199,7 +2639,7 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                     "overflow": "hidden",
                     "border": "3px solid rgba(255,255,255,0.96)",
                     "boxShadow": (
-                        f"0 0 0 4px {_hairline(ctx.theme.palette.primary, 0.10)}, "
+                        f"0 0 0 4px {_hairline('#0f172a', 0.10)}, "
                         "0 14px 30px rgba(15,23,42,0.18)"
                     ),
                 },
@@ -2224,7 +2664,7 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                     **s.body,
                     "fontSize": "12px",
                     "lineHeight": "1.35",
-                    "color": ctx.theme.palette.primary,
+                    "color": meta_ink(ctx.theme),
                     "textAlign": "center",
                     "fontWeight": 800,
                     "letterSpacing": "0.08em",
@@ -2248,6 +2688,32 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
                         # Scraped directory bios pack credentials / specialties /
                         # address as newline-separated facts — keep the breaks.
                         "whiteSpace": "pre-line",
+                    },
+                )
+            )
+        profile_href = getattr(member, "profile_href", None)
+        if profile_href:
+            # Where the source's roster card pointed. A quiet text link, not a
+            # button: the card is an introduction, and the page it opens is the
+            # same person — matches the catalog team-grid's profile_link node.
+            first_name = member.name.split()[0] if member.name else ""
+            card.append(
+                _link(
+                    f"View {first_name}'s profile" if first_name else "View profile",
+                    profile_href,
+                    ctx=ctx,
+                    primary=False,
+                    extra={
+                        "background": "none",
+                        "border": "none",
+                        "boxShadow": "none",
+                        "padding": "0",
+                        "marginTop": "12px",
+                        "alignSelf": "center",
+                        "color": brand_ink(ctx.theme),
+                        "fontSize": "14px",
+                        "fontWeight": 700,
+                        "textDecoration": "none",
                     },
                 )
             )
@@ -2283,6 +2749,121 @@ async def _build_team(block: TeamBlock, ctx: RenderContext) -> BuilderElement:
     return _section(ctx, [header, *rows], name="Team")
 
 
+async def _build_profile(block: ProfileBlock, ctx: RenderContext) -> BuilderElement:
+    """One person's page, programmatic path — the portrait-split variant.
+
+    Mirrors the catalog's `profile-portrait-split`: portrait beside identity,
+    story, contacts. Real pages come from the catalog (fill_template); this is
+    the fallback that keeps the legacy builder able to render every kind.
+    """
+    s = ctx.styles
+    if block.photo_url:
+        photo = PhotoResult(
+            url=block.photo_url,
+            alt=block.photo_alt or block.name,
+            photographer=None,
+            photographer_url=None,
+            source="scraped",
+        )
+    else:
+        # Initials, never a stock face — a stranger's portrait under a real
+        # person's name is a misattribution (same rule as _build_team).
+        photo = PhotoResult(
+            url=monogram_avatar_url(
+                block.name,
+                primary_hex=ctx.theme.palette.primary,
+                secondary_hex=ctx.theme.palette.secondary,
+            ),
+            alt=block.photo_alt or block.name,
+            photographer=None,
+            photographer_url=None,
+            source="placeholder",
+        )
+
+    portrait = _image_from_photo(
+        photo,
+        name="Portrait",
+        aspect_ratio="4 / 5",
+        border_radius="28px",
+        extra_styles={"width": "100%", "maxWidth": "360px", "overflow": "hidden"},
+    )
+
+    # Name first, designation under it — the order a profile page has always
+    # been written in, and the one the catalog variants use.
+    identity: list[BuilderElement] = [
+        _text(block.name, name="Name", styles=s.heading_md, mobile=s.heading_mobile)
+    ]
+    if block.role:
+        identity.append(
+            _text(
+                block.role,
+                name="Role",
+                styles={
+                    **s.body,
+                    "fontSize": "16px",
+                    "lineHeight": "1.45",
+                    "color": brand_ink(ctx.theme),
+                    "fontWeight": 700,
+                },
+            )
+        )
+    if block.credentials:
+        identity.append(
+            _text(
+                block.credentials,
+                name="Credentials",
+                styles={**s.body, "fontSize": "15px", "fontWeight": 600},
+            )
+        )
+    if block.bio:
+        identity.append(
+            _text(
+                block.bio,
+                name="Bio",
+                styles={
+                    **s.body,
+                    "fontSize": "17px",
+                    "lineHeight": "1.75",
+                    # Scraped bios pack credentials / specialties / address as
+                    # separate lines — keep the breaks.
+                    "whiteSpace": "pre-line",
+                },
+            )
+        )
+    for contact in block.contacts:
+        identity.append(
+            _link(
+                contact.label,
+                contact.href,
+                ctx=ctx,
+                primary=False,
+                extra={
+                    "background": "none",
+                    "border": "none",
+                    "boxShadow": "none",
+                    "padding": "0",
+                    "alignSelf": "flex-start",
+                    "color": brand_ink(ctx.theme),
+                    "fontSize": "14px",
+                    "fontWeight": 700,
+                    "textDecoration": "none",
+                },
+            )
+        )
+
+    return _section(
+        ctx,
+        [
+            _two_col(
+                [portrait],
+                identity,
+                styles={"gap": "56px", "alignItems": "center"},
+            )
+        ],
+        name="Profile",
+    )
+
+
 async def _build_gallery(block: GalleryBlock, ctx: RenderContext) -> BuilderElement:
     s = ctx.styles
     head: list[BuilderElement] = [
@@ -2301,7 +2882,14 @@ async def _build_gallery(block: GalleryBlock, ctx: RenderContext) -> BuilderElem
 
     tiles: list[BuilderElement] = []
     for item in block.items:
-        photo = await ctx.resolver.resolve(item.image_query, intent="generic", alt_fallback=item.title or item.image_query)
+        # A gallery replays the source's own photos, so a scraped portrait is a
+        # legitimate tile here (unlike a services/features card).
+        photo = await ctx.resolver.resolve(
+            item.image_query,
+            intent="generic",
+            alt_fallback=item.title or item.image_query,
+            allow_portrait=True,
+        )
         tile = _image_from_photo(
             photo,
             name="Gallery item",
@@ -2375,6 +2963,10 @@ async def _build_gallery(block: GalleryBlock, ctx: RenderContext) -> BuilderElem
         },
         content=tiles,
         responsiveStyles=ResponsiveStyles(mobile={"gap": "12px"}),
+        # Click-to-enlarge on the public site, matching the gallery-grid catalog
+        # template this fallback stands in for. Tiles that link to a child
+        # case-study page keep their link — the runtime skips linked images.
+        lightbox=True,
     )
 
     return _section(ctx, [header, grid], name="Gallery")
@@ -2433,7 +3025,7 @@ async def _build_menu(block: MenuBlock, ctx: RenderContext) -> BuilderElement:
                             "fontFamily": ctx.theme.typography.heading_font,
                             "fontSize": "16px",
                             "fontWeight": 600,
-                            "color": ctx.theme.palette.primary,
+                            "color": meta_ink(ctx.theme),
                             "whiteSpace": "nowrap",
                             "marginLeft": "16px",
                         },
@@ -2466,7 +3058,7 @@ async def _build_menu(block: MenuBlock, ctx: RenderContext) -> BuilderElement:
                             "color": ctx.theme.palette.secondary,
                             "margin": "0 0 12px 0",
                             "paddingBottom": "8px",
-                            "borderBottom": f"2px solid {ctx.theme.palette.primary}",
+                            "borderBottom": f"2px solid {emphasis_ink(ctx.theme)}",
                         },
                     ),
                     *item_children,
@@ -2517,7 +3109,7 @@ async def _build_process(block: ProcessBlock, ctx: RenderContext) -> BuilderElem
                             "fontSize": "13px",
                             "fontWeight": 700,
                             "letterSpacing": "0.06em",
-                            "color": ctx.theme.palette.primary,
+                            "color": emphasis_ink(ctx.theme),
                             "margin": "0 0 8px 0",
                         },
                     ),
@@ -2631,6 +3223,101 @@ async def _build_linkbar(block: LinkBarBlock, ctx: RenderContext) -> BuilderElem
     )
 
 
+async def _build_downloads(block: DownloadsBlock, ctx: RenderContext) -> BuilderElement:
+    """One or more downloadable-document cards (title + optional thumbnail +
+    file links), scraped from the source page's document cards. Each item
+    stays its OWN card — image, title, and its links together — never
+    flattened into a single row of buttons across documents. Link buttons are
+    ordinary `link`-type elements (via `_link`) — no bespoke file element.
+    """
+    s = ctx.styles
+    head: list[BuilderElement] = []
+    if block.heading:
+        head.append(
+            _text(
+                block.heading,
+                name="Heading",
+                styles={**s.heading_md, "textAlign": "center"},
+                mobile=s.heading_mobile,
+            )
+        )
+
+    item_cards: list[list[BuilderElement]] = []
+    for item in block.items:
+        card: list[BuilderElement] = []
+        if item.image_url:
+            photo = PhotoResult(
+                url=item.image_url,
+                alt=item.title or "Document thumbnail",
+                photographer=None,
+                photographer_url=None,
+                source="scraped",
+            )
+            card.append(
+                _image_from_photo(
+                    photo,
+                    name="Document thumbnail",
+                    aspect_ratio="4 / 3",
+                    border_radius="16px",
+                )
+            )
+        if item.title:
+            card.append(
+                _text(
+                    item.title,
+                    name="Document title",
+                    styles={
+                        **s.body,
+                        "fontWeight": 700,
+                        "fontSize": "16px",
+                        "textAlign": "center",
+                    },
+                )
+            )
+        card.append(
+            _container(
+                [
+                    _link(link.label, link.href, ctx=ctx, primary=False)
+                    for link in item.links
+                ],
+                name="Download buttons",
+                styles={
+                    "flexDirection": "row",
+                    "flexWrap": "wrap",
+                    "alignItems": "center",
+                    "justifyContent": "center",
+                    "gap": "8px",
+                },
+            )
+        )
+        item_cards.append(card)
+
+    # Lay out 3 per row, same pattern as _build_team.
+    rows: list[BuilderElement] = []
+    triplet: list[list[BuilderElement]] = []
+    for card in item_cards:
+        triplet.append(card)
+        if len(triplet) == 3:
+            rows.append(_three_col(triplet, styles={"gap": "24px"}))
+            triplet = []
+    if triplet:
+        if len(triplet) == 2:
+            rows.append(_two_col(triplet[0], triplet[1], styles={"gap": "24px"}))
+        else:
+            rows.append(_container(triplet[0], name="Document card", styles=s.cards))
+
+    _apply_card_styles(
+        rows,
+        {
+            **s.cards,
+            "alignItems": "center",
+            "gap": "10px",
+            "padding": "24px 20px",
+        },
+    )
+    return _section(ctx, [*head, *rows], name="Downloads")
+
+
 async def _build_timeline(block: TimelineBlock, ctx: RenderContext) -> BuilderElement:
     s = ctx.styles
     head: list[BuilderElement] = [
@@ -2656,7 +3343,7 @@ async def _build_timeline(block: TimelineBlock, ctx: RenderContext) -> BuilderEl
                     "fontSize": "14px",
                     "fontWeight": 700,
                     "letterSpacing": "0.06em",
-                    "color": ctx.theme.palette.primary,
+                    "color": meta_ink(ctx.theme),
                     "margin": "0",
                 },
             ),
@@ -2733,7 +3420,7 @@ async def _build_awards(block: AwardsBlock, ctx: RenderContext) -> BuilderElemen
                         **s.body,
                         "fontSize": "13px",
                         "textAlign": "center",
-                        "color": ctx.theme.palette.primary,
+                        "color": meta_ink(ctx.theme),
                         "fontWeight": 700,
                         "letterSpacing": "0.04em",
                         "textTransform": "uppercase",
@@ -2841,7 +3528,7 @@ async def _build_stats(block: StatsBlock, ctx: RenderContext) -> BuilderElement:
                         "fontFamily": ctx.theme.typography.heading_font,
                         "fontSize": "40px",
                         "fontWeight": 800,
-                        "color": ctx.theme.palette.primary,
+                        "color": emphasis_ink(ctx.theme),
                         "margin": "0",
                         "textAlign": "center",
                     },
@@ -2888,10 +3575,12 @@ _DISPATCH = {
     "contact": _build_contact,
     "pricing": _build_pricing,
     "team": _build_team,
+    "profile": _build_profile,
     "gallery": _build_gallery,
     "menu": _build_menu,
     "process": _build_process,
     "linkbar": _build_linkbar,
+    "downloads": _build_downloads,
     "timeline": _build_timeline,
     "awards": _build_awards,
     "clients": _build_clients,
@@ -2902,7 +3591,23 @@ _DISPATCH = {
 # Image-resolution intent per block kind (catalog path). Drives the resolver's
 # scraped-vs-Pexels choice (e.g. cta_bg + avatars skip the scraped pool and use
 # atmospheric Pexels imagery).
-_IMAGE_INTENT = {"hero": "hero", "about": "about", "cta": "cta_bg", "team": "avatar"}
+_IMAGE_INTENT = {
+    "hero": "hero",
+    "about": "about",
+    "cta": "cta_bg",
+    "team": "avatar",
+    # A profile's portrait is never resolved from stock: an unmatched person
+    # renders their monogram (section_content._profile_content), so the intent
+    # only ever describes the scraped portrait already bound to the block.
+    "profile": "avatar",
+}
+
+# Block kinds whose image slots may hold a scraped head-and-shoulders photo of a
+# person: the ones that are ABOUT people (team, testimonial authors) and the
+# gallery, whose job is replaying the source's own photos. Everywhere else a
+# headshot shows a stranger's face where the slot's subject belongs — the
+# services grid rendering the committee page. See image_match.rank_candidates.
+_PORTRAIT_SLOT_KINDS = frozenset({"team", "profile", "testimonials", "gallery"})
 
 # Photo sources that count as a "genuine" hero image. A `placeholder` result is
 # the resolver's last-resort on-brand gradient — it means no scraped/document
@@ -2975,6 +3680,23 @@ async def _apply_hero_directive(
         if abstract is not None:
             block.image_query = abstract_query
             return abstract, None
+        # Nothing genuine AND no colour-matched abstract: the page opens on a
+        # flat colour hero. Logged because this degrade is otherwise invisible —
+        # the page renders fine, it just silently lost its photograph, and the
+        # only symptom is a hero that looks like a coloured band (the contact
+        # page is the usual victim: it is content-sparse, so its query is the
+        # weakest, and it is generated last, so the stock pool is most picked
+        # over by the time it asks).
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Hero on '%s' degraded to a flat colour band: no genuine photo for "
+            "%r and no colour-matched abstract for %r. Check PEXELS_API_KEY "
+            "reaches the app and that the page's image_query is not empty.",
+            ctx.current_page_slug or "?",
+            block.image_query,
+            abstract_query,
+        )
         block.layout = "split"  # compact gradient hero, not an empty full-bleed
         block.image_query = None
         return None, None
@@ -3033,12 +3755,24 @@ async def _apply_hero_photo_policy(
     """
     if directive is not None:
         return await _apply_hero_directive(block, ctx, directive)
+    # Split only for split-inclined moods, and only when the planner didn't
+    # explicitly ask for a full-bleed photo (default layout is "split").
+    # Decided BEFORE resolving: a full-bleed background slot must tell the
+    # resolver slot_usage="background" up front so the text-detection safety
+    # net (OCR/vision — see media._reject_text_backgrounds, image_match.
+    # bears_text) actually screens the candidate; deciding "background" only
+    # after the fact, as this used to, let a photo-of-text win the slot with
+    # zero screening. Mirrors _apply_hero_directive's existing split/inline
+    # split, which never had this gap.
+    mood = getattr(ctx.theme, "mood", None)
+    will_split = mood in SPLIT_INCLINED_MOODS and block.layout != "background"
     featured = await ctx.resolver.resolve(
         block.image_query,
         intent="hero",
         alt_fallback=block.image_alt or block.headline,
         prefer=ctx.page_images,
         pinned_url=block.image_url,
+        slot_usage=("inline" if will_split else "background"),
     )
     abstract_query = _abstract_theme_query(ctx)
     primary_hex = ctx.theme.palette.primary
@@ -3046,10 +3780,7 @@ async def _apply_hero_photo_policy(
     if featured.source in _GENUINE_PHOTO_SOURCES:
         if not (block.image_query or "").strip():
             block.image_query = block.image_alt or block.headline or "brand photo"
-        mood = getattr(ctx.theme, "mood", None)
-        # Split only for split-inclined moods, and only when the planner didn't
-        # explicitly ask for a full-bleed photo (default layout is "split").
-        if mood in SPLIT_INCLINED_MOODS and block.layout != "background":
+        if will_split:
             block.layout = "split"
             washed_bg = await ctx.resolver.resolve_abstract_bg(
                 abstract_query, color_target_hex=primary_hex, intent="cta_bg"
@@ -3102,6 +3833,8 @@ async def block_to_element(
     hero_scroll_target_kind: str | None = None,
     explicit_template_id: str | None = None,
     hero_directive: HeroDirective | None = None,
+    hero_comp: HeroComposition | None = None,
+    cached_hero: tuple[PhotoResult | None, PhotoResult | None, str] | None = None,
 ) -> BuilderElement:
     # Heroes are art-directed per page (see hero_director.plan_site_heroes);
     # direct callers without a directive fall back to the legacy site-wide
@@ -3111,11 +3844,39 @@ async def block_to_element(
     hero_photo: PhotoResult | None = None
     hero_washed_bg: PhotoResult | None = None
     if block.kind == "hero":
-        hero_photo, hero_washed_bg = await _apply_hero_photo_policy(
-            block, ctx, hero_directive
-        )
+        if cached_hero is not None:
+            # A profile page reached from a roster: reuse the roster's already
+            # -resolved hero exactly, rather than re-resolving — a second call
+            # with the same abstract-background query can legitimately return a
+            # DIFFERENT photo (media.py's stock dedup avoids repeats), which
+            # would silently break the shared look this is meant to preserve.
+            hero_photo, hero_washed_bg, block.layout = cached_hero
+        else:
+            hero_photo, hero_washed_bg = await _apply_hero_photo_policy(
+                block, ctx, hero_directive
+            )
+            ctx.resolved_hero_photo = (hero_photo, hero_washed_bg, block.layout)
         if hero_directive is not None:
             explicit_template_id = hero_directive.template_id
+        # With every page on the same full-bleed template, composition is the
+        # only axis of variety left (see hero_director). plan_to_site plans it
+        # site-wide so consecutive pages differ; a direct caller without one
+        # falls back to deciding this page in isolation.
+        if hero_comp is None:
+            hero_comp = hero_composition(
+                slug=ctx.current_page_slug or "",
+                seed=ctx.variety_seed or "",
+                is_homepage=is_homepage,
+                hero_height=ctx.theme.hero_background_height,
+            )
+        # An anchor only earns its keep when there is a SUBJECT for it to make
+        # room for: the copy sits to one side precisely so the photograph keeps
+        # the other. Against a colour-matched abstract wash (texture, no
+        # subject), a gradient, or a placeholder, there is nothing on the open
+        # side — so anchored copy just reads as text shoved against an edge with
+        # dead space beside it. Those centre.
+        if not _has_composable_subject(hero_photo):
+            hero_comp = HeroComposition("center")
 
     # Catalogue path: for section types that have shared builder templates, the
     # LLM-mapped content fills a chosen template (selection by feasibility +
@@ -3127,6 +3888,7 @@ async def block_to_element(
     mapped = block_to_section(
         block,
         mood=ctx.theme.mood,
+        industry=ctx.industry,
         is_homepage=is_homepage,
         hero_scroll_target_kind=hero_scroll_target_kind,
         explicit_id=explicit_template_id,
@@ -3144,6 +3906,10 @@ async def block_to_element(
             if block.kind in {"hero", "about", "features", "services", "team", "gallery"}
             else "any"
         )
+        # Only sections that are ABOUT people, or that replay the source's own
+        # photos, may draw a scraped headshot; every other slot would render a
+        # committee member's face as its subject (see image_match).
+        allow_portrait = block.kind in _PORTRAIT_SLOT_KINDS
 
         # A block-level scraped photo the LLM bound via image_ref. Safe to pin
         # for the block's single featured/background slot (about, cta) — kinds
@@ -3166,6 +3932,7 @@ async def block_to_element(
                     prefer=ctx.page_images,
                     slot_usage=slot_usage,
                     pinned_url=block_pinned,
+                    allow_portrait=allow_portrait,
                 )
             )
             # Capture the FIRST resolved image's band as the section's featured
@@ -3186,15 +3953,32 @@ async def block_to_element(
             theme={
                 "primary": ctx.theme.palette.primary,
                 "secondary": ctx.theme.palette.secondary,
+                # Lets a full-bleed photo dissolve into the page below it
+                # instead of ending on a ruled line.
+                "background": ctx.theme.palette.background,
             },
+            # Art-direct the photo treatment: which way the scrim runs off the
+            # copy, and where in the frame the subject is. Only for the
+            # full-bleed hero — a bento tile or a CTA band is not composed
+            # around a headline block.
+            composition=(
+                PhotoComposition(
+                    anchor=hero_comp.anchor,
+                    focal_y=hero_photo.focal_y if hero_photo else None,
+                )
+                if hero_comp is not None and template["id"] in _FULLBLEED_HERO_IDS
+                else None
+            ),
         )
         # Split hero: wash the whole section with the abstract theme background.
         if hero_washed_bg is not None:
             _apply_hero_washed_background(element, hero_washed_bg, ctx)
         # Childcare: drop the brand-colour tint over the hero photo — the brief
-        # wants the real image colours, not a theme wash. Swap the fill's
-        # brand-tinted overlay for a neutral, lighter scrim (still enough to keep
-        # the light multi-colour title legible).
+        # wants the real image colours, not a theme wash. Rebuild the stack with
+        # a neutral ink instead of the palette's, so the photo keeps its own
+        # colours while grain, vignette, edge fade and framing all survive.
+        # (Replacing backgroundImage outright would leave the other three layer
+        # lists describing layers that no longer exist.)
         if (
             block.kind == "hero"
             and ctx.industry == "childcare"
@@ -3203,8 +3987,42 @@ async def block_to_element(
         ):
             element.styles = {
                 **(element.styles or {}),
-                "backgroundImage": f"{_CHILDCARE_HERO_SCRIM}, url('{hero_photo.url}')",
+                **photo_background(
+                    hero_photo.avg_color, hero_photo.url,
+                    _CHILDCARE_HERO_INK, _CHILDCARE_HERO_INK,
+                    anchor=hero_comp.anchor if hero_comp else "center",
+                    focal_y=hero_photo.focal_y,
+                    page_bg_hex=ctx.theme.palette.background,
+                ),
             }
+        # Homepage: the first-impression hero deserves a vivid photo, not a
+        # slate-tinted one. The whole-frame brand cast + vignette get lightened
+        # (never the text scrim, which is what actually buys copy contrast) so
+        # a genuinely attractive resolved photo reads as a photo. Childcare
+        # already gets an even stronger treatment above, so it's excluded here.
+        if (
+            block.kind == "hero"
+            and is_homepage
+            and ctx.industry != "childcare"
+            and template["id"] in _FULLBLEED_HERO_IDS
+            and hero_photo is not None
+            and hero_photo.source in _GENUINE_PHOTO_SOURCES
+        ):
+            element.styles = {
+                **(element.styles or {}),
+                **photo_background(
+                    hero_photo.avg_color, hero_photo.url,
+                    ctx.theme.palette.secondary, ctx.theme.palette.primary,
+                    anchor=hero_comp.anchor if hero_comp else "center",
+                    focal_y=hero_photo.focal_y,
+                    page_bg_hex=ctx.theme.palette.background,
+                    wash_alpha_scale=_HOMEPAGE_HERO_WASH_SCALE,
+                ),
+            }
+        # Composition: anchor the copy block and let the scrim (built above)
+        # run off that edge. Same template, different photograph per page.
+        if block.kind == "hero" and hero_comp is not None and template["id"] in _FULLBLEED_HERO_IDS:
+            _apply_hero_composition(element, hero_comp)
         # Hero typography pass: accent headline line + photo-hero ink retint.
         if block.kind == "hero":
             _apply_hero_typography(element, block, ctx, template_id=template["id"])
@@ -3282,6 +4100,297 @@ def _harvest_image_slots(plan: SitePlan) -> list[tuple[str | None, ImageIntent]]
     return slots
 
 
+# Every "get in touch" action — the header CTA, a mid-page `cta` block, a
+# scaffolded hero, a pricing tier — defaults to this placeholder because at
+# planning time there is no page-specific target. It only ever resolved on a
+# page that happened to render its own contact section, so it ships as a dead
+# link everywhere else; `_resolve_contact_href` turns it into a real URL.
+_CONTACT_PLACEHOLDER = "#contact"
+# The id stamped on a rendered `contact` section so a `/slug#contact` fallback
+# actually lands (ContainerBlock renders `anchorId` as the HTML id).
+CONTACT_ANCHOR = "contact"
+# Every CTA href field a block (or one of its items/tiers) can carry.
+_CTA_HREF_FIELDS = ("cta_href", "primary_cta_href", "secondary_cta_href")
+_CTA_ITEM_ATTRS = ("items", "tiers")
+# Hrefs that already point somewhere real and are none of this pass's business.
+_EXTERNAL_HREF_PREFIXES = (
+    "http://",
+    "https://",
+    "//",
+    "mailto:",
+    "tel:",
+    "sms:",
+    "whatsapp:",
+)
+
+
+def _is_contact_page(page: PagePlan) -> bool:
+    """True when this page is the site's Contact page.
+
+    The plan's own `page_type` wins, but a slug/title that reads as Contact
+    counts too: menu_builder drops Contact from the primary nav on exactly that
+    inference, so a page it hides has to stay reachable from the header CTA —
+    otherwise one mislabeled `page_type` strands the page in the footer.
+
+    `menu_hidden` pages are out: they are roster detail pages, and one titled
+    "Contact Ashley" is a person, not the site's contact desk.
+    """
+    # Local import: page_inference imports nothing from this module, so this
+    # stays cycle-free (same pattern as menu_builder._is_contact).
+    from app.services.page_inference import _infer_page_type
+
+    if page.is_homepage or page.menu_hidden:
+        return False
+    return (
+        page.page_type == "contact"
+        or _infer_page_type(page.slug, page.title) == "contact"
+    )
+
+
+def _has_contact_section(page: PagePlan) -> bool:
+    """True when this page renders a `contact` block — i.e. a contact FORM
+    (the catalog's only contact template is `contact-split-form`)."""
+    return any(b.kind == "contact" for b in page.blocks)
+
+
+def _resolve_contact_href(pages: list[PagePlan], *, locale: str | None) -> str | None:
+    """Where `#contact` should point for pages in ``locale``.
+
+    A Contact page is the destination. Among several, the ranking is: one that
+    renders a form first (the CTA promises an action, so the page that can
+    complete it wins), then one the plan itself labeled `contact` over one only
+    the slug/title reads that way, then the shallowest slug. Failing a Contact
+    page entirely, the page carrying a `contact` section, linked as
+    ``/slug#contact`` — the render loop stamps the matching anchor.
+
+    Locale-scoped so a translated page reaches its own twin rather than the
+    source-language page; the caller falls back to the base locale when a
+    translation set has no Contact page of its own.
+
+    None means the site has no contact affordance at all; the caller drops the
+    action rather than shipping the placeholder.
+    """
+    scoped = [p for p in pages if p.locale == locale]
+    contact_pages = [p for p in scoped if _is_contact_page(p)]
+    if contact_pages:
+        best = min(
+            contact_pages,
+            key=lambda p: (
+                not _has_contact_section(p),
+                p.page_type != "contact",
+                p.slug.count("/"),
+            ),
+        )
+        return f"/{best.slug}"
+    # No Contact page — link to the section instead, preferring the homepage:
+    # its hero never emits a scroll cue, so the `contact` anchor is free there
+    # (an interior hero can claim its first content section's anchorId).
+    sectioned = sorted(
+        (p for p in scoped if _has_contact_section(p) and not p.menu_hidden),
+        key=lambda p: not p.is_homepage,
+    )
+    if sectioned:
+        return f"/{sectioned[0].slug}#{CONTACT_ANCHOR}"
+    return None
+
+
+def _href_token(value: str) -> str:
+    """Comparison key for a planned href or a page slug/title, so `/About-Us`,
+    `#about_us` and "About Us" all meet on the same page."""
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _page_href_index(pages: list[PagePlan]) -> dict[str, str]:
+    """token → "/slug" for every generated page.
+
+    An LLM naming a real page by a near-miss spelling (`/our-services`,
+    `#Services`, `/coaching` for a child at `services/coaching`) still lands on
+    it. Each page contributes its full slug, its last path segment, and its
+    title; the homepage has no slug to contribute, so it is indexed under its
+    title plus the literal "home" the LLM tends to write for it. First writer
+    wins and pages are walked in plan order, so a top-level page beats a deeper
+    one when a token is ambiguous.
+    """
+    index: dict[str, str] = {}
+    for page in pages:
+        slug = page.slug.strip("/").lower()
+        candidates = (
+            (slug, slug.rsplit("/", 1)[-1], page.title or "")
+            if slug
+            else (page.title or "", "home")
+        )
+        for candidate in candidates:
+            if token := _href_token(candidate):
+                index.setdefault(token, f"/{slug}" if slug else "/")
+    return index
+
+
+def _match_page_href(token: str, index: dict[str, str]) -> str | None:
+    """The page ``token`` names, or None.
+
+    Exact first, then containment either way — the LLM routinely names a page
+    with a possessive or a suffix the generated page set spells plainly
+    ("/our-services" → /services, "/about-us" → /about, "/service" → /services).
+    Longest match wins so a page whose name is a fragment of another doesn't
+    steal the link, and tokens under 4 characters only ever match exactly:
+    "us" or "faq" inside a longer name is coincidence, not a reference.
+    """
+    if not token:
+        return None
+    if exact := index.get(token):
+        return exact
+    if len(token) < 4:
+        return None
+    best: tuple[int, str] | None = None
+    for key, target in index.items():
+        if len(key) < 4 or not (key in token or token in key):
+            continue
+        if best is None or len(key) > best[0]:
+            best = (len(key), target)
+    return best[1] if best else None
+
+
+def _resolve_cta_href(
+    href: str | None, *, index: dict[str, str], fallback: str | None
+) -> str | None:
+    """The real destination for one planned CTA href, or None to drop the button.
+
+    The LLM writes these hrefs from the source site's vocabulary, not from the
+    page set we ended up generating, so it invents paths that don't exist here
+    (`/book-now`) and in-page anchors that are never stamped (`#pricing` — the
+    only anchors this renderer emits are the hero scroll cue and the contact
+    section, both injected downstream of this pass). Both ship as dead links.
+    So an href is read as a *reference to a page* and matched against the real
+    page set; what can't be matched falls back to ``fallback`` (the contact
+    destination for a primary action, None for a secondary one, which would
+    otherwise just duplicate the primary's target).
+    """
+    value = (href or "").strip()
+    if value.lower().startswith(_EXTERNAL_HREF_PREFIXES):
+        return value
+    if not value or value == _CONTACT_PLACEHOLDER:
+        return fallback
+    path, _, fragment = value.partition("#")
+    path = path.strip("/").lower()
+    if not path and not fragment:  # an explicit link to the homepage
+        return "/"
+    return _match_page_href(_href_token(path or fragment), index) or fallback
+
+
+def _resolve_block_cta_hrefs(
+    block: ContentBlock, *, index: dict[str, str], contact_href: str | None
+) -> None:
+    """Point every CTA href on ``block`` (and its items/tiers) at a real page.
+
+    A button with nowhere to go loses its label as well as its href: a blank
+    label makes the mapper emit None for the slot, and template_filler drops a
+    None slot's node entirely — the same route ``apply_hero_cta_policy`` takes
+    to strip an interior hero's CTA. Shipping the button with a dead href would
+    be worse than shipping no button.
+    """
+    targets = [
+        block,
+        *(
+            item
+            for attr in _CTA_ITEM_ATTRS
+            for item in getattr(block, attr, None) or []
+        ),
+    ]
+    for target in targets:
+        for field in _CTA_HREF_FIELDS:
+            if not hasattr(target, field):
+                continue
+            label_field = field.replace("_href", "_label")
+            label = getattr(target, label_field, None)
+            current = getattr(target, field)
+            # An optional CTA the LLM never filled in: nothing to resolve, and
+            # nothing renders either way.
+            if not label and not current:
+                continue
+            resolved = _resolve_cta_href(
+                current,
+                index=index,
+                # A secondary action has no claim on the contact destination —
+                # the primary next to it already goes there.
+                fallback=None if field == "secondary_cta_href" else contact_href,
+            )
+            setattr(target, field, resolved)
+            if resolved is None and hasattr(target, label_field):
+                setattr(target, label_field, "")
+
+
+# Height of a hero prepended to a page outside the plan (privacy / terms). The
+# var is only defined on a "banded" site, so the literal fallback bands the hero
+# either way — a legal page has nothing to sell and must not open on a full
+# screen of photography. Keeping the var IN the expression also preserves the
+# renderers' legacy full-bleed-hero signature (PreviewSiteShell's
+# heroIsBackgroundLayout matches on the token name).
+_EXTRA_PAGE_HERO_MIN_HEIGHT = f"var(--builder-hero-min-height, {HERO_BANDED_MIN_HEIGHT})"
+
+
+async def _prepend_photo_hero(
+    page: GeneratedPage,
+    *,
+    theme: ThemeTokens,
+    resolver: ImageResolver,
+    styles: StyleTokens,
+    industry: str | None,
+    seed: str,
+) -> bool:
+    """Give a page built outside the plan (privacy / terms) a banded photo hero.
+
+    Legal pages are assembled straight from boilerplate (services/legal_pages.py)
+    and have always opened on a flat band of body copy. That is fine under a
+    header that carries its own solid chrome, but not under the floating pill,
+    which never solidifies — so when the pill is in play every page needs a
+    photo hero, these included.
+
+    Returns True only when the hero rendered a GENUINE photo (i.e. came back
+    `headerOverlaySafe`). A degraded hero is discarded rather than shipped: a
+    flat colour band under the pill is exactly the look this exists to prevent,
+    and the caller demotes the archetype instead. So a page is either left
+    byte-identical to its pre-hero self, or gains a hero the pill can float over.
+    """
+    ctx = RenderContext(
+        theme=theme,
+        resolver=resolver,
+        styles=styles,
+        industry=industry,
+        current_page_slug=page.slug,
+        variety_seed=seed,
+    )
+    block = HeroBlock(
+        headline=page.title,
+        subheadline=page.seo.description or page.description,
+        layout="background",
+    )
+    hero = await block_to_element(
+        block,
+        ctx,
+        # Not the homepage and no section to scroll to: apply_hero_cta_policy
+        # strips the hero's CTAs, which is what a legal page wants — its one
+        # job is to carry the title over a photograph.
+        is_homepage=False,
+        hero_scroll_target_kind=None,
+        hero_directive=HeroDirective("hero-background-bold", "background"),
+        hero_comp=HeroComposition("center"),
+    )
+    if getattr(hero, "headerOverlaySafe", False) is not True:
+        return False
+    hero.styles = {**(hero.styles or {}), "minHeight": _EXTRA_PAGE_HERO_MIN_HEIGHT}
+    enforce_text_contrast([hero], theme)
+    # The hero headline becomes the page's single <h1>; the body's own title
+    # heading goes, so the page neither repeats itself nor ships two h1s.
+    apply_heading_levels([hero])
+    drop_page_title(page)
+    page.body_schema.elements.insert(0, hero)
+    if settings.seo_enabled and not page.seo.ogImage:
+        page.seo.ogImage = _extract_og_image_safe([hero])
+        if page.seo.ogImage:
+            page.seo.twitterCard = "summary_large_image"
+    return True
+
+
 async def plan_to_site(
     plan: SitePlan,
     *,
@@ -3292,12 +4401,14 @@ async def plan_to_site(
     page_images: dict[str, list[ImageMetadata]] | None = None,
     contact: dict[str, str] | None = None,
     extra_footer_nav: list[tuple[str, str]] | None = None,
+    extra_pages: list[GeneratedPage] | None = None,
     market_cue: str | None = None,
     place_cue: str | None = None,
     social_links: list[tuple[str, str]] | None = None,
     reserved_image_urls: set[str] | None = None,
     header_override: HeaderArchetype | None = None,
     footer_override: FooterArchetype | None = None,
+    stock_only: bool = False,
 ) -> GeneratedSite:
     """
     Build a complete, themed site from a SitePlan.
@@ -3311,8 +4422,19 @@ async def plan_to_site(
       image_query instead of round-robin. Falls back to `scraped_images` if
       only bare URLs are available.
     - `extra_footer_nav` lets the caller add pages that aren't in plan.pages
-      yet (e.g. legal pages that will be appended after this call) so they
-      still appear in the footer navigation.
+      (e.g. the boilerplate legal pages) so they still appear in the footer
+      navigation.
+    - `extra_pages` are already-built pages outside the plan (again: privacy /
+      terms). They are appended to `site.pages` here rather than by the caller
+      so the site-wide chrome rules can see the WHOLE page list: the floating
+      pill header needs a photo hero on every page, legal ones included, and
+      this function is where that hero gets prepended. They stay out of
+      `page_tree` / primary nav exactly as before.
+    - `stock_only` bars every source photo from the tree, so each slot resolves
+      its image_query from Pexels. It is a brace, not the mechanism: the caller
+      has already handed us a source with no photography (see
+      services/source_images.py), and this closes the one path an empty pool
+      leaves open — an LLM-bound `pinned_url` the pool no longer contains.
     """
     effective_brand = brand or BrandIdentity(
         name=plan.site_name,
@@ -3370,10 +4492,25 @@ async def plan_to_site(
     else:
         manifest = DesignManifest(seed=effective_brand.name or plan.site_name)
 
+    # A self-chrome header (the floating pill) never solidifies: it floats over
+    # the first section with its own chrome at every scroll position. That only
+    # reads as designed over a photo hero — full-screen or banded — so the pill
+    # imposes ONE invariant on the whole site: every page, legal pages included,
+    # opens with a full-bleed photo hero. The invariant is met by GIVING pages
+    # that hero (forced directives below + the legal-page hero pass further
+    # down), not by quietly skipping the archetype; only a page that still can't
+    # resolve a genuine photo demotes it (see the audit before build_header).
+    wants_self_chrome = (
+        settings.design_engine_enabled
+        and settings.header_overlay_enabled
+        and manifest.header_archetype in SELF_CHROME_HEADERS
+    )
+
     styles = make_style_tokens(theme)
     resolver = ImageResolver(
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
+        stock_only=stock_only,
         market_cue=market_cue,
         industry_category=plan.industry_category,
         place_cue=place_cue,
@@ -3383,6 +4520,17 @@ async def plan_to_site(
     # Photos already bound to specific sections by the image_ref pass must not
     # be re-picked by free ranking for other slots (pinned resolution itself
     # bypasses the used-set, so the owning slot still renders them).
+    if stock_only and not settings.pexels_api_key:
+        # Not fatal: resolve() always succeeds, falling to the on-brand gradient
+        # placeholder. But every content image on the site becomes that gradient,
+        # which looks like a generation fault rather than a missing key — so say
+        # so once here instead of leaving the operator to infer it.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "stock_only requested but PEXELS_API_KEY is unset — every image "
+            "will render as an on-brand gradient placeholder."
+        )
     if reserved_image_urls:
         resolver.mark_used(reserved_image_urls)
 
@@ -3398,6 +4546,17 @@ async def plan_to_site(
         children_by_parent.setdefault(parent, []).append(
             ChildPageRef(slug=pp.slug, title=pp.title, page_type=pp.page_type)
         )
+
+    # A profile page linked from a roster (menu_hidden + parent_slug) shares
+    # its parent's exact hero rather than resolving its own — see
+    # hero_director._inherit_from_parent for the directive/composition half of
+    # this; here we cache the resolved PHOTO so the same reuse holds for the
+    # actual image, not just the template pick. Keyed by slug as each page's
+    # hero resolves below. Safe by construction: menu_hidden is only ever set
+    # (page_inference.py) when the parent scaffold already existed, so the
+    # parent always renders — and therefore populates this cache — before its
+    # linked profile pages do.
+    hero_photo_cache: dict[str, tuple[PhotoResult | None, PhotoResult | None, str]] = {}
 
     # Two independent warm-ups, run concurrently (they share no data):
     # - Stock prewarm fills the per-query Pexels cache for every image slot the
@@ -3418,7 +4577,10 @@ async def plan_to_site(
             return await generate_site_design_recipe(
                 mood=effective_brand.mood,
                 industry=plan.industry_category,
-                pages=[[b.kind for b in p.blocks] for p in plan.pages],
+                # Whole blocks, not just kinds: the menu is filtered by
+                # is_feasible, which reads the content (a two-item features
+                # section can't use the three-tile bento).
+                pages=[list(p.blocks) for p in plan.pages],
             )
 
     _, site_design_recipe = await asyncio.gather(_prewarm(), _design_recipe())
@@ -3434,6 +4596,22 @@ async def plan_to_site(
         industry=plan.industry_category,
         has_source_background=resolver.strongest_source_background() is not None,
         seed=effective_brand.name or plan.site_name,
+        # A banded site is a shorter PHOTO hero, not a colour one — the height
+        # has to reach the template picker or it lands on a hero that neither
+        # shows a photo nor reads the banded min-height token.
+        hero_height=theme.hero_background_height,
+        # The floating pill needs something to float over on EVERY page, so it
+        # overrides the per-mood interior rotation (which leads with compact
+        # splits) even when the site-wide full-bleed policy is off.
+        force_background=wants_self_chrome,
+    )
+    # With every page on the same full-bleed template, how each hero is COMPOSED
+    # is the only axis of variety left — planned site-wide so consecutive pages
+    # don't converge on the same one.
+    hero_compositions = plan_site_compositions(
+        plan.pages,
+        seed=effective_brand.name or plan.site_name,
+        hero_height=theme.hero_background_height,
     )
 
     # Fold the remaining design decisions into the manifest so it is the ONE
@@ -3492,6 +4670,43 @@ async def plan_to_site(
                     )
                 )
 
+    # Point every CTA href at a page this site actually generated. Two things
+    # get fixed here: the "#contact" placeholder the LLM/scaffold defaults to
+    # for lack of a page-specific target, and the hrefs the LLM invents from the
+    # SOURCE site's vocabulary ("/book-now", "#pricing") which name no page here
+    # and would ship dead. Rewritten BEFORE rendering so the resolved link is
+    # what gets baked into each block's element.
+    #
+    # The contact destination is the fallback for anything unmatched: a Contact
+    # page that renders a form wins over one that only lists details; with no
+    # Contact page at all it is the page carrying a `contact` section
+    # (`/slug#contact`). A site with no contact affordance at all resolves to
+    # None, and those buttons are dropped rather than shipped dead — the same
+    # rule the header CTA below has always followed.
+    #
+    # Both the destination and the page index are locale-scoped so a translated
+    # page links to its own twin, falling back to the base locale's pages.
+    contact_href_by_locale = {
+        loc: _resolve_contact_href(plan.pages, locale=loc)
+        for loc in {p.locale for p in plan.pages}
+    }
+    base_contact_href = contact_href_by_locale.get(None)
+    _base_href_index = _page_href_index(
+        [p for p in plan.pages if p.locale is None]
+    )
+    href_index_by_locale = {
+        loc: {
+            **_base_href_index,
+            **_page_href_index([p for p in plan.pages if p.locale == loc]),
+        }
+        for loc in {p.locale for p in plan.pages}
+    }
+    for _page_plan in plan.pages:
+        _href = contact_href_by_locale.get(_page_plan.locale) or base_contact_href
+        _index = href_index_by_locale.get(_page_plan.locale, _base_href_index)
+        for _block in _page_plan.blocks:
+            _resolve_block_cta_hrefs(_block, index=_index, contact_href=_href)
+
     # Build each page's body
     pages: list[GeneratedPage] = []
     _render_start = perf_counter()
@@ -3528,12 +4743,22 @@ async def plan_to_site(
         hero_target_kind = content_kinds[0] if content_kinds else None
         hero_element: BuilderElement | None = None
         target_element: BuilderElement | None = None
+        contact_element: BuilderElement | None = None
         # This page's slice of the batched site recipe (computed once above).
         design_recipe: DesignRecipe = site_design_recipe.recipe_for(page_index)
         for block_index, block in enumerate(page_plan.blocks):
             # Reset the per-section capture, render, then read the band of the
             # section's featured image (Phase 4b) into the pass input.
             ctx.section_image_band = None
+            ctx.resolved_hero_photo = None
+            # A profile page linked from a roster reuses that roster's already
+            # -resolved hero (see hero_photo_cache precompute above) instead of
+            # resolving its own.
+            cached_hero = (
+                hero_photo_cache.get(page_plan.parent_slug)
+                if block.kind == "hero" and page_plan.menu_hidden and page_plan.parent_slug
+                else None
+            )
             element = await block_to_element(
                 block,
                 ctx,
@@ -3545,7 +4770,18 @@ async def plan_to_site(
                     if block.kind == "hero"
                     else None
                 ),
+                hero_comp=(
+                    hero_compositions.get(page_plan.slug)
+                    if block.kind == "hero"
+                    else None
+                ),
+                cached_hero=cached_hero,
             )
+            if block.kind == "hero" and page_plan.slug not in hero_photo_cache:
+                if ctx.resolved_hero_photo is not None:
+                    hero_photo_cache[page_plan.slug] = ctx.resolved_hero_photo
+                elif cached_hero is not None:
+                    hero_photo_cache[page_plan.slug] = cached_hero
             elements.append(element)
             if hero_element is None and block.kind == "hero":
                 hero_element = element
@@ -3553,6 +4789,8 @@ async def plan_to_site(
             # hero's scroll anchor if the hero ended up full-bleed.
             if target_element is None and block.kind == hero_target_kind:
                 target_element = element
+            if contact_element is None and block.kind == "contact":
+                contact_element = element
             visual_inputs.append(
                 section_visual_input_for(block, image_band=ctx.section_image_band)
             )
@@ -3563,6 +4801,14 @@ async def plan_to_site(
             anchor = hero_scroll_anchor(hero_target_kind)
             if _has_link_to(hero_element, f"#{anchor}"):
                 target_element.anchorId = anchor
+        # Same idea for the contact section: it is the landing spot for the
+        # `/slug#contact` fallback `_resolve_contact_href` hands out when the
+        # site has no Contact page. Second in line — a hero scroll cue already
+        # holds the only anchor a section can carry.
+        if contact_element is not None and (
+            getattr(contact_element, "anchorId", None) is None
+        ):
+            contact_element.anchorId = CONTACT_ANCHOR
         # Story pages: alternate the image side of consecutive about splits so
         # the photos zigzag down the page instead of stacking on one side.
         apply_about_zigzag(elements)
@@ -3581,6 +4827,14 @@ async def plan_to_site(
         # after modernize_sections (the lone mesh/grain accent is now present) and
         # before dividers so a shaped seam reads against the final solid colour.
         cap_gradient_textures(elements, theme)
+        # Brand-token gradient fills resolve to concrete, AA-checked hexes: a
+        # catalog template paints with var(--builder-color-*) and so cannot know
+        # whether the theme it lands in keeps its white ink readable.
+        enforce_fill_contrast(elements, theme)
+        # Panel polish (measure cap on the headline, hairline flipped to suit a
+        # dark fill). Runs AFTER the pass above, which is what turns the fill's
+        # tokens into the real hexes this one reads to judge the fill's darkness.
+        polish_inset_panels(elements)
         # Childcare: recolour flat sections through the cheerful pastel set
         # (cream/sky/mint/peach/lavender/butter) so the page reads multi-coloured
         # rather than one hue plus a dark band. Runs after the rhythm/modernize
@@ -3594,10 +4848,15 @@ async def plan_to_site(
             # Each pastel section's title gets its own vivid colour (runs after
             # the pastel pass so its dark-ink recolour doesn't overwrite them).
             apply_childcare_heading_colors(elements)
-        # Shaped section dividers — fill colour reads each neighbour's solid
-        # backgroundColor; both neighbours are flattened so a shaped seam always
-        # sits against solid colour (never a mesh/grain band).
+        # Shaped section dividers — the picture section carries the edge and the
+        # fill is the flat neighbour's exact colour; a boundary with a picture on
+        # both sides gets no divider at all, since no flat fill could match it.
         apply_section_dividers(elements, effective_brand.mood, plan.industry_category)
+        # A full-bleed photo's bottom dissolve was written against the THEME page
+        # background before the page existed. Now that the neighbour (and any
+        # shaped edge) is known, re-point it at the real surface below or drop
+        # it — otherwise it hazes page-coloured over a dark or pastel band.
+        retune_photo_edge_fades(elements, theme)
         # Asymmetric headers + scroll/backdrop motion — applied last so they
         # read the final band/background each section landed on.
         apply_heading_alignment(elements, effective_brand.mood)
@@ -3619,6 +4878,11 @@ async def plan_to_site(
         elif page_plan.page_type == "events":
             elements.append(_cms_list_element("events"))
         og_image = _extract_og_image_safe(elements) if settings.seo_enabled else None
+        if settings.seo_enabled and not og_image:
+            # A video page can legitimately carry no photography at all — its
+            # content is players. The first video's poster is a real image OF
+            # the real content, which beats shipping no social card.
+            og_image = _first_video_thumbnail(page_plan.blocks)
         structured = None
         if settings.seo_enabled and settings.seo_structured_data_enabled:
             bc_chain = _breadcrumb_slug_chain(page_plan.slug, page_title_by_slug)
@@ -3626,7 +4890,12 @@ async def plan_to_site(
                 page_plan=page_plan,
                 site_name=plan.site_name,
                 brand_name=effective_brand.name or plan.site_name,
-                logo_url=effective_brand.logo_url,
+                # schema.org Organization.logo must be the real mark — a social
+                # card or a favicon fails Google's rich-result check. Same gate
+                # the header uses (services/logo_extraction.py).
+                logo_url=(
+                    effective_brand.logo_url if effective_brand.logo_render_ok else None
+                ),
                 industry_category=plan.industry_category,
                 contact=contact,
                 breadcrumb_slugs=bc_chain,
@@ -3652,16 +4921,82 @@ async def plan_to_site(
                 parent_slug=page_plan.parent_slug,
                 nav_rank=page_plan.nav_rank,
                 from_source=page_plan.from_source,
+                menu_hidden=page_plan.menu_hidden,
             )
         )
     log_elapsed("page_render", _render_start)
+
+    # Pages from outside the plan (privacy / terms). They render last, so the
+    # stock pool is at its most picked-over by the time they ask for a photo —
+    # which is exactly why their hero is built here, against the same resolver,
+    # rather than by the caller with no image pipeline in hand.
+    # Its return value is deliberately not read: whether the hero stuck is
+    # re-established for every page at once by the audit below.
+    outside_pages = list(extra_pages or [])
+    if wants_self_chrome:
+        for _extra in outside_pages:
+            await _prepend_photo_hero(
+                _extra,
+                theme=theme,
+                resolver=resolver,
+                styles=styles,
+                industry=plan.industry_category,
+                seed=manifest.seed,
+            )
+
+    # Self-chrome audit. The pill floats over the first section on EVERY page
+    # with no solid phase to fall back on, so one page that opens on a flat band
+    # invalidates the archetype for the whole site. Every page has been given a
+    # photo hero by now (forced directives + the pass above); a page that STILL
+    # isn't overlay-safe never resolved a genuine photo, and no amount of
+    # art direction can fix that here — so the pill steps aside for a header
+    # that chromes itself. The demotion lands on the manifest, which is what
+    # every downstream reader (build_header, build_layout_payload, the pushed
+    # designManifest) takes its archetype from.
+    if wants_self_chrome:
+        _unsafe = [
+            p.slug or "/"
+            for p in [*pages, *outside_pages]
+            if getattr(_first_content_section(p), "headerOverlaySafe", False) is not True
+        ]
+        if _unsafe:
+            demote_self_chrome_header(
+                manifest,
+                reason=(
+                    "no photo hero on "
+                    + ", ".join(f"'{s}'" for s in _unsafe[:3])
+                    + (f" (+{len(_unsafe) - 3} more)" if len(_unsafe) > 3 else "")
+                ),
+            )
+
+    # Luminance markers for the renderers' scroll-adaptive header ink. Stamped
+    # here, once, for every page the site will ship: the legal pages above never
+    # went through the per-page styling loop, and the pill's prepended hero
+    # lands after it. Nothing below this point touches a body section's styles.
+    for _page in [*pages, *outside_pages]:
+        _stamp_band_markers(_page.body_schema.elements, theme)
 
     page_tree = _build_page_tree(pages)
     nav_items = _nav_items_from_pages(pages)
     footer_nav = list(nav_items)
     if extra_footer_nav:
         footer_nav.extend(extra_footer_nav)
-    primary_cta = ("Get in touch", "#contact")
+    # The header's primary CTA (label varies by industry, see
+    # _CTA_LABEL_BY_INDUSTRY) routes to the contact destination resolved above
+    # — the site's Contact page, preferring one that carries a form. It is the
+    # header's only route there: menu_builder leaves Contact out of the primary
+    # nav (see its policy note) because this CTA covers that action. It is
+    # therefore never a bare "#contact", which lands nowhere on every page but
+    # the one rendering its own contact section. A site with no contact
+    # affordance at all gets no button rather than a dead one.
+    primary_cta = (
+        (
+            _CTA_LABEL_BY_INDUSTRY.get(plan.industry_category, "Get in touch"),
+            base_contact_href,
+        )
+        if base_contact_href
+        else None
+    )
 
     # Transparent floating header (white nav ink), solidifying on scroll —
     # default on; the setting is a kill switch. It engages ONLY over a genuinely
@@ -3739,7 +5074,9 @@ async def plan_to_site(
         tagline=plan.tagline,
         primary_color=theme.palette.primary,
         secondary_color=theme.palette.secondary,
-        pages=pages,
+        # Legal pages ride along in `pages` but not in `page_tree`/nav — they
+        # reach the footer through `extra_footer_nav`, as they always have.
+        pages=[*pages, *outside_pages],
         page_tree=page_tree,
         media_credits=resolver.attributions,
         social_links=social_links or [],
@@ -3793,6 +5130,9 @@ def _build_page_tree(pages: list[GeneratedPage]) -> list[PageNode]:
             is_homepage=p.is_homepage,
             nav_rank=p.nav_rank,
             from_source=p.from_source,
+            menu_hidden=p.menu_hidden,
+            locale=getattr(p, "locale", None),
+            translation_of=getattr(p, "translation_of", None),
         )
 
     roots: list[PageNode] = []

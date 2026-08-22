@@ -8,6 +8,7 @@ import type {
   CrawlJob,
   DetectedBrand,
   ExtendCrawlResult,
+  FacebookFacts,
   GeneratedSite,
   HeroHeight,
   IndustryCategory,
@@ -58,7 +59,10 @@ export interface GeneratePayload {
   brand?: BrandIdentity | null
   mood_override?: BrandMood | null
   color_scheme_override?: ColorScheme | null
-  hero_height?: HeroHeight
+  hero_height?: HeroHeight | null
+  /** Every content image comes from Pexels stock; no source photo is used.
+   * The brand logo, document thumbnails and migrated post images are unaffected. */
+  stock_images_only?: boolean
   contact?: Record<string, string> | null
 }
 
@@ -76,12 +80,19 @@ export interface GenerateWithPagesPayload {
   brand?: BrandIdentity | null
   mood_override?: BrandMood | null
   color_scheme_override?: ColorScheme | null
-  hero_height?: HeroHeight
+  hero_height?: HeroHeight | null
+  /** Every content image comes from Pexels stock; no source photo is used.
+   * The brand logo, document thumbnails and migrated post images are unaffected. */
+  stock_images_only?: boolean
   contact?: Record<string, string> | null
   jurisdiction?: string | null
   legal_contact_email?: string | null
   /** Pass the detected_brand from /api/pages/recipe to skip a duplicate LLM call. */
   detected_brand?: DetectedBrand | null
+  /** The Facebook Page this site was read from. It is the authority on its own
+   * contact details, hours, reviews and counts — the backend rewrites those
+   * blocks from it after the LLM has run. */
+  facebook_facts?: FacebookFacts | null
 }
 
 export async function generateWithPages(
@@ -93,15 +104,25 @@ export async function generateWithPages(
   })
 }
 
+export interface PageRecipeOptions {
+  industryOverride?: IndustryCategory
+  /** One landing page instead of the industry template's fan-out. */
+  singlePage?: boolean
+  /** Section list gated on the facts the source actually holds. */
+  homepageSections?: string[]
+}
+
 export async function fetchPageRecipe(
   source: SourceContent,
-  industryOverride?: IndustryCategory,
+  opts: PageRecipeOptions = {},
 ): Promise<PageRecipeResponse> {
   return jsonRequest('/api/pages/recipe', {
     method: 'POST',
     body: JSON.stringify({
       source,
-      industry_override: industryOverride ?? null,
+      industry_override: opts.industryOverride ?? null,
+      single_page: opts.singlePage ?? false,
+      homepage_sections: opts.homepageSections ?? null,
     }),
   })
 }
@@ -111,23 +132,15 @@ export interface ScrapeOptions {
   crawl?: boolean
   crawlMaxPages?: number
   crawlMaxDepth?: number
+  /** Facebook Page access token. Request-scoped — the backend holds it in
+   * memory for the life of the job and never writes it to the jobs table. */
+  accessToken?: string
 }
 
-export async function scrapeUrlPreview(
-  url: string,
-  opts: ScrapeOptions = {},
-): Promise<ScrapePreview> {
-  return jsonRequest('/api/scrape/preview', {
-    method: 'POST',
-    body: JSON.stringify({
-      url,
-      respect_robots: opts.respectRobots ?? true,
-      crawl: opts.crawl ?? true,
-      crawl_max_pages: opts.crawlMaxPages ?? 20,
-      crawl_max_depth: opts.crawlMaxDepth ?? 3,
-    }),
-  })
-}
+/* `scrapeUrlPreview` (POST /api/scrape/preview) lived here. It was the original
+ * synchronous scrape, superseded by the job model below (startCrawl + polling),
+ * and had no remaining call sites — the wizard has used startCrawl throughout.
+ * Removed with the endpoint it called. */
 
 /** Fast sitemap probe — returns total URL count before paying for Playwright. */
 export async function probeSitemap(url: string): Promise<SitemapProbeResult> {
@@ -137,7 +150,11 @@ export async function probeSitemap(url: string): Promise<SitemapProbeResult> {
   })
 }
 
-/** Async crawl kickoff — returns a job_id to poll. */
+/** Async source-read kickoff — returns a job_id to poll.
+ *
+ * One endpoint for every link. The backend inspects the URL and picks the
+ * reader (HTML crawler or Facebook Page), so there is no second function here
+ * and no mode for the caller to get wrong. */
 export async function startCrawl(
   url: string,
   opts: ScrapeOptions = {},
@@ -150,6 +167,7 @@ export async function startCrawl(
       crawl: opts.crawl ?? true,
       crawl_max_pages: opts.crawlMaxPages ?? 20,
       crawl_max_depth: opts.crawlMaxDepth ?? 3,
+      access_token: opts.accessToken?.trim() || null,
     }),
   })
 }

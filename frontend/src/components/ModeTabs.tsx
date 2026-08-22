@@ -7,11 +7,15 @@ interface ModeTabsProps {
   onChange: (mode: GeneratorMode) => void
 }
 
+// Two tabs, because these are two genuinely different input affordances: you
+// type a link, or you drop a file. There is deliberately no "Facebook" tab —
+// a Facebook Page is a link, and which reader handles it is our problem, not
+// something the user should have to classify. See lib/sourceDetect.ts.
 const TABS: { id: GeneratorMode; label: string; description: string }[] = [
   {
     id: 'url',
-    label: 'Scrape a URL',
-    description: 'Pull content from an existing website and rebuild it.',
+    label: 'Paste a link',
+    description: 'A website or a Facebook Page — we work out how to read it.',
   },
   {
     id: 'document',

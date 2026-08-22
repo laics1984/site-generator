@@ -17,13 +17,27 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
 from urllib.parse import urlparse
 
-from app.models.content_blocks import NavLink, PageType, SectionType, SourceContent
+from app.models.content_blocks import (
+    NavLink,
+    PageType,
+    SectionCandidate,
+    SectionType,
+    SourceContent,
+)
 from app.models.industry import IndustryCategory, PageScaffold
 from app.services.industry_templates import get_template
 from app.services.landing_patterns import homepage_sections
+from app.services.locale import (
+    AMBIGUOUS_LOCALE_SEGMENTS,
+    locale_label,
+    locale_segment,
+)
 from app.services.nav_extraction import find_repeated_cluster_keys
+from app.services.source_path import is_record_url, normalize_source_slug
+from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +100,60 @@ def _slug_tokens(slug: str) -> set[str]:
     }
 
 
+def _match_tokens(text: str) -> list[str]:
+    """Ordered, lowercased word tokens of a slug + title.
+
+    Order is preserved (unlike ``_slug_tokens``) because multi-word hints match
+    as a contiguous run: "how-we-work" must find `how, we, work` adjacent and in
+    that order, not merely present.
+    """
+    return [t for t in re.split(r"[^a-z0-9]+", text.lower()) if t]
+
+
+def _hint_matches(hint: str, tokens: list[str]) -> bool:
+    """True when `hint`'s own tokens appear as a contiguous run in `tokens`.
+
+    Whole-token matching (not substring) is what keeps "work" off /framework,
+    "team" off /teamwork and "help" off /helpful-resources — every one of which
+    the old ``hint in haystack`` test claimed.
+    """
+    needle = _match_tokens(hint)
+    if not needle:
+        return False
+    span = len(needle)
+    return any(
+        tokens[i : i + span] == needle for i in range(len(tokens) - span + 1)
+    )
+
+
+def _matched_page_type(slug: str, title: str = "") -> PageType | None:
+    """The page type a slug + title actually evidences, or None.
+
+    Hints are tried in TWO passes — every multi-word hint across all types
+    before any single-word hint. Within a pass, ``_TYPE_HINTS`` order decides.
+
+    The two passes are the whole point: "work" (a `work` hint) and
+    "how-we-work" (a `process` hint) both match /how-we-work, and `work` sits
+    earlier in the table, so a single ordered pass types the page as a
+    portfolio. The more specific hint has to win regardless of table order.
+    """
+    tokens = _match_tokens(f"{slug} {title}")
+    if not tokens:
+        return None
+    first_segment = slug.split("/", 1)[0].lower()
+
+    for multiword in (True, False):
+        for page_type, hints in _TYPE_HINTS:
+            for hint in hints:
+                if (len(_match_tokens(hint)) > 1) is not multiword:
+                    continue
+                # An exact first-segment match is the strongest evidence there
+                # is (/team, /pricing) and stays a direct hit.
+                if hint == first_segment or _hint_matches(hint, tokens):
+                    return page_type
+    return None
+
+
 def _infer_page_type(slug: str, title: str = "") -> PageType:
     """Best-effort match of a URL slug + title to one of the PageType literals.
 
@@ -94,14 +162,9 @@ def _infer_page_type(slug: str, title: str = "") -> PageType:
     """
     if not slug:
         return "home"
-    haystack = f"{slug} {title}".lower()
-    for page_type, hints in _TYPE_HINTS:
-        for hint in hints:
-            # Match against full token, slash-delimited segment, or substring
-            if hint == slug.split("/", 1)[0]:
-                return page_type
-            if hint in haystack:
-                return page_type
+    matched = _matched_page_type(slug, title)
+    if matched is not None:
+        return matched
     # No match — depth decides between landing (sub) and services (top).
     return "landing" if "/" in slug else "services"
 
@@ -111,6 +174,43 @@ def _infer_page_type(slug: str, title: str = "") -> PageType:
 # cards keeps its own recipe. Imported by routers/generate.py so the roster
 # fill uses the same threshold as the classification.
 DIRECTORY_MIN_PROFILES = 6
+
+# Cards on ONE page before its links count as a roster index. Two is enough to
+# be a listing; one is not, and the difference matters: the lone card on a
+# person's own page links BACK to the roster, and reading that as a roster edge
+# would file the committee page under Ashley Jinivon. Same threshold, same
+# reasoning as ``_rostered_names`` in routers/generate.py.
+ROSTER_MIN_PROFILES = 2
+
+
+def roster_detail_links(source: SourceContent) -> dict[str, str]:
+    """``{detail-page slug: the roster page's slug}`` across the whole source.
+
+    The site's own index of which pages are somebody's profile and where they
+    belong, read off the links its roster cards carry
+    (``scraper._profile_card_link``). Two things downstream need exactly this:
+    a detail page's real parent (this module), and where a rendered team card
+    should point (routers/generate.py).
+
+    Nothing is inferred from URL shape. A site whose members live at /profile/*
+    while the roster is /committee is the normal case, not the exception, and
+    only the link says so.
+    """
+    links: dict[str, str] = {}
+    for page in (source, *source.discovered_pages):
+        candidates = page.profile_candidates or []
+        if len(candidates) < ROSTER_MIN_PROFILES:
+            continue
+        roster_slug = _path_to_slug(page.url_path)
+        for candidate in candidates:
+            if not candidate.profile_url:
+                continue
+            detail_slug = _path_to_slug(urlparse(candidate.profile_url).path)
+            # A roster linking to itself is a paginator, not a profile.
+            if not detail_slug or detail_slug == roster_slug:
+                continue
+            links.setdefault(detail_slug, roster_slug)
+    return links
 
 
 def _looks_like_directory_page(page: SourceContent | None) -> bool:
@@ -122,6 +222,61 @@ def _looks_like_directory_page(page: SourceContent | None) -> bool:
     therapist").
     """
     return page is not None and len(page.profile_candidates or []) >= DIRECTORY_MIN_PROFILES
+
+
+def _homepage_founder_names(source: SourceContent | None) -> list[str]:
+    """Distinct founder/owner names visible anywhere in the crawl, or [].
+
+    Returns [] rather than a long list when more than ``FOUNDERS_BAND_MAX``
+    people carry a founder-ish title: that is a leadership page, not the two
+    people who started the business, and the caller's question is only ever
+    "is there a small founder group to introduce on the homepage?".
+    """
+    if source is None:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for page in (source, *(source.discovered_pages or [])):
+        for candidate in page.profile_candidates or []:
+            if not looks_like_founder_role(candidate.role):
+                continue
+            key = " ".join((candidate.name or "").split()).lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            names.append(candidate.name)
+            if len(names) > FOUNDERS_BAND_MAX:
+                return []
+    return names
+
+
+def _weave_founders_into_home(
+    scaffolds: list[PageScaffold], source: SourceContent | None
+) -> None:
+    """Give the homepage a people section when a small founder group is visible.
+
+    "Who runs this" is homepage material for an owner-operated business, and the
+    rule stays useful for a large firm with two founders — where a headcount
+    rule would show nothing.
+
+    Only the SECTION is placed here. WHICH people fill it is decided later, by
+    ``generate._apply_homepage_team_policy``, once portrait and vision gating
+    have settled who actually renders — so a homepage that also has a full Team
+    page ends up with the founders, not a second copy of the roster.
+    """
+    if not _homepage_founder_names(source):
+        return
+    home = next((s for s in scaffolds if s.is_homepage), None)
+    if home is None or "team" in home.sections:
+        return
+    # Keep the homepage inside the single-LLM-call ceiling — the same reason
+    # _augment_sections trims its extras.
+    if len(home.sections) >= _MAX_PAGE_SECTIONS:
+        return
+    if "cta" in home.sections:
+        home.sections.insert(home.sections.index("cta"), "team")
+    else:
+        home.sections.append("team")
 
 
 def _coerce_directory_type(page_type: PageType, page: SourceContent | None) -> PageType:
@@ -176,6 +331,11 @@ _SUBPAGE_SECTIONS: list[SectionType] = ["hero", "features", "process", "testimon
 _WORK_SUBPAGE_SECTIONS: list[SectionType] = ["hero", "about", "gallery", "testimonials", "cta"]
 # Sub-pages of team show a single person's bio + linked services/work.
 _TEAM_SUBPAGE_SECTIONS: list[SectionType] = ["hero", "about", "testimonials", "cta"]
+# A page a roster LINKS to is that one person's page, and the profile block is
+# the whole of it: portrait, name, role, story, contact. No `about` — the story
+# belongs beside the face, and a separate about section would tell it twice
+# from the same source text.
+_PROFILE_PAGE_SECTIONS: list[SectionType] = ["hero", "profile", "cta"]
 
 
 # Page types whose fixed rhythm always wins — conversion pages (home), pages
@@ -190,6 +350,53 @@ _STORY_INELIGIBLE_TYPES: frozenset[PageType] = frozenset(
 _STORY_MIN_SECTIONS = 3
 
 
+# Page types whose STRUCTURE is their content: the grid/list IS the page. A
+# sub-page repeating its parent's type is normally a detail page — /services/
+# web-design describes one service rather than listing them again — but these
+# are not. "Photos" under a GALLERY ▾ dropdown is still a gallery, and a
+# "Lunch" page under MENU ▾ is still a menu. Collapsing them to `landing`
+# handed them _SUBPAGE_SECTIONS and, with the type gone, dropped them out of
+# every guard keyed on it (_STORY_INELIGIBLE_TYPES,
+# _PHOTO_SECTION_INELIGIBLE_TYPES) — a photo gallery shipped as
+# hero/features/process/about/cta with no pictures on it at all.
+#
+# `team` is deliberately absent: it has the evidence-gated rule in
+# _sections_for below (_looks_like_directory_page), and an unconditional entry
+# here would take _TEAM_SUBPAGE_SECTIONS away from a single person's bio page.
+_SELF_STRUCTURED_TYPES: frozenset[PageType] = frozenset(
+    {"gallery", "menu", "pricing", "faq", "testimonials"}
+)
+
+
+def _child_type_under(sub_type: PageType, parent_type: PageType | None) -> PageType:
+    """A child repeating its parent's type is a detail page — unless that
+    type's own structure is the page's content."""
+    if sub_type == parent_type and sub_type not in _SELF_STRUCTURED_TYPES:
+        return "landing"
+    return sub_type
+
+
+# Card kinds whose section IS its pictures. Used to tell a badge/photo wall
+# apart from a narrative section, which is the difference between "one image
+# illustrating a paragraph" and "the images are the content".
+_IMAGE_GRID_CARD_KINDS: frozenset[str] = frozenset({"gallery", "documents"})
+
+# At or above this many images under one heading, the heading is a wall rather
+# than a narrative beat — used where no section tree is available to say so.
+_WALL_MIN_IMAGES = 3
+
+
+def _grid_headings(page: SourceContent | None) -> set[str]:
+    """Lowercased headings whose section is a rack of pictures, not prose."""
+    if page is None:
+        return set()
+    return {
+        section.heading.strip().lower()
+        for section in (page.section_candidates or [])
+        if section.cards and section.card_kind in _IMAGE_GRID_CARD_KINDS
+    }
+
+
 def _story_section_count(page: SourceContent | None) -> int:
     """How many title+paragraph+photo sections the source page evidences.
 
@@ -198,20 +405,29 @@ def _story_section_count(page: SourceContent | None) -> int:
     whose context_heading matches one of the page's headings, counted over
     distinct headings. Zero on the fast path when no context was captured —
     detection degrades to the fixed rhythm, never breaks it.
+
+    A heading whose images form a WALL is not a narrative beat and must not be
+    counted. A narrative section has one photo; an awards or accreditation
+    section has a dozen — but counted per distinct heading they looked
+    identical, so an awards page with three badge racks read as a three-part
+    story and came out as three invented paragraphs.
     """
     if page is None:
         return 0
     headings = {h.strip().lower() for h in (page.headings or []) if h.strip()}
     if not headings:
         return 0
-    matched: set[str] = set()
+    walls = _grid_headings(page)
+    per_heading: dict[str, int] = {}
     for meta in page.image_metadata or []:
         if meta.role in ("logo", "decoration") or meta.intent == "logo":
             continue
         ch = (meta.context_heading or "").strip().lower()
-        if ch and ch in headings:
-            matched.add(ch)
-    return len(matched)
+        if ch and ch in headings and ch not in walls:
+            per_heading[ch] = per_heading.get(ch, 0) + 1
+    # The count is the fallback for pages with no usable section tree: several
+    # images under one heading is a wall whatever the tree did or didn't say.
+    return sum(1 for n in per_heading.values() if n < _WALL_MIN_IMAGES)
 
 
 def _story_sections(story_count: int) -> list[SectionType]:
@@ -223,6 +439,78 @@ def _story_sections(story_count: int) -> list[SectionType]:
     """
     n = min(story_count, _MAX_PAGE_SECTIONS - 2)
     return ["hero", *(["about"] * n), "cta"]
+
+
+# What a source card group becomes. `offerings` alternates services/features so
+# a page with two card racks doesn't render the same layout family twice —
+# they're both card sections, but they draw from different template pools.
+_CARD_KIND_SECTIONS: dict[str, SectionType] = {
+    "people": "team",
+    "steps": "process",
+    "gallery": "gallery",
+    "documents": "downloads",
+}
+
+# Below this the tree says too little to be worth overriding the page-type
+# recipe with — a two-heading page is better served by its industry rhythm.
+_TREE_MIN_SECTIONS = 3
+
+
+def _tree_is_image_led(tree: list[SectionCandidate]) -> bool:
+    """True when every card-bearing section of the tree is a rack of pictures.
+
+    Lets the tree win below ``_TREE_MIN_SECTIONS``. The floor exists because a
+    two-heading prose page says too little to outrank its industry rhythm — but
+    that reasoning does not transfer to pictures. The single most common awards
+    page there is has ONE heading over a dozen badges, and the recipe it falls
+    back to has nowhere to put them, so the page's entire content is dropped.
+
+    Deliberately "all", not "any": a services page with one photo strip among
+    its prose sections keeps its own rhythm.
+    """
+    carded = [section for section in tree if section.cards]
+    if not carded:
+        return False
+    return all(section.card_kind in _IMAGE_GRID_CARD_KINDS for section in carded)
+
+
+def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
+    """The section list the SOURCE dictates, or None to fall back to the recipe.
+
+    Same override as ``_story_sections`` above, generalised: instead of assuming
+    every source section is an image+text split, each one becomes the block kind
+    its cards actually justify.
+
+    This is the half of the section-tree work without which the other half
+    misfires. The planner prompt tells the model "one source section → one
+    output section", but ``required_sections`` was still derived from the URL
+    slug — so on a page with six source sections and a five-kind recipe the
+    model had nowhere to put the extras, and fell back to the one schema that is
+    always in the prompt and accepts arbitrary prose: `about`. Glorykids'
+    /school-life came out as six consecutive about blocks with four age-group
+    cards flattened into one of their body strings.
+    """
+    tree = page.section_candidates if page else None
+    if not tree:
+        return None
+    if len(tree) < _TREE_MIN_SECTIONS and not _tree_is_image_led(tree):
+        return None
+
+    body: list[SectionType] = []
+    offerings_seen = 0
+    for section in tree:
+        if not section.cards:
+            body.append("about")
+        elif section.card_kind == "offerings":
+            body.append("services" if offerings_seen % 2 == 0 else "features")
+            offerings_seen += 1
+        else:
+            body.append(_CARD_KIND_SECTIONS.get(section.card_kind, "about"))
+
+    # hero and cta bracket the page; the source's own sections are trimmed to
+    # fit between them rather than displacing them.
+    body = body[: max(0, _MAX_PAGE_SECTIONS - 2)]
+    return ["hero", *body, "cta"]
 
 
 def _content_photo_count(page: SourceContent | None) -> int:
@@ -298,6 +586,14 @@ def _sections_for(
     # even for sub-pages (which would otherwise get the generic detail rhythm).
     if page_type == "team" and _looks_like_directory_page(page):
         return _augment_sections(list(_TOP_SECTIONS["team"]), page_type, page)
+    # The source's own section tree outranks every fixed rhythm below, and the
+    # story heuristic above it: the story rule infers "this page is a sequence
+    # of image+text sections" from photo COUNT, while the tree reads the actual
+    # markup and knows which of those sections carry cards.
+    if page_type not in _STORY_INELIGIBLE_TYPES:
+        from_tree = _sections_from_tree(page)
+        if from_tree is not None:
+            return _augment_sections(from_tree, page_type, page)
     # Story pages override the fixed rhythms: the source itself dictates the
     # section list (a photo-and-heading section sequence), not the page type.
     if page_type not in _STORY_INELIGIBLE_TYPES:
@@ -306,6 +602,14 @@ def _sections_for(
             return _augment_sections(_story_sections(story_count), page_type, page)
     if parent_type is None:
         base = list(_TOP_SECTIONS.get(page_type, _TOP_SECTIONS["services"]))
+    elif page_type in _SELF_STRUCTURED_TYPES:
+        # The grid IS the page: a gallery/menu/pricing/FAQ/testimonials page
+        # nested under a dropdown keeps its own rhythm rather than the generic
+        # detail rhythm, exactly as a team directory does above. Set `base`
+        # rather than returning early so the tail below still runs — that is
+        # what keeps the invented `about` off a gallery page, since `gallery`
+        # is in _PHOTO_SECTION_INELIGIBLE_TYPES.
+        base = list(_TOP_SECTIONS[page_type])
     elif parent_type == "work":
         base = list(_WORK_SUBPAGE_SECTIONS)
     elif parent_type == "team":
@@ -315,7 +619,35 @@ def _sections_for(
     # Below the story threshold, an image-rich page still gets its matched
     # photos as image+text splits woven into the fixed rhythm.
     base = _weave_photo_sections(base, page_type, page)
+    base = _swap_unfillable_gallery_for_video(base, page)
     return _augment_sections(base, page_type, page)
+
+
+def _swap_unfillable_gallery_for_video(
+    sections: list[SectionType], page: SourceContent | None
+) -> list[SectionType]:
+    """A video gallery's "photos" are videos — ask for the section it can fill.
+
+    ``/gallery-video`` types as `gallery`, whose recipe asks for a photo wall the
+    page cannot supply: its content is in ``<iframe>``s, so there are no content
+    photos, ``_drop_unbound_gallery_items`` rightly deletes the empty block, and
+    the page ships as hero + generic cta. That is exactly what brightkids
+    shipped — a video gallery rendered as stock imagery under invented headings.
+
+    Requires BOTH conditions, so this never fires on a page that merely happens
+    to have a video: the page must carry embeds AND have no content photography
+    of its own. A gallery page with both keeps its gallery and gains a video
+    section through the ordinary signal path.
+
+    Applied only to the fixed-rhythm tail — never to the `_sections_from_tree`
+    or story early-returns above, where a `gallery` means the source's markup
+    actually offered a picture rack.
+    """
+    if page is None or not page.video_embeds:
+        return sections
+    if "gallery" not in sections or _content_photo_count(page) > 0:
+        return sections
+    return ["video" if section == "gallery" else section for section in sections]
 
 
 # --- content-signal detection (timeline / awards / clients / stats) -------------
@@ -362,6 +694,25 @@ _SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
     "clients": frozenset({"home", "work"}),
     "stats": frozenset({"home", "about"}),
     "locations": frozenset({"home", "about", "contact"}),
+    "video": frozenset(
+        {"home", "about", "services", "gallery", "work", "landing", "process"}
+    ),
+    # Wider than any other signal, and legitimately so: this fires only when the
+    # page DEMONSTRABLY framed a map, and a business that pins its address on a
+    # franchise or admissions page meant it to be there. Excluded only where a
+    # map is never the point — a menu, a price list, a FAQ.
+    "map": frozenset(
+        {
+            "home",
+            "about",
+            "contact",
+            "services",
+            "landing",
+            "work",
+            "process",
+            "gallery",
+        }
+    ),
 }
 
 _MAX_EXTRA_SECTIONS = 2  # quality cap — don't let a page balloon past its rhythm
@@ -377,7 +728,18 @@ _MAX_PAGE_SECTIONS = 9
 def _detect_content_signals(page: SourceContent) -> list[SectionType]:
     """Detected kinds, in `_SIGNAL_PATTERNS` order — deterministic when the cap bites."""
     haystack = " ".join([page.raw_text or "", " ".join(page.headings or [])])
-    return [kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)]
+    # Structural, not lexical, so these lead: the _SIGNAL_PATTERNS below are
+    # regexes guessing at intent from prose, while these two are the page
+    # DEMONSTRABLY carrying a player or a pin. When _MAX_EXTRA_SECTIONS bites,
+    # what the page actually contains should outrank what its wording hints at.
+    # A regex could never find either anyway — an <iframe> contributes no text.
+    detected: list[SectionType] = ["video"] if page.video_embeds else []
+    if page.map_embeds:
+        detected.append("map")
+    detected += [
+        kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)
+    ]
+    return detected
 
 
 def _augment_sections(
@@ -415,11 +777,11 @@ def _without_section(sections: list[SectionType], section: SectionType) -> list[
 def _path_to_slug(url_path: str | None) -> str:
     """Normalize ``"/services/web-design/"`` → ``"services/web-design"``.
 
-    The empty string ⇒ homepage.
+    The empty string ⇒ homepage. A page extension is dropped, so
+    ``/about-awards.php`` and ``/about-awards`` are the same page — see
+    ``source_path`` for why all three call sites share one rule.
     """
-    if not url_path or url_path == "/":
-        return ""
-    return url_path.strip("/").lower()
+    return normalize_source_slug(url_path)
 
 
 def _humanize(slug_part: str) -> str:
@@ -427,11 +789,96 @@ def _humanize(slug_part: str) -> str:
     return " ".join(w.capitalize() for w in re.split(r"[-_]", slug_part) if w)
 
 
+def translation_pairing(slugs: set[str]) -> dict[str, tuple[str, str]]:
+    """Map each translated mirror slug → (locale, the slug it translates).
+
+    ``bm/committee`` translates ``committee``; the bare language root ``bm``
+    translates the homepage (``""``). The pairing needs evidence — a mirror only
+    counts when its untranslated counterpart is also in the crawl — so a real
+    section that happens to look like a language code (``it/support`` on a site
+    with no ``/support``) stays an ordinary page. Same rule the crawler uses to
+    defer mirrors, applied here to the slugs that actually came back.
+    """
+    pairs: dict[str, tuple[str, str]] = {}
+    for slug in slugs:
+        segment = locale_segment(slug)
+        if segment is None:
+            continue
+        remainder = slug[len(segment):].strip("/")
+        if not remainder:
+            # A bare /bm is the translated homepage — but only for codes that
+            # aren't ordinary English words, since there's no subtree to prove it.
+            if segment not in AMBIGUOUS_LOCALE_SEGMENTS:
+                pairs[slug] = (segment, "")
+            continue
+        if remainder in slugs:
+            pairs[slug] = (segment, remainder)
+    return pairs
+
+
+def _ambiguous_page_labels(
+    pages: list[SourceContent],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Titles and headings that repeat across the crawled pages.
+
+    Templates routinely stamp one ``<title>`` on a whole family of detail pages
+    — MMTA's nine committee-member pages are all "About MMTA" — which would
+    leave the scaffold layer with nine identically named pages. A title or
+    heading carried by two or more pages names the template, not the page, so
+    the caller falls back to per-page evidence instead.
+    """
+    title_counts: dict[str, int] = {}
+    heading_counts: dict[str, int] = {}
+    for page in pages:
+        title = (page.title or "").strip().casefold()
+        if title:
+            title_counts[title] = title_counts.get(title, 0) + 1
+        for heading in {h.strip().casefold() for h in page.headings if h.strip()}:
+            heading_counts[heading] = heading_counts.get(heading, 0) + 1
+    return (
+        frozenset(t for t, n in title_counts.items() if n >= 2),
+        frozenset(h for h, n in heading_counts.items() if n >= 2),
+    )
+
+
+def _distinct_page_label(
+    page: SourceContent, ambiguous_headings: frozenset[str]
+) -> str | None:
+    """A name for a page whose ``<title>`` is shared with its siblings.
+
+    A detail page carrying exactly one profile card *is* that person's page
+    (/profile/ashley → "Ashley Jinivon"); otherwise the first heading the page
+    doesn't share with its siblings names it. None when neither applies — the
+    caller then falls back to the slug.
+    """
+    named = [p for p in (page.profile_candidates or []) if (p.name or "").strip()]
+    if len(named) == 1:
+        return named[0].name.strip()[:60]
+    for heading in page.headings:
+        text = heading.strip()
+        if text and len(text) <= 60 and text.casefold() not in ambiguous_headings:
+            return text
+    return None
+
+
 def _title_from_page(
-    page: SourceContent, fallback_slug: str, *, site_name: str | None = None
+    page: SourceContent,
+    fallback_slug: str,
+    *,
+    site_name: str | None = None,
+    ambiguous_titles: frozenset[str] = frozenset(),
+    ambiguous_headings: frozenset[str] = frozenset(),
 ) -> str:
     """Prefer the source's own title, strip brand prefix/suffix, fall back to slug."""
     raw = (page.title or "").strip()
+    if raw and raw.casefold() in ambiguous_titles:
+        # Template title shared with sibling pages — name the page by what makes
+        # it different instead, so a family of detail pages isn't nine rows of
+        # the same string in the page picker.
+        distinct = _distinct_page_label(page, ambiguous_headings)
+        if distinct:
+            return distinct
+        raw = ""
     if raw:
         # Strip leading "Brand: " / "Brand | " / "Brand - " prefixes (e.g.
         # "Sass: Install Sass" → "Install Sass") when we know the brand name.
@@ -480,26 +927,35 @@ def _explicit_page_type(slug: str) -> PageType | None:
     which would make every strip target look like a listing page — here we
     need to know the type was *evidenced*, not defaulted.
     """
-    haystack = slug.lower()
-    for page_type, hints in _TYPE_HINTS:
-        for hint in hints:
-            if hint == slug.split("/", 1)[0] or hint in haystack:
-                return page_type
-    return None
+    return _matched_page_type(slug)
 
 
 def _is_explicit_listing(slug: str) -> bool:
     return "/" not in slug and _explicit_page_type(slug) in _LISTING_TYPES
 
 
+# Filenames that name a directory rather than a page of its own. ``index.php``
+# in the header IS the homepage, which already scaffolds as "".
+_INDEX_NAMES = frozenset({"index", "default", "home"})
+
+
 def _href_to_slug(href: str) -> str | None:
-    """Nav href → page slug. ``"/"`` ⇒ ``""`` (home); pure anchors ⇒ None."""
+    """Nav href → page slug. ``"/"`` ⇒ ``""`` (home); pure anchors ⇒ None.
+
+    Normalized exactly as ``url_path`` is, via ``normalize_source_slug`` — the
+    scaffold index this feeds is keyed that way. While it wasn't, every nav
+    href on a .php site missed its own scaffold: dropdown nesting was never
+    applied, and each unmatched href scaffolded a second, empty copy of a page
+    the crawl had already read ("about-us.php" beside "about-us").
+    """
     path = href.split("#", 1)[0]
     if "#" in href and path in ("", "/"):
         return None  # same-page anchor, not a page
     if not path or path == "/":
         return ""
-    return path.strip("/").lower()
+    slug = normalize_source_slug(path)
+    head, _, tail = slug.rpartition("/")
+    return head if tail in _INDEX_NAMES else slug
 
 
 class _NavEvidence:
@@ -646,6 +1102,8 @@ def infer_page_scaffolds(
     *,
     industry: IndustryCategory,
     site_name: str | None = None,
+    single_page: bool = False,
+    homepage_sections_override: list[str] | None = None,
 ) -> list[PageScaffold]:
     """Build the inferred scaffold tree.
 
@@ -655,9 +1113,31 @@ def infer_page_scaffolds(
     Non-empty crawl → derive scaffolds from the discovered URL structure,
     merging in core pages the source doesn't expose (about/contact often live
     in the footer; we add them so the generated site is complete).
+
+    ``single_page`` returns just the homepage plus the template's legal pages,
+    skipping the fan-out entirely. A source that carries one page's worth of
+    grounded facts — a Facebook Page, say — would otherwise get the industry
+    template's four or five pages, which the fidelity net then strips back to
+    almost nothing. ``homepage_sections_override`` lets that caller supply a
+    section list gated on the facts it actually holds, so no section is ever
+    *requested* that the source can't ground.
     """
     template = get_template(industry)
     evidence = _gather_nav_evidence(source.nav_links)
+
+    if single_page:
+        sections = homepage_sections_override or homepage_sections(
+            industry, seed=site_name
+        )
+        home = _home_scaffold(source, industry, seed=site_name).model_copy(
+            update={"sections": sections}
+        )
+        legal = [s for s in template.core_pages if s.is_legal]
+        logger.info(
+            "Single-page source — homepage (%d sections) + %d legal page(s)",
+            len(sections), len(legal),
+        )
+        return [home, *legal]
 
     if not source.discovered_pages:
         # Thin site or crawl disabled: return the industry template's
@@ -703,6 +1183,9 @@ def infer_page_scaffolds(
                 fallback[existing_idx] = directory_scaffold
             else:
                 fallback.append(directory_scaffold)
+        # A 2-3 founder business is very often exactly this single-page site,
+        # so the founders weave has to run on the fallback path too.
+        _weave_founders_into_home(fallback, source)
         for scaffold in fallback:
             scaffold.nav_rank = evidence.rank.get(scaffold.slug)
         return _apply_team_placement(fallback)
@@ -712,8 +1195,52 @@ def infer_page_scaffolds(
     by_slug: dict[str, SourceContent] = {"": source}
     for page in source.discovered_pages:
         slug = _path_to_slug(page.url_path)
-        if slug and slug not in by_slug:
+        if not slug:
+            continue
+        # Several crawled URLs can share a slug — an album viewer serves every
+        # album from gallery-photo.php?id=NNN. The query-less URL is the page;
+        # the rest are its records, and letting one of those win would title
+        # /gallery-photo after whichever album was crawled first.
+        if slug not in by_slug or (
+            is_record_url(by_slug[slug].source_ref) and not is_record_url(page.source_ref)
+        ):
             by_slug[slug] = page
+
+    # One representative per slug is right for titling, but wrong for evidence:
+    # the records the representative displaced carry their own embeds, and a
+    # paginated viewer (?gspg=2) can hold every one the page has. Union them so
+    # the structural signals see the whole page, matching how
+    # routers.generate._inject_videos/_inject_maps accumulate before placing.
+    #
+    # model_copy, never in-place: `source` belongs to the caller.
+    for embed_field in ("video_embeds", "map_embeds"):
+        embeds_by_slug: dict[str, list[Any]] = {}
+        for page in [source, *source.discovered_pages]:
+            slug = "" if page is source else _path_to_slug(page.url_path)
+            if slug not in by_slug:
+                continue
+            bucket = embeds_by_slug.setdefault(slug, [])
+            seen_embeds = {embed.embed_url for embed in bucket}
+            bucket.extend(
+                embed
+                for embed in getattr(page, embed_field) or []
+                if embed.embed_url not in seen_embeds
+            )
+        for slug, embeds in embeds_by_slug.items():
+            if embeds and len(embeds) != len(getattr(by_slug[slug], embed_field) or []):
+                by_slug[slug] = by_slug[slug].model_copy(update={embed_field: embeds})
+
+    # Titles/headings the source template repeats across pages — they can't
+    # name an individual page (see _ambiguous_page_labels).
+    ambiguous_titles, ambiguous_headings = _ambiguous_page_labels(
+        [source, *source.discovered_pages]
+    )
+
+    # Translated mirrors are held back from the structural walk entirely: they
+    # must not synthesize a "/bm" parent section, join the primary nav, or get
+    # their own recipe. They're attached at the end, each pointing at the page
+    # it translates.
+    translations = translation_pairing(set(by_slug))
 
     scaffolds: list[PageScaffold] = []
     seen_slugs: set[str] = set()
@@ -722,9 +1249,14 @@ def infer_page_scaffolds(
     scaffolds.append(_home_scaffold(by_slug.get("", source), industry, seed=site_name))
     seen_slugs.add("")
 
+    # Where the source's own rosters say their people's pages live. Read before
+    # the walk so a detail page can be filed under the page that links to it
+    # instead of under a section invented from its URL.
+    detail_links = roster_detail_links(source)
+
     # 2. Walk slugs in path-depth order so parents always exist before children
     sorted_slugs = sorted(
-        (s for s in by_slug if s),
+        (s for s in by_slug if s and s not in translations),
         key=lambda s: (s.count("/"), s),
     )
 
@@ -739,7 +1271,13 @@ def infer_page_scaffolds(
         title = (
             nav_label
             if 0 < len(nav_label) <= 40
-            else _title_from_page(page, slug, site_name=site_name)
+            else _title_from_page(
+                page,
+                slug,
+                site_name=site_name,
+                ambiguous_titles=ambiguous_titles,
+                ambiguous_headings=ambiguous_headings,
+            )
         )
 
         if len(segments) == 1:
@@ -761,10 +1299,27 @@ def infer_page_scaffolds(
             )
             seen_slugs.add(slug)
         else:
-            # Sub-page: ensure its parent scaffold exists
-            parent_slug = "/".join(segments[:-1])
+            # Sub-page: ensure its parent scaffold exists.
+            #
+            # A page some roster links to already HAS a home — the page holding
+            # that roster (/profile/ashley belongs to /committee, which is what
+            # links to it). Inventing /profile there would ship a page the source
+            # doesn't have, and strand the members under it instead of on the
+            # grid the reader actually arrives from.
+            #
+            # The roster has to be a page in its own right: depth ordering means
+            # it is already scaffolded, and ``seen_slugs`` excludes the homepage,
+            # so a roster on the front page falls through to the URL's parent
+            # rather than trying to nest pages under home.
+            linked_parent = detail_links.get(slug)
+            parent_slug = (
+                linked_parent
+                if linked_parent and linked_parent in seen_slugs
+                else "/".join(segments[:-1])
+            )
             if parent_slug not in seen_slugs:
-                # Parent wasn't in the crawl — synthesize it from the top segment.
+                # Parent wasn't in the crawl and nothing links to this page —
+                # synthesize a section from the top segment so it has a home.
                 parent_title = _humanize(segments[0])
                 parent_type = _infer_page_type(parent_slug, parent_title)
                 if parent_type in ("privacy", "terms"):
@@ -793,20 +1348,32 @@ def infer_page_scaffolds(
                 continue
             sub_type = _infer_page_type(slug, title)
             # Sub-pages typically aren't another listing of the parent — coerce
-            # services/x → landing detail unless title looks like a real category.
-            if sub_type == parent_type:
-                sub_type = "landing"
+            # services/x → landing detail unless title looks like a real category,
+            # or the type's own structure is the page (gallery/x is still a gallery).
+            sub_type = _child_type_under(sub_type, parent_type)
             sub_type = _coerce_directory_type(sub_type, page)
+            linked_from_roster = parent_slug == linked_parent
             scaffolds.append(
                 PageScaffold(
                     page_type=sub_type,
                     slug=slug,
                     title=title,
-                    sections=_sections_for(sub_type, parent_type=parent_type, page=page),
-                    rationale=f"Sub-page of /{parent_slug} discovered in the source.",
+                    sections=(
+                        _augment_sections(list(_PROFILE_PAGE_SECTIONS), sub_type, page)
+                        if linked_from_roster
+                        else _sections_for(sub_type, parent_type=parent_type, page=page)
+                    ),
+                    rationale=(
+                        f"Linked from the profile roster on /{parent_slug}."
+                        if linked_from_roster
+                        else f"Sub-page of /{parent_slug} discovered in the source."
+                    ),
                     parent_slug=parent_slug,
                     source_url=page.source_ref,
                     from_source=True,
+                    # The roster grid is how the source reaches this page, so
+                    # that is how the generated site should reach it too.
+                    menu_hidden=linked_from_roster,
                 )
             )
             seen_slugs.add(slug)
@@ -845,6 +1412,14 @@ def infer_page_scaffolds(
     for nav_slug, _rank in sorted(evidence.rank.items(), key=lambda kv: kv[1]):
         if nav_slug in seen_slugs or "/" in nav_slug:
             continue
+        if nav_slug in translations or (
+            locale_segment(nav_slug) == nav_slug
+            and nav_slug not in AMBIGUOUS_LOCALE_SEGMENTS
+        ):
+            # "Bahasa Malaysia" / "中文" in the header are language switches, not
+            # sections. Crawled ones are attached as translations below; ones the
+            # crawl never reached must not become empty pages.
+            continue
         label = evidence.labels.get(nav_slug) or _humanize(nav_slug)
         nav_type = _infer_page_type(nav_slug, label)
         if nav_type in ("privacy", "terms"):
@@ -872,8 +1447,7 @@ def infer_page_scaffolds(
         if parent.parent_slug or parent_slug in forced_parent:
             continue  # keep the tree one level deep — no chained nesting
         child.parent_slug = parent_slug
-        if child.page_type == parent.page_type:
-            child.page_type = "landing"
+        child.page_type = _child_type_under(child.page_type, parent.page_type)
         child.sections = _sections_for(
             child.page_type, parent_type=parent.page_type, page=by_slug.get(child_slug)
         )
@@ -899,6 +1473,38 @@ def infer_page_scaffolds(
                 home.sections.insert(home.sections.index("cta"), "team")
             else:
                 home.sections.append("team")
+
+    # 2d-2. A small founder/owner group earns a place on the homepage.
+    _weave_founders_into_home(scaffolds, source)
+
+    # 2e. Attach translated mirrors to the pages they translate. They inherit
+    #     the counterpart's type and section rhythm because they will be built
+    #     by cloning its finished page, not planned independently — so they
+    #     cost no design decisions and carry no nav_rank of their own.
+    by_scaffold_slug = {s.slug: s for s in scaffolds}
+    for slug in sorted(translations, key=lambda s: (s.count("/"), s)):
+        locale, counterpart_slug = translations[slug]
+        counterpart = by_scaffold_slug.get(counterpart_slug)
+        if counterpart is None or counterpart.locale:
+            continue  # nothing to translate, or a mirror of a mirror
+        scaffolds.append(
+            PageScaffold(
+                page_type=counterpart.page_type,
+                slug=slug,
+                title=f"{counterpart.title} ({locale_label(locale)})",
+                sections=list(counterpart.sections),
+                rationale=(
+                    f"{locale_label(locale)} translation of "
+                    f"/{counterpart_slug} on the source site."
+                ),
+                parent_slug=counterpart.parent_slug,
+                source_url=by_slug[slug].source_ref,
+                from_source=True,
+                locale=locale,
+                translation_of=counterpart_slug,
+            )
+        )
+        seen_slugs.add(slug)
 
     # 3. Ensure About / Contact are present — they often live in the footer
     #    rather than the nav, so the crawler misses them on small sites.
@@ -929,6 +1535,12 @@ def _apply_team_placement(scaffolds: list[PageScaffold]) -> list[PageScaffold]:
     belongs under About; a separate Team page is kept only when the crawl/nav/doc
     actually surfaced one (``from_source=True``). When a real Team page exists,
     remove the full team section from About to avoid duplicate rosters.
+
+    The HOMEPAGE is deliberately not handled here. Whether home repeats the
+    roster depends on how many people actually render and whether they are
+    founders — neither is knowable at scaffold time (portrait + vision gating
+    happens later, in ``_scraped_team_members``). That call lives in
+    ``routers.generate._apply_homepage_team_policy``, which has the real roster.
     """
     has_source_team_page = any(
         s.page_type == "team"

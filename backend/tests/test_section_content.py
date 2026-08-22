@@ -208,13 +208,41 @@ class ImageCardTemplatesTest(unittest.TestCase):
         self.assertTrue(all(i["image"] for i in content["items"]))
 
     def test_friendly_mood_services_prefer_program_cards(self):
-        # Friendly/playful brands keep the photo-topped card policy but get the
-        # badge-carrying program cards (services-programs-age) instead.
+        # Friendly/playful brands keep the photo-topped card policy and get the
+        # badge-carrying program cards — but only when the items actually carry
+        # a who-it's-for badge, which is the variant's defining element.
+        from app.models.content_blocks import ServiceItem, ServicesBlock
         from app.services.section_content import block_to_section
 
-        template, content = block_to_section(self._services_block(), mood="friendly")
+        block = ServicesBlock(
+            heading="Our Services",
+            items=[
+                ServiceItem(
+                    title=name,
+                    description=f"{name} description.",
+                    image_query=f"{name.lower()} classroom",
+                    audience=age,
+                )
+                for name, age in (
+                    ("Toddlers", "Ages 2-3"),
+                    ("Preschool", "Ages 3-4"),
+                    ("Kindergarten", "Ages 5-6"),
+                )
+            ],
+        )
+        template, content = block_to_section(block, mood="friendly")
         self.assertEqual(template["id"], "services-programs-age")
         self.assertTrue(all(i["image"] for i in content["items"]))
+
+    def test_badgeless_friendly_services_stay_on_the_image_cards(self):
+        """The programme variant's whole point is the who-it's-for badge. With
+        no audiences the badge slot is unbound and dropped, so forcing the
+        variant gave every friendly brand a programme layout whose defining
+        element was missing — a restaurant's dishes as programme cards."""
+        from app.services.section_content import block_to_section
+
+        template, _content = block_to_section(self._services_block(), mood="friendly")
+        self.assertEqual(template["id"], "services-image-cards")
 
     def test_bound_item_photo_fills_src_directly(self):
         from app.services.section_content import block_to_section
@@ -228,17 +256,23 @@ class ImageCardTemplatesTest(unittest.TestCase):
         # Unbound items stay query-shaped for the resolver.
         self.assertIn("query", content["items"][1]["image"])
 
-    def test_query_less_items_backfill_from_titles_and_still_get_image_cards(self):
-        # The LLM forgot every image_query → each card falls back to its title
-        # as the stock search, so the photo-topped grid still wins (site
-        # policy: cards always lead with an image, stock when necessary).
+    def test_query_less_items_backfill_from_titles_but_no_longer_force_photos(self):
+        """The LLM forgot every image_query, so each card falls back to its
+        title as the stock search — that keeps a photo layout *available*.
+
+        It no longer forces one. A source site with no feature photography
+        would otherwise have every features grid filled with stock images
+        searched on phrases like "24/7 Support", and every text layout was
+        unreachable as a result."""
         from app.services.section_content import block_to_section
 
         template, content = block_to_section(
             self._services_block(with_images=False), mood="modern"
         )
-        self.assertEqual(template["id"], "services-image-cards")
+        # The backfill still happens, so the photo variant stays feasible…
         self.assertEqual(content["items"][0]["image"]["query"], "Kindergarten")
+        # …but it is not what the section is forced onto.
+        self.assertNotEqual(template["id"], "services-image-cards")
 
     def test_image_cards_beat_an_explicit_text_grid_pick(self):
         # The design-brain may explicitly pick the text-only grid; the
@@ -295,3 +329,151 @@ class ImageCardTemplatesTest(unittest.TestCase):
         self.assertEqual(len(srcs), 3)
         self.assertIn("https://x/kindy.jpg", srcs)  # bound photo used verbatim
         self.assertTrue(any("stock.example" in s for s in srcs))  # queries resolved
+
+
+class CtaLabelHealingTest(unittest.TestCase):
+    """A button label is a verb phrase, not a sentence. Over-long labels are
+    almost always a source nav link that leaked into the slot — the button then
+    offers a different journey than its headline just promised."""
+
+    def _label(self, raw):
+        return CtaBlock(headline="Join our effort", cta_label=raw).cta_label
+
+    def test_a_nav_link_is_trimmed_to_its_verb_phrase(self):
+        self.assertEqual(self._label("Learn More About Our Committee Members"), "Learn More")
+
+    def test_a_trailing_function_word_is_dropped(self):
+        # "Register For" reads worse than "Register".
+        self.assertEqual(self._label("Register For The Annual Conference Today"), "Register")
+
+    def test_a_label_with_no_function_word_is_capped_by_words(self):
+        self.assertEqual(self._label("Find a Music Therapist Near You"), "Find a Music Therapist")
+
+    def test_tight_labels_are_left_alone(self):
+        for label in ("Join Our Community", "Get Involved Now", "Donate", "Book a call"):
+            self.assertEqual(self._label(label), label)
+
+    def test_blank_still_heals_to_the_default(self):
+        self.assertEqual(self._label("   "), "Get started")
+        self.assertEqual(self._label(None), "Get started")
+
+    def test_the_hero_cta_gets_the_same_treatment(self):
+        hero = HeroBlock(
+            headline="H", primary_cta_label="Learn More About Our Committee Members"
+        )
+        self.assertEqual(hero.primary_cta_label, "Learn More")
+
+
+class TeamMemberPhotoFallbackTest(unittest.TestCase):
+    """A named real person never gets a stock stranger's face.
+
+    Pexels returns a photo of a DIFFERENT real person; captioning it with an
+    employee's name is a misattribution, so a member with no portrait of their
+    own falls back to an initials monogram instead.
+    """
+
+    def _photos(self, members):
+        from app.models.content_blocks import TeamBlock
+
+        _template, content = block_to_section(
+            TeamBlock(heading="Our team", members=members)
+        )
+        return [item["photo"] for item in content["items"]]
+
+    def test_member_without_photo_gets_a_monogram_not_a_query(self):
+        from app.models.content_blocks import TeamMember
+
+        photos = self._photos([
+            TeamMember(
+                name="Aisha Rahman",
+                role="Music therapist",
+                photo_query="smiling professional woman",
+            )
+        ])
+
+        self.assertEqual(photos[0].get("monogram"), "Aisha Rahman")
+        self.assertNotIn("query", photos[0])
+
+    def test_duplicate_photo_url_falls_back_to_a_monogram(self):
+        from app.models.content_blocks import TeamMember
+
+        shared = "https://x/one-photo.jpg"
+        photos = self._photos([
+            TeamMember(name="Aisha Rahman", role="Therapist", photo_url=shared),
+            TeamMember(name="Marcus Ong", role="Treasurer", photo_url=shared),
+        ])
+
+        self.assertEqual(photos[0]["src"], shared)
+        self.assertEqual(photos[1].get("monogram"), "Marcus Ong")
+
+
+class MonogramAvatarTest(unittest.TestCase):
+    def test_builds_a_themed_data_uri_with_initials(self):
+        from app.services.media import monogram_avatar_url
+
+        url = monogram_avatar_url(
+            "Aisha Rahman", primary_hex="#2563eb", secondary_hex="#0f172a"
+        )
+
+        self.assertTrue(url.startswith("data:image/svg+xml;utf8,"))
+        self.assertIn("AR", url)
+        self.assertIn("%232563eb", url)
+
+    def test_is_deterministic_per_name(self):
+        from app.services.media import monogram_avatar_url
+
+        self.assertEqual(
+            monogram_avatar_url("Aisha Rahman"), monogram_avatar_url("Aisha Rahman")
+        )
+        self.assertNotEqual(
+            monogram_avatar_url("Aisha Rahman"), monogram_avatar_url("Marcus Ong")
+        )
+
+
+class MarkdownBackstopTest(unittest.TestCase):
+    """`innerText` is plain text — TextBlock renders it verbatim — so markdown
+    the model writes reaches the visitor as literal asterisks and bullets.
+
+    Seen live: with no card block available for four facility cards, the model
+    packed them into an `about` body as "• **Innovation Centre:** Develops…".
+    The real fix is upstream (the cards get their own block now); this stops the
+    failure from also looking broken.
+    """
+
+    def test_bold_markers_are_removed_but_the_words_stay(self):
+        from app.services.schema_builder import _strip_markdown
+
+        self.assertEqual(
+            _strip_markdown("**Innovation Centre:** Develops language skills."),
+            "Innovation Centre: Develops language skills.",
+        )
+
+    def test_leading_bullets_are_removed(self):
+        from app.services.schema_builder import _strip_markdown
+
+        self.assertEqual(
+            _strip_markdown("• Full Programme: 8:30 am\n• Extended: 5:30 pm"),
+            "Full Programme: 8:30 am\nExtended: 5:30 pm",
+        )
+
+    def test_ordinary_prose_is_untouched(self):
+        from app.services.schema_builder import _strip_markdown
+
+        for text in (
+            "Open 8:30 am - 3:00 pm daily.",
+            "Ages 4-6 * subject to availability",
+            "Mathematics, Art & Craft and Physical Development.",
+            "",
+        ):
+            self.assertEqual(_strip_markdown(text), text, text)
+
+    def test_text_elements_are_sanitised_at_construction(self):
+        from app.services.schema_builder import _text
+
+        el = _text("**Bold** heading")
+
+        self.assertEqual(el.content.innerText, "Bold heading")
+
+
+if __name__ == "__main__":
+    unittest.main()

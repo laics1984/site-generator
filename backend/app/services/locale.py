@@ -8,6 +8,11 @@ place names. Returns a `MarketContext` whose `demonym` is fed into image queries
 whose country/region feeds `place_query_cue` for scenery queries
 (e.g. "office skyline Malaysia").
 
+Also home to ``locale_segment`` — the language-directory test shared by the
+crawler (which defers translated mirrors) and page inference (which pairs each
+mirror with the page it translates). Both need the same answer for
+``/bm/committee``, and neither should import the other.
+
 Deterministic + dependency-light on purpose — no LLM call, unit-testable alone.
 """
 
@@ -15,6 +20,62 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlparse
+
+# --- language directories ---------------------------------------------------------
+
+# Language/locale path prefixes: /bm/committee, /zh/about, /fr-fr/produits.
+LOCALE_SEGMENTS = frozenset({
+    "af", "am", "ar", "az", "be", "bg", "bm", "bn", "bs", "ca", "cn", "cs",
+    "cy", "da", "de", "el", "en", "eo", "es", "et", "eu", "fa", "fi", "fil",
+    "fr", "ga", "gl", "gu", "he", "hi", "hr", "hu", "hy", "id", "is", "it",
+    "ja", "jp", "ka", "kk", "km", "kn", "ko", "kr", "lt", "lv", "mk", "ml",
+    "mn", "mr", "ms", "mt", "my", "nb", "ne", "nl", "nn", "no", "pa", "pl",
+    "pt", "ro", "ru", "si", "sk", "sl", "sq", "sr", "sv", "sw", "ta", "te",
+    "th", "tl", "tr", "tw", "uk", "ur", "uz", "vi", "zh",
+})
+
+# Codes that are also ordinary English path words — /it (IT services), /hr
+# (human resources), /no, /is. Callers treat these as a language only with
+# corroborating evidence (a translated subtree), never on the segment alone.
+AMBIGUOUS_LOCALE_SEGMENTS = frozenset({
+    "am", "be", "hr", "id", "is", "it", "ms", "my", "no", "pa",
+})
+
+# Display names for the language switcher. Falls back to the uppercased code.
+LOCALE_LABELS: dict[str, str] = {
+    "ar": "العربية", "bm": "Bahasa Malaysia", "cn": "中文", "de": "Deutsch",
+    "en": "English", "es": "Español", "fr": "Français", "hi": "हिन्दी",
+    "id": "Bahasa Indonesia", "it": "Italiano", "ja": "日本語", "ko": "한국어",
+    "ms": "Bahasa Melayu", "nl": "Nederlands", "pt": "Português",
+    "ru": "Русский", "ta": "தமிழ்", "th": "ไทย", "tw": "繁體中文",
+    "vi": "Tiếng Việt", "zh": "中文",
+}
+
+
+def locale_segment(path: str) -> str | None:
+    """First path segment when it looks like a language/locale directory."""
+    segment = path.strip("/").split("/", 1)[0].lower()
+    if not segment:
+        return None
+    if segment in LOCALE_SEGMENTS:
+        return segment
+    # "fr-FR", "pt_BR", "zh-hans" — language code plus a region/script tag.
+    match = re.fullmatch(r"([a-z]{2})[-_][a-z]{2,4}", segment)
+    if match and match.group(1) in LOCALE_SEGMENTS:
+        return segment
+    return None
+
+
+def locale_label(code: str) -> str:
+    """Human-readable name for a locale code, for the language switcher."""
+    normalized = code.strip().lower()
+    if normalized in LOCALE_LABELS:
+        return LOCALE_LABELS[normalized]
+    base = re.split(r"[-_]", normalized)[0]
+    if base in LOCALE_LABELS:
+        return LOCALE_LABELS[base]
+    return normalized.upper()
 
 
 @dataclass(frozen=True)
@@ -158,17 +219,50 @@ def _bounded(needle: str, haystack: str) -> bool:
     return re.search(rf"(?<![a-z]){re.escape(needle)}(?![a-z])", haystack) is not None
 
 
+def _hostnames(urls: list[str] | None) -> list[str]:
+    """Lower-cased hostnames from a URL list; unparseable entries are skipped.
+
+    A ccTLD is a property of the HOST, so it is matched against these rather
+    than against the joined URL string. Matching the whole string reads query
+    parameters and path segments as evidence: `?user.id=3` would score
+    Indonesia and `/a.in?x=1` would score India.
+    """
+    hosts: list[str] = []
+    for url in urls or []:
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except ValueError:
+            continue
+        if host:
+            hosts.append(host)
+    return hosts
+
+
+def _host_has_cctld(hosts: list[str], tld: str) -> bool:
+    """True when any host sits under `tld` (".my" matches "roti.com.my").
+
+    Deliberately not `_bounded`: that helper is written for word-shaped needles
+    and guards its left edge with `(?<![a-z])`, which a dotted TLD can never
+    satisfy — every real domain has a letter immediately before the dot, so
+    `.my` failed against "kopitiam.com.my" and "kopitiam.my" alike. The result
+    was that ALL 36 ccTLDs were dead and the `urls` argument contributed nothing
+    to detection at all: a Malaysian site whose copy happened not to name a city
+    or a +60 number got no market cue, and its stock imagery was un-localised.
+    """
+    return any(host == tld.lstrip(".") or host.endswith(tld) for host in hosts)
+
+
 def detect_market(text: str | None, urls: list[str] | None = None) -> MarketContext | None:
     """Best-effort market detection. Returns None when there's no signal."""
     text_l = (text or "").lower()
     compact = text_l.replace(" ", "").replace("-", "")
-    urls_l = " ".join(urls or []).lower()
+    hosts = _hostnames(urls)
 
     scores: dict[str, int] = {}
     for country, sig in _MARKETS.items():
         score = 0
         for tld in sig.cctld:
-            if _bounded(tld, urls_l) or _bounded(tld, text_l):
+            if _host_has_cctld(hosts, tld) or _bounded(tld, text_l):
                 score += _STRONG
         for code in sig.phone:
             if re.search(re.escape(code), compact):

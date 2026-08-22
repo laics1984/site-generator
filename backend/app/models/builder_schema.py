@@ -86,6 +86,8 @@ class BuilderElementContent(BaseModel):
     target: LinkTarget | None = None
     rel: str | None = None
     ariaLabel: str | None = None
+    # Accessible name for a `video` element's iframe (a player, or a map).
+    title: str | None = None
     # Menu element fields (type == "menu").
     menuId: str | None = None
     slot: MenuSlot | None = None
@@ -194,6 +196,20 @@ class BuilderElement(BaseModel):
     # right panel hides the control otherwise.
     htmlTag: str | None = None
     backgroundTexture: BackgroundStrategy | None = None
+    # Marks this element as a lightbox gallery group: on the public site every
+    # descendant image becomes click-to-enlarge and the group navigates as one
+    # set, in DOM order. Set on the tile grid, not the individual images — one
+    # flag defines both the trigger surface and the navigation order. The
+    # builder canvas ignores it; renderers that don't know the field degrade to
+    # plain, non-interactive tiles.
+    lightbox: bool | None = None
+    # Marks the inner bar of a SELF-CHROME header (the floating pill): the
+    # `__header` root is transparent and this container paints the visible
+    # chrome. Renderers read it to know the root is not the painted surface —
+    # they strip the root during overlay but never this bar, they aim the
+    # scroll-shrink padding here, and the builder's right panel points its
+    # appearance controls (background + opacity, blur, shadow) at this element.
+    headerBar: bool | None = None
 
 
 BuilderElement.model_rebuild()
@@ -230,6 +246,7 @@ class GeneratedPage(BaseModel):
     parent_slug: str | None = None  # set on sub-pages for breadcrumbs + nav grouping
     nav_rank: int | None = None     # source-nav position carried from the scaffold; None ⇒ not in source nav
     from_source: bool = False       # page evidenced by the source site vs template-injected
+    menu_hidden: bool = False       # reached from a listing (a roster grid), not from a menu
 
 
 class PageNode(BaseModel):
@@ -244,7 +261,17 @@ class PageNode(BaseModel):
     title: str
     is_homepage: bool = False
     nav_rank: int | None = None  # source-nav position; menu_builder uses it to order + cap the primary menu
+    # A page the source reaches from a listing rather than a menu (a committee
+    # member's own page). It keeps its place in the tree — breadcrumbs and the
+    # hierarchy are real — but menu_builder skips it in the header dropdown and
+    # the footer column, the same carve-out `locale` gets below.
+    menu_hidden: bool = False
     from_source: bool = False    # page evidenced by the source site; gates Contact in the heuristic menu
+    # Set on translated pages (/bm/committee). They belong in the language
+    # switcher, never in the primary or footer menus — a reader shouldn't meet
+    # the same page twice in two languages in one menu.
+    locale: str | None = None
+    translation_of: str | None = None
     children: list["PageNode"] = Field(default_factory=list)
 
 

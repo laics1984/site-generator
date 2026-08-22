@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from collections import Counter
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
@@ -42,6 +43,14 @@ _MAX_LABEL_LEN = 60
 # "Current Releases: <a>…</a> <a>…</a>" still qualify — the label eats into
 # the ratio but the block is clearly a link strip, not prose.
 _MIN_LINK_TEXT_RATIO = 0.6
+
+# Downloadable document extensions — a cluster made entirely of these hrefs is
+# a download card (find_document_link_clusters), not a nav strip. Also
+# consumed by scraper.py as the document subset of its non-page extensions,
+# so the two stay in lockstep.
+DOCUMENT_EXTENSIONS = (
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+)
 
 _SKIP_HREF_PREFIXES = ("javascript:", "mailto:", "tel:", "data:")
 
@@ -212,6 +221,34 @@ _SOCIAL_DOMAINS: list[tuple[str, str]] = [
 _SOCIAL_SHARE_HINTS = ("/sharer", "/share", "/intent", "/plugins/", "shareArticle")
 
 
+def _social_link_for_href(href: str, base_url: str) -> NavLink | None:
+    """The social profile an anchor's href points at, if any.
+
+    Shared by the page-wide and card-scoped extractors below so the platform
+    list and share-link exclusions live in one place.
+    """
+    raw = href.strip()
+    if not raw or raw.lower().startswith(_SKIP_HREF_PREFIXES):
+        return None
+    try:
+        absolute = urljoin(base_url, raw)
+        parsed = urlparse(absolute)
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    host = parsed.netloc.lower().removeprefix("www.")
+    path = parsed.path or "/"
+    if any(hint in absolute for hint in _SOCIAL_SHARE_HINTS):
+        return None
+    for domain, label in _SOCIAL_DOMAINS:
+        if host == domain or host.endswith(f".{domain}"):
+            if path in ("", "/") and domain not in ("wa.me", "t.me"):
+                return None  # bare platform homepage, not a profile
+            return NavLink(label=label, href=absolute)
+    return None
+
+
 def extract_social_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
     """Social profile links anywhere on the page — one per platform, max 6.
 
@@ -223,27 +260,29 @@ def extract_social_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
     for a in soup.find_all("a", href=True):
         if not isinstance(a, Tag):
             continue
-        raw = str(a.get("href") or "").strip()
-        if not raw or raw.lower().startswith(_SKIP_HREF_PREFIXES):
-            continue
-        try:
-            absolute = urljoin(base_url, raw)
-            parsed = urlparse(absolute)
-        except ValueError:
-            continue
-        if parsed.scheme not in ("http", "https"):
-            continue
-        host = parsed.netloc.lower().removeprefix("www.")
-        path = parsed.path or "/"
-        if any(hint in absolute for hint in _SOCIAL_SHARE_HINTS):
-            continue
-        for domain, label in _SOCIAL_DOMAINS:
-            if (host == domain or host.endswith(f".{domain}")) and label not in found:
-                if path in ("", "/") and domain not in ("wa.me", "t.me"):
-                    break  # bare platform homepage, not a profile
-                found[label] = NavLink(label=label, href=absolute)
-                break
+        link = _social_link_for_href(str(a.get("href") or ""), base_url)
+        if link is not None and link.label not in found:
+            found[link.label] = link
         if len(found) >= 6:
+            break
+    return list(found.values())
+
+
+def social_links_from_anchors(anchors: list[Tag], base_url: str) -> list[NavLink]:
+    """Social profile links among a specific set of anchors — one per platform, max 4.
+
+    Used to scope social-link discovery to one person's card/page rather than
+    the whole document, e.g. a team member's own LinkedIn/Instagram link.
+    """
+    found: dict[str, NavLink] = {}
+    for a in anchors:
+        href = a.get("href")
+        if not isinstance(href, str):
+            continue
+        link = _social_link_for_href(href, base_url)
+        if link is not None and link.label not in found:
+            found[link.label] = link
+        if len(found) >= 4:
             break
     return list(found.values())
 
@@ -402,6 +441,17 @@ def _looks_like_breadcrumb(cluster: LinkCluster) -> bool:
     return (cluster.context_label or "").strip().rstrip(":").lower() == "home"
 
 
+def is_document_href(href: str) -> bool:
+    """True when href's path segment (pre-#/?) ends in DOCUMENT_EXTENSIONS.
+
+    Shared by scraper._extract_document_cards (card detection) and
+    push_orchestrator's document-rehosting pass — both need the same "is this
+    a document link" test.
+    """
+    path = href.split("#", 1)[0].split("?", 1)[0].lower()
+    return path.endswith(DOCUMENT_EXTENSIONS)
+
+
 def strip_linkbar_lines(source: SourceContent, cluster: LinkCluster) -> None:
     """Remove the strap's text from the entry page's raw_text.
 
@@ -434,6 +484,54 @@ def strip_linkbar_lines(source: SourceContent, cluster: LinkCluster) -> None:
     source.raw_text = "\n".join(
         line for line in source.raw_text.split("\n") if not _is_strap_line(line)
     )
+
+
+# A section heading seen on this many crawled pages is template furniture —
+# the same threshold, and the same reasoning, as find_repeated_cluster_keys.
+_CHROME_SECTION_MIN_PAGES = 2
+
+
+def strip_chrome_sections(source: SourceContent) -> None:
+    """Drop section candidates whose heading repeats across crawled pages.
+
+    Same reasoning as ``strip_chrome_lines``, applied to the section tree: a
+    heading that appears on every page is the template's, not the page's. The
+    tree is built per page during parsing, where the repetition is invisible —
+    and ``_in_chrome`` only recognises chrome that says so in its tags, which a
+    hand-built site whose footer is a plain ``<section>`` never does. Those
+    footer widgets then read as ordinary sections and were handed to the
+    planner as page content. Mutates in place; needs two pages to conclude
+    anything, so a single-page crawl is left alone.
+
+    Only ever removes a DUPLICATE: the heading has to appear on more than one
+    page, so a genuine section is safe even when it shares a name with one.
+    """
+    pages = [source, *source.discovered_pages]
+    if len(pages) < _CHROME_SECTION_MIN_PAGES:
+        return
+    seen: Counter[str] = Counter()
+    for page in pages:
+        for heading in {
+            section.heading.strip().lower()
+            for section in page.section_candidates
+            if section.heading.strip()
+        }:
+            seen[heading] += 1
+    chrome = {h for h, n in seen.items() if n >= _CHROME_SECTION_MIN_PAGES}
+    if not chrome:
+        return
+    for page in pages:
+        kept = [
+            section
+            for section in page.section_candidates
+            if section.heading.strip().lower() not in chrome
+        ]
+        # Never strip a page down to nothing. If every section it has looks
+        # repeated, the repetition is the page's own content being served at a
+        # second URL — an alias, a print view — and the right answer is to keep
+        # it rather than hand the planner an empty page.
+        if kept or not page.section_candidates:
+            page.section_candidates = kept
 
 
 def strip_chrome_lines(source: SourceContent) -> None:

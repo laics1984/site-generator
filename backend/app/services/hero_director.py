@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeVar
 
 from app.config import settings
+from app.models.brand import HeroBackgroundHeight
 from app.models.content_blocks import BrandMood, PagePlan
+from app.services.image_styling import HeroAnchor
 
 # Hero templates that render no image slot (see app/templates/section_catalog.json).
 # For these the photo policy skips image resolution entirely so a scraped photo
@@ -162,6 +164,117 @@ def _rotation_index(seed: str, slug: str, size: int) -> int:
     return int(digest[:8], 16) % size
 
 
+_T = TypeVar("_T")
+
+
+def _inherit_from_parent(pages: list[PagePlan], picks: dict[str, _T]) -> None:
+    """A profile page reached from a roster's own link (``menu_hidden``) reads
+    as a continuation of that roster, not a new place — so it copies its
+    parent's hero pick (directive or composition) wholesale instead of
+    drawing its own from the rotation. Mutates ``picks`` in place; ``picks``
+    is already fully populated for every page, so this is independent of
+    page order."""
+    for page in pages:
+        if page.menu_hidden and page.parent_slug and page.parent_slug in picks:
+            picks[page.slug] = picks[page.parent_slug]
+
+
+# --- per-page composition -------------------------------------------------------
+#
+# With the site-wide full-bleed policy on (settings.hero_fullbleed_all_pages)
+# every page opens with the SAME template at the SAME height, so the only axis
+# left for variety is how each hero is composed: where the copy sits, which way
+# the scrim runs off it, and which side of the frame the photograph keeps. That
+# is enough — a left-anchored hero and a centred one read as different pages
+# even on the same photo — and it costs nothing structural, unlike rotating
+# templates (which changes each page's height and breaks the transparent header).
+
+
+@dataclass(frozen=True)
+class HeroComposition:
+    """How one page's full-bleed hero is laid out within its frame."""
+
+    anchor: HeroAnchor
+
+
+# Rotation for interior pages. Centre is included but never leads: it is the
+# weakest composition on a photograph (symmetrical, and its scrim dims the
+# middle of the frame where the subject sits), so it earns its place as variety
+# rather than as the default it used to be.
+_ANCHOR_ROTATION: tuple[HeroAnchor, ...] = ("left", "bottom-left", "center")
+
+
+def hero_composition(
+    *,
+    slug: str,
+    seed: str,
+    is_homepage: bool,
+    hero_height: HeroBackgroundHeight = "full",
+) -> HeroComposition:
+    """One page's hero composition, seeded so regeneration is idempotent.
+
+    The homepage always leads left-anchored: it is the editorial default, it
+    gives the headline a column instead of a centred block, and it leaves the
+    open right side of the frame for the photograph.
+
+    A banded hero is forced back to centre — at 460px there is no vertical room
+    for an anchor to read as composition, and a bottom-left copy block would
+    simply look like it had fallen out of the band.
+
+    Note this decides a page in isolation. `plan_site_compositions` is the
+    entry point that also spreads the picks ACROSS pages, which is what actually
+    stops a site's interiors converging; use it whenever the whole page list is
+    in hand.
+    """
+    if not settings.hero_anchored_copy:
+        return HeroComposition("center")
+    if hero_height == "banded":
+        return HeroComposition("center")
+    if is_homepage:
+        return HeroComposition("left")
+    return HeroComposition(
+        _ANCHOR_ROTATION[_rotation_index(seed, slug, len(_ANCHOR_ROTATION))]
+    )
+
+
+def plan_site_compositions(
+    pages: list[PagePlan],
+    *,
+    seed: str,
+    hero_height: HeroBackgroundHeight = "full",
+) -> dict[str, HeroComposition]:
+    """Assign every page a hero composition, keyed by slug.
+
+    Per-page seeding alone clusters: with three anchors and five interiors, a
+    run of three identical compositions is ordinary, and three consecutive pages
+    that open the same way is the exact problem composition exists to solve. So
+    the seeded pick is nudged off the previous interior's, the same way
+    `plan_site_heroes` spreads template choices. Still deterministic — the
+    nudge depends only on page order and the seed.
+    """
+    if not settings.hero_anchored_copy:
+        return {page.slug: HeroComposition("center") for page in pages}
+    out: dict[str, HeroComposition] = {}
+    previous: HeroAnchor | None = None
+    for page in pages:
+        if page.is_homepage or page.page_type == "home":
+            out[page.slug] = hero_composition(
+                slug=page.slug, seed=seed, is_homepage=True, hero_height=hero_height
+            )
+            continue
+        if hero_height == "banded":
+            out[page.slug] = HeroComposition("center")
+            continue
+        start = _rotation_index(seed, page.slug, len(_ANCHOR_ROTATION))
+        anchor = _ANCHOR_ROTATION[start]
+        if anchor == previous:
+            anchor = _ANCHOR_ROTATION[(start + 1) % len(_ANCHOR_ROTATION)]
+        previous = anchor
+        out[page.slug] = HeroComposition(anchor)
+    _inherit_from_parent(pages, out)
+    return out
+
+
 def plan_site_heroes(
     pages: list[PagePlan],
     *,
@@ -169,12 +282,23 @@ def plan_site_heroes(
     industry: str | None,
     has_source_background: bool,
     seed: str,
+    hero_height: HeroBackgroundHeight = "full",
+    force_background: bool = False,
 ) -> dict[str, HeroDirective]:
     """Assign every page a HeroDirective, keyed by slug.
 
     ``has_source_background``: the source site led with a CSS background image
     — the homepage is forced full-bleed and pins it, whatever the spec says.
     ``seed`` (brand/site name) keeps the interior rotation stable per site.
+    ``hero_height``: the site-wide photo-hero height (theme.hero_background_height).
+    "banded" is a SHORTER PHOTO HERO, so it selects the background treatment —
+    see the policy branch below.
+    ``force_background``: the site's chrome REQUIRES a photo hero on every page
+    (the floating-pill header: it floats over the first section with its own
+    chrome, and only a full-screen or banded photo hero gives it something to
+    float over). Takes the site-wide branch below whatever the settings say —
+    the caller demotes the header archetype if a page still can't resolve a
+    genuine photo. See schema_builder's self-chrome audit.
     """
     spec = _INDUSTRY_SPECS.get((industry or "").strip().lower())
     if spec is None:
@@ -188,8 +312,19 @@ def plan_site_heroes(
     # fallbacks (and the compact-hero degrade when nothing genuine resolves)
     # are handled downstream by _apply_hero_directive; that degrade also keeps
     # the header solid on such a page, so readability never regresses.
-    if settings.hero_fullbleed_all_pages:
-        return {
+    #
+    # A "banded" site takes the same branch, because banded means a bounded-height
+    # full-bleed PHOTO hero (models/brand.py) — the height decision and the
+    # template decision were made independently, and every mood/industry that
+    # defaults to banded (modern, technical / saas, consultancy, …) also leads
+    # with a split or gradient hero, so choosing "Banded" used to produce a flat
+    # COLOUR hero and nothing else: `hero-background-bold` is the only catalog
+    # hero that reads --builder-hero-min-height, so the 460px token it emitted
+    # was read by no template on the page. Banded is also self-justifying against
+    # the "interiors stay compact" rule that keeps the full-bleed hero out of the
+    # rotations: at 460px this IS the compact variant.
+    if settings.hero_fullbleed_all_pages or hero_height == "banded" or force_background:
+        directives = {
             page.slug: (
                 HeroDirective(
                     "hero-background-bold", "background", pin_source_background=True
@@ -199,6 +334,8 @@ def plan_site_heroes(
             )
             for page in pages
         }
+        _inherit_from_parent(pages, directives)
+        return directives
 
     directives: dict[str, HeroDirective] = {}
     interior_seen: list[str] = []
@@ -222,4 +359,5 @@ def plan_site_heroes(
                 directive = spec.rotation[(start + 1) % len(spec.rotation)]
             interior_seen.append(directive.template_id)
         directives[page.slug] = directive
+    _inherit_from_parent(pages, directives)
     return directives

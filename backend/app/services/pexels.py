@@ -44,6 +44,16 @@ class PhotoResult:
     # schema_builder luminance pass; None until set / when no colour is known.
     luminance: float | None = None  # WCAG relative luminance, 0.0..1.0
     band: Literal["light", "dark"] | None = None
+    # Where the subject sits vertically, 0..1 down the frame (see
+    # services/image_sampling.sample_photo). Drives a full-bleed slot's
+    # background-position so a tall crop frames the subject instead of
+    # hard-centering it. None → callers keep the "center" default.
+    focal_y: float | None = None
+    # True for a colour-matched atmospheric texture picked by
+    # ImageResolver.resolve_abstract_bg rather than a photo OF anything. It is a
+    # genuine Pexels photo, so `source` can't distinguish it — but it carries no
+    # subject, which changes how a hero may be composed around it.
+    is_abstract: bool = False
 
     @property
     def attribution(self) -> str | None:

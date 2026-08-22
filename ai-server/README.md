@@ -119,7 +119,7 @@ own Modelfile pins `num_ctx` wins, silently. Measured on
 
 ```
     quantization        Q6_K
-    num_ctx             262144      ← the model's own value, 16x what you asked for
+    num_ctx             16384      ← the model's own value, 16x what you asked for
 ```
 
 The cost is not academic. The oversized KV cache pushed the resident footprint

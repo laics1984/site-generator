@@ -37,6 +37,11 @@ DEFAULT_MIN_DELAY_MS = 200
 DEFAULT_BACKOFF_BASE_SEC = 1.0
 DEFAULT_BACKOFF_MAX_SEC = 30.0
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 5
+# How long a tripped circuit stays open before it half-opens and lets the next
+# crawl try again. Long enough to ride out a WAF cool-off or a brief outage,
+# short enough that a user retrying by hand isn't told "no" for the rest of the
+# process's life.
+DEFAULT_CIRCUIT_COOLDOWN_SEC = 120.0
 
 
 @dataclass
@@ -46,11 +51,12 @@ class HostPoliteness:
     host: str
     concurrency: int = DEFAULT_CONCURRENCY
     min_delay_sec: float = DEFAULT_MIN_DELAY_MS / 1000
+    circuit_cooldown_sec: float = DEFAULT_CIRCUIT_COOLDOWN_SEC
 
     _semaphore: asyncio.Semaphore = field(init=False)
     _last_request_at: float = field(init=False, default=0.0)
     _consecutive_failures: int = field(init=False, default=0)
-    _circuit_open: bool = field(init=False, default=False)
+    _circuit_opened_at: float | None = field(init=False, default=None)
     _lock: asyncio.Lock = field(init=False)
 
     def __post_init__(self) -> None:
@@ -59,8 +65,30 @@ class HostPoliteness:
 
     @property
     def circuit_open(self) -> bool:
-        """When True, the crawl loop should stop sending requests to this host."""
-        return self._circuit_open
+        """When True, the crawl loop should stop sending requests to this host.
+
+        The circuit is HALF-OPEN rather than latching: once
+        ``circuit_cooldown_sec`` has passed since it tripped, it closes itself
+        and the failure counter resets, so the next crawl gets a fresh set of
+        attempts.
+
+        This registry is process-wide and keyed by host, so a latching circuit
+        meant one bad crawl (a site down for a minute, a transient WAF block)
+        blocked that host for the lifetime of the backend — every later crawl
+        stopping instantly at zero pages with no way back short of a restart.
+        """
+        if self._circuit_opened_at is None:
+            return False
+        if time.monotonic() - self._circuit_opened_at >= self.circuit_cooldown_sec:
+            logger.info(
+                "Politeness circuit for host=%s cooled down after %.0fs — closing",
+                self.host,
+                self.circuit_cooldown_sec,
+            )
+            self._circuit_opened_at = None
+            self._consecutive_failures = 0
+            return False
+        return True
 
     @asynccontextmanager
     async def slot(self) -> AsyncIterator[None]:
@@ -89,12 +117,17 @@ class HostPoliteness:
         """Increment failure counter. Opens the circuit after the configured
         threshold of consecutive failures. ``retriable`` is informational."""
         self._consecutive_failures += 1
-        if self._consecutive_failures >= DEFAULT_MAX_CONSECUTIVE_FAILURES:
-            self._circuit_open = True
+        if (
+            self._consecutive_failures >= DEFAULT_MAX_CONSECUTIVE_FAILURES
+            and self._circuit_opened_at is None
+        ):
+            self._circuit_opened_at = time.monotonic()
             logger.warning(
-                "Politeness circuit opened for host=%s after %d consecutive failures",
+                "Politeness circuit opened for host=%s after %d consecutive "
+                "failures — reopening in %.0fs",
                 self.host,
                 self._consecutive_failures,
+                self.circuit_cooldown_sec,
             )
 
     async def back_off(self, attempt: int) -> None:

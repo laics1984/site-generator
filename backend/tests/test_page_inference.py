@@ -1,6 +1,13 @@
 import unittest
 
-from app.models.content_blocks import ImageMetadata, ProfileCandidate, SourceContent
+from app.models.content_blocks import (
+    ImageMetadata,
+    NavLink,
+    ProfileCandidate,
+    SectionCandidate,
+    SourceCard,
+    SourceContent,
+)
 from app.services.page_inference import (
     _MAX_PAGE_SECTIONS,
     DIRECTORY_MIN_PROFILES,
@@ -243,6 +250,96 @@ class PageInferenceTest(unittest.TestCase):
         self.assertEqual(about.title, "About Us")
         self.assertEqual(contact.title, "Contact Us")
 
+    def test_template_titled_detail_pages_are_named_by_their_profile(self):
+        # MMTA's nine committee-member pages all carry <title>About MMTA</title>
+        # and the same "The Committee" heading — without per-page evidence the
+        # picker shows nine identical rows (and types them all as about pages).
+        members = [("Sandra Cheah", "sandra"), ("Nathan Ng", "nathan")]
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            title="About MMTA",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref=f"https://example.my/profile/{slug}",
+                    title="About MMTA",
+                    headings=["The Committee"],
+                    raw_text=f"{name} is a music therapist.",
+                    url_path=f"/profile/{slug}",
+                    profile_candidates=[
+                        ProfileCandidate(
+                            name=name, role="Committee Member", confidence=0.9
+                        )
+                    ],
+                )
+                for name, slug in members
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+
+        for name, slug in members:
+            page = next(s for s in scaffolds if s.slug == f"profile/{slug}")
+            self.assertEqual(page.title, name)
+            # "About MMTA" used to drag these into the about page_type.
+            self.assertEqual(page.page_type, "landing")
+
+    def test_template_titled_pages_fall_back_to_their_distinct_heading(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref=f"https://example.my/services/{slug}",
+                    title="Our Services",
+                    headings=["What We Do", heading],
+                    raw_text=f"{heading} details.",
+                    url_path=f"/services/{slug}",
+                )
+                for heading, slug in (
+                    ("Group Sessions", "group-sessions"),
+                    ("Home Visits", "home-visits"),
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+
+        group = next(s for s in scaffolds if s.slug == "services/group-sessions")
+        visits = next(s for s in scaffolds if s.slug == "services/home-visits")
+        # "What We Do" is on both pages — template chrome, not a page name.
+        self.assertEqual(group.title, "Group Sessions")
+        self.assertEqual(visits.title, "Home Visits")
+
+    def test_unique_page_titles_are_still_used_verbatim(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/membership",
+                    title="Membership",
+                    headings=["Join Us"],
+                    raw_text="Membership details.",
+                    url_path="/membership",
+                    profile_candidates=[
+                        ProfileCandidate(name="Sandra Cheah", confidence=0.9)
+                    ],
+                )
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+
+        membership = next(s for s in scaffolds if s.slug == "membership")
+        self.assertEqual(membership.title, "Membership")
+
     def test_discovered_team_page_removes_full_team_section_from_about(self):
         source = SourceContent(
             source_kind="url",
@@ -376,6 +473,101 @@ class PageInferenceTest(unittest.TestCase):
         self.assertIn("team", about.sections)
 
 
+class TranslatedMirrorTest(unittest.TestCase):
+    """Multilingual sources (mmta.org.my ships /bm and /zh copies of everything).
+
+    A mirror is a translation of a page we already have, not a new page: it must
+    not invent a "/bm" section, must not take a primary-nav slot, and must point
+    at the counterpart whose design it will clone.
+    """
+
+    @staticmethod
+    def _source(*paths: str, nav: list[NavLink] | None = None) -> SourceContent:
+        return SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            nav_links=nav or [],
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref=f"https://example.my{path}",
+                    title=path.strip("/").replace("/", " ").title(),
+                    raw_text=f"Content of {path}.",
+                    url_path=path,
+                )
+                for path in paths
+            ],
+        )
+
+    def test_mirror_is_paired_with_the_page_it_translates(self):
+        scaffolds = infer_page_scaffolds(
+            self._source("/committee", "/bm/committee"), industry="other"
+        )
+
+        committee = next(s for s in scaffolds if s.slug == "committee")
+        translated = next(s for s in scaffolds if s.slug == "bm/committee")
+
+        self.assertIsNone(committee.locale)
+        self.assertEqual(translated.locale, "bm")
+        self.assertEqual(translated.translation_of, "committee")
+        # It clones the counterpart's design, so it inherits its shape.
+        self.assertEqual(translated.page_type, committee.page_type)
+        self.assertEqual(translated.sections, committee.sections)
+
+    def test_language_root_translates_the_homepage(self):
+        scaffolds = infer_page_scaffolds(self._source("/bm"), industry="other")
+
+        translated = next(s for s in scaffolds if s.slug == "bm")
+        self.assertEqual(translated.locale, "bm")
+        self.assertEqual(translated.translation_of, "")
+
+    def test_mirror_does_not_invent_a_language_section(self):
+        scaffolds = infer_page_scaffolds(
+            self._source("/committee", "/bm/committee"), industry="other"
+        )
+        # Without the pairing, /bm/committee synthesizes a "bm" parent page.
+        parent = next((s for s in scaffolds if s.slug == "bm"), None)
+        self.assertIsNone(parent)
+        self.assertIsNone(
+            next(s for s in scaffolds if s.slug == "bm/committee").parent_slug
+        )
+
+    def test_translations_take_no_primary_nav_slot(self):
+        nav = [
+            NavLink(label="Committee", href="/committee"),
+            NavLink(label="Bahasa Malaysia", href="/bm"),
+        ]
+        scaffolds = infer_page_scaffolds(
+            self._source("/committee", "/bm", nav=nav), industry="other"
+        )
+
+        translated = next(s for s in scaffolds if s.slug == "bm")
+        self.assertIsNone(translated.nav_rank)
+        # The source page it came from keeps its own rank.
+        self.assertIsNotNone(next(s for s in scaffolds if s.slug == "committee").nav_rank)
+
+    def test_uncrawled_language_link_does_not_become_an_empty_page(self):
+        nav = [
+            NavLink(label="Committee", href="/committee"),
+            NavLink(label="中文", href="/zh"),
+        ]
+        scaffolds = infer_page_scaffolds(
+            self._source("/committee", nav=nav), industry="other"
+        )
+        # /zh was never crawled — scaffolding it from the nav link alone would
+        # ship a blank "中文" page in the generated site.
+        self.assertIsNone(next((s for s in scaffolds if s.slug == "zh"), None))
+
+    def test_locale_looking_section_without_a_counterpart_is_a_normal_page(self):
+        scaffolds = infer_page_scaffolds(
+            self._source("/it/support", "/about"), industry="other"
+        )
+        support = next(s for s in scaffolds if s.slug == "it/support")
+        self.assertIsNone(support.locale)
+        self.assertEqual(support.parent_slug, "it")  # ordinary IT section
+
+
 class StoryPageRhythmTest(unittest.TestCase):
     """A source page that narrates section-by-section (heading + paragraph +
     photo, repeated) gets a story rhythm — one image+text `about` per source
@@ -451,6 +643,137 @@ class StoryPageRhythmTest(unittest.TestCase):
         scaffolds = infer_page_scaffolds(source, industry="childcare")
         contact = next(s for s in scaffolds if s.slug == "contact")
         self.assertLessEqual(contact.sections.count("about"), 1)
+
+
+class SectionTreeRhythmTest(unittest.TestCase):
+    """A page whose markup declares its own sections gets a scaffold shaped like
+    that markup — a card block per card group, an `about` per prose section.
+
+    Without this the planner prompt asks for one output section per source
+    section while `required_sections` still comes from the URL slug. On
+    Glorykids' /school-life that meant six source sections against a five-kind
+    `services` recipe, and the model padded with the one schema always in the
+    prompt: six consecutive `about` blocks, with four age-group cards flattened
+    into one of their body strings as a fake bullet list.
+    """
+
+    @staticmethod
+    def _page(sections: list[SectionCandidate], slug: str = "school-life") -> SourceContent:
+        return SourceContent(
+            source_kind="url",
+            source_ref=f"https://example.my/{slug}",
+            title="School Life",
+            raw_text="School life content for this page.",
+            url_path=f"/{slug}",
+            headings=[s.heading for s in sections],
+            section_candidates=sections,
+        )
+
+    @staticmethod
+    def _cards(n: int) -> list[SourceCard]:
+        return [
+            SourceCard(title=f"Card {i}", body="Some descriptive body text here.")
+            for i in range(n)
+        ]
+
+    def _scaffold_for(self, page: SourceContent, slug: str = "school-life"):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[page],
+        )
+        scaffolds = infer_page_scaffolds(source, industry="childcare")
+        return next(s for s in scaffolds if s.slug == slug)
+
+    def _glorykids_tree(self) -> list[SectionCandidate]:
+        """The real /school-life shape: prose, cards, prose, prose, cards, prose."""
+        return [
+            SectionCandidate(heading="Curriculum", level=1, prose="Our curriculum text."),
+            SectionCandidate(
+                heading="School Life", level=2, card_kind="offerings", cards=self._cards(4)
+            ),
+            SectionCandidate(heading="Full Programme", level=2, prose="After-school text."),
+            SectionCandidate(heading="Extended Programme", level=2, prose="Daycare text."),
+            SectionCandidate(
+                heading="Centres", level=2, card_kind="offerings", cards=self._cards(4)
+            ),
+            SectionCandidate(heading="Field Trip", level=2, prose="Field trip text."),
+        ]
+
+    def test_card_groups_get_card_blocks_not_about(self):
+        scaffold = self._scaffold_for(self._page(self._glorykids_tree()))
+
+        self.assertEqual(
+            scaffold.sections,
+            ["hero", "about", "services", "about", "about", "features", "about", "cta"],
+        )
+
+    def test_every_card_group_gets_a_block_that_has_items(self):
+        """The regression that matters: a card group must never land in `about`,
+        whose body is a single string."""
+        sections = self._scaffold_for(self._page(self._glorykids_tree())).sections
+        item_blocks = {"services", "features", "team", "process", "gallery", "downloads"}
+
+        card_groups = sum(1 for s in self._glorykids_tree() if s.cards)
+        self.assertEqual(sum(1 for s in sections if s in item_blocks), card_groups)
+
+    def test_card_kind_picks_the_matching_block(self):
+        tree = [
+            SectionCandidate(heading="Intro", level=1, prose="Intro text."),
+            SectionCandidate(
+                heading="Our Team", level=2, card_kind="people", cards=self._cards(3)
+            ),
+            SectionCandidate(
+                heading="How It Works", level=2, card_kind="steps", cards=self._cards(3)
+            ),
+            SectionCandidate(
+                heading="Our Work", level=2, card_kind="gallery", cards=self._cards(4)
+            ),
+        ]
+
+        sections = self._scaffold_for(self._page(tree)).sections
+
+        self.assertIn("team", sections)
+        self.assertIn("process", sections)
+        self.assertIn("gallery", sections)
+
+    def test_tree_respects_the_page_section_ceiling(self):
+        tree = [
+            SectionCandidate(heading=f"Section {i}", level=2, prose="Body text here.")
+            for i in range(14)
+        ]
+
+        sections = self._scaffold_for(self._page(tree)).sections
+
+        self.assertLessEqual(len(sections), _MAX_PAGE_SECTIONS)
+        self.assertEqual(sections[0], "hero")
+        self.assertEqual(sections[-1], "cta")
+
+    def test_a_thin_tree_falls_back_to_the_page_type_recipe(self):
+        """Two headings say too little to override the industry rhythm.
+
+        The recipe's own spine must survive — the tree would have produced
+        exactly ["hero", "about", "about", "cta"], which is what we must NOT
+        see. (The recipe may still weave an about of its own; that is the
+        photo-weaving path, not the tree.)"""
+        tree = [
+            SectionCandidate(heading="Intro", level=1, prose="Intro text."),
+            SectionCandidate(heading="More", level=2, prose="More text."),
+        ]
+
+        sections = self._scaffold_for(self._page(tree)).sections
+
+        self.assertIn("services", sections)
+        self.assertNotEqual(sections, ["hero", "about", "about", "cta"])
+
+    def test_no_tree_leaves_existing_behaviour_untouched(self):
+        page = self._page([])
+        page.section_candidates = []
+
+        sections = self._scaffold_for(page).sections
+
+        self.assertIn("services", sections)
 
 
 class PhotoSectionWeavingTest(unittest.TestCase):
@@ -628,3 +951,236 @@ class PhotoSectionWeavingTest(unittest.TestCase):
         prevention = next(s for s in scaffolds if s.slug == "prevention")
 
         self.assertNotEqual(prevention.page_type, "events")
+
+
+class RosterLinkedDetailPageTest(unittest.TestCase):
+    """Where a detail page belongs, and whether a parent gets invented.
+
+    MMTA has nine /profile/<name> pages and no /profile page. The URL suggests a
+    section that doesn't exist; the committee grid's own links say where those
+    pages actually belong.
+    """
+
+    def _source(self, *, roster_links: bool, roster_path="/committee"):
+        members = [("Ashley Jinivon", "ashley"), ("Sandra Cheah", "sandra")]
+        roster = SourceContent(
+            source_kind="url",
+            source_ref=f"https://example.my{roster_path}",
+            title="The Committee",
+            raw_text="The committee members.",
+            url_path=roster_path,
+            profile_candidates=[
+                ProfileCandidate(
+                    name=name,
+                    role="Committee Member",
+                    photo_url=f"https://example.my/photos/{slug}.jpg",
+                    profile_url=(
+                        f"https://example.my/profile/{slug}" if roster_links else None
+                    ),
+                    confidence=0.9,
+                )
+                for name, slug in members
+            ],
+        )
+        details = [
+            SourceContent(
+                source_kind="url",
+                source_ref=f"https://example.my/profile/{slug}",
+                title="About Us",
+                headings=["The Committee"],
+                raw_text=f"{name} is a music therapist with years of experience.",
+                url_path=f"/profile/{slug}",
+                profile_candidates=[
+                    ProfileCandidate(
+                        name=name,
+                        role="Committee Member",
+                        photo_url=f"https://example.my/photos/{slug}.jpg",
+                        # A member page's own card links BACK to the roster.
+                        profile_url=f"https://example.my{roster_path}",
+                        confidence=0.9,
+                    )
+                ],
+            )
+            for name, slug in members
+        ]
+        return SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            title="MMTA",
+            raw_text="Home page text.",
+            discovered_pages=[roster, *details],
+        )
+
+    def test_roster_link_replaces_the_invented_parent(self):
+        scaffolds = infer_page_scaffolds(self._source(roster_links=True), industry="other")
+        slugs = {s.slug for s in scaffolds}
+
+        self.assertNotIn("profile", slugs)
+        for slug in ("profile/ashley", "profile/sandra"):
+            page = next(s for s in scaffolds if s.slug == slug)
+            # The slug is the source's own path, untouched.
+            self.assertEqual(page.parent_slug, "committee")
+            self.assertTrue(page.menu_hidden)
+
+    def test_the_roster_itself_is_not_filed_under_a_member(self):
+        # Every member page links back to /committee. Read naively that would
+        # make the committee page a child of whichever member came first.
+        scaffolds = infer_page_scaffolds(self._source(roster_links=True), industry="other")
+
+        committee = next(s for s in scaffolds if s.slug == "committee")
+        self.assertIsNone(committee.parent_slug)
+        self.assertFalse(committee.menu_hidden)
+
+    def test_without_a_linking_roster_the_parent_is_still_synthesized(self):
+        # Children nothing links to still need a home — this is what keeps
+        # /services/web-design working on a site with no /services page.
+        scaffolds = infer_page_scaffolds(self._source(roster_links=False), industry="other")
+        slugs = {s.slug for s in scaffolds}
+
+        self.assertIn("profile", slugs)
+        page = next(s for s in scaffolds if s.slug == "profile/ashley")
+        self.assertEqual(page.parent_slug, "profile")
+        self.assertFalse(page.menu_hidden)
+
+
+class NestedSelfStructuredPageTest(unittest.TestCase):
+    """A page whose grid IS its content keeps that grid when nested.
+
+    The source's own dropdown ("GALLERY ▾ → Photos") re-parents the child, and
+    a child repeating its parent's type used to collapse to `landing` — which
+    handed a photo gallery the generic detail rhythm and, with the `gallery`
+    type gone, dropped it out of every guard keyed on that type. brightkids'
+    /gallery-photo shipped as hero/features/process/about/cta with no pictures.
+    """
+
+    @staticmethod
+    def _source(parent_label, parent_href, children, extra_pages=()):
+        nav = [
+            NavLink(label="HOME", href="index.php"),
+            NavLink(
+                label=parent_label,
+                href=parent_href,
+                children=[NavLink(label=lbl, href=href) for lbl, href in children],
+            ),
+        ]
+        discovered = [
+            SourceContent(
+                source_kind="url",
+                source_ref=f"https://example.my/{href}",
+                title=lbl,
+                raw_text=f"{lbl} page text.",
+                url_path=f"/{href}",
+            )
+            for lbl, href in [*children, *extra_pages]
+        ]
+        return SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            title="Example",
+            raw_text="Home page text.",
+            nav_links=nav,
+            discovered_pages=discovered,
+        )
+
+    def _sections(self, source, slug):
+        scaffolds = infer_page_scaffolds(source, industry="other")
+        return next(s for s in scaffolds if s.slug == slug)
+
+    def test_a_gallery_under_a_gallery_dropdown_keeps_the_gallery_rhythm(self):
+        # The reproducer: brightkids.com.my/gallery-photo.php.
+        source = self._source(
+            "GALLERY", "#", [("Photos", "gallery-photo.php"), ("Videos", "gallery-video.php")]
+        )
+        page = self._sections(source, "gallery-photo")
+
+        self.assertEqual(page.page_type, "gallery")
+        self.assertEqual(page.parent_slug, "gallery")
+        self.assertEqual(page.sections, ["hero", "gallery", "cta"])
+        # The padding that shipped instead of the pictures.
+        for padded in ("features", "process", "about", "testimonials"):
+            self.assertNotIn(padded, page.sections)
+
+    def test_every_self_structured_type_keeps_its_rhythm_when_nested(self):
+        # The invariant is "nesting changes nothing", so the control is the
+        # SAME page read top-level — not _TOP_SECTIONS, which would miss the
+        # photo-split weaving that legitimately applies to both.
+        from app.services.page_inference import _SELF_STRUCTURED_TYPES
+
+        for page_type in sorted(_SELF_STRUCTURED_TYPES):
+            with self.subTest(page_type=page_type):
+                child = f"{page_type}-detail.php"
+                # The child's own slug has to evidence the type, as "Photos"
+                # under GALLERY ▾ does — otherwise it is a genuine detail page.
+                nested = self._sections(
+                    self._source(page_type.upper(), f"{page_type}.php", [(page_type.title(), child)]),
+                    f"{page_type}-detail",
+                )
+                flat = self._sections(
+                    self._source("HOME", "index.php", [(page_type.title(), child)]),
+                    f"{page_type}-detail",
+                )
+
+                self.assertEqual(nested.page_type, page_type)
+                self.assertEqual(nested.parent_slug, page_type)
+                self.assertEqual(nested.sections, flat.sections)
+
+    def test_a_service_detail_page_still_gets_the_subpage_rhythm(self):
+        # The guard against over-generalising: /services/web-design describes
+        # ONE service, so it must not become another services listing.
+        from app.services.page_inference import _SUBPAGE_SECTIONS
+
+        source = self._source(
+            "SERVICES", "services.php", [("Web Design", "services/web-design.php")]
+        )
+        page = self._sections(source, "services/web-design")
+
+        self.assertEqual(page.page_type, "landing")
+        self.assertEqual(page.parent_slug, "services")
+        for kind in _SUBPAGE_SECTIONS:
+            self.assertIn(kind, page.sections)
+        self.assertNotIn("services", page.sections)
+
+    def test_a_php_nav_href_finds_its_own_scaffold(self):
+        # _href_to_slug used to skip the extension strip that the scaffold
+        # index applies, so on a .php site NO nav href matched a page: dropdown
+        # nesting never applied and each href scaffolded an empty duplicate.
+        source = self._source(
+            "GALLERY", "#", [("Photos", "gallery-photo.php")], extra_pages=(("About", "about-us.php"),)
+        )
+        slugs = {s.slug for s in infer_page_scaffolds(source, industry="other")}
+
+        self.assertIn("gallery-photo", slugs)
+        self.assertNotIn("gallery-photo.php", slugs)
+        self.assertNotIn("about-us.php", slugs)
+
+    def test_the_nav_index_page_is_the_homepage_not_a_second_page(self):
+        # "index.php" in the header IS the homepage, which scaffolds as "".
+        source = self._source("GALLERY", "#", [("Photos", "gallery-photo.php")])
+        slugs = {s.slug for s in infer_page_scaffolds(source, industry="other")}
+
+        self.assertNotIn("index", slugs)
+        self.assertNotIn("index.php", slugs)
+
+
+class ChildTypeUnderTest(unittest.TestCase):
+    def test_repeating_a_plain_parent_type_collapses_to_a_detail_page(self):
+        from app.services.page_inference import _child_type_under
+
+        self.assertEqual(_child_type_under("services", "services"), "landing")
+
+    def test_repeating_a_self_structured_type_keeps_it(self):
+        from app.services.page_inference import _child_type_under
+
+        self.assertEqual(_child_type_under("gallery", "gallery"), "gallery")
+        self.assertEqual(_child_type_under("menu", "menu"), "menu")
+
+    def test_a_differing_type_is_never_touched(self):
+        from app.services.page_inference import _child_type_under
+
+        self.assertEqual(_child_type_under("gallery", "about"), "gallery")
+        self.assertEqual(_child_type_under("services", "about"), "services")
+
+    def test_a_child_with_no_parent_is_never_collapsed(self):
+        from app.services.page_inference import _child_type_under
+
+        self.assertEqual(_child_type_under("services", None), "services")

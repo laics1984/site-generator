@@ -13,7 +13,10 @@ from app.config import settings
 from app.models.content_blocks import PagePlan
 from app.services.hero_director import (
     IMAGELESS_HERO_IDS,
+    HeroComposition,
     HeroDirective,
+    hero_composition,
+    plan_site_compositions,
     plan_site_heroes,
 )
 
@@ -35,7 +38,7 @@ _APPROVED_NONPROFIT_IDS = {
 }
 
 
-def _page(slug, page_type="landing", *, homepage=False):
+def _page(slug, page_type="landing", *, homepage=False, parent_slug=None, menu_hidden=False):
     return PagePlan(
         page_type=page_type,
         slug=slug,
@@ -44,6 +47,8 @@ def _page(slug, page_type="landing", *, homepage=False):
         blocks=[],
         seo_title=slug,
         seo_description=slug,
+        parent_slug=parent_slug,
+        menu_hidden=menu_hidden,
     )
 
 
@@ -176,6 +181,71 @@ class FullBleedEverywhereTest(unittest.TestCase):
         self.assertEqual(self._plan(), self._plan())
 
 
+class BandedIsAPhotoBandTest(_LegacyRotationCase):
+    """"banded" is a bounded-height full-bleed PHOTO hero, so it selects the
+    background treatment even with the site-wide full-bleed policy off.
+
+    Before this, the height and the template were decided independently: every
+    mood/industry that defaults to banded (modern, technical / saas,
+    consultancy, …) also leads with a split or gradient hero, so a banded site
+    opened on a flat COLOUR hero — and since `hero-background-bold` is the only
+    catalog hero reading --builder-hero-min-height, the 460px token the theme
+    emitted was read by no template on the page. The choice did nothing at all.
+    """
+
+    def _plan(self, *, hero_height, has_source_background=False):
+        return plan_site_heroes(
+            _nonprofit_site(),
+            mood="modern",
+            industry="saas",
+            has_source_background=has_source_background,
+            seed="Acme",
+            hero_height=hero_height,
+        )
+
+    def test_banded_directs_every_page_to_the_photo_background(self):
+        for slug, d in self._plan(hero_height="banded").items():
+            self.assertEqual(d.template_id, "hero-background-bold", slug)
+            self.assertEqual(d.layout, "background", slug)
+
+    def test_banded_beats_the_mood_split_lead(self):
+        """Modern's own spec leads with hero-modern-split — a colour hero."""
+        self.assertEqual(
+            self._plan(hero_height="full")["home"].template_id, "hero-modern-split"
+        )
+        self.assertEqual(
+            self._plan(hero_height="banded")["home"].template_id, "hero-background-bold"
+        )
+
+    def test_full_keeps_the_legacy_rotation(self):
+        ids = {d.template_id for d in self._plan(hero_height="full").values()}
+        self.assertNotIn("hero-background-bold", ids)
+
+    def test_full_is_the_default_so_existing_callers_are_unchanged(self):
+        self.assertEqual(
+            plan_site_heroes(
+                _nonprofit_site(), mood="modern", industry="saas",
+                has_source_background=False, seed="Acme",
+            ),
+            self._plan(hero_height="full"),
+        )
+
+    def test_banded_still_pins_the_source_background_on_the_homepage_only(self):
+        directives = self._plan(hero_height="banded", has_source_background=True)
+        self.assertTrue(directives["home"].pin_source_background)
+        for slug, d in directives.items():
+            if slug != "home":
+                self.assertFalse(d.pin_source_background, slug)
+
+    def test_banded_heroes_are_centred_so_height_and_composition_agree(self):
+        """The composition planner already forces centre at 460px; the two
+        decisions now describe the same hero."""
+        comps = plan_site_compositions(
+            _nonprofit_site(), seed="Acme", hero_height="banded"
+        )
+        self.assertEqual({c.anchor for c in comps.values()}, {"center"})
+
+
 class DirectiveShapeTest(_LegacyRotationCase):
     def test_imageless_ids_never_pin_or_wash(self):
         directives = plan_site_heroes(
@@ -192,6 +262,181 @@ class DirectiveShapeTest(_LegacyRotationCase):
         with self.assertRaises(Exception):
             d.template_id = "x"  # type: ignore[misc]
         self.assertIn(d, {d})
+
+
+class CentredByDefaultTest(unittest.TestCase):
+    """Hero copy is centred unless `hero_anchored_copy` is explicitly turned on.
+
+    An anchored column only works when the photograph has a genuinely open side
+    to give it; across arbitrary scraped and stock imagery that's the exception,
+    so the anchor more often lands copy over a busy half of the frame than
+    beside a clean one. Centre is the reliable default.
+    """
+
+    def _pages(self):
+        return [
+            _page("home", "home", homepage=True),
+            _page("about", "about"),
+            _page("contact", "contact"),
+        ]
+
+    def test_the_switch_is_off_by_default(self):
+        self.assertFalse(settings.hero_anchored_copy)
+
+    def test_every_page_including_the_homepage_is_centred(self):
+        comps = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        self.assertEqual({c.anchor for c in comps.values()}, {"center"})
+
+    def test_the_single_page_helper_agrees(self):
+        for homepage in (True, False):
+            comp = hero_composition(slug="about", seed="s", is_homepage=homepage)
+            self.assertEqual(comp.anchor, "center")
+
+    def test_turning_it_on_restores_anchoring(self):
+        """The machinery stays intact and reversible — the switch is the whole
+        difference, so the scrim and focal crop keep following the anchor."""
+        with mock.patch.object(settings, "hero_anchored_copy", True):
+            comps = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        self.assertEqual(comps["home"].anchor, "left")
+        self.assertGreater(len({c.anchor for c in comps.values()}), 1)
+
+
+class ProfilePageInheritsParentHeroTest(_LegacyRotationCase):
+    """A profile page reached from a roster's own link (``menu_hidden`` +
+    ``parent_slug``) reads as a continuation of that roster page, not a new
+    place — it must share the roster's exact directive/composition, not draw
+    an independent rotation pick."""
+
+    def _pages(self):
+        return [
+            _page("home", "home", homepage=True),
+            _page("team", "team"),  # nonprofit by_page_type -> _EDITORIAL
+            _page("team/ashley", "landing", parent_slug="team", menu_hidden=True),
+            _page("team/dana", "landing", parent_slug="team", menu_hidden=True),
+            # Same parent_slug, but NOT reached via the roster's link — must
+            # keep its own explicit page-type directive, not inherit team's.
+            _page("team/contact", "contact", parent_slug="team", menu_hidden=False),
+        ]
+
+    def _directives(self):
+        return plan_site_heroes(
+            self._pages(), mood="friendly", industry="nonprofit",
+            has_source_background=False, seed="Hope Foundation",
+        )
+
+    def test_profile_pages_copy_the_parent_roster_directive(self):
+        directives = self._directives()
+        self.assertEqual(directives["team/ashley"], directives["team"])
+        self.assertEqual(directives["team/dana"], directives["team"])
+
+    def test_a_menu_visible_sub_page_keeps_its_own_directive(self):
+        directives = self._directives()
+        self.assertEqual(directives["team/contact"].template_id, "hero-centered-minimal")
+        self.assertNotEqual(directives["team/contact"], directives["team"])
+
+    def test_dangling_parent_slug_falls_back_safely(self):
+        pages = self._pages() + [
+            _page("orphan", "landing", parent_slug="nonexistent", menu_hidden=True)
+        ]
+        directives = plan_site_heroes(
+            pages, mood="friendly", industry="nonprofit",
+            has_source_background=False, seed="Hope Foundation",
+        )
+        self.assertIn("orphan", directives)
+
+    def test_composition_also_inherits(self):
+        with mock.patch.object(settings, "hero_anchored_copy", True):
+            comps = plan_site_compositions(self._pages(), seed="Hope Foundation")
+        self.assertEqual(comps["team/ashley"], comps["team"])
+        self.assertEqual(comps["team/dana"], comps["team"])
+
+    def test_composition_dangling_parent_slug_falls_back_safely(self):
+        pages = self._pages() + [
+            _page("orphan", "landing", parent_slug="nonexistent", menu_hidden=True)
+        ]
+        with mock.patch.object(settings, "hero_anchored_copy", True):
+            comps = plan_site_compositions(pages, seed="Hope Foundation")
+        self.assertIn("orphan", comps)
+
+
+class HeroCompositionTest(unittest.TestCase):
+    """With every page on the same full-bleed template, composition is the only
+    axis of variety left — so it has to actually vary, and still be idempotent.
+
+    Covers the opt-in anchored mode (`hero_anchored_copy`); the default centred
+    behaviour is CentredByDefaultTest above.
+    """
+
+    def setUp(self):
+        patcher = mock.patch.object(settings, "hero_anchored_copy", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _pages(self):
+        return [
+            _page("home", "home", homepage=True),
+            _page("about", "about"),
+            _page("services", "services"),
+            _page("team", "team"),
+            _page("contact", "contact"),
+            _page("faq", "faq"),
+        ]
+
+    def test_homepage_always_leads_left_anchored(self):
+        comps = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        self.assertEqual(comps["home"].anchor, "left")
+
+    def test_consecutive_interiors_never_share_an_anchor(self):
+        """Per-page seeding alone clusters: three identical compositions in a row
+        is the exact convergence composition exists to prevent."""
+        for seed in ("Blue Fin Bistro", "Meridian Law", "Sunny Days Kindergarten"):
+            anchors = [
+                c.anchor
+                for slug, c in plan_site_compositions(self._pages(), seed=seed).items()
+                if slug != "home"
+            ]
+            for a, b in zip(anchors, anchors[1:]):
+                self.assertNotEqual(a, b, msg=f"{seed}: {anchors}")
+
+    def test_a_site_uses_more_than_one_composition(self):
+        for seed in ("Blue Fin Bistro", "Meridian Law", "Sunny Days Kindergarten"):
+            comps = plan_site_compositions(self._pages(), seed=seed)
+            self.assertGreater(len({c.anchor for c in comps.values()}), 1, msg=seed)
+
+    def test_regeneration_is_idempotent(self):
+        # md5-seeded, not hash()-seeded: the pick must survive a restart, or
+        # every regeneration silently reshuffles the whole site.
+        first = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        second = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        self.assertEqual(
+            {k: v.anchor for k, v in first.items()},
+            {k: v.anchor for k, v in second.items()},
+        )
+
+    def test_different_brands_compose_differently(self):
+        a = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")
+        b = plan_site_compositions(self._pages(), seed="Meridian Law")
+        self.assertNotEqual(
+            [c.anchor for c in a.values()], [c.anchor for c in b.values()]
+        )
+
+    def test_banded_heroes_stay_centred_everywhere(self):
+        """460px has no vertical room for an anchor to read as composition — a
+        bottom-left copy block would just look like it fell out of the band."""
+        comps = plan_site_compositions(
+            self._pages(), seed="Blue Fin Bistro", hero_height="banded"
+        )
+        self.assertEqual({c.anchor for c in comps.values()}, {"center"})
+
+    def test_single_page_helper_agrees_with_the_site_planner_on_the_homepage(self):
+        solo = hero_composition(slug="home", seed="Blue Fin Bistro", is_homepage=True)
+        planned = plan_site_compositions(self._pages(), seed="Blue Fin Bistro")["home"]
+        self.assertEqual(solo.anchor, planned.anchor)
+
+    def test_composition_is_frozen(self):
+        c = HeroComposition("left")
+        with self.assertRaises(Exception):
+            c.anchor = "center"  # type: ignore[misc]
 
 
 if __name__ == "__main__":

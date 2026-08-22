@@ -5,6 +5,8 @@ from app.models.content_blocks import (
     AwardsBlock,
     ClientItem,
     ClientsBlock,
+    GalleryBlock,
+    GalleryItem,
     HeroBlock,
     PagePlan,
     StatItem,
@@ -569,6 +571,191 @@ class ScaffoldEnforcementTest(unittest.TestCase):
 
         hero = next(b for b in aligned.blocks if b.kind == "hero")
         self.assertEqual(hero.image_query, "Example team at work")
+
+
+class TeamMemberDetailSanitizationTest(unittest.TestCase):
+    """A real person keeps their card; text the card can't vouch for is blanked.
+
+    Guards the fix for team cards rendering unrelated page copy: role and bio
+    reached the page with no validation at all.
+    """
+
+    SOURCE = (
+        "Aisha Rahman is our music therapist. "
+        "She leads the paediatric palliative programme. "
+        "Marcus Ong keeps the accounts."
+    )
+
+    def _team_page(self, members):
+        return PagePlan(
+            page_type="landing",
+            slug="about",
+            title="About",
+            blocks=[TeamBlock(heading="Our team", members=members)],
+            seo_title="About - Example",
+            seo_description="About us.",
+        )
+
+    def _aligned_members(self, members, source_text=SOURCE):
+        page = self._team_page(members)
+        scaffold = PageScaffold(
+            page_type="landing", slug="about", title="About", sections=["team"],
+        )
+        aligned = align_page_to_scaffold(
+            page, scaffold, brand_name="Example", source_text=source_text
+        )
+        return next(b for b in aligned.blocks if b.kind == "team").members
+
+    def test_blanks_cta_role_and_keeps_the_person(self):
+        members = self._aligned_members([
+            TeamMember(name="Aisha Rahman", role="Read More"),
+        ])
+
+        self.assertEqual(len(members), 1)
+        self.assertEqual(members[0].name, "Aisha Rahman")
+        self.assertEqual(members[0].role, "")
+
+    def test_drops_ungrounded_bio_keeps_grounded_one(self):
+        members = self._aligned_members([
+            TeamMember(
+                name="Aisha Rahman",
+                role="Music therapist",
+                bio=(
+                    "She leads the paediatric palliative programme.\n"
+                    "Winner of three international awards."
+                ),
+            ),
+        ])
+
+        self.assertEqual(members[0].role, "Music therapist")
+        self.assertEqual(
+            members[0].bio, "She leads the paediatric palliative programme."
+        )
+        # The deprecated alias must move with it, or _team_content resurrects
+        # the dirty text via `bio or description`.
+        self.assertEqual(members[0].description, members[0].bio)
+
+    def test_drops_bio_lines_naming_another_member(self):
+        members = self._aligned_members([
+            TeamMember(
+                name="Aisha Rahman",
+                role="Music therapist",
+                bio=(
+                    "She leads the paediatric palliative programme.\n"
+                    "Marcus Ong keeps the accounts."
+                ),
+            ),
+            TeamMember(name="Marcus Ong", role="Treasurer"),
+        ])
+
+        self.assertEqual(
+            members[0].bio, "She leads the paediatric palliative programme."
+        )
+
+    def test_drops_contact_details_from_bio(self):
+        members = self._aligned_members(
+            [
+                TeamMember(
+                    name="Aisha Rahman",
+                    role="Music therapist",
+                    bio="Call +60 4-226 1234\nEmail aisha@example.my",
+                )
+            ],
+            source_text=None,
+        )
+
+        self.assertIsNone(members[0].bio)
+
+    def test_still_drops_non_person_names(self):
+        page = self._team_page([
+            TeamMember(name="Our Team", role="Everyone"),
+        ])
+        scaffold = PageScaffold(
+            page_type="landing", slug="about", title="About", sections=["team"],
+        )
+
+        aligned = align_page_to_scaffold(
+            page, scaffold, brand_name="Example", source_text=self.SOURCE
+        )
+
+        # No team block survives; align_page_to_scaffold's "never emit a blank
+        # page" rule then backfills a hero.
+        self.assertNotIn("team", [b.kind for b in aligned.blocks])
+
+
+class GallerySanitizationTest(unittest.TestCase):
+    """A gallery asserts "these are our photos" — so it has to be ours.
+
+    Gallery was the one card kind with no grounding check, so an LLM
+    image_query survived to render and resolved through media.ImageResolver to
+    a Pexels photo. A childcare site then shipped a "gallery" of stock children
+    presented as its own, which is worse than shipping no gallery.
+
+    In the SCAFFOLDED flow the rule runs late, in
+    routers.generate._drop_unbound_gallery_items — see
+    tests/test_image_walls.py. Alignment deliberately leaves the block alone so
+    _inject_image_walls can fill it in its scaffolded position first.
+    """
+
+    SCAFFOLD = PageScaffold(
+        page_type="gallery",
+        slug="gallery",
+        title="Gallery",
+        sections=["hero", "gallery", "cta"],
+    )
+
+    @staticmethod
+    def _page(items):
+        return PagePlan(
+            title="Gallery",
+            slug="gallery",
+            page_type="gallery",
+            blocks=[
+                HeroBlock(headline="Our Gallery", subheadline="", image_query="children"),
+                GalleryBlock(heading="Moments", items=items),
+            ],
+        )
+
+    def test_alignment_keeps_the_slot_for_the_injector(self):
+        # Dropping it here would cost the page its position: an awards page
+        # reads hero/gallery x3/about/gallery, and re-inserting the racks
+        # afterwards would stack all four above the narrative they follow.
+        aligned = align_page_to_scaffold(
+            self._page([GalleryItem(image_query="happy children playing")]),
+            self.SCAFFOLD,
+            brand_name="Bright Kids",
+            source_text="Some text.",
+        )
+
+        self.assertEqual([b.kind for b in aligned.blocks], ["hero", "gallery", "cta"])
+
+    def test_the_from_source_flow_drops_a_stock_only_gallery(self):
+        # That flow has no injection or ref-binding pass to defer to, so the
+        # same rule has to run here.
+        blocks = sanitize_blocks_against_source(
+            [GalleryBlock(heading="Moments", items=[GalleryItem(image_query="stock children")])],
+            source_text="Some text.",
+        )
+
+        self.assertEqual(blocks, [])
+
+    def test_the_from_source_flow_keeps_backed_tiles(self):
+        blocks = sanitize_blocks_against_source(
+            [
+                GalleryBlock(
+                    heading="Moments",
+                    items=[
+                        GalleryItem(image_query="album", image_url="https://x.test/1.jpg"),
+                        GalleryItem(image_query="classroom", image_ref=0),
+                        GalleryItem(image_query="invented"),
+                    ],
+                )
+            ],
+            source_text="Some text.",
+        )
+
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(len(blocks[0].items), 2)
 
 
 if __name__ == "__main__":

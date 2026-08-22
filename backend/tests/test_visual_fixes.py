@@ -2,17 +2,54 @@
 glass cards, and orphan-free card grids."""
 
 import asyncio
+import math
+import re
 import unittest
 
 from app.models.builder_schema import BuilderElement
-from app.services.image_styling import color_distance
+from app.models.content_blocks import (
+    AwardItem,
+    AwardsBlock,
+    MenuBlock,
+    MenuCategory,
+    MenuItem,
+    PricingBlock,
+    PricingTier,
+    StatItem,
+    StatsBlock,
+    TeamBlock,
+    TeamMember,
+    TimelineBlock,
+    TimelineItem,
+)
+from app.services.image_styling import (
+    _TEXT_SCRIM_RATIO,
+    _split_layers,
+    brand_overlay_gradient,
+    color_distance,
+    edge_fade_gradient,
+    is_edge_fade_layer,
+    overlay_alpha,
+    photo_background,
+    text_scrim_gradient,
+)
 from app.services.schema_builder import (
+    RenderContext,
+    _build_awards,
+    _build_menu,
+    _build_pricing,
+    _build_stats,
+    _build_team,
+    _build_timeline,
     apply_section_dividers,
     cap_gradient_textures,
     glass_card_styles,
+    make_style_tokens,
     mesh_gradient,
     modernize_sections,
+    retune_photo_edge_fades,
 )
+from app.services.style_tokens import emphasis_ink, meta_ink
 from app.services.template_filler import fill_template
 from app.services.theme import _adjust_lightness, _hex_to_rgb, build_theme
 
@@ -187,6 +224,190 @@ class DividerMeshTest(unittest.TestCase):
         self.assertIsNone(hero.divider.bottom.texture)
 
 
+class DividerPictureSeamTest(unittest.TestCase):
+    """The divider is a flat-filled SVG pinned inside its carrier's edge, so it
+    only reads as a seam when the section it reveals is a solid colour. The
+    picture section carries the edge; a boundary with a picture on both sides
+    gets none, because no single colour could match either neighbour."""
+
+    @staticmethod
+    def _flat(name, bg="#f8fafc"):
+        return BuilderElement(
+            name=name, type="section",
+            styles={"backgroundColor": bg, "width": "100%"}, content=[],
+        )
+
+    @staticmethod
+    def _photo(name):
+        # Mirrors the catalog's hero-background-bold / cta-background roots: a
+        # real photo AND a solid colour underneath it.
+        return BuilderElement(
+            name=name, type="section",
+            styles={
+                "backgroundImage": (
+                    "linear-gradient(rgba(15,23,42,0.55), rgba(15,23,42,0.55)), "
+                    "url('https://images.pexels.com/p.jpg')"
+                ),
+                "backgroundColor": "#0f172a",
+                "width": "100%",
+            },
+            content=[],
+        )
+
+    def test_photo_hero_reveals_the_flat_band_below_it(self):
+        hero, band = self._photo("Hero"), self._flat("Features", "#111827")
+        apply_section_dividers([hero, band], "modern")
+
+        # Carrier is the picture; the fill is the band's exact colour, NOT the
+        # page background the old fallback would have painted over a dark band.
+        self.assertIsNotNone(hero.divider)
+        self.assertEqual(hero.divider.bottom.color, "#111827")
+        self.assertIsNone(band.divider)
+
+    def test_no_divider_when_both_sides_paint_a_picture(self):
+        hero, cta = self._photo("Hero"), self._photo("CTA")
+        apply_section_dividers([hero, cta], "modern")
+
+        self.assertIsNone(hero.divider)
+        self.assertIsNone(cta.divider)
+
+    def test_gradient_band_counts_as_a_picture_side(self):
+        hero = self._flat("Hero")
+        gradient = BuilderElement(
+            name="CTA", type="section",
+            styles={"background": "linear-gradient(135deg, #0f172a, #2563eb)"},
+            content=[],
+        )
+        apply_section_dividers([hero, gradient], "modern")
+
+        # The gradient carries the edge even though it sits second, and reveals
+        # the flat hero above it.
+        self.assertIsNone(hero.divider)
+        self.assertEqual(gradient.divider.top.color, "#f8fafc")
+
+    def test_carrier_flips_to_the_picture_side_at_the_cta_seam(self):
+        # A photo section between two FLAT bands: the edge belongs on the photo
+        # at BOTH seams, so it becomes a bottom edge there instead of the CTA's
+        # usual top edge — and the two must merge onto the one carrier rather
+        # than the second overwriting the first.
+        hero = self._flat("Hero")
+        about = self._photo("About")
+        cta = self._flat("CTA", "#111827")
+        apply_section_dividers([hero, about, cta], "modern")
+
+        self.assertIsNone(hero.divider)
+        self.assertIsNone(cta.divider)
+        self.assertEqual(about.divider.top.color, "#f8fafc")     # reveals the hero
+        self.assertEqual(about.divider.bottom.color, "#111827")  # reveals the CTA
+
+    def test_photo_cta_keeps_its_top_edge(self):
+        hero, band, cta = self._flat("Hero"), self._flat("About"), self._photo("CTA")
+        apply_section_dividers([hero, band, cta], "modern")
+
+        self.assertEqual(cta.divider.top.color, "#f8fafc")
+
+    def test_hero_seam_is_skipped_without_disabling_the_cta_seam(self):
+        # Photo hero next to a photo band → that boundary is unusable, but the
+        # page still gets its CTA seam.
+        hero, band, cta = self._photo("Hero"), self._photo("About"), self._flat("CTA")
+        apply_section_dividers([hero, band, cta], "modern")
+
+        self.assertIsNone(hero.divider)
+        self.assertEqual(band.divider.bottom.color, "#f8fafc")
+
+
+class PhotoEdgeFadeTest(unittest.TestCase):
+    """`photo_background` fades a hero into the THEME page background because the
+    section below it doesn't exist yet. `retune_photo_edge_fades` corrects that
+    once the page is assembled."""
+
+    def setUp(self):
+        self.theme = build_theme("#2563eb")
+
+    def _hero(self):
+        styles = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed",
+            page_bg_hex=self.theme.page.background,
+        )
+        return BuilderElement(
+            name="Hero", type="section", styles={**styles, "width": "100%"}, content=[],
+        )
+
+    @staticmethod
+    def _flat(name, bg):
+        return BuilderElement(
+            name=name, type="section",
+            styles={"backgroundColor": bg, "width": "100%"}, content=[],
+        )
+
+    @staticmethod
+    def _fade_of(section):
+        layers = _split_layers(section.styles["backgroundImage"])
+        return next((l for l in layers if is_edge_fade_layer(l)), None)
+
+    def test_the_writer_and_the_matcher_agree(self):
+        self.assertTrue(is_edge_fade_layer(edge_fade_gradient("#0f172a")))
+        self.assertFalse(is_edge_fade_layer("linear-gradient(to right, #fff, #000)"))
+
+    def test_fade_repoints_at_a_dark_band_below(self):
+        hero = self._hero()
+        self.assertIsNotNone(self._fade_of(hero))  # written against the page bg
+
+        retune_photo_edge_fades([hero, self._flat("CTA", "#111827")], self.theme)
+
+        # Dissolves into the band that is actually there, not page-coloured haze.
+        self.assertIn("rgba(17,24,39,1) 100%", self._fade_of(hero))
+
+    def test_fade_is_dropped_when_a_shaped_edge_already_bridges_the_seam(self):
+        hero, band = self._hero(), self._flat("Features", "#111827")
+        apply_section_dividers([hero, band], "modern")
+        widths = len(_split_layers(hero.styles["backgroundImage"]))
+
+        retune_photo_edge_fades([hero, band], self.theme)
+
+        self.assertIsNone(self._fade_of(hero))
+        # Every parallel per-layer list loses the same index, or the grain tile
+        # would slide onto a layer that expects `cover`.
+        layers = _split_layers(hero.styles["backgroundImage"])
+        self.assertEqual(len(layers), widths - 1)
+        for prop in ("backgroundSize", "backgroundRepeat", "backgroundPosition"):
+            self.assertEqual(len(_split_layers(hero.styles[prop])), len(layers), prop)
+        self.assertTrue(hero.styles["backgroundSize"].startswith("140px 140px,"))
+        self.assertTrue(hero.styles["backgroundPosition"].startswith("0 0,"))
+
+    def test_fade_is_dropped_when_the_next_section_paints_its_own_picture(self):
+        below = BuilderElement(
+            name="CTA", type="section",
+            styles={"backgroundImage": "url('https://x/q.jpg')", "backgroundColor": "#0f172a"},
+            content=[],
+        )
+        hero = self._hero()
+        retune_photo_edge_fades([hero, below], self.theme)
+
+        self.assertIsNone(self._fade_of(hero))
+
+    def test_fade_is_dropped_when_nothing_follows_on_the_page(self):
+        hero = self._hero()
+        retune_photo_edge_fades([hero], self.theme)
+
+        self.assertIsNone(self._fade_of(hero))
+
+    def test_builder_colour_tokens_resolve_against_the_theme(self):
+        hero = self._hero()
+        below = self._flat("CTA", "var(--builder-color-secondary, #0f172a)")
+        retune_photo_edge_fades([hero, below], self.theme)
+
+        r, g, b = _hex_to_rgb(self.theme.palette.secondary)
+        self.assertIn(f"rgba({r},{g},{b},1) 100%", self._fade_of(hero))
+
+    def test_a_page_background_neighbour_leaves_the_fade_alone(self):
+        hero = self._hero()
+        before = self._fade_of(hero)
+        retune_photo_edge_fades([hero, self._flat("About", self.theme.page.background)], self.theme)
+
+        self.assertEqual(self._fade_of(hero), before)
+
+
 class ColorDistanceTest(unittest.TestCase):
     """color_distance ranks abstract candidates by closeness to the theme."""
 
@@ -203,6 +424,169 @@ class ColorDistanceTest(unittest.TestCase):
         grey = color_distance("#9ca3af", theme)
         off_hue = color_distance("#16a34a", theme)  # saturated green
         self.assertLess(grey, off_hue)
+
+
+class PhotoOverlayTest(unittest.TestCase):
+    """The hero/CTA photo overlay tints a photograph; it must not repaint it.
+    A saturated brand hue composited at legibility alpha turns every photo into
+    the same flat sheet of brand colour, which is what makes a generated page
+    read as one-colour."""
+
+    def _rgba(self, css: str) -> list[tuple[int, int, int, float]]:
+        return [
+            (int(r), int(g), int(b), float(a))
+            for r, g, b, a in re.findall(
+                r"rgba\((\d+),(\d+),(\d+),([\d.]+)\)", css.replace(" ", "")
+            )
+        ]
+
+    def test_brand_end_is_mixed_toward_the_ink(self):
+        ink, primary = "#221d2b", "#7c3aed"
+        stops = self._rgba(brand_overlay_gradient(ink, primary, 0.55))
+        self.assertEqual(len(stops), 2)
+        (_, _, _, a1), (pr, pg, pb, _) = stops
+        # The ink end keeps the full legibility alpha…
+        self.assertEqual(a1, 0.55)
+        # …and the brand end is closer to the ink than the raw primary is, so
+        # the photo underneath keeps its own hues.
+        raw = _hex_to_rgb(primary)
+        ink_rgb = _hex_to_rgb(ink)
+        dist = lambda c: sum(abs(x - y) for x, y in zip(c, ink_rgb))  # noqa: E731
+        self.assertLess(dist((pr, pg, pb)), dist(raw))
+
+    def test_brand_end_still_carries_the_hue(self):
+        # Mixing toward ink must not flatten the tint to grey — the gradient
+        # still has to read as the brand's colour.
+        stops = self._rgba(brand_overlay_gradient("#221d2b", "#7c3aed", 0.55))
+        pr, pg, pb, _ = stops[1]
+        self.assertGreater(max(pr, pg, pb) - min(pr, pg, pb), 30)
+
+    def test_alpha_ratio_between_the_two_ends_is_preserved(self):
+        for alpha in (0.14, 0.24, 0.34):
+            stops = self._rgba(brand_overlay_gradient("#0f172a", "#2563eb", alpha))
+            self.assertEqual(stops[0][3], alpha)
+            self.assertAlmostEqual(stops[1][3], round(alpha * 0.82, 2), places=2)
+
+    def test_photo_background_layers_scrim_over_cast_over_photo(self):
+        styles = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        layers = _split_layers(styles["backgroundImage"])
+        # Grain on top, photo at the bottom, cast directly above the photo.
+        self.assertTrue(layers[0].startswith("url(\"data:image/svg+xml"), layers[0][:32])
+        self.assertTrue(layers[-2].startswith("linear-gradient("), layers[-2][:24])
+        self.assertEqual(layers[-1], "url('https://x/p.jpg')")
+        # The scrim still sits above the cast.
+        scrim = next(i for i, l in enumerate(layers) if "115% 88%" in l)
+        cast = len(layers) - 2
+        self.assertLess(scrim, cast)
+
+    def test_photo_background_property_lists_line_up_with_the_layers(self):
+        """The grain tiles at a fixed size while every other layer covers. If the
+        four lists ever drift out of sync, CSS pairs a layer with the wrong size
+        and one grain cell is stretched across the whole hero."""
+        for anchor in ("center", "left", "bottom-left"):
+            styles = photo_background(
+                "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed",
+                anchor=anchor, focal_y=0.38, page_bg_hex="#ffffff",
+            )
+            n = len(_split_layers(styles["backgroundImage"]))
+            for prop in ("backgroundSize", "backgroundRepeat", "backgroundPosition"):
+                self.assertEqual(
+                    len(_split_layers(styles[prop])), n, f"{anchor}/{prop}"
+                )
+            self.assertTrue(styles["backgroundSize"].startswith("140px 140px,"))
+            self.assertTrue(styles["backgroundRepeat"].startswith("repeat,"))
+
+    def test_focal_point_frames_the_subject_and_biases_off_the_copy(self):
+        centred = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed", focal_y=0.3
+        )
+        # Vertical: sit on the measured subject band, not hard centre.
+        self.assertTrue(centred["backgroundPosition"].endswith("center 30%"))
+        # Horizontal: a left-anchored copy pushes the subject to the open side.
+        left = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed",
+            anchor="left", focal_y=0.3,
+        )
+        self.assertTrue(left["backgroundPosition"].endswith("68% 30%"))
+        # No measurement → unchanged behaviour.
+        plain = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        self.assertTrue(plain["backgroundPosition"].endswith("center center"))
+
+    def test_directional_scrim_keeps_the_open_side_of_the_frame_clear(self):
+        """The point of anchoring: darkness runs off the copy's edge, so the
+        photograph stays saturated where the subject is."""
+        left = text_scrim_gradient("#221d2b", 0.34, anchor="left")
+        self.assertTrue(left.startswith("linear-gradient(to right,"))
+        self.assertIn(",0)", left.replace(" ", ""))
+
+    def test_every_anchor_holds_the_legibility_sheet_behind_the_copy(self):
+        """Same invariant as the centred case, for the directional anchors: the
+        composite behind the copy must not fall below the legacy single sheet,
+        or every ink derived from _SCRIM_COMPOSITE_BG becomes a lie."""
+        for avg, legacy in (("#2b2b2b", 0.31), ("#808080", 0.37), ("#e0e0e0", 0.54)):
+            cast = overlay_alpha(avg)
+            scrim = round(cast * _TEXT_SCRIM_RATIO, 2)
+            # left: full scrim at the anchored edge, plus part of the vignette.
+            left = 1 - (1 - cast) * (1 - scrim)
+            self.assertGreaterEqual(left, legacy - 0.02, msg=f"left/{avg}")
+            # bottom-left: two half-strength axes compound back to `scrim`.
+            half = math.ceil((1 - (1 - scrim) ** 0.5) * 100) / 100
+            corner = 1 - (1 - cast) * (1 - half) ** 2
+            self.assertGreaterEqual(corner, legacy - 0.02, msg=f"bottom-left/{avg}")
+
+    def test_scrim_fades_to_fully_transparent_before_the_edge(self):
+        # The corners must show the photograph, not a wash — that is the whole
+        # point of paying for legibility locally.
+        css = text_scrim_gradient("#221d2b", 0.34)
+        self.assertIn(",0)", css.replace(" ", ""))
+
+    def test_cast_and_scrim_compound_to_the_legibility_sheet(self):
+        """The invariant the split rests on: behind the copy the two layers add
+        up to the single sheet that was there before (0.30→0.62 on the same
+        luminance ramp), so every ink derived from _SCRIM_COMPOSITE_BG stays
+        valid — while the edges carry only the much fainter cast."""
+        for avg, old_sheet in (("#2b2b2b", 0.31), ("#808080", 0.37), ("#e0e0e0", 0.54)):
+            cast = overlay_alpha(avg)
+            scrim = round(cast * _TEXT_SCRIM_RATIO, 2)
+            centre = 1 - (1 - cast) * (1 - scrim)
+            self.assertAlmostEqual(centre, old_sheet, delta=0.02, msg=avg)
+            # …and outside the scrim the photo is roughly twice as visible.
+            self.assertLess(cast, old_sheet * 0.62, msg=avg)
+
+    def test_wash_alpha_scale_lightens_cast_and_vignette_not_the_scrim(self):
+        """The homepage hero lever (schema_builder._HOMEPAGE_HERO_WASH_SCALE):
+        scaling down wash_alpha_scale must let more of the photo's own colour
+        through (cast, vignette) without touching the scrim, which is the only
+        layer legibility actually depends on."""
+        full = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        half = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed", wash_alpha_scale=0.5
+        )
+        full_layers = _split_layers(full["backgroundImage"])
+        half_layers = _split_layers(half["backgroundImage"])
+        self.assertEqual(len(full_layers), len(half_layers))
+        scrim_i = next(i for i, l in enumerate(full_layers) if "115% 88%" in l)
+        cast_i = len(full_layers) - 2
+        vignette_i = cast_i - 1
+
+        full_scrim_a = self._rgba(full_layers[scrim_i])[0][3]
+        half_scrim_a = self._rgba(half_layers[scrim_i])[0][3]
+        self.assertEqual(full_scrim_a, half_scrim_a)
+
+        full_vignette_a = self._rgba(full_layers[vignette_i])[-1][3]
+        half_vignette_a = self._rgba(half_layers[vignette_i])[-1][3]
+        self.assertAlmostEqual(half_vignette_a, round(full_vignette_a * 0.5, 2), places=2)
+
+        full_cast_a = self._rgba(full_layers[cast_i])[0][3]
+        half_cast_a = self._rgba(half_layers[cast_i])[0][3]
+        self.assertAlmostEqual(half_cast_a, round(full_cast_a * 0.5, 2), places=2)
+
+    def test_wash_alpha_scale_default_is_a_no_op(self):
+        default = photo_background("#808080", "https://x/p.jpg", "#221d2b", "#7c3aed")
+        explicit = photo_background(
+            "#808080", "https://x/p.jpg", "#221d2b", "#7c3aed", wash_alpha_scale=1.0
+        )
+        self.assertEqual(default, explicit)
 
 
 class CapGradientTexturesTest(unittest.TestCase):
@@ -272,6 +656,96 @@ class CapGradientTexturesTest(unittest.TestCase):
 
         self.assertEqual(mesh.backgroundTexture, "flat")
         self.assertNotIn("backgroundImage", mesh.styles)
+
+
+def _find_by_name(node, name):
+    if getattr(node, "name", None) == name:
+        return node
+    content = getattr(node, "content", None)
+    if isinstance(content, list):
+        for child in content:
+            found = _find_by_name(child, name)
+            if found is not None:
+                return found
+    return None
+
+
+class ElementAccentBalanceTest(unittest.TestCase):
+    """Decorative 'pop' elements (badges, borders, step numbers, stat
+    numbers) should draw from the brand accent via `emphasis_ink`, and pure
+    metadata (role labels, prices, dates) should read as neutral via
+    `meta_ink` — neither should independently default to `palette.primary`,
+    which is what made one hue dominate every generated page. Section
+    backgrounds/CTAs are untouched by this fix and aren't covered here."""
+
+    @staticmethod
+    def _ctx(theme):
+        return RenderContext(theme=theme, resolver=None, styles=make_style_tokens(theme))
+
+    def test_pricing_badge_and_highlighted_border_use_accent_not_primary(self):
+        theme = build_theme("#2563eb")
+        ctx = self._ctx(theme)
+        block = PricingBlock(
+            heading="Plans",
+            tiers=[
+                PricingTier(name="Basic", price="$9/mo"),
+                PricingTier(name="Pro", price="$29/mo", highlighted=True),
+            ],
+        )
+        section = asyncio.run(_build_pricing(block, ctx))
+        expected = emphasis_ink(theme)
+
+        badge = _find_by_name(section, "Badge")
+        self.assertEqual(badge.styles["color"], expected)
+        self.assertNotEqual(badge.styles["color"], theme.palette.primary)
+
+        grid = _find_by_name(section, "Two Columns")
+        highlighted_col = grid.content[1]  # the "Pro" tier, marked highlighted
+        self.assertIn(expected, highlighted_col.styles["border"])
+        self.assertNotIn(theme.palette.primary, highlighted_col.styles["border"])
+
+    def test_stats_big_number_uses_accent_not_primary(self):
+        theme = build_theme("#2563eb")
+        ctx = self._ctx(theme)
+        block = StatsBlock(items=[StatItem(value="10k", label="Users")])
+        section = asyncio.run(_build_stats(block, ctx))
+
+        stat_value = _find_by_name(section, "Stat value")
+        self.assertEqual(stat_value.styles["color"], emphasis_ink(theme))
+        self.assertNotEqual(stat_value.styles["color"], theme.palette.primary)
+
+    def test_meta_text_no_longer_brand_colored(self):
+        theme = build_theme("#2563eb")
+        ctx = self._ctx(theme)
+        expected = meta_ink(theme)
+
+        team_block = TeamBlock(
+            members=[TeamMember(name="Ada Lovelace", role="Engineer", photo_url="https://x/a.jpg")]
+        )
+        team_section = asyncio.run(_build_team(team_block, ctx))
+        role = _find_by_name(team_section, "Member role")
+        self.assertEqual(role.styles["color"], expected)
+        self.assertNotEqual(role.styles["color"], theme.palette.primary)
+
+        menu_block = MenuBlock(
+            categories=[MenuCategory(name="Mains", items=[MenuItem(name="Burger", price="$12")])]
+        )
+        menu_section = asyncio.run(_build_menu(menu_block, ctx))
+        price = _find_by_name(menu_section, "Item price")
+        self.assertEqual(price.styles["color"], expected)
+        self.assertNotEqual(price.styles["color"], theme.palette.primary)
+
+        timeline_block = TimelineBlock(items=[TimelineItem(year="2020", title="Founded")])
+        timeline_section = asyncio.run(_build_timeline(timeline_block, ctx))
+        year = _find_by_name(timeline_section, "Timeline year")
+        self.assertEqual(year.styles["color"], expected)
+        self.assertNotEqual(year.styles["color"], theme.palette.primary)
+
+        awards_block = AwardsBlock(items=[AwardItem(title="Best of 2020", issuer="Acme", year="2020")])
+        awards_section = asyncio.run(_build_awards(awards_block, ctx))
+        meta = _find_by_name(awards_section, "Award meta")
+        self.assertEqual(meta.styles["color"], expected)
+        self.assertNotEqual(meta.styles["color"], theme.palette.primary)
 
 
 if __name__ == "__main__":

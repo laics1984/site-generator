@@ -12,3 +12,9 @@ trafilatura==1.12.2
 pillow==10.4.0
 pymupdf==1.24.10
 aiosqlite==0.20.0
+# OCR text detection for hero backgrounds (services/text_detection.py):
+# flags source images that already carry a headline so we never draw ours
+# over them. Pulls onnxruntime + opencv (~400MB in the image). Set
+# OCR_TEXT_DETECTION_ENABLED=false to run without it — the pass no-ops
+# cleanly if the wheel is absent.
+rapidocr-onnxruntime==1.4.4

@@ -46,6 +46,7 @@ SectionType = Literal[
     "contact",
     "pricing",
     "team",
+    "profile",
     "gallery",
     "menu",
     "process",
@@ -54,7 +55,35 @@ SectionType = Literal[
     "clients",
     "stats",
     "locations",
+    "downloads",
+    "video",
+    "map",
 ]
+
+
+# Kinds re-attached from the source deterministically, never authored by the LLM.
+#
+# The model is not shown a schema for these (they're absent from
+# prompts._SCAFFOLD_BLOCK_SCHEMAS) — but that alone is NOT protection. Absence
+# from the schema list only withholds the shape; `planner._scaffold_payload`
+# still puts the kind NAME into `required_sections` in the user prompt, and
+# `PagePlan.salvage_page_content` validates each block against the whole
+# `ContentBlock` union. A model that guesses the shape produces a structurally
+# valid block that `align_page_to_scaffold` then matches to the slot, and
+# nothing errors. `downloads` already reaches `required_sections` this way, via
+# `page_inference._CARD_KIND_SECTIONS`.
+#
+# What these kinds carry is not prose but FACTS with external referents — a
+# download href, a video id, a pinned map coordinate. An invented one is not
+# vague, it is *wrong*, and it looks authoritative: a hallucinated 11-character
+# YouTube id is a stranger's video embedded on a client's site, and a guessed
+# map pin sends their customers to the wrong street. So it is enforced on both
+# sides —
+# the model is never invited (planner), and its output for these kinds is
+# discarded even if it volunteers one (scaffold_enforcement).
+DETERMINISTIC_SECTION_KINDS: frozenset[str] = frozenset(
+    {"downloads", "linkbar", "video", "map"}
+)
 
 
 PageType = Literal[
@@ -86,6 +115,42 @@ def _default_if_blank(value: object, default: str) -> object:
     if isinstance(value, str) and not value.strip():
         return default
     return value
+
+
+# A button is a promise of one action, so its label is a verb phrase, not a
+# sentence. Long labels are almost always a source NAV link that leaked into the
+# slot ("Learn More About Our Committee Members" under a "Join Our Effort"
+# headline) — the button then sends the reader somewhere the headline never
+# offered. Trim at the first function word that still leaves a usable verb
+# phrase, so "Learn More About Our Committee Members" → "Learn More" and any
+# already-tight label ("Join Our Community", 18 chars) is untouched.
+_CTA_LABEL_MAX_CHARS = 24
+_CTA_LABEL_MAX_WORDS = 4
+_CTA_LABEL_STOP_WORDS = frozenset({
+    "about", "our", "the", "your", "their", "with", "for", "from", "of", "on",
+    "in", "at", "by", "and", "or", "to", "into", "all",
+})
+
+
+def _heal_cta_label(value: object, default: str) -> object:
+    """Blank → `default`; an over-long label → its leading verb phrase.
+
+    Cuts at the first function word from position 2 on (so a two-word verb
+    phrase always survives), then drops any function word left dangling at the
+    end — a button reading "Register For" is worse than one reading "Register".
+    """
+    healed = _default_if_blank(value, default)
+    if not isinstance(healed, str) or len(healed) <= _CTA_LABEL_MAX_CHARS:
+        return healed
+    words = healed.split()
+    cut = next(
+        (i for i, w in enumerate(words) if i >= 2 and w.lower() in _CTA_LABEL_STOP_WORDS),
+        min(len(words), _CTA_LABEL_MAX_WORDS),
+    )
+    kept = words[:cut]
+    while len(kept) > 1 and kept[-1].lower() in _CTA_LABEL_STOP_WORDS:
+        kept.pop()
+    return " ".join(kept)
 
 
 def _heal_image_ref(value: object) -> int | None:
@@ -130,6 +195,20 @@ def heal_brand_mood_value(value: object) -> str | None:
 def heal_industry_value(value: object) -> str:
     """Coerce an LLM industry_category onto its Literal, default 'other'."""
     return _coerce_literal(value, frozenset(get_args(IndustryCategoryLiteral)), "other")
+
+
+def heal_optional_str_value(value: object) -> object:
+    """Map an explicit JSON `null` onto `""` for a non-nullable string field.
+
+    The model writes `"site_name": null` often enough to matter, and a bare
+    `str` annotation rejects it — which costs a FULL repair round trip in
+    `llm._validated` (it re-sends the whole prompt plus the failed response as
+    an assistant turn). At local-GPU speeds that is minutes for a field every
+    consumer already `or`-guards against an empty string. Anything that isn't
+    None passes through untouched, so a genuinely wrong TYPE still fails
+    validation and still earns its retry.
+    """
+    return "" if value is None else value
 
 
 class VisualPolicy(BaseModel):
@@ -235,7 +314,7 @@ class HeroBlock(BaseModel):
     @field_validator("primary_cta_label", mode="before")
     @classmethod
     def heal_cta_label(cls, v: object) -> object:
-        return _default_if_blank(v, "Get started")
+        return _heal_cta_label(v, "Get started")
 
     @field_validator("primary_cta_href", mode="before")
     @classmethod
@@ -423,7 +502,7 @@ class FaqItem(BaseModel):
 class FaqBlock(BaseModel):
     kind: Literal["faq"] = "faq"
     heading: str = "Frequently asked questions"
-    items: list[FaqItem] = Field(min_length=1, max_length=20)
+    items: list[FaqItem] = Field(min_length=1, max_length=50)
 
     @field_validator("heading", mode="before")
     @classmethod
@@ -465,7 +544,7 @@ class CtaBlock(BaseModel):
     @field_validator("cta_label", mode="before")
     @classmethod
     def heal_cta_label(cls, v: object) -> object:
-        return _default_if_blank(v, "Get started")
+        return _heal_cta_label(v, "Get started")
 
     @field_validator("image_ref", mode="before")
     @classmethod
@@ -539,6 +618,14 @@ class TeamMember(BaseModel):
         default=None,
         description="Pexels-search phrase for portrait photo, e.g. 'smiling professional woman'.",
     )
+    profile_href: str | None = Field(
+        default=None,
+        description=(
+            "Site-relative link to this person's own page, when the source's "
+            "roster card carried one and that page was generated. Filled by code "
+            "after planning; leave null in LLM output."
+        ),
+    )
 
     @model_validator(mode="after")
     def sync_description_aliases(self) -> "TeamMember":
@@ -561,6 +648,75 @@ class TeamBlock(BaseModel):
     @classmethod
     def heal_heading(cls, v: object) -> object:
         return _default_if_blank(v, "Meet the team")
+
+
+class ProfileContact(BaseModel):
+    """One way to reach the person a profile block is about.
+
+    Its own model rather than a ``NavLink``: these are the person's contact
+    affordances as their page states them (an email, a phone number, a
+    professional profile), not site navigation — and the union below is built
+    before ``NavLink`` exists.
+    """
+
+    label: str
+    href: str
+
+
+class ProfileBlock(BaseModel):
+    """One person, on the page that is about them.
+
+    A team block introduces people to each other; this introduces ONE person to
+    the reader. It exists because a roster grid rendering a single card gets
+    everything slightly wrong — the portrait is thumbnail-sized on a page that
+    is entirely about that face, the name is restated under a hero that already
+    said it, and there is nowhere for the contact details a directory carries.
+
+    The bio lives here rather than in a separate about section: a profile page
+    tells the story next to the face, and both came from the same source text
+    anyway (see routers/generate._profile_page_member).
+    """
+
+    kind: Literal["profile"] = "profile"
+    name: str
+    role: str = ""
+    credentials: str | None = Field(
+        default=None,
+        description=(
+            "Qualifications line under the name, e.g. 'MT-BC, Saint "
+            "Mary-of-the-Woods College'. Only what the source states."
+        ),
+    )
+    bio: str | None = None
+    photo_url: str | None = Field(
+        default=None,
+        description=(
+            "Resolved scraped portrait of this real person. Filled by code "
+            "after planning; leave null in LLM output."
+        ),
+    )
+    photo_alt: str | None = None
+    photo_query: str | None = Field(
+        default=None,
+        description=(
+            "Ignored for real people — a stranger's stock face under a real "
+            "name is a misattribution, so an unmatched profile renders a "
+            "monogram instead (same rule as team cards)."
+        ),
+    )
+    contacts: list[ProfileContact] = Field(
+        default_factory=list,
+        max_length=4,
+        description=(
+            "The person's own contact affordances as the source gives them: "
+            "an email link, a phone number, a professional profile."
+        ),
+    )
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def blank_role(cls, v: object) -> object:
+        return "" if v is None else v
 
 
 class GalleryItem(BaseModel):
@@ -591,7 +747,11 @@ class GalleryBlock(BaseModel):
     kind: Literal["gallery"] = "gallery"
     heading: str = "Gallery"
     subheading: str | None = None
-    items: list[GalleryItem] = Field(min_length=1, max_length=12)
+    # A real scraped photo gallery routinely runs past a dozen shots, and the
+    # tiles are click-to-enlarge (see BuilderElement.lightbox), so a longer set
+    # is browsable rather than just a taller grid. Still capped — every unique
+    # image is one media upload at push time.
+    items: list[GalleryItem] = Field(min_length=1, max_length=24)
 
     @field_validator("heading", mode="before")
     @classmethod
@@ -671,6 +831,133 @@ class LinkBarBlock(BaseModel):
     kind: Literal["linkbar"] = "linkbar"
     label: str | None = None
     links: list[LinkBarLink] = Field(min_length=1, max_length=6)
+
+
+class DownloadLink(BaseModel):
+    label: str
+    href: str
+
+
+class DownloadItem(BaseModel):
+    """One document, as its source card presented it: a title, an optional
+    thumbnail, and one-or-more file links (e.g. per-language variants of the
+    same brochure). Mirrors DocumentCardCandidate 1:1 — the block-model
+    counterpart built once hrefs are resolved to absolute URLs."""
+
+    title: str | None = None
+    image_url: str | None = None
+    links: list[DownloadLink] = Field(min_length=1, max_length=6)
+
+
+class DownloadsBlock(BaseModel):
+    """One or more downloadable-document cards on a page (e.g. a resource
+    library, or a single card with per-language file links).
+
+    Never produced by the LLM: injected deterministically from the source
+    page's scraped document cards (scraper._extract_document_cards →
+    SourceContent.document_cards), same non-LLM pattern as LinkBarBlock. Every
+    document card found on a page becomes one item of a SINGLE block for that
+    page — never split across multiple blocks — so a document's title/image
+    stay grouped with its own download links.
+    """
+
+    kind: Literal["downloads"] = "downloads"
+    heading: str | None = None
+    items: list[DownloadItem] = Field(min_length=1, max_length=12)
+
+
+class VideoItem(BaseModel):
+    """One embedded player, as the source page attached it.
+
+    ``embed_url`` is already canonical (services.video_embed.parse_video_src), so
+    nothing downstream re-parses it. There is deliberately no ``image_query``
+    field — every other media item has one so an unfilled slot can fall through
+    to stock photography, but there is no stock equivalent of a specific video.
+    A tile with no embed is not a tile.
+    """
+
+    embed_url: str
+    title: str | None = None
+    thumbnail_url: str | None = None
+
+
+class VideoBlock(BaseModel):
+    """Videos the source page embedded, replayed verbatim.
+
+    NEVER produced by the LLM — see DETERMINISTIC_SECTION_KINDS. A video id is
+    an opaque 11-character string with an external referent: invent one and you
+    have not written vague copy, you have embedded a stranger's video on a
+    client's site, captioned as if it were theirs. Injected from
+    SourceContent.video_embeds by routers.generate._inject_videos, the same
+    non-LLM pattern as DownloadsBlock and LinkBarBlock.
+
+    ``heading`` is a non-blank str rather than ``str | None`` on purpose: it
+    fills a REQUIRED text slot in the catalog templates, and
+    ``section_content.is_feasible`` rejects a required slot whose value is None
+    — which makes select_template return None and schema_builder raise for an
+    unregistered block kind. The healer below is the same guard GalleryBlock uses.
+    """
+
+    kind: Literal["video"] = "video"
+    heading: str = "Videos"
+    subheading: str | None = None
+    # 24, matching GalleryBlock rather than the 12 of downloads/awards: a video
+    # index is a gallery of players, and brightkids' carries 14. Capping lower
+    # silently drops real videos, which is the failure this block exists to fix.
+    # Cheap to allow — the renderer ships click-to-load facades, and a video is
+    # hotlinked rather than uploaded to the tenant's media library.
+    items: list[VideoItem] = Field(min_length=1, max_length=24)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Videos")
+
+
+class MapItem(BaseModel):
+    """One embedded map, as the source page framed it.
+
+    ``embed_url`` is already canonical (services.map_embed.parse_map_src) and,
+    like VideoItem, has no ``image_query`` sibling: there is no stock stand-in
+    for a specific place. A pin nobody supplied is not a pin.
+    """
+
+    embed_url: str
+    title: str | None = None
+
+
+class MapBlock(BaseModel):
+    """Maps the source page embedded, replayed verbatim.
+
+    NEVER produced by the LLM — see DETERMINISTIC_SECTION_KINDS. A map URL
+    encodes a coordinate: invent one and you have not written vague copy, you
+    have published the wrong address for a real business and sent its customers
+    somewhere else. Injected from SourceContent.map_embeds by
+    routers.generate._inject_maps, the same non-LLM pattern as VideoBlock.
+
+    Distinct from LocationsBlock on purpose, even though both end up rendering a
+    Google Map. ``locations`` is LLM-authored prose (branch names, hours, phone)
+    whose map is SYNTHESIZED from the address it wrote — a search for a string.
+    This is the map the site owner themself pinned, which is the more precise
+    artefact and the only one available on a page that states no address at all.
+    ``_inject_maps`` yields to a page that already has a locations block rather
+    than shipping two maps.
+
+    ``heading`` is a non-blank str rather than ``str | None`` for the reason
+    spelled out on VideoBlock: it fills a REQUIRED text slot in the catalog
+    templates, and a None there makes select_template return None and
+    schema_builder raise for an unregistered block kind.
+    """
+
+    kind: Literal["map"] = "map"
+    heading: str = "Find us"
+    subheading: str | None = None
+    items: list[MapItem] = Field(min_length=1, max_length=8)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Find us")
 
 
 class TimelineItem(BaseModel):
@@ -794,6 +1081,7 @@ ContentBlock = Annotated[
     | ContactBlock
     | PricingBlock
     | TeamBlock
+    | ProfileBlock
     | GalleryBlock
     | MenuBlock
     | ProcessBlock
@@ -802,7 +1090,10 @@ ContentBlock = Annotated[
     | AwardsBlock
     | ClientsBlock
     | StatsBlock
-    | LocationsBlock,
+    | LocationsBlock
+    | DownloadsBlock
+    | VideoBlock
+    | MapBlock,
     Field(discriminator="kind"),
 ]
 
@@ -877,6 +1168,12 @@ class PagePlan(BaseModel):
     parent_slug: str | None = None
     nav_rank: int | None = None  # source-nav position from the scaffold; never set by the LLM
     from_source: bool = False    # page evidenced by the source site; never set by the LLM
+    menu_hidden: bool = False    # reached from a listing, not a menu; never set by the LLM
+    # Carried through from the scaffold; never set by the LLM. A page with
+    # `locale` set is a translation of `translation_of` — same blocks, same
+    # images, same templates, text in another language.
+    locale: str | None = None
+    translation_of: str | None = None
 
     @field_validator("page_type", mode="before")
     @classmethod
@@ -1092,7 +1389,8 @@ class SourceContent(BaseModel):
     only.
     """
 
-    source_kind: Literal["url", "pdf", "docx"]
+    # Mirrored by `SourceKind` in frontend/src/lib/types.ts — change both together.
+    source_kind: Literal["url", "pdf", "docx", "facebook"]
     source_ref: str
     title: str | None = None
     description: str | None = None
@@ -1132,6 +1430,48 @@ class SourceContent(BaseModel):
             "continue to validate unchanged."
         ),
     )
+    section_candidates: list["SectionCandidate"] = Field(
+        default_factory=list,
+        description=(
+            "The page's own section tree, recovered from heading rank by "
+            "services/section_extraction.py. The planner is grounded on THIS "
+            "rather than re-deriving boundaries from flat text, so one source "
+            "section maps to one output section and a card never migrates "
+            "between them. Additive and optional: a page whose markup carries "
+            "no usable headings yields [] and the flat raw_text path applies."
+        ),
+    )
+    document_cards: list["DocumentCardCandidate"] = Field(
+        default_factory=list,
+        description=(
+            "Likely downloadable-document cards extracted from THIS page (title + "
+            "optional thumbnail + one-or-more document links, e.g. a brochure "
+            "offered in several languages). Scoped per-page like image_metadata, "
+            "not just the primary page — routers.generate._inject_downloads groups "
+            "every card found on a page into one DownloadsBlock for that page."
+        ),
+    )
+    video_embeds: list["VideoEmbed"] = Field(
+        default_factory=list,
+        description=(
+            "YouTube/Vimeo players THIS page embedded, canonicalized at "
+            "extraction (scraper._extract_videos). Whitelist-only: every other "
+            "iframe on a page is a tracker, a chat widget or a social plugin. "
+            "Scoped per-page like image_metadata and document_cards — "
+            "routers.generate._inject_videos groups every embed found on a page "
+            "into one VideoBlock for that page."
+        ),
+    )
+    map_embeds: list["MapEmbed"] = Field(
+        default_factory=list,
+        description=(
+            "Maps THIS page framed (Google Maps, OpenStreetMap), canonicalized "
+            "at extraction (scraper._extract_embeds). Same whitelist discipline "
+            "as video_embeds, and scoped per-page the same way — "
+            "routers.generate._inject_maps groups every map found on a page "
+            "into one MapBlock for that page."
+        ),
+    )
     nav_links: list["NavLink"] = Field(
         default_factory=list,
         description=(
@@ -1156,6 +1496,16 @@ class SourceContent(BaseModel):
             "Social profile links found anywhere on the page (label = platform "
             "name, href = full profile URL). One per platform, share/intent "
             "URLs excluded. Feeds the generated site's menu-social."
+        ),
+    )
+    subject_name: str | None = Field(
+        default=None,
+        description=(
+            "The person the page's BODY leads with: the first designated name "
+            "element (a heading, or an element classed name/member-name) below "
+            "the chrome whose text reads as a person's name. Evidence that the "
+            "page is that person's own, for detail pages whose <title> is a "
+            "shared template and whose h1 is a section banner."
         ),
     )
 
@@ -1196,6 +1546,15 @@ class ImageMetadata(BaseModel):
     ] | None = None
     vision_people: int | None = None  # visible people count
     vision_portrait: bool | None = None  # single face/head-and-shoulders subject
+    # Readable words burned into the pixels (headline, tagline, price list, a
+    # legible sign). Bars the image from full-bleed BACKGROUND slots, where our
+    # own headline would be laid over words that are already there; it stays
+    # eligible for featured/inline slots, which draw nothing on top.
+    vision_has_text: bool | None = None
+    # Same judgement from the OCR pass (services/text_detection.py), which is
+    # independent of the vision model and runs off the critical path. None until
+    # that pass runs / when it is disabled.
+    ocr_has_text: bool | None = None
     # Luminance-band inputs for the schema_builder pass (SECTION_VISUAL_POLICY_SPEC.md
     # §4.3). Dominant colour comes free from Pexels avg_color or a generated base —
     # NO pixel download. luminance/band stay None until set by media.py.
@@ -1213,7 +1572,163 @@ class ProfileCandidate(BaseModel):
     photo_url: str | None = None
     photo_alt: str | None = None
     source_url: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    social_links: list[tuple[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "(label, href) social profile links found on this person's own card "
+            "or page, e.g. ('LinkedIn', 'https://linkedin.com/in/...'). Distinct "
+            "from the site-wide SourceContent.social_links: these are scoped to "
+            "this one person, not the header/footer."
+        ),
+    )
+    profile_url: str | None = Field(
+        default=None,
+        description=(
+            "The page this card LINKS to — the person's own detail page, when the "
+            "roster gives them one. The source site's own answer to two questions "
+            "code would otherwise have to guess: which page a detail page belongs "
+            "under, and where a rendered team card should point. Null when the card "
+            "links nowhere (a directory whose cards carry only an email)."
+        ),
+    )
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+# What a card GROUP is. Deliberately coarse: these are the distinctions the
+# source markup can actually support. "offerings" covers services, programmes,
+# rooms and features alike — whether a card carries a photo is already visible
+# in `image_urls`, and splitting on that alone produced a "facilities" category
+# that meant nothing more than "has an image".
+SourceCardKind = Literal[
+    "people",
+    "offerings",
+    "steps",
+    "documents",
+    "gallery",
+    "prose",
+]
+
+
+class SourceCard(BaseModel):
+    """One card inside a source section's repeated group.
+
+    Deliberately kind-agnostic: the same shape carries a person, a programme, a
+    room and a downloadable brochure. What it IS is the enclosing
+    ``SectionCandidate.card_kind``, decided over the whole group — a card in
+    isolation cannot be classified, which is the mistake that turned Glorykids'
+    facility grid into a team roster.
+    """
+
+    # May be "": a badge/logo tile (an award, an accreditation, a partner mark)
+    # is a picture and nothing else. What the group IS still resolves, because
+    # `card_kind` is decided over the whole group — a rack of untitled pictures
+    # is exactly the `gallery` signature.
+    title: str = ""
+    body: str = ""
+    image_url: str | None = None
+    image_alt: str = ""
+    link: str | None = None
+    meta: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Short label/value lines the card carries beside its body — "
+            "'Full Programme : 8:30 am - 3:00 pm', a price, an age badge. Kept "
+            "separate from `body` so a mapper can render them as badges rather "
+            "than prose, and so they never read as a person's job title."
+        ),
+    )
+
+
+class SectionCandidate(BaseModel):
+    """One section of the SOURCE page, as the source's own markup declares it.
+
+    The unit the source page is actually built from, recovered from heading
+    rank: a heading owns everything until the next heading of same-or-higher
+    rank, so an h3 card title nests inside the h2 section above it. This is the
+    structure that ``headings`` (a flat, level-less, deduped list) and
+    ``raw_text`` (newline-joined lines) each destroy — leaving the LLM to
+    rebuild a tree from a list, which is why six sections arrived as one.
+
+    Advisory, never binding: the planner is told to preserve these boundaries,
+    but a page whose markup carries no usable headings simply yields none and
+    the flat text path still applies.
+    """
+
+    heading: str
+    level: int = Field(ge=1, le=6)
+    subheading: str = ""
+    prose: str = ""
+    cards: list[SourceCard] = Field(default_factory=list)
+    card_kind: SourceCardKind = "prose"
+    image_urls: list[str] = Field(default_factory=list)
+
+
+class DocumentCardLink(BaseModel):
+    """One file link on a document card, as scraped (href still page-relative
+    — resolved to absolute by the injector, mirroring how ProfileCandidate's
+    photo_url is resolved downstream of extraction)."""
+
+    label: str
+    href: str
+
+
+class DocumentCardCandidate(BaseModel):
+    """A likely downloadable-document card extracted near a cluster of
+    document-file links (scraper._extract_document_cards).
+
+    Mirrors ProfileCandidate's shape: a distinctive anchor (there, a portrait;
+    here, a document-extension href) plus nearby title/thumbnail text found by
+    walking up to the smallest enclosing card. No site-specific markup is
+    assumed — this must work on any site's resource/brochure listing, not just
+    one with a particular class-name convention.
+    """
+
+    title: str | None = None
+    image_url: str | None = None
+    links: list[DocumentCardLink] = Field(min_length=1)
+
+
+class VideoEmbed(BaseModel):
+    """One playable video the SOURCE page embedded (scraper._extract_videos).
+
+    Whitelist-only (YouTube/Vimeo). Every other iframe on a real page is an ad,
+    a tracker, a chat widget or a social plugin — brightkids' homepage carries
+    four iframes, of which three are Google Tag Manager and a Facebook like-box.
+
+    ``embed_url`` is already the canonical form the renderer wants, so nothing
+    downstream re-parses a raw src. ``title`` is the source's own caption, left
+    EMPTY rather than guessed: an embed with no heading near it gets no title,
+    because a wrong caption is worse than none. ``context_heading`` is the
+    nearest preceding heading and groups several embeds under one section.
+    """
+
+    provider: Literal["youtube", "vimeo"]
+    video_id: str
+    embed_url: str
+    thumbnail_url: str | None = None
+    title: str = ""
+    context_heading: str = ""
+
+
+class MapEmbed(BaseModel):
+    """One map the SOURCE page framed (scraper._extract_embeds).
+
+    Sibling of VideoEmbed, same whitelist discipline and same caption rules:
+    ``title`` is the source's own label for this map — the DOM caption if it has
+    one, else the place the URL itself names — and is left EMPTY rather than
+    guessed. ``context_heading`` groups several pins under one section, which is
+    what turns a three-branch page into one "Our centres" map wall.
+
+    There is no ``thumbnail_url``: a map has no poster frame, so the renderer
+    always frames it directly instead of showing a click-to-load facade.
+    """
+
+    provider: Literal["google", "osm"]
+    embed_url: str
+    title: str = ""
+    context_heading: str = ""
 
 
 class NavLink(BaseModel):

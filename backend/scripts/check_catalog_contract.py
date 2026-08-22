@@ -4,7 +4,9 @@ catalog so drift (e.g. a reintroduced grid leak) fails loudly.
 
 For each template it checks:
   - fills with its own sampleContent without error
-  - no element carries display:grid / gridTemplateColumns (builder owns the grid)
+  - no element carries display:grid / gridTemplateColumns (builder owns the grid),
+    EXCEPT a `$bento` fan-out container — the one sanctioned exception, since a
+    bento's mixed-size tiles cannot be expressed with 2Col/3Col
   - every element type is a known EditorBtns
   - every $slot / $styleSlot used in the tree is declared in `slots`
   - every required (non-optional) slot has sample content
@@ -47,23 +49,48 @@ def _used_slots(node: dict, found: set[str]) -> None:
         found.add(node["$styleSlot"]["slot"])
     if node.get("$repeat"):
         found.add(node["$repeat"])
+    if node.get("$bento"):
+        found.add(node["$bento"])
     content = node.get("content")
     if isinstance(content, list):
         for child in content:
             _used_slots(child, found)
 
 
-def _invariants(el, errs: list[str]) -> None:
+def _bento_names(node: dict, found: set[str]) -> None:
+    """Names of `$bento` fan-out containers in a template tree.
+
+    The grid ban is enforced on the MATERIALIZED element tree, where the
+    `$bento` directive has already been consumed, so the exemption is carried
+    across by node name (which `_base_fields` copies through verbatim).
+    """
+    if node.get("$bento"):
+        found.add(node["name"])
+    content = node.get("content")
+    if isinstance(content, list):
+        for child in content:
+            _bento_names(child, found)
+
+
+def _invariants(el, errs: list[str], bento: set[str]) -> None:
     styles = el.styles or {}
-    if styles.get("display") == "grid":
-        errs.append(f"display:grid on {el.name}")
-    if "gridTemplateColumns" in styles:
-        errs.append(f"gridTemplateColumns on {el.name}")
+    # A bento container owns its grid: mixed-size tiles (`_bento_spans`) cannot
+    # be expressed with the builder's 2Col/3Col primitives. Every other element
+    # must leave the grid to the builder.
+    if el.name not in bento:
+        if styles.get("display") == "grid":
+            errs.append(f"display:grid on {el.name}")
+        if "gridTemplateColumns" in styles:
+            errs.append(f"gridTemplateColumns on {el.name}")
     if el.type not in KNOWN:
         errs.append(f"unknown type {el.type}")
     if isinstance(el.content, list):
         for child in el.content:
-            _invariants(child, errs)
+            _invariants(child, errs, bento)
+
+
+# Slot kinds that carry no scalar value, so `sampleContent` cannot describe them.
+_UNSAMPLEABLE_SLOT_KINDS = frozenset({"subtree", "flag"})
 
 
 async def main() -> int:
@@ -86,6 +113,14 @@ async def main() -> int:
         for slot in template.get("slots", []):
             if slot.get("optional"):
                 continue
+            # A `subtree` slot is a whole BuilderElement tree the caller injects
+            # (header_footer._logo_mark builds the brand lockup), and a `flag` is
+            # a $if condition, not content. Neither is a scalar sampleContent
+            # value, so demanding one flagged all five chrome headers for a
+            # `logo` they cannot possibly sample — the rule was written for
+            # text/link/image/list slots and never qualified.
+            if slot.get("kind") in _UNSAMPLEABLE_SLOT_KINDS:
+                continue
             if slot["id"] not in sample:
                 errs.append(f"required slot '{slot['id']}' missing from sampleContent")
 
@@ -93,7 +128,9 @@ async def main() -> int:
             el = await fill_template(
                 template, sample, resolve_image=_stub_image, content_factories=factories
             )
-            _invariants(el, errs)
+            bento: set[str] = set()
+            _bento_names(template["tree"], bento)
+            _invariants(el, errs, bento)
         except Exception as exc:  # noqa: BLE001
             errs.append(f"fill error: {exc}")
 

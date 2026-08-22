@@ -24,12 +24,16 @@ payload — no brand values are inlined here.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from app.models.builder_schema import BuilderElement, BuilderElementContent
+from app.services.icons import icon_data_url
+from app.services.image_styling import HeroAnchor
+from app.services.media import monogram_avatar_url
 
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "templates" / "section_catalog.json"
 
@@ -38,7 +42,23 @@ CATALOG_PATH = Path(__file__).resolve().parent.parent / "templates" / "section_c
 ResolveImage = Callable[[str], Awaitable[tuple[str, "str | None"]]]
 ContentFactory = Callable[[], dict[str, Any]]
 # Theme colours for brand-tinted photo overlays: {"primary": hex, "secondary": hex}.
+# An optional "background" hex lets a photo hero fade into the page below it.
 ThemeColors = dict[str, str]
+
+
+@dataclass(frozen=True)
+class PhotoComposition:
+    """How a `$styleSlot` photo background should be framed and scrimmed.
+
+    Supplied by the caller because neither is a property of the template: the
+    anchor is per-page art direction (services/hero_director.hero_composition)
+    and the focal point is measured off the photo itself
+    (services/image_sampling). Absent → the historical centred, centre-cropped
+    treatment.
+    """
+
+    anchor: HeroAnchor = "center"
+    focal_y: float | None = None
 
 
 @lru_cache(maxsize=1)
@@ -89,6 +109,12 @@ def _base_fields(node: dict[str, Any], styles: dict[str, Any]) -> dict[str, Any]
         out["responsiveStyles"] = node["responsiveStyles"]
     if node.get("motion") is not None:
         out["motion"] = node["motion"]
+    if node.get("lightbox") is not None:
+        out["lightbox"] = node["lightbox"]
+    if node.get("headerBar") is not None:
+        out["headerBar"] = node["headerBar"]
+    if node.get("backgroundTexture") is not None:
+        out["backgroundTexture"] = node["backgroundTexture"]
     return out
 
 
@@ -101,7 +127,9 @@ def _image_src(value: Any) -> str | None:
     return None
 
 
-async def _resolve_image(value: Any, resolve_image: ResolveImage) -> dict[str, str]:
+async def _resolve_image(
+    value: Any, resolve_image: ResolveImage, theme: ThemeColors | None = None
+) -> dict[str, str]:
     """Normalize an image slot value to ``{src, alt}``, resolving a query if needed."""
     if isinstance(value, str):
         return {"src": value, "alt": ""}
@@ -109,9 +137,35 @@ async def _resolve_image(value: Any, resolve_image: ResolveImage) -> dict[str, s
         return {"src": "", "alt": ""}
     src = value.get("src") or ""
     alt = value.get("alt") or ""
+    # {"monogram": name} — a named person with no portrait of their own. Built
+    # locally in the brand's colours; never resolved to a stock photo.
+    if not src and value.get("monogram"):
+        return {"src": _monogram_src(str(value["monogram"]), theme), "alt": alt}
+    # {"icon": name} — a curated glyph, coloured HERE rather than in the mapper
+    # because only fill time knows the theme. An unknown name yields no src, so
+    # _bind_slot's caller drops the node instead of drawing a broken image.
+    if not src and value.get("icon"):
+        return {"src": _icon_src(str(value["icon"]), theme) or "", "alt": alt}
     if not src and value.get("query"):
         src, _avg = await resolve_image(value["query"])
     return {"src": src or "", "alt": alt}
+
+
+def _icon_src(name: str, theme: ThemeColors | None) -> str | None:
+    """A curated glyph in the brand's ink. `secondary` is the palette's ink
+    token — the same colour the tile's heading uses — so an icon reads as part
+    of the type, not as a second accent competing with the CTA."""
+    return icon_data_url(name, theme.get("secondary", "#0f172a") if theme else "#0f172a")
+
+
+def _monogram_src(name: str, theme: ThemeColors | None) -> str:
+    if not theme:
+        return monogram_avatar_url(name)
+    return monogram_avatar_url(
+        name,
+        primary_hex=theme.get("primary", "#64748b"),
+        secondary_hex=theme.get("secondary", "#1e293b"),
+    )
 
 
 async def _bind_slot(
@@ -119,6 +173,7 @@ async def _bind_slot(
     value: Any,
     base: dict[str, Any],
     resolve_image: ResolveImage,
+    theme: ThemeColors | None = None,
 ) -> BuilderElementContent:
     if node_type == "link":
         v = value if isinstance(value, dict) else {}
@@ -130,12 +185,18 @@ async def _bind_slot(
             }
         )
     if node_type == "image":
-        img = await _resolve_image(value, resolve_image)
+        img = await _resolve_image(value, resolve_image, theme)
         return BuilderElementContent(**{**base, "src": img["src"], "alt": img["alt"]})
     if node_type == "video":
-        # Raw iframe embed (maps, players): value is {src} or a bare URL string.
-        src = value.get("src") if isinstance(value, dict) else value
-        return BuilderElementContent(**{**base, "src": str(src or "")})
+        # Raw iframe embed (maps, players): value is {src, title?} or a bare URL
+        # string. `title` becomes the frame's accessible name — the renderer
+        # falls back to "Embedded video", which is wrong for a map.
+        v = value if isinstance(value, dict) else {}
+        src = v.get("src") if isinstance(value, dict) else value
+        out = {**base, "src": str(src or "")}
+        if v.get("title"):
+            out["title"] = str(v["title"])
+        return BuilderElementContent(**out)
     return BuilderElementContent(**{**base, "innerText": str(value)})
 
 
@@ -145,10 +206,12 @@ async def _fill_node(
     resolve_image: ResolveImage,
     factories: dict[str, ContentFactory],
     theme: ThemeColors | None,
+    composition: PhotoComposition | None = None,
 ) -> BuilderElement | None:
     # $styleSlot: inject a resolved image into a CSS property (e.g. a hero/CTA
     # background). When theme colours are supplied and the target is the
-    # background image, build a brand-tinted overlay whose darkness adapts to the
+    # background image, build the full layered photo treatment (grain, edge
+    # fade, copy scrim, vignette, brand cast) whose darkness adapts to the
     # photo's average luminance; otherwise use the template's static format.
     styles = node["styles"]
     style_slot = node.get("$styleSlot")
@@ -162,12 +225,20 @@ async def _fill_node(
             if theme and prop == "backgroundImage":
                 from app.services.image_styling import photo_background
 
+                # photo_background returns backgroundSize/Repeat/Position too:
+                # the grain layer tiles at a fixed size while every other layer
+                # covers, so the template's single `background-size: cover`
+                # cannot be left in place. These OVERRIDE the catalog values.
+                comp = composition or PhotoComposition()
                 styles = {
                     **styles,
-                    prop: photo_background(
+                    **photo_background(
                         avg, url,
                         theme.get("secondary", "#0f172a"),
                         theme.get("primary", "#2563eb"),
+                        anchor=comp.anchor,
+                        focal_y=comp.focal_y,
+                        page_bg_hex=theme.get("background"),
                     ),
                 }
             else:
@@ -183,7 +254,9 @@ async def _fill_node(
         children: list[BuilderElement] = []
         if item_template:
             for item in items:
-                el = await _fill_node(item_template, item, resolve_image, factories, theme)
+                el = await _fill_node(
+                    item_template, item, resolve_image, factories, theme, composition
+                )
                 if el is not None:
                     children.append(el)
         # $gridFit: pick column-layout type by item count (mirror of the TS engine).
@@ -205,7 +278,9 @@ async def _fill_node(
         tiles: list[BuilderElement] = []
         if item_template:
             for item in items:
-                el = await _fill_node(item_template, item, resolve_image, factories, theme)
+                el = await _fill_node(
+                    item_template, item, resolve_image, factories, theme, composition
+                )
                 if el is not None:
                     tiles.append(el)
         for i, el in enumerate(tiles):
@@ -227,7 +302,7 @@ async def _fill_node(
             return None
         node_content = node.get("content")
         slot_base = node_content if isinstance(node_content, dict) else {}
-        bound = await _bind_slot(node["type"], value, slot_base, resolve_image)
+        bound = await _bind_slot(node["type"], value, slot_base, resolve_image, theme)
         return BuilderElement(id=str(uuid4()), content=bound, **base)
 
     # Container: recurse children in the same scope.
@@ -235,7 +310,7 @@ async def _fill_node(
     if isinstance(content, list):
         children = []
         for child in content:
-            el = await _fill_node(child, scope, resolve_image, factories, theme)
+            el = await _fill_node(child, scope, resolve_image, factories, theme, composition)
             if el is not None:
                 children.append(el)
         # Prune a container that filled to nothing — e.g. a card/list-item whose
@@ -260,15 +335,17 @@ async def fill_template(
     resolve_image: ResolveImage,
     content_factories: dict[str, ContentFactory] | None = None,
     theme: ThemeColors | None = None,
+    composition: PhotoComposition | None = None,
 ) -> BuilderElement:
     """Build a concrete ``BuilderElement`` tree from a catalog entry + content.
 
     When ``theme`` ({"primary","secondary"} hex) is supplied, photo backgrounds
-    get a brand-tinted, luminance-adaptive overlay; otherwise the template's
-    static overlay format is used.
+    get the full layered treatment (brand-tinted, luminance-adaptive); otherwise
+    the template's static overlay format is used. ``composition`` art-directs
+    that treatment — see ``PhotoComposition``.
     """
     root = await _fill_node(
-        template["tree"], content, resolve_image, content_factories or {}, theme
+        template["tree"], content, resolve_image, content_factories or {}, theme, composition
     )
     if root is None:
         raise ValueError(f"Template {template.get('id')!r} filled to nothing")

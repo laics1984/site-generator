@@ -45,6 +45,102 @@ def _rgba(hex_color: str, alpha: float) -> str:
     b = int(hex_color[5:7], 16)
     return f"rgba({r}, {g}, {b}, {alpha})"
 
+
+# The floating pill's glass. Thin on purpose: the pane reads as glass, so the
+# backdrop comes through rather than being masked by it.
+#
+# What that alpha does and does not buy, measured on the built values:
+#
+#   light scheme, ink #0f172a   bright photo 10.1   background 17.9   surface 16.7
+#                               scrimmed hero  2.2  ← below AA
+#   dark scheme,  ink #ffffff   scrimmed hero 16.0  background 19.3   surface 17.7
+#                               bright photo   3.1  ← below AA
+#
+# So the built-value ink clears AA over every backdrop on ITS OWN side of the
+# luminance split — the theme's own bands included — and fails only against the
+# opposite side. That is not a gap to be closed by thickening the pane; it is
+# exactly what `behavior.adaptiveInk` exists to flip (see ADAPTIVE_INK_VARS and
+# CLAUDE.md's "Scroll-adaptive header ink"), and it is why adaptive ink is
+# MANDATORY for this archetype rather than an enhancement. Raising the alpha
+# until the fallback is legible on both sides costs the glass its transparency —
+# it takes ~0.45, better than twice this, to hold 4.5:1 everywhere.
+GLASS_ALPHA = 0.20
+# Frosted glass: the backdrop is blurred, NOT desaturated.
+#
+# A grayscale() pass was tried and reverted — the neutralised pane read worse in
+# practice than the colour it was removing, going muddy and grey over photos.
+# The original argument for full desaturation is preserved in f95e2ec if it ever
+# needs revisiting; the shipped answer is that the backdrop's own colour showing
+# through is the better of the two looks.
+#
+# The `grayscale(0)` term is a no-op kept explicitly rather than dropped: it
+# marks the amount as a deliberate 0 (see the test pinning it) instead of
+# leaving a bare blur() that invites someone to "restore" desaturation from a
+# stale comment. A saturate() boost would be the opposite move again — the
+# glassmorphism idiom, which this is not.
+GLASS_FILTER = "blur(20px) grayscale(0)"
+
+# The three values a renderer may flip on the floating pill as the visitor
+# scrolls from a light section to a dark one. They ship as
+# `var(--wt-pill-ink, <built value>)`: the built value stays in the fallback
+# slot, so a renderer that sets nothing paints exactly what it painted before,
+# and the whole feature is additive. Declared in the catalog
+# (chrome-header-floating-pill) except the wordmark's, which _logo_mark writes.
+ADAPTIVE_INK_VARS = ("--wt-pill-ink", "--wt-pill-tint", "--wt-pill-hairline")
+
+_ADAPTIVE_VAR_OPEN = "var(--wt-pill-"
+
+
+def built_value(css: str) -> str:
+    """An adaptive `var(--wt-pill-…, <value>)` wrap reduced to what it paints.
+
+    The canonical reader of that wire format — anything judging what the pill
+    actually shows (contrast checks, tests, tooling) goes through here rather
+    than parsing the wrapper itself. Works anywhere in the string, because one
+    of the three values is a shorthand (`1px solid var(--wt-pill-hairline, …)`),
+    and scans for the closing paren rather than regexing for it, since the
+    fallback is itself parenthesised (`rgba(…)`). Non-wrapped values, including
+    `var(--builder-*)` tokens the BUILDER resolves, pass through untouched.
+
+    Mirrored in the builder by `color-utils.unwrapCssVarFallback`, which also
+    writes back into the fallback slot so an edit in the right panel doesn't
+    strip the adaptation.
+    """
+    if not isinstance(css, str):
+        return css
+    out = css
+    while (start := out.find(_ADAPTIVE_VAR_OPEN)) != -1:
+        depth, i = 0, start + 3  # the "(" of var(
+        while i < len(out):
+            if out[i] == "(":
+                depth += 1
+            elif out[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if i >= len(out):
+            return out  # unbalanced — leave it alone rather than mangle it
+        inner = out[start + 4 : i]  # inside var( … )
+        fallback = inner.partition(",")[2]
+        out = out[:start] + fallback.strip() + out[i + 1 :]
+    return out
+
+
+def _glass_tint(hex_color: str) -> str:
+    """`hex_color` stripped of hue and saturation, keeping only its lightness.
+
+    The pill reads as clear glass, so its veil must be achromatic — the brand
+    hue belongs to the page showing through it, not to the pane. In a light
+    scheme the header background is already pure white and this is a no-op; in
+    a dark one it turns the palette's navy-black into a neutral black.
+    """
+    from app.services.theme import _hex_to_rgb, _rgb_to_hex, _rgb_to_hls
+
+    lightness = _rgb_to_hls(*_hex_to_rgb(hex_color))[1]
+    value = round(max(0.0, min(1.0, lightness)) * 255)
+    return _rgb_to_hex(value, value, value)
+
 # The builder's HeaderSettings "Divider" control is a boxShadow preset on the
 # __header root element. This is the exact "Subtle" preset value
 # (HEADER_SHADOW_PRESETS in builder src/lib/site-navigation.ts) — emitting the
@@ -55,6 +151,14 @@ HEADER_DIVIDER_SUBTLE = "0 1px 3px 0 rgba(15, 23, 42, 0.06)"
 # prominent mark (childcare: warm, friendly, front-and-centre for parents).
 _DEFAULT_LOGO_HEIGHT = "52px"
 _LOGO_HEIGHT_BY_INDUSTRY: dict[str, str] = {"childcare": "68px"}
+
+# The floating pill overrides both. The logo is the tallest thing in the bar, so
+# it — not the padding — sets the bar's height: childcare's 68px mark alone
+# makes the pill half again as tall as the compact floating bar the archetype is
+# supposed to be. A self-chrome pill is a slim capsule over the hero, not a
+# brand banner, so it caps the mark and lets the industry keep its bigger logo
+# on every other archetype (where the bar spans the full width and can carry it).
+_SELF_CHROME_LOGO_HEIGHT = "45px"
 
 # Industries whose logo must never get the contrast "chip" (a boxed background
 # behind the mark) — it reads as an unwanted border against their light chrome.
@@ -160,6 +264,7 @@ def _logo_mark(
     lockup: str | None = None,
     ink: str | None = None,
     logo_height: str = "52px",
+    adaptive_ink: bool = False,
 ) -> BuilderElement:
     """
     Returns a logo BuilderElement — either the uploaded image or a typographic
@@ -167,8 +272,18 @@ def _logo_mark(
     image sits in a contrast chip so it stays legible on header chrome that is
     too close to the logo's own brightness. `ink` colours the typographic
     wordmark so it matches the header's menu ink (falls back to secondary).
+
+    `adaptive_ink` (self-chrome archetypes) writes that wordmark colour as
+    `var(--wt-pill-ink, <ink>)` so a renderer can flip it with the pill's menu
+    as the page scrolls — the built value stays the fallback, so nothing changes
+    where no renderer sets the var. Only the wordmark: a bitmap logo cannot be
+    recoloured (it gets the `lockup` chip instead) and the monogram circle is
+    its own painted surface.
     """
-    if brand.logo_url or brand.logo_data_url:
+    # `logo_render_ok`, not the URL: the scraper keeps an og:image or an
+    # undersized favicon as a palette source, and either one rendered at 52px is
+    # worse than the typographic mark below. See services/logo_extraction.py.
+    if brand.logo_render_ok and (brand.logo_url or brand.logo_data_url):
         # The logo IS the home link — standard convention, and it lets the
         # primary menu drop the redundant "Home" item entirely.
         img = _image(
@@ -239,7 +354,11 @@ def _logo_mark(
                     "fontFamily": theme.typography.heading_font,
                     "fontWeight": 700,
                     "fontSize": "18px",
-                    "color": ink or theme.palette.secondary,
+                    "color": (
+                        f"var(--wt-pill-ink, {ink or theme.palette.secondary})"
+                        if adaptive_ink
+                        else (ink or theme.palette.secondary)
+                    ),
                     "textDecoration": "none",
                 },
                 content=BuilderElementContent(
@@ -345,13 +464,20 @@ def build_header(
     # an overlay header is transparent the renderer forces `wt-header-ink`
     # elements to white (.wt-page-header--overlay .wt-header-ink). Self-chrome
     # archetypes (floating pill) skip the marker — their bar chromes itself
-    # during overlay, so a white flip would break on the light pill.
+    # during overlay, so a white flip would break on the light pill. They take
+    # the `--wt-pill-ink` var instead, which flips with the section under them
+    # rather than with the header's own transparency.
     logo = _logo_mark(
         brand,
         theme,
         lockup=logo_lockup,
         ink=header_fg,
-        logo_height=_LOGO_HEIGHT_BY_INDUSTRY.get(norm_industry, _DEFAULT_LOGO_HEIGHT),
+        logo_height=(
+            _SELF_CHROME_LOGO_HEIGHT
+            if archetype in SELF_CHROME_HEADERS
+            else _LOGO_HEIGHT_BY_INDUSTRY.get(norm_industry, _DEFAULT_LOGO_HEIGHT)
+        ),
+        adaptive_ink=archetype in SELF_CHROME_HEADERS,
     )
     if archetype not in SELF_CHROME_HEADERS:
         logo.classes = "wt-header-ink"
@@ -379,10 +505,18 @@ def build_header(
 def _header_tokens(
     theme: ThemeTokens, header_bg: str, header_fg: str
 ) -> dict[str, str]:
-    """The header half of the chrome token contract (see template_filler)."""
+    """The header half of the chrome token contract (see template_filler).
+
+    Mirrored by HEADER_TOKENS in builder/src/lib/chrome-archetypes.ts (as
+    `color-mix` against the live CSS vars) — a token added here and not there
+    ships as a literal `{{...}}` string in the editor. Keep the two in lockstep.
+    """
     return {
         "header.bg": header_bg,
         "header.fg": header_fg,
+        # The floating pill's glass: achromatic, and as thin as AA allows.
+        "glass.tint": _rgba(_glass_tint(header_bg), GLASS_ALPHA),
+        "glass.filter": GLASS_FILTER,
         "header.bg@72": _rgba(header_bg, 0.72),
         "header.bg@88": _rgba(header_bg, 0.88),
         "header.fg@10": _rgba(header_fg, 0.10),
@@ -393,7 +527,9 @@ def _header_tokens(
         "buttons.fg": theme.buttons.text,
         "buttons.radiusPx": f"{theme.buttons.radius}px",
         "pill.radiusPx": f"{max(20, theme.buttons.radius + 14)}px",
-        "pill.maxWidthPx": f"{max(720, theme.page.max_width - 240)}px",
+        # No pill.maxWidthPx: the pill spans `page.maxWidthPx`, the same column
+        # every other header bar and every content section uses, so it lines up
+        # with the page instead of floating at its own inset width.
         "page.maxWidthPx": f"{theme.page.max_width}px",
         "font.heading": theme.typography.heading_font,
         "font.body": theme.typography.body_font,
@@ -460,7 +596,9 @@ def build_footer(
     # theme tokens. When a usable logo exists we show it alone (mirroring the
     # header); the text wordmark appears only when there is no logo, or the
     # logo would vanish into the footer band (dark on dark / light on light).
-    logo_src = brand.logo_url or brand.logo_data_url
+    # Same gate as the header (_logo_mark): a mark the header declined is not
+    # good enough for the footer either.
+    logo_src = (brand.logo_url or brand.logo_data_url) if brand.logo_render_ok else None
     show_wordmark = (not logo_src) or (
         brand.logo_is_light is (False if footer_is_dark else True)
     )

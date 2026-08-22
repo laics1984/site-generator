@@ -32,6 +32,7 @@ from pydantic import (
 )
 
 from app.models.content_blocks import (
+    DETERMINISTIC_SECTION_KINDS,
     BrandMood,
     ContentBlock,
     IndustryCategoryLiteral,
@@ -41,12 +42,20 @@ from app.models.content_blocks import (
     SourceContent,
     heal_brand_mood_value,
     heal_industry_value,
+    heal_optional_str_value,
     industry_default_mood,
 )
 from app.config import settings
 from app.models.industry import PageScaffold
 from app.services.industry_personality import personality_prompt_lines
-from app.services.llm import LlmClient, chat_json_cached, get_llm, get_reasoning_llm
+from app.services.llm import (
+    LlmClient,
+    LlmError,
+    chat_json_cached,
+    get_llm,
+    get_reasoning_llm,
+)
+from app.services.polite import HostPoliteness
 from app.services.prompts import (
     DETECT_BRAND_PROMPT,
     LEGACY_SYSTEM_PROMPT,
@@ -61,6 +70,14 @@ from app.services.source_router import (
 )
 
 logger = logging.getLogger(__name__)
+
+# How many times one content work item may be attempted against the AI server.
+# This is a TRANSPORT-level retry and does not overlap llm._validated's retries,
+# which cover empty streams, truncation and invalid JSON — a dropped connection
+# or a connect timeout raises LlmError straight out of them. Two attempts with
+# polite.back_off between; past that the circuit breaker is the right answer,
+# not more hammering.
+_LLM_ITEM_ATTEMPTS = 2
 
 
 # Prompt text lives in app/services/prompts.py (imported above) so prompt edits
@@ -109,6 +126,15 @@ class DetectedBrand(BaseModel):
     brand_mood: BrandMood | None = None
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
+
+    # A null site_name/brand_summary is the model's most common schema slip and
+    # it used to cost a whole repair call. Heal it here; every consumer already
+    # falls back (`scaffolded.site_name or detected.site_name`, and the
+    # BrandIdentity construction in routers/generate.py).
+    @field_validator("site_name", "brand_summary", mode="before")
+    @classmethod
+    def heal_null_strings(cls, v: object) -> object:
+        return heal_optional_str_value(v)
 
     # The LLM sometimes invents moods/industries despite the enumerated prompt.
     # A wrong adjective must never fail brand detection — degrade to defaults.
@@ -210,6 +236,11 @@ class ScaffoldedSitePlan(BaseModel):
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
     pages: list[PagePlan]
+    # Slugs whose generating LLM call failed outright. They are still SHIPPED —
+    # `_align_pages_to_scaffolds` re-materialises each one from its scaffold with
+    # structural defaults — but the copy is generic, so the caller logs it and
+    # can surface it. Empty on a clean run.
+    degraded_slugs: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -242,6 +273,15 @@ class ScaffoldedSitePlan(BaseModel):
                 continue
             kept.append(page)
         return {**data, "pages": kept}
+
+    # A null site_name/brand_summary is the model's most common schema slip and
+    # it used to cost a whole repair call. Heal it here; every consumer already
+    # falls back (`scaffolded.site_name or detected.site_name`, and the
+    # BrandIdentity construction in routers/generate.py).
+    @field_validator("site_name", "brand_summary", mode="before")
+    @classmethod
+    def heal_null_strings(cls, v: object) -> object:
+        return heal_optional_str_value(v)
 
     @field_validator("brand_mood", mode="before")
     @classmethod
@@ -287,7 +327,14 @@ def _scaffolds_to_prompt_payload(
             "slug": s.slug,
             "title": s.title,
             "is_homepage": s.is_homepage,
-            "required_sections": s.sections,
+            # Deterministic kinds are withheld from the prompt entirely. Naming
+            # one here invites the model to write it, and it CAN — the block is
+            # in the ContentBlock union, so a guessed shape validates even
+            # though no schema was shown. See DETERMINISTIC_SECTION_KINDS; the
+            # matching discard lives in scaffold_enforcement.align_page_to_scaffold.
+            "required_sections": [
+                k for k in s.sections if k not in DETERMINISTIC_SECTION_KINDS
+            ],
         }
         if s.parent_slug is not None:
             entry["parent_slug"] = s.parent_slug
@@ -366,7 +413,8 @@ def _scaffold_num_ctx() -> int:
 #   _TOK_BRAND_SOURCE   brand dict + entry-page text  ≈ 600 tokens
 #
 # Per-page input overhead (added once per page in the batch):
-#   _TOK_PER_PAGE_STUB    slug + title + sections list ≈ 100 tokens
+#   _TOK_PER_PAGE_STUB    slug + title + requested-sections list ≈ 100 tokens
+#   _TOK_PER_SOURCE_SECTION  the source's own section tree, per section
 #   page source           estimated from the page's ACTUAL text length, capped at
 #                         settings.multipass_max_chars_per_call, at _CHARS_PER_TOKEN
 #                         chars/token (small pages cost less; large pages are
@@ -384,8 +432,50 @@ _TOK_PER_PAGE_STUB = 100
 _TOK_PER_SECTION_OUT = 230
 # One page_source.images entry ({ref, alt, role, near}) costs ~30 tokens.
 _TOK_PER_IMAGE = 30
+# One page_source.sections entry — heading + level + capped prose + up to a
+# dozen cards ({title, body, meta}). Bigger than an image entry by an order of
+# magnitude, so it has to be costed: source_router caps the tree at 12 sections
+# with 12 cards each, which is exactly the shape that would otherwise overflow
+# num_ctx and buy a truncation retry.
+_TOK_PER_SOURCE_SECTION = 120
+_MAX_COSTED_SOURCE_SECTIONS = 12
 _INPUT_SHARE = 0.48          # fraction of num_ctx reserved for input tokens
 _CHARS_PER_TOKEN = 4          # rough English chars→tokens ratio for estimates
+# CJK text has no spaces and tokenises far denser — roughly one token per
+# character, against English's ~4. Treating a Chinese page as 4 chars/token
+# under-counts its real cost by ~3x, which silently overflows num_ctx and burns
+# a truncation retry (or a whole degraded batch). This generator targets
+# multilingual Malaysian sites, so /zh mirrors are routine, not exotic.
+_CJK_CHARS_PER_TOKEN = 1.2
+# Hiragana/katakana, CJK ideographs (incl. extension A), compatibility
+# ideographs, and half-width katakana. Written as \u escapes so the ranges
+# stay reviewable in a diff and survive any editor's encoding. Hangul is
+# deliberately absent - Korean tokenises much closer to the Latin rate, so
+# billing it as CJK would over-count.
+_CJK_RE = re.compile(
+    "["
+    "\u3040-\u30ff"   # hiragana + katakana
+    "\u3400-\u4dbf"   # CJK unified ideographs extension A
+    "\u4e00-\u9fff"   # CJK unified ideographs
+    "\uf900-\ufaff"   # CJK compatibility ideographs
+    "\uff66-\uff9f"   # half-width katakana
+    "]"
+)
+
+
+def _estimate_tokens(text: str) -> int:
+    """Character-count → token estimate, weighted by script.
+
+    English bills at ``_CHARS_PER_TOKEN``; CJK characters at
+    ``_CJK_CHARS_PER_TOKEN``. A mixed string is billed proportionally rather
+    than by a threshold, so a mostly-English page with a Chinese address doesn't
+    jump budgets.
+    """
+    if not text:
+        return 0
+    cjk = len(_CJK_RE.findall(text))
+    other = max(0, len(text) - cjk)
+    return int(cjk / _CJK_CHARS_PER_TOKEN + other / _CHARS_PER_TOKEN)
 
 # The batch/chunk caps themselves are model-variant knobs and live in settings:
 #   settings.max_sections_per_batch      section-density cap per batch
@@ -434,19 +524,20 @@ def _build_batches(
         # the per-call budget — larger pages are chunked elsewhere, never batched).
         # This lets tiny pages pack several-per-batch instead of all costing a flat
         # estimate. Only small pages (<= the per-call budget) reach this function.
-        src_chars = (
-            min(
-                len(source_map[s.slug].raw_text or ""),
-                settings.multipass_max_chars_per_call,
-            )
+        src_text = (
+            (source_map[s.slug].raw_text or "")[: settings.multipass_max_chars_per_call]
             if has_source
-            else 0
+            else ""
         )
         image_count = len(promptable_images(source_map[s.slug])) if has_source else 0
+        section_count = (
+            len(source_map[s.slug].section_candidates or []) if has_source else 0
+        )
         page_input = (
             _TOK_PER_PAGE_STUB
-            + src_chars // _CHARS_PER_TOKEN
+            + _estimate_tokens(src_text)
             + image_count * _TOK_PER_IMAGE
+            + min(section_count, _MAX_COSTED_SOURCE_SECTIONS) * _TOK_PER_SOURCE_SECTION
         )
         page_output = len(s.sections) * _TOK_PER_SECTION_OUT
         page_sections = len(s.sections)
@@ -1007,9 +1098,10 @@ async def plan_site_with_scaffolds(
     # personality, with an empty pages list) once, instead of trusting the
     # _TOK_BRAND_SOURCE guess — an unusually long brand summary or heading list
     # would otherwise let batches overflow the input budget.
-    fixed_input_tokens = (
-        len(_build_scaffolded_user_prompt(source, brand, [], None, source_map))
-        // _CHARS_PER_TOKEN
+    # Script-weighted: this envelope carries the entry page's own raw_text, so on
+    # a Chinese-language site a flat chars/4 under-counts it several-fold.
+    fixed_input_tokens = _estimate_tokens(
+        _build_scaffolded_user_prompt(source, brand, [], None, source_map)
     )
 
     # 3. Build an ordered work-list. Runs of small pages flow through the existing
@@ -1018,6 +1110,24 @@ async def plan_site_with_scaffolds(
     #    so parent hero context is available downstream. Items are tagged with
     #    their scaffold depth so the concurrent path can group them.
     concurrency = max(1, settings.scaffold_batch_concurrency)
+    # Concurrency cap + failure tracking for the AI endpoint, reusing the
+    # crawler's politeness primitive (services/polite.py): the slot cap,
+    # record_success/record_failure, the consecutive-failure circuit and its
+    # exponential back_off. min_delay_sec=0 — the crawl's pacing between
+    # requests is about not tripping someone else's WAF and means nothing to a
+    # local GPU.
+    #
+    # Built per generation rather than fetched from polite's process-wide
+    # registry: `get_politeness` is get-or-create and IGNORES its arguments when
+    # an instance already exists, so a changed scaffold_batch_concurrency would
+    # silently keep the old slot count until a restart, and one test's circuit
+    # would leak into the next. The failure this guards (a run losing three
+    # batches to `Server disconnected`) is within a single generation anyway.
+    politeness = HostPoliteness(
+        host=f"llm:{getattr(client, 'base_url', '') or 'default'}",
+        concurrency=concurrency,
+        min_delay_sec=0.0,
+    )
     worklist: list[tuple[str, object, int]] = []
     small_run: list[PageScaffold] = []
 
@@ -1058,6 +1168,7 @@ async def plan_site_with_scaffolds(
     all_pages: list[PagePlan] = []
     parent_context: dict[str, dict] = {}
     first: ScaffoldedSitePlan | None = None
+    degraded_slugs: list[str] = []
 
     async def _run_item(
         item_index: int, item_kind: str, payload: object
@@ -1096,6 +1207,74 @@ async def plan_site_with_scaffolds(
         )
         return list(result.pages), result
 
+    def _item_slugs(item_kind: str, payload: object) -> list[str]:
+        """The scaffold slugs one work item is responsible for."""
+        if item_kind == "batch":
+            return [s.slug for s in payload]  # type: ignore[union-attr]
+        return [payload.slug]  # type: ignore[union-attr]
+
+    async def _run_item_safe(
+        item_index: int, item_kind: str, payload: object
+    ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
+        """`_run_item`, but a failed LLM call costs only ITS OWN pages.
+
+        A single `LlmError` used to abort the whole generation: batch 4 of 6
+        timing out on a cold local model threw away five batches that had
+        already succeeded, and the user got a 502 after two minutes of work.
+        The pages this item owned are simply not produced — alignment then
+        re-materialises each from its scaffold with structural defaults, which
+        is the same path a page the model silently dropped already takes.
+
+        Degrading is the LAST resort, not the first. A generation that lost
+        three batches to `Server disconnected` and `ConnectTimeout` shipped
+        three generic pages and told the user nothing was wrong, because the
+        only response to a flaky endpoint was to give up on that item. So the
+        item is retried behind `polite.back_off` first, and once the endpoint
+        has failed `DEFAULT_MAX_CONSECUTIVE_FAILURES` times in a row the circuit
+        opens and the remaining items degrade immediately instead of each
+        waiting out its own timeout — the same shape the crawler uses via
+        `_should_stop` (services/scraper.py).
+
+        `politeness.slot()` also *is* the concurrency cap, so serial and
+        concurrent runs share one code path.
+        """
+        slugs = _item_slugs(item_kind, payload)
+
+        def _degrade(reason: object) -> tuple[list[PagePlan], None]:
+            degraded_slugs.extend(slugs)
+            logger.warning(
+                "Content generation failed for %s (%s) — shipping %d page(s) with "
+                "scaffold defaults instead of failing the whole site: %s",
+                ", ".join(f"/{s}" for s in slugs) or "(homepage)",
+                item_kind,
+                len(slugs),
+                reason,
+            )
+            return [], None
+
+        for attempt in range(1, _LLM_ITEM_ATTEMPTS + 1):
+            if politeness.circuit_open:
+                return _degrade(
+                    "AI server circuit open after repeated failures — not retried"
+                )
+            try:
+                async with politeness.slot():
+                    produced = await _run_item(item_index, item_kind, payload)
+            except LlmError as exc:
+                politeness.record_failure()
+                if attempt >= _LLM_ITEM_ATTEMPTS or politeness.circuit_open:
+                    return _degrade(exc)
+                logger.warning(
+                    "Content generation attempt %d/%d failed for %s — backing off: %s",
+                    attempt, _LLM_ITEM_ATTEMPTS,
+                    ", ".join(f"/{s}" for s in slugs) or "(homepage)", exc,
+                )
+                await politeness.back_off(attempt)
+                continue
+            politeness.record_success()
+            return produced
+        return _degrade("exhausted attempts")
+
     def _absorb(produced: list[PagePlan], result: "ScaffoldedSitePlan | None") -> None:
         # Harvest parent hero context for children that come in later work items.
         # Children are guaranteed later because of the depth sort.
@@ -1112,21 +1291,20 @@ async def plan_site_with_scaffolds(
         # Strictly serial — the right shape for a single local GPU model, and
         # every item sees the freshest parent_context (same as always).
         for item_index, (item_kind, payload, _depth) in enumerate(worklist):
-            _absorb(*await _run_item(item_index, item_kind, payload))
+            _absorb(*await _run_item_safe(item_index, item_kind, payload))
     else:
         # Same-depth items are mutually independent (a page never parents a
-        # sibling), so run each contiguous depth group under a semaphore and
-        # harvest parent_context only after the whole group completes — the
-        # next (deeper) group then sees every parent hero. gather preserves
+        # sibling), so run each contiguous depth group together and harvest
+        # parent_context only after the whole group completes — the next
+        # (deeper) group then sees every parent hero. gather preserves
         # submission order, keeping page order and `first` deterministic.
-        sem = asyncio.Semaphore(concurrency)
-
-        async def _run_bounded(
-            item_index: int, item_kind: str, payload: object
-        ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
-            async with sem:
-                return await _run_item(item_index, item_kind, payload)
-
+        #
+        # Within a group this is already a sliding window, not lockstep: every
+        # item is submitted at once and `politeness.slot()` admits them
+        # `concurrency` at a time, so a freed slot picks up the next item
+        # immediately. Only the depth BOUNDARY is a barrier, and that barrier is
+        # load-bearing — crossing it early would generate a child page before
+        # its parent's hero exists to ground it.
         pos = 0
         while pos < len(worklist):
             group_depth = worklist[pos][2]
@@ -1135,7 +1313,7 @@ async def plan_site_with_scaffolds(
                 group.append((pos, worklist[pos][0], worklist[pos][1]))
                 pos += 1
             outcomes = await asyncio.gather(
-                *(_run_bounded(i, kind, payload) for i, kind, payload in group)
+                *(_run_item_safe(i, kind, payload) for i, kind, payload in group)
             )
             for produced, result in outcomes:
                 _absorb(produced, result)
@@ -1159,7 +1337,27 @@ async def plan_site_with_scaffolds(
     extras = [p for p in all_pages if p not in ordered_pages]
     final_pages = ordered_pages + extras
 
-    assert first is not None
+    if first is None:
+        # Every work item failed (or there were none). The site-level fields
+        # normally come from the first successful call; fall back to the brand
+        # detection that already ran, so the caller still gets a themeable plan
+        # of scaffold-default pages rather than an AssertionError.
+        if degraded_slugs:
+            logger.error(
+                "Every content-generation call failed — falling back to detected "
+                "brand metadata and scaffold-default pages for all %d page(s)",
+                len(degraded_slugs),
+            )
+        first = ScaffoldedSitePlan(
+            site_name=(brand.site_name if brand else None) or source.title or "Untitled",
+            tagline=brand.tagline if brand else None,
+            brand_summary=brand.brand_summary if brand else "",
+            brand_mood=brand.brand_mood if brand else None,
+            industry_category=brand.industry_category if brand else "other",
+            primary_color_hint=brand.primary_color_hint if brand else None,
+            pages=[],
+        )
+
     plan = ScaffoldedSitePlan(
         site_name=first.site_name,
         tagline=first.tagline,
@@ -1168,5 +1366,6 @@ async def plan_site_with_scaffolds(
         industry_category=first.industry_category,
         primary_color_hint=first.primary_color_hint,
         pages=final_pages,
+        degraded_slugs=degraded_slugs,
     )
     return plan, source_map

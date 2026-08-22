@@ -34,6 +34,69 @@ def _offline_pexels():
 
 
 @pytest.fixture(autouse=True)
+def _offline_photo_sampling():
+    """Disable pixel sampling of photos for every test.
+
+    ``ImageResolver.resolve`` samples a full-bleed slot's photo to read its
+    dominant colour and focal point (services/image_sampling.py). That is the
+    one place in the resolver that downloads bytes, so leaving it on makes the
+    suite hit the network for every fake ``https://cdn.example.com/...`` URL and
+    wait out the timeout. Off, resolution takes the metadata-only path it always
+    had. The sampling tests exercise the measurement functions directly, and any
+    test wanting the wired-up behaviour flips the flag back on with a stubbed
+    fetcher.
+    """
+    original = settings.photo_sampling_enabled
+    settings.photo_sampling_enabled = False
+    try:
+        yield
+    finally:
+        settings.photo_sampling_enabled = original
+
+
+@pytest.fixture(autouse=True)
+def _offline_ocr():
+    """Disable the OCR text screen for every test.
+
+    ``text_detection.prefetch_text_flags`` downloads images and runs an ONNX
+    detector (~630ms each). Today it self-disables because the wheel isn't in
+    the test venv, but that is an accident of the environment, not a guarantee —
+    once ``rapidocr-onnxruntime`` is installed the suite would start doing
+    network I/O and burning seconds per test. Off, ``ocr_has_text`` simply stays
+    None, which is the pre-OCR behaviour every existing assertion was written
+    against. The text-detection tests flip it back on themselves.
+    """
+    original = settings.ocr_text_detection_enabled
+    settings.ocr_text_detection_enabled = False
+    try:
+        yield
+    finally:
+        settings.ocr_text_detection_enabled = original
+
+
+@pytest.fixture(autouse=True)
+def _offline_facebook():
+    """Keep the Facebook reader off the network for every test.
+
+    A real ``FACEBOOK_ACCESS_TOKEN`` in ``.env`` makes ``default_fetchers``
+    build a Graph client, so any test that reaches ``fetch_facebook_page``
+    without injecting fetchers would call graph.facebook.com for real. Nulling
+    the token AND disabling the render fallback leaves an empty chain, which
+    fails loudly instead of quietly doing I/O — tests that want a read inject
+    their own fetcher, which bypasses both.
+    """
+    original_token = settings.facebook_access_token
+    original_fallback = settings.facebook_render_fallback_enabled
+    settings.facebook_access_token = None
+    settings.facebook_render_fallback_enabled = False
+    try:
+        yield
+    finally:
+        settings.facebook_access_token = original_token
+        settings.facebook_render_fallback_enabled = original_fallback
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_diversity():
     """Disable the diversity engine's SQLite history for every test.
 

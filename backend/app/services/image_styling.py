@@ -12,6 +12,8 @@ scraped images can be sampled with Pillow upstream).
 from __future__ import annotations
 
 import colorsys
+import math
+import re
 from typing import Literal
 
 
@@ -53,7 +55,20 @@ def band_for_color(
     return band_for_luminance(relative_luminance(avg_hex), threshold=threshold)
 
 
-def overlay_alpha(avg_hex: str, *, min_alpha: float = 0.30, max_alpha: float = 0.62) -> float:
+# Full-frame cast strength. This layer covers the WHOLE photo, including the
+# parts no text sits on, so it is kept faint on purpose: its job is to bind the
+# photo to the brand, not to dim it. Legibility is bought separately, by the
+# centre scrim below, where the copy actually is — a uniform sheet heavy enough
+# for a bright photo's headline also flattens the 70% of the frame that has
+# nothing on it, which is what makes a hero read as a colour block with a
+# picture buried in it rather than as a photograph.
+_CAST_MIN_ALPHA = 0.14  # already-dark photo: barely a tint
+_CAST_MAX_ALPHA = 0.34  # bright/busy photo: still see-through
+
+
+def overlay_alpha(
+    avg_hex: str, *, min_alpha: float = _CAST_MIN_ALPHA, max_alpha: float = _CAST_MAX_ALPHA
+) -> float:
     """Pick the dark-overlay opacity from the photo's average luminance.
 
     A dark photo already provides contrast for white text → light overlay
@@ -64,15 +79,39 @@ def overlay_alpha(avg_hex: str, *, min_alpha: float = 0.30, max_alpha: float = 0
     return round(min_alpha + (max_alpha - min_alpha) * max(0.0, min(1.0, lum)), 2)
 
 
+# How far the overlay's BRAND end is pulled toward the ink end before it is
+# painted. A saturated primary composited at ~0.5 alpha does not tint a photo,
+# it repaints it: hue information in the pixels underneath is replaced, so a
+# guitar, a classroom and a plate of food all arrive as the same flat sheet of
+# brand colour — duotone applied as a default rather than chosen. Darkening the
+# same pixels preserves their hue relationships, so mixing the primary toward
+# the ink keeps the photograph legible AS a photograph while the gradient still
+# runs visibly on-brand. Alpha is deliberately NOT lowered to achieve this: the
+# white headline's contrast comes from that alpha.
+_BRAND_END_INK_MIX = 0.55
+
+
+def _mix(a_hex: str, b_hex: str, t: float) -> tuple[int, int, int]:
+    """`a` moved `t` of the way toward `b` in sRGB."""
+    ar, ag, ab = _hex_to_rgb(a_hex)
+    br, bg, bb = _hex_to_rgb(b_hex)
+    return (
+        round(ar + (br - ar) * t),
+        round(ag + (bg - ag) * t),
+        round(ab + (bb - ab) * t),
+    )
+
+
 def brand_overlay_gradient(secondary_hex: str, primary_hex: str, alpha: float) -> str:
     """A brand-tinted dark overlay layer (CSS gradient string, no image).
 
-    Tinting the overlay toward the brand colours makes ANY photo harmonise with
-    the theme — the modern duotone/brand-wash technique. Slightly lighter on the
-    primary end so the brand hue reads without washing out the photo.
+    Tinting the overlay toward the brand colours makes any photo harmonise with
+    the theme, but the tint is a cast, not a repaint: the brand end is mixed
+    toward the ink first (see `_BRAND_END_INK_MIX`), so the photo keeps its own
+    colours instead of arriving as a flat sheet of the brand hue.
     """
     sr, sg, sb = _hex_to_rgb(secondary_hex)
-    pr, pg, pb = _hex_to_rgb(primary_hex)
+    pr, pg, pb = _mix(primary_hex, secondary_hex, _BRAND_END_INK_MIX)
     a2 = round(alpha * 0.82, 2)
     return (
         f"linear-gradient(135deg, rgba({sr},{sg},{sb},{alpha}), "
@@ -80,13 +119,250 @@ def brand_overlay_gradient(secondary_hex: str, primary_hex: str, alpha: float) -
     )
 
 
-def photo_background(avg_hex: str | None, url: str, secondary_hex: str, primary_hex: str) -> str:
-    """Full `background-image` value: brand-tinted adaptive overlay over the photo.
+# Text scrim: the layer that actually buys legibility, concentrated where the
+# copy sits and faded out well before the far side, so the rest of the frame
+# keeps the photograph almost untouched. Expressed as a multiple of the cast
+# alpha, so a bright photo gets a stronger scrim on the same curve rather than a
+# second hand-tuned ramp.
+#
+# The ratio is chosen so that cast and scrim COMPOUND to the pre-split single
+# sheet (0.30→0.62 on the same luminance ramp) behind the copy: the headline
+# lands on the same backdrop it always did — which is what keeps
+# schema_builder._SCRIM_COMPOSITE_BG, and every ink derived from it, honest —
+# while everything outside the scrim is roughly half as covered as before.
+_TEXT_SCRIM_RATIO = 1.25
+# Where the scrim starts easing off and where it reaches zero.
+_TEXT_SCRIM_MID_STOP = "44%"
+_TEXT_SCRIM_END_STOP = "78%"
 
-    Falls back to a fixed mid overlay when the average colour is unknown.
+# Where the hero's copy block sits, which is the only thing the scrim geometry
+# needs to know. `center` is the historical treatment; the directional variants
+# let the open side of the frame keep full saturation.
+HeroAnchor = Literal["center", "left", "bottom-left"]
+
+
+def text_scrim_gradient(
+    secondary_hex: str, alpha: float, *, anchor: HeroAnchor = "center"
+) -> str:
+    """A legibility scrim weighted toward the copy (CSS gradient, no image).
+
+    Peak alpha is identical across anchors — only the geometry moves — so the
+    compounding invariant above holds whichever way the hero is composed.
+
+    `center` keeps the original radial. It is the weakest of the three as art
+    direction: a centre-weighted scrim dims the middle of the frame, which is
+    where a photograph's subject almost always is, and leaves the corners
+    bright. The directional variants run the darkness off the edge the copy is
+    anchored to, so the subject stays vivid on the open side — the standard
+    editorial treatment, and the reason a magazine cover doesn't look hazy.
     """
-    alpha = overlay_alpha(avg_hex) if avg_hex else 0.55
-    return f"{brand_overlay_gradient(secondary_hex, primary_hex, alpha)}, url('{url}')"
+    r, g, b = _hex_to_rgb(secondary_hex)
+    a = round(alpha * _TEXT_SCRIM_RATIO, 2)
+    mid = round(a * 0.55, 2)
+    if anchor == "left":
+        return (
+            f"linear-gradient(to right, rgba({r},{g},{b},{a}), "
+            f"rgba({r},{g},{b},{mid}) {_TEXT_SCRIM_MID_STOP}, "
+            f"rgba({r},{g},{b},0) {_TEXT_SCRIM_END_STOP})"
+        )
+    if anchor == "bottom-left":
+        # Two axes: the copy sits in the corner, so darkness has to fall off
+        # both upward and rightward or the headline's top line loses its
+        # backdrop. Split the alpha between them so they compound to `a` in the
+        # corner rather than doubling it. Rounded UP, not to nearest: two
+        # rounded-down halves compound to less than `a`, which would quietly put
+        # the corner below the legibility sheet every ink is derived from.
+        half = math.ceil((1 - (1 - a) ** 0.5) * 100) / 100
+        half_mid = round(half * 0.55, 2)
+        return (
+            f"linear-gradient(to top, rgba({r},{g},{b},{half}), "
+            f"rgba({r},{g},{b},{half_mid}) 46%, rgba({r},{g},{b},0) 82%), "
+            f"linear-gradient(to right, rgba({r},{g},{b},{half}), "
+            f"rgba({r},{g},{b},{half_mid}) 46%, rgba({r},{g},{b},0) 82%)"
+        )
+    return (
+        f"radial-gradient(115% 88% at 50% 50%, rgba({r},{g},{b},{a}), "
+        f"rgba({r},{g},{b},{mid}) {_TEXT_SCRIM_MID_STOP}, "
+        f"rgba({r},{g},{b},0) {_TEXT_SCRIM_END_STOP})"
+    )
+
+
+# Vignette strength, as a fraction of the cast alpha. Small on purpose: this is
+# depth, not legibility. Anything heavier stops reading as a lens and starts
+# reading as a black border.
+_VIGNETTE_RATIO = 0.5
+
+
+def vignette_gradient(secondary_hex: str, alpha: float) -> str:
+    """Corner falloff — transparent through the middle, ink at the extremes.
+
+    The inverse of the centre scrim, and the correct use of a radial here: it
+    darkens only what the frame edges hold (usually nothing) and leaves the
+    subject alone, which is what makes a flat composite read as a photograph
+    with depth rather than a picture behind a sheet of colour.
+    """
+    r, g, b = _hex_to_rgb(secondary_hex)
+    a = round(alpha * _VIGNETTE_RATIO, 2)
+    return (
+        f"radial-gradient(125% 105% at 50% 42%, rgba({r},{g},{b},0) 45%, "
+        f"rgba({r},{g},{b},{a}) 100%)"
+    )
+
+
+# (alpha, stop%) of the bottom dissolve, as the literal strings the CSS carries.
+# Shared by the writer and the matcher below so the two can never drift: if the
+# ramp is retuned, `is_edge_fade_layer` keeps recognising it.
+_EDGE_FADE_STOPS: tuple[tuple[str, int], ...] = (("0", 72), ("0.55", 90), ("1", 100))
+
+
+def edge_fade_gradient(page_bg_hex: str) -> str:
+    """A short dissolve from the photo into the page background at the bottom.
+
+    Without it a full-bleed hero ends on a ruled horizontal line where the
+    photograph stops and the next section's flat colour starts — the single
+    most common tell that a page was assembled from bands rather than designed.
+
+    The caller passes the THEME page background, because at build time the
+    section below this one does not exist yet. Once the page is assembled,
+    schema_builder.retune_photo_edge_fades re-points (or drops) the layer using
+    the surface that actually follows — see `is_edge_fade_layer`.
+    """
+    r, g, b = _hex_to_rgb(page_bg_hex)
+    stops = ", ".join(f"rgba({r},{g},{b},{a}) {pos}%" for a, pos in _EDGE_FADE_STOPS)
+    return f"linear-gradient(to bottom, {stops})"
+
+
+_EDGE_FADE_RE = re.compile(
+    r"^linear-gradient\(\s*to bottom\s*,\s*"
+    + r"\s*,\s*".join(
+        rf"rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*{re.escape(alpha)}\s*\)\s*{pos}%"
+        for alpha, pos in _EDGE_FADE_STOPS
+    )
+    + r"\s*\)$"
+)
+
+
+def is_edge_fade_layer(layer: str) -> bool:
+    """True if one background layer is an `edge_fade_gradient` output, whatever
+    colour it fades to.
+
+    The composite's other layers are all radial, or `to bottom` ramps that stop
+    short of full opacity, so this shape is unambiguous — nothing else in
+    `photo_background` fades a solid colour all the way in at 100%.
+    """
+    return bool(_EDGE_FADE_RE.match(layer.strip()))
+
+
+# Grain sits over everything. Faint enough to be felt rather than seen: its job
+# is to break up the smooth gradient ramps (which band visibly on wide, dark
+# heroes) and give the composite a surface.
+_GRAIN_OPACITY = 0.055
+_GRAIN_TILE_PX = 140
+
+
+def _focal_position(focal_y: float | None, anchor: HeroAnchor) -> str:
+    """`background-position` for the photo layer.
+
+    Two independent nudges. Vertically, sit on the measured subject band
+    (services/image_sampling) instead of hard-centering, so a 100dvh crop of a
+    landscape photo doesn't slice through faces. Horizontally, bias AWAY from
+    the copy, so the subject lands in the open half of the frame rather than
+    behind the headline.
+    """
+    y = "center" if focal_y is None else f"{round(focal_y * 100)}%"
+    x = "68%" if anchor in ("left", "bottom-left") else "center"
+    return f"{x} {y}"
+
+
+def photo_background(
+    avg_hex: str | None,
+    url: str,
+    secondary_hex: str,
+    primary_hex: str,
+    *,
+    anchor: HeroAnchor = "center",
+    focal_y: float | None = None,
+    page_bg_hex: str | None = None,
+    wash_alpha_scale: float = 1.0,
+) -> dict[str, str]:
+    """The full background style set for a photo hero, as CSS properties.
+
+    Six layers, top to bottom: grain, an edge fade into the page, the copy
+    scrim, a vignette, the brand cast, and the photograph. Splitting scrim from
+    cast is what lets the overlay stay light without costing contrast — behind
+    the headline they compound to roughly the old single sheet, while the rest
+    of the frame carries only the faint cast and reads as a photograph. The
+    vignette and grain add depth on top of that; the fade ties the section to
+    the one below it.
+
+    Returns a dict rather than a string because the layers need DIFFERENT
+    sizing: the grain is a repeating 140px tile while everything else covers the
+    frame. A single `background-size: cover` (which is what the catalog sets)
+    would stretch one grain cell across the whole hero. All four properties must
+    be applied together, and they override the template's values rather than
+    merging with them.
+
+    Falls back to a mid cast when the average colour is unknown, and to no edge
+    fade when the page background is unknown.
+
+    ``wash_alpha_scale`` (default 1.0, a no-op) scales ONLY the vignette and
+    brand cast — the two layers whose job is binding the photo to the brand,
+    not legibility — so a caller can let a photo read as more vivid/true-to-
+    colour without touching the text scrim, which is what actually buys
+    contrast for the copy.
+    """
+    # Lazy: style_tokens pulls in the theme chain, and this module is otherwise
+    # a dependency-free leaf that the rest of the package imports freely.
+    from app.services.style_tokens import grain_data_uri
+
+    alpha = overlay_alpha(avg_hex) if avg_hex else 0.26
+    wash_alpha = round(alpha * wash_alpha_scale, 2)
+
+    layers = [grain_data_uri(_GRAIN_OPACITY)]
+    sizes = [f"{_GRAIN_TILE_PX}px {_GRAIN_TILE_PX}px"]
+    repeats = ["repeat"]
+    positions = ["0 0"]
+
+    def cover(layer: str) -> None:
+        layers.append(layer)
+        sizes.append("cover")
+        repeats.append("no-repeat")
+        positions.append("center")
+
+    if page_bg_hex:
+        cover(edge_fade_gradient(page_bg_hex))
+    # text_scrim_gradient may itself return two comma-joined layers (the
+    # bottom-left anchor), so expand it rather than assuming one.
+    for scrim_layer in _split_layers(text_scrim_gradient(secondary_hex, alpha, anchor=anchor)):
+        cover(scrim_layer)
+    cover(vignette_gradient(secondary_hex, wash_alpha))
+    cover(brand_overlay_gradient(secondary_hex, primary_hex, wash_alpha))
+
+    layers.append(f"url('{url}')")
+    sizes.append("cover")
+    repeats.append("no-repeat")
+    positions.append(_focal_position(focal_y, anchor))
+
+    return {
+        "backgroundImage": ", ".join(layers),
+        "backgroundSize": ", ".join(sizes),
+        "backgroundRepeat": ", ".join(repeats),
+        "backgroundPosition": ", ".join(positions),
+    }
+
+
+def _split_layers(css: str) -> list[str]:
+    """Split a CSS layer list on top-level commas (ignoring those inside
+    `rgba(...)` / gradient parens)."""
+    out: list[str] = []
+    depth = start = 0
+    for i, ch in enumerate(css):
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth == 0:
+            out.append(css[start:i].strip())
+            start = i + 1
+    out.append(css[start:].strip())
+    return [layer for layer in out if layer]
 
 
 def washed_photo_background(

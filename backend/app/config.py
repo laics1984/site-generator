@@ -72,8 +72,15 @@ class Settings(BaseSettings):
     reasoning_model: str | None = None  # None → auto-discovered from that endpoint
     reasoning_api_key: str | None = None  # sent as "Authorization: Bearer …" when set
     reasoning_timeout_seconds: float | None = None  # None → llm_timeout_seconds
-    # Output budget. Higher than llm_max_tokens because thinking tokens count
-    # against the completion budget on OpenAI-compatible servers.
+    # Output budget for the reasoning calls. Same value as llm_max_tokens, but
+    # kept separate because thinking tokens count against the completion budget
+    # on OpenAI-compatible servers — so this role burns budget before emitting
+    # any JSON, and may need to diverge.
+    #
+    # NB raising this past LLM_CTX does nothing: the server's context window
+    # covers prompt + completion together, so it is the real ceiling. A genuine
+    # truncation needs a bigger LLM_CTX (ai-server/.env, mirrored by
+    # LLM_CONTEXT_TOKENS) or smaller batches — not a bigger max_tokens.
     reasoning_max_tokens: int = 16384
     # Thinking ON by default for this role: the reasoning calls are small
     # prompts with small JSON outputs, where a thinking pass buys better
@@ -123,10 +130,18 @@ class Settings(BaseSettings):
     llm_cache_enabled: bool = True
     llm_cache_ttl_seconds: int = 1800
     llm_cache_max_entries: int = 64
-    # TTL for the scrape-preview cache (routers/scrape.py). 5 minutes routinely
-    # expired while the user was still in the page picker, forcing a full
-    # re-scrape on regeneration; 30 minutes covers a whole editing session.
+    # TTL for the crawl-job result cache (routers/scrape.py + crawl_jobs). 5
+    # minutes routinely expired while the user was still in the page picker,
+    # forcing a full re-scrape on regeneration; 30 minutes covers a whole
+    # editing session.
     scrape_cache_ttl_seconds: int = 1800
+
+    # Seed the crawl frontier from the site's own sitemap, behind every link the
+    # entry page shows. The BFS alone only reaches pages some crawled page links
+    # to, so a page linked only from beyond the budget (or from nowhere) was
+    # invisible even when the sitemap listed it. Costs 1-3s of plain HTTP per
+    # crawl; off → links-only discovery, exactly as before.
+    crawl_seed_from_sitemap: bool = True
 
     # Brand detection + the legacy free-form planner: faithful rewrite — keep it
     # close to the source, not creative.
@@ -171,15 +186,29 @@ class Settings(BaseSettings):
     # slimmed system prompt these caps (not tokens) are usually the binding
     # constraint on batch size, so on a larger model raising them here is the
     # lever that genuinely cuts the number of content calls.
-    max_sections_per_batch: int = 6
+    #
+    # At 6 this was a *per-page* cap in disguise: an inferred rhythm is 3-6
+    # sections, so nearly every batch sealed at one page while the token budgets
+    # sat two-thirds empty ("Batch sealed — pages=1 sections=6 est_input=4162"
+    # against input_budget=15084). 10 is the ceiling the costing note below
+    # names — past it the model thins each block — and it lets 6+3 / 5+5 pages
+    # share a call. It also raises _needs_section_chunking's threshold, so a
+    # 7-section page stops being split into extra calls that each re-send the
+    # whole page excerpt and the ~3k-token system prompt.
+    max_sections_per_batch: int = 10
     max_pages_per_batch: int = 4
-    # How many scaffold batches may be in flight at once. 1 (default) preserves
-    # strictly serial generation — correct for a single local GPU model, where
-    # parallel requests just queue and slow each other down. Raise it only when
-    # the LLM backend genuinely serves parallel requests (vLLM/llama-server on a
-    # big card, a hosted API); batches are grouped by page depth either way so
-    # child pages still see their parent's hero context.
-    scaffold_batch_concurrency: int = 1
+    # How many scaffold batches may be in flight at once. 1 is strictly serial.
+    # Raise it only when the LLM backend genuinely serves parallel requests —
+    # for Ollama that means OLLAMA_NUM_PARALLEL >= this value, or the requests
+    # simply queue on one slot. Mind the VRAM: Ollama sizes its KV cache as
+    # num_ctx * num_parallel, so a second slot on a model that already spills to
+    # CPU evicts more weights and runs SLOWER. Lower OLLAMA_CONTEXT_LENGTH (and
+    # llm_context_tokens with it) to keep the product flat.
+    #
+    # Work items are pulled by a sliding-window worker pool, not lockstep depth
+    # groups (see planner._run_worklist), so one slow page no longer idles the
+    # other slots.
+    scaffold_batch_concurrency: int = 2
 
     # Char cap on the raw source text sent to the LEGACY free-form planner
     # (planner._build_user_prompt, the /from-source path). The old hardcoded
@@ -223,6 +252,18 @@ class Settings(BaseSettings):
     # with a solid header (readability wins). Off → legacy per-mood interior
     # hero rotation (compact splits/centered).
     hero_fullbleed_all_pages: bool = True
+
+    # Anchor a full-bleed hero's copy to one side (left / bottom-left) instead of
+    # centring it, with the scrim and focal crop following that edge — the
+    # editorial composition from services/hero_director.hero_composition.
+    #
+    # Off by default: centred copy is what reads as deliberate on this
+    # generator's output. An anchored column only works when the photograph has
+    # a genuinely open side to give it, and across arbitrary scraped and stock
+    # imagery that is the exception, not the rule — so the anchor more often
+    # lands copy over a busy half of the frame than beside a clean one.
+    # On → homepage leads left and interiors rotate left / bottom-left / centre.
+    hero_anchored_copy: bool = False
 
     # Minimum long-edge (px) a SCRAPED image must have to fill a full-bleed hero
     # background. Heroes stretch their photo edge-to-edge (background-size:
@@ -291,6 +332,40 @@ class Settings(BaseSettings):
     vision_max_images: int = 12  # annotation cap per generation
     vision_image_max_bytes: int = 4_000_000  # skip downloads larger than this
     vision_fetch_timeout_seconds: float = 8.0
+
+    # Pixel sampling for full-bleed photo slots (services/image_sampling.py):
+    # reads a scraped photo's dominant colour and focal point so the hero scrim
+    # adapts and the crop frames the subject. Off ⇒ scraped photos keep the
+    # metadata-only path (blind mid-cast, centred crop), exactly as before the
+    # pass existed. The backend test suite turns this off — it is the only thing
+    # in ImageResolver that touches the network.
+    # OCR text detection (services/text_detection.py): flags scraped images that
+    # carry their own headline/tagline/price list so they never fill a slot we
+    # draw OUR headline over. Requires rapidocr-onnxruntime; the pass no-ops
+    # cleanly when the wheel is absent, so turning this off is also how you run
+    # without that dependency installed.
+    #
+    # Runs on SOURCE images only (never stock) and rides the existing prefetch
+    # window alongside the content LLM, so it is ~free in wall time: measured
+    # ~630ms/image, i.e. ~7s for the default cap, against an LLM pass that owns
+    # the GPU meanwhile. Do NOT raise the cap far — it is CPU-bound and
+    # single-batch (thread pools measured SLOWER: onnxruntime already uses every
+    # core per inference).
+    ocr_text_detection_enabled: bool = True
+    ocr_max_images: int = 12  # screening cap per generation
+    ocr_input_px: int = 512  # matches the vision thumbnail, so downloads are shared
+    ocr_fetch_concurrency: int = 3
+    # How many text-bearing candidates a single background slot may reject
+    # before giving up and falling through to stock. Each rejection costs a
+    # download plus an inference, so this bounds the worst case (a source whose
+    # every image is a promo graphic) instead of screening the whole pool.
+    ocr_verify_budget: int = 4
+
+    photo_sampling_enabled: bool = True
+    # Deliberately tighter than the vision fetch: a hero's dressing is an
+    # enhancement, never worth stalling a build for. On timeout the photo just
+    # keeps the old defaults.
+    photo_sample_timeout_seconds: float = 4.0
 
     cms_api_base_url: str = "http://localhost:8000"
 
@@ -373,6 +448,32 @@ class Settings(BaseSettings):
     playwright_goto_timeout_ms: int = 15000
     cms_timeout_seconds: float = 30.0
     cms_media_upload_timeout_seconds: float = 120.0
+
+    # --- Facebook -----------------------------------------------------------
+    # Reading a Facebook business Page (About, contacts, hours, posts, profile
+    # mark) as a generation source. Routed to automatically when the pasted link
+    # is a Facebook URL — see services/source_detect.py.
+    facebook_graph_base_url: str = "https://graph.facebook.com"
+    facebook_graph_version: str = "v21.0"
+    # Optional default Page access token. The Graph path is the sanctioned one
+    # and yields structured hours/emails/posts; without it the reader falls back
+    # to rendering the public Page, which is best-effort. A per-request token
+    # (never persisted) overrides this.
+    facebook_access_token: str | None = None
+    facebook_timeout_seconds: float = 15.0
+    facebook_max_posts: int = 25
+    facebook_max_reviews: int = 12
+    # Floor below which a Page has too little to build from. Higher than the
+    # document path's 80 because Facebook ALWAYS yields a name plus a category
+    # (~40 chars), which would sail past 80 and produce a padded site.
+    facebook_min_raw_text_chars: int = 200
+    # Public-page render when no token is available. Fragile by nature (Facebook
+    # changes its markup without notice); set false to require a token.
+    facebook_render_fallback_enabled: bool = True
+    # Ask the vision judge whether the profile picture is a real mark or a
+    # photograph, and demote it to palette-only when it's a photo. No-op unless
+    # llm_vision_model is configured.
+    facebook_logo_vision_check: bool = True
 
 
 settings = Settings()

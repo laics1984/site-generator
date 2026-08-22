@@ -8,12 +8,25 @@
  * renders inside an iframe, so the scroll container is the frame's own
  * document. `scrollRoot` carries it in.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import type { PublicBlockNode, PublicMenu, PublicSchemaTree, PublicStyleTokens } from './lib/public'
 import { SchemaRenderer } from './SchemaRenderer'
+import { GalleryLightbox } from './GalleryLightbox'
 import { getNodeStyles } from './lib/blockRuntime'
+import {
+  type Band,
+  inkClassForBand,
+  pickBandAtY,
+  probeY,
+  readBandRects,
+} from './lib/adaptiveInk'
 import { isFirstSectionHeaderOverlaySafe } from './lib/headerOverlay'
+import {
+  collectLightboxGroupIds,
+  startLightboxRuntime,
+  type LightboxSlide,
+} from './lib/lightbox'
 import {
   findFirstNonBreadcrumbNode,
   getNodeChildren,
@@ -131,6 +144,40 @@ export function PreviewSiteShell({
   const cssVars = useMemo(() => buildCssVars(site.builderStyles), [site.builderStyles])
   const runtimeMenus = useMemo(() => site.menus ?? [], [site.menus])
 
+  // Click-to-enlarge on gallery grids (`lightbox` markers from the section
+  // catalog). PORT of useSchemaLightbox — the composable's job is split between
+  // this state and the effect below, because the runtime needs the iframe's
+  // document, which only exists once the root has mounted into it.
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const [frameDoc, setFrameDoc] = useState<Document | null>(null)
+  const [lightboxOpen, setLightboxOpen] = useState(false)
+  const [lightboxSlides, setLightboxSlides] = useState<LightboxSlide[]>([])
+  const [lightboxIndex, setLightboxIndex] = useState(0)
+  const closeLightbox = useCallback(() => setLightboxOpen(false), [])
+
+  const attachRoot = useCallback((node: HTMLDivElement | null) => {
+    rootRef.current = node
+    setFrameDoc(node?.ownerDocument ?? null)
+  }, [])
+
+  useEffect(() => {
+    if (!frameDoc) return
+    // Re-arming means the tree was replaced; a viewer left open would be
+    // floating over content that no longer produced it.
+    setLightboxOpen(false)
+    const groupIds = collectLightboxGroupIds([site.headerSchema, bodySchema, site.footerSchema])
+    if (groupIds.length === 0) return
+    return startLightboxRuntime({
+      doc: frameDoc,
+      groupIds,
+      onOpen: (event) => {
+        setLightboxSlides(event.slides)
+        setLightboxIndex(event.index)
+        setLightboxOpen(true)
+      },
+    })
+  }, [frameDoc, site.headerSchema, site.footerSchema, bodySchema])
+
   const pageWidthMode = (() => {
     const page = asRecord(site.builderStyles)?.page
     const record = asRecord(page)
@@ -219,6 +266,14 @@ export function PreviewSiteShell({
   const [isScrolled, setIsScrolled] = useState(false)
   const [isShrunk, setIsShrunk] = useState(false)
 
+  // Adaptive ink (`behavior.adaptiveInk` — the self-chrome floating pill).
+  // That bar never solidifies, so it has no chrome of its own to stay legible
+  // against: its ink, glass tint and hairline follow whichever marked section
+  // is under it. See lib/adaptiveInk.
+  const headerAdaptiveInk = readHeaderBehavior()?.adaptiveInk === true
+  const headerRef = useRef<HTMLElement | null>(null)
+  const [inkBand, setInkBand] = useState<Band | null>(null)
+
   useEffect(() => {
     const root = scrollRoot
     if (!root) return
@@ -229,12 +284,49 @@ export function PreviewSiteShell({
       const scrollY = root.scrollTop
       setIsScrolled(scrollY > headerRevealOffset)
       setIsShrunk(headerShrinkOnScroll && scrollY > headerShrinkOffset)
+
+      const header = headerRef.current
+      setInkBand(
+        headerAdaptiveInk && header
+          ? pickBandAtY(
+              // The frame's own document, not the host page's: everything the
+              // preview renders lives inside the iframe.
+              readBandRects(root.ownerDocument),
+              probeY(header.getBoundingClientRect())
+            )
+          : null
+      )
     }
 
-    scroller.addEventListener('scroll', handleHeaderScroll, { passive: true })
+    // rAF-gated: the adaptive-ink branch measures the marked sections, which is
+    // layout work, and scroll fires far more often than a frame.
+    let frame = 0
+    const onScroll = () => {
+      if (frame) return
+      frame = scroller.requestAnimationFrame(() => {
+        frame = 0
+        handleHeaderScroll()
+      })
+    }
+
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    scroller.addEventListener('resize', onScroll, { passive: true })
     handleHeaderScroll()
-    return () => scroller.removeEventListener('scroll', handleHeaderScroll)
-  }, [scrollRoot, headerRevealOffset, headerShrinkOnScroll, headerShrinkOffset])
+    return () => {
+      scroller.removeEventListener('scroll', onScroll)
+      scroller.removeEventListener('resize', onScroll)
+      if (frame) scroller.cancelAnimationFrame(frame)
+    }
+  }, [
+    scrollRoot,
+    headerRevealOffset,
+    headerShrinkOnScroll,
+    headerShrinkOffset,
+    headerAdaptiveInk,
+    // A new page swaps the whole body for one with different bands without
+    // scrolling, so nothing else would re-measure.
+    bodySchema,
+  ])
 
   const runtimeHeaderShrink = useMemo(
     () => ({ active: isShrunk, ratio: headerShrinkRatio }),
@@ -289,6 +381,7 @@ export function PreviewSiteShell({
       ? 'wt-page-header--overlay-sticky'
       : '',
     !runtimeHeaderOverlay ? 'wt-page-header--solid' : '',
+    (headerAdaptiveInk && inkClassForBand(inkBand)) || '',
   ]
     .filter(Boolean)
     .join(' ')
@@ -300,12 +393,14 @@ export function PreviewSiteShell({
           <HeaderOverlayContext.Provider value={runtimeHeaderOverlay}>
             <HeaderShrinkContext.Provider value={runtimeHeaderShrink}>
               <div
+                ref={attachRoot}
                 className="wt-site"
                 style={cssVars as CSSProperties}
                 data-page-width-mode={pageWidthMode}
               >
                 {site.headerSchema && (
                   <header
+                    ref={headerRef}
                     className={headerClassName}
                     style={runtimeHeaderOverlay ? undefined : headerWrapperStyle}
                   >
@@ -320,6 +415,14 @@ export function PreviewSiteShell({
                     <SchemaRenderer schema={site.footerSchema} scope="footer" />
                   </footer>
                 )}
+                <GalleryLightbox
+                  open={lightboxOpen}
+                  slides={lightboxSlides}
+                  index={lightboxIndex}
+                  doc={frameDoc}
+                  onIndexChange={setLightboxIndex}
+                  onClose={closeLightbox}
+                />
               </div>
             </HeaderShrinkContext.Provider>
           </HeaderOverlayContext.Provider>

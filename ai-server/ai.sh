@@ -75,7 +75,17 @@ compose() {
 }
 
 # Ready == serves the OpenAI model list, which is exactly what the backend needs.
-llm_up() { curl -sf -m 3 "$PROBE_URL/v1/models" >/dev/null 2>&1; }
+#
+# Tries the configured URL first, then the localhost-rewritten form. Both are
+# needed: `host.docker.internal` resolves from a WSL shell when Docker Desktop is
+# installed but NOT from a plain macOS/Linux host shell, so neither address works
+# everywhere. Probing as-is first means a legitimately reachable URL is never
+# discarded by the rewrite.
+llm_up() {
+  curl -sf -m 3 "$BASE_URL/v1/models" >/dev/null 2>&1 && return 0
+  [ "$PROBE_URL" != "$BASE_URL" ] || return 1
+  curl -sf -m 3 "$PROBE_URL/v1/models" >/dev/null 2>&1
+}
 
 # The backend discovers its model from /v1/models. Ollama advertises EVERY
 # pulled model there, not just the one LLM_MODEL names, so with more than one
@@ -100,7 +110,7 @@ warn_if_ambiguous() {
 # A model's own Modelfile can pin num_ctx, which OVERRIDES OLLAMA_CONTEXT_LENGTH
 # (i.e. LLM_CTX here) — silently. That matters because the backend sizes its
 # batches from LLM_CONTEXT_TOKENS, which is supposed to mirror LLM_CTX. Measured
-# on a model shipping num_ctx=262144 against LLM_CTX=16384: the KV cache ballooned
+# on a model shipping num_ctx=16384 against LLM_CTX=16384: the KV cache ballooned
 # the resident footprint from 28GB to 32GB and pushed the split from 42%/58% to
 # 55%/45% CPU/GPU, costing ~6x in latency.
 warn_if_ctx_mismatch() {

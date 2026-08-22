@@ -21,12 +21,14 @@ import logging
 import re
 
 from app.models.content_blocks import (
+    DETERMINISTIC_SECTION_KINDS,
     AboutBlock,
     AwardsBlock,
     ClientsBlock,
     ContactBlock,
     ContentBlock,
     CtaBlock,
+    GalleryBlock,
     HeroBlock,
     PagePlan,
     StatsBlock,
@@ -36,6 +38,7 @@ from app.models.content_blocks import (
     TimelineBlock,
 )
 from app.models.industry import PageScaffold
+from app.services.profile_text import clean_team_bio, looks_like_team_role
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +178,11 @@ def looks_like_team_member_name(value: str | None) -> bool:
         return False
     if "@" in text or "http" in low:
         return False
+    # A name is one person; "&" and "/" join things. Mirrors the same rule in
+    # `scraper._looks_like_person_name` — unlike `_NON_PERSON_NAME_TOKENS` below
+    # it carries no industry vocabulary, so it holds on any site.
+    if "&" in text or "/" in text:
+        return False
     tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
     if len(tokens) < 2 or len(tokens) > 7:
         return False
@@ -190,14 +198,49 @@ def looks_like_team_member_name(value: str | None) -> bool:
     return True
 
 
-def _sanitize_team_block(block: TeamBlock) -> TeamBlock | None:
+def _sanitize_team_block(
+    block: TeamBlock, source_text: str | None = None
+) -> TeamBlock | None:
+    """Drop non-people, then strip anything a member's card can't vouch for.
+
+    A bad name means the "member" isn't a person at all, so the entry goes. A
+    bad role or bio is just untrustworthy text attached to a real person — it is
+    BLANKED, and the card renders with the slots it can stand behind (both are
+    optional in the team-grid template).
+
+    `profile_text.roster_is_people` is deliberately NOT applied to the members
+    here. It asks whether a scraped card rack agrees that it is people, and its
+    evidence is role/bio/contact — exactly the fields the blanking above strips
+    from a REAL person whose card the model mis-transcribed. A grounded name
+    with a CTA in the role slot is a person with one bad field, not a product.
+    """
     members = [
         member for member in block.members
         if looks_like_team_member_name(member.name)
     ]
     if not members:
         return None
-    return block.model_copy(update={"members": members})
+
+    haystack = _normalize_for_grounding(source_text) if source_text else None
+    names = tuple(m.name for m in members)
+    cleaned = []
+    for member in members:
+        others = tuple(n for n in names if n != member.name)
+        bio = clean_team_bio(member.bio, other_names=others, haystack=haystack)
+        cleaned.append(
+            member.model_copy(
+                update={
+                    "role": member.role if looks_like_team_role(member.role) else "",
+                    "bio": bio,
+                    # Kept in sync by TeamMember.sync_description_aliases on
+                    # construction; model_copy bypasses validators, so the
+                    # deprecated alias must be updated here too or it resurrects
+                    # the dirty text via _team_content's `bio or description`.
+                    "description": bio,
+                }
+            )
+        )
+    return block.model_copy(update={"members": cleaned})
 
 
 # Generic placeholder names the LLM reaches for when it has no real reviewer
@@ -244,6 +287,27 @@ def _longest_match_len(needle: str, haystack: str) -> int:
     return match.size
 
 
+def is_grounded_in_normalized(text: str | None, haystack: str) -> bool:
+    """``is_grounded_in_source`` against an ALREADY-normalized haystack.
+
+    Callers checking several items against one page should normalize the source
+    ONCE and use this: normalizing lowercases, splits and rejoins the entire
+    page text, and doing that per item (twice per item, for testimonials) is
+    pure repeated work.
+    """
+    if not text or not haystack:
+        return False
+    needle = _normalize_for_grounding(text)
+    if not needle:
+        return False
+    if needle in haystack:
+        return True
+    if len(needle) < 15:
+        return False  # too short for fuzzy matching to be meaningful
+    threshold = max(15, int(len(needle) * 0.6))
+    return _longest_match_len(needle, haystack) >= threshold
+
+
 def is_grounded_in_source(text: str | None, source_text: str | None) -> bool:
     """True when `text` plausibly came FROM `source_text`.
 
@@ -257,16 +321,7 @@ def is_grounded_in_source(text: str | None, source_text: str | None) -> bool:
     """
     if not text or not source_text:
         return False
-    needle = _normalize_for_grounding(text)
-    haystack = _normalize_for_grounding(source_text)
-    if not needle:
-        return False
-    if needle in haystack:
-        return True
-    if len(needle) < 15:
-        return False  # too short for fuzzy matching to be meaningful
-    threshold = max(15, int(len(needle) * 0.6))
-    return _longest_match_len(needle, haystack) >= threshold
+    return is_grounded_in_normalized(text, _normalize_for_grounding(source_text))
 
 
 def _sanitize_testimonials_block(
@@ -274,14 +329,15 @@ def _sanitize_testimonials_block(
 ) -> TestimonialsBlock | None:
     items: list[TestimonialItem] = []
     dropped_fabricated = 0
+    haystack = _normalize_for_grounding(source_text) if source_text else ""
     for item in block.items:
         if looks_like_placeholder_author(item.author):
             continue
         # No source text to check against (e.g. legacy callers / unit tests) →
         # fall back to the placeholder-name check only.
-        if source_text and not (
-            is_grounded_in_source(item.quote, source_text)
-            or is_grounded_in_source(item.author, source_text)
+        if haystack and not (
+            is_grounded_in_normalized(item.quote, haystack)
+            or is_grounded_in_normalized(item.author, haystack)
         ):
             dropped_fabricated += 1
             continue
@@ -336,10 +392,11 @@ def _sanitize_timeline_block(
     """
     items = block.items
     if source_text:
+        haystack = _normalize_for_grounding(source_text)
         items = [
             item for item in items
-            if is_grounded_in_source(item.year, source_text)
-            or is_grounded_in_source(item.title, source_text)
+            if is_grounded_in_normalized(item.year, haystack)
+            or is_grounded_in_normalized(item.title, haystack)
         ]
         if not items:
             return None
@@ -351,10 +408,11 @@ def _sanitize_awards_block(
 ) -> AwardsBlock | None:
     if not source_text:
         return block
+    haystack = _normalize_for_grounding(source_text)
     items = [
         item for item in block.items
-        if is_grounded_in_source(item.title, source_text)
-        or is_grounded_in_source(item.issuer, source_text)
+        if is_grounded_in_normalized(item.title, haystack)
+        or is_grounded_in_normalized(item.issuer, haystack)
     ]
     if not items:
         return None
@@ -366,7 +424,8 @@ def _sanitize_clients_block(
 ) -> ClientsBlock | None:
     if not source_text:
         return block
-    items = [item for item in block.items if is_grounded_in_source(item.name, source_text)]
+    haystack = _normalize_for_grounding(source_text)
+    items = [item for item in block.items if is_grounded_in_normalized(item.name, haystack)]
     if not items:
         return None
     return block.model_copy(update={"items": items})
@@ -377,10 +436,50 @@ def _sanitize_stats_block(
 ) -> StatsBlock | None:
     if not source_text:
         return block
+    haystack = _normalize_for_grounding(source_text)
     items = [
         item for item in block.items
-        if is_grounded_in_source(item.value, source_text)
-        or is_grounded_in_source(item.label, source_text)
+        if is_grounded_in_normalized(item.value, haystack)
+        or is_grounded_in_normalized(item.label, haystack)
+    ]
+    if not items:
+        return None
+    return block.model_copy(update={"items": items})
+
+
+def _sanitize_gallery_block(block: GalleryBlock) -> GalleryBlock | None:
+    """Keep only tiles the SOURCE supplied a photo for.
+
+    A gallery asserts "these are our photos". A tile resolved from an LLM
+    ``image_query`` asserts it falsely: ``media.ImageResolver.resolve`` falls
+    through the scraped pool to Pexels, and a documentary photo grid is the one
+    place a stranger's stock photo reads as a lie about the client rather than
+    as decoration. A childcare site's "gallery" of stock children is worse than
+    no gallery, so an unbacked tile goes and an empty block goes with it — the
+    same rule ``prompts.py`` states for the model ("a shorter honest page beats
+    a padded one"), enforced where the model can't be trusted to apply it.
+
+    Unlike its siblings this takes no ``source_text``: the test is structural,
+    not lexical. Backing is an ``image_ref`` (bound to a URL later, by
+    ``image_refs.bind_image_refs``) or an ``image_url`` already set by a
+    deterministic injection. An ``image_query`` alone is not backing.
+
+    Used by the scaffold-free ``/from-source`` flow, which has no injection or
+    ref-binding pass to defer to. The scaffolded flow runs the same rule later
+    instead, in ``routers.generate._drop_unbound_gallery_items`` — see the note
+    in ``align_page_to_scaffold``.
+
+    One exception, and it is the caller's to make: under stock-images-only
+    generation the site has no source photography anywhere, so "these are our
+    photos" is not a claim any section on the page is making. A query-backed
+    tile there is the requested outcome, not an unbacked one, and deleting the
+    block would silently drop a page the user asked for. Both enforcement points
+    take the same flag — ``sanitize_blocks_against_source(allow_stock_gallery=)``
+    here, the ``if not payload.stock_images_only`` guard on the scaffolded side.
+    """
+    items = [
+        item for item in block.items
+        if item.image_ref is not None or (item.image_url or "").strip()
     ]
     if not items:
         return None
@@ -438,7 +537,10 @@ def _backfill_hero_image_query(
 
 
 def sanitize_blocks_against_source(
-    blocks: list[ContentBlock], source_text: str | None
+    blocks: list[ContentBlock],
+    source_text: str | None,
+    *,
+    allow_stock_gallery: bool = False,
 ) -> list[ContentBlock]:
     """Scaffold-free equivalent of the per-kind sanitization inside
     ``align_page_to_scaffold``, for the legacy free-form ``/from-source`` flow.
@@ -448,16 +550,20 @@ def sanitize_blocks_against_source(
     which meant testimonials/awards/clients/stats fabrication checks never
     ran there at all. This applies the same kind-specific sanitizers directly
     to a page's block list, dropping any block that ends up with zero
-    surviving items. Team and structural kinds are left untouched here (team
-    keeps its existing placeholder-name check elsewhere; hero/about/cta/contact
+    surviving items. Structural kinds are left untouched (hero/about/cta/contact
     carry no invented facts).
+
+    ``allow_stock_gallery`` suspends the gallery rule only — see
+    ``_sanitize_gallery_block``. Set by the stock-images-only mode, where the
+    site carries no source photography at all and a query-backed tile is the
+    intended outcome rather than an unbacked one.
     """
     sanitized: list[ContentBlock] = []
     for block in blocks:
         kind = _block_kind(block)
         result: ContentBlock | None = block
         if kind == "team" and isinstance(block, TeamBlock):
-            result = _sanitize_team_block(block)
+            result = _sanitize_team_block(block, source_text)
         elif kind == "testimonials" and isinstance(block, TestimonialsBlock):
             result = _sanitize_testimonials_block(block, source_text)
         elif kind == "timeline" and isinstance(block, TimelineBlock):
@@ -468,6 +574,12 @@ def sanitize_blocks_against_source(
             result = _sanitize_clients_block(block, source_text)
         elif kind == "stats" and isinstance(block, StatsBlock):
             result = _sanitize_stats_block(block, source_text)
+        elif (
+            kind == "gallery"
+            and isinstance(block, GalleryBlock)
+            and not allow_stock_gallery
+        ):
+            result = _sanitize_gallery_block(block)
         if result is not None:
             sanitized.append(result)
     return sanitized
@@ -501,8 +613,18 @@ def align_page_to_scaffold(
     """
     required_kinds = list(scaffold.sections)
     by_kind: dict[str, list[ContentBlock]] = {}
+    discarded: list[str] = []
     for blk in page.blocks:
-        by_kind.setdefault(_block_kind(blk), []).append(blk)
+        kind = _block_kind(blk)
+        if kind in DETERMINISTIC_SECTION_KINDS:
+            # The model was never shown these (planner strips them from
+            # `required_sections`), but it can still volunteer one: the block is
+            # in the ContentBlock union, so a guessed shape validates. Dropping
+            # it here is the half that does not depend on the model behaving —
+            # the source-injected version is attached later by routers.generate.
+            discarded.append(kind)
+            continue
+        by_kind.setdefault(kind, []).append(blk)
 
     aligned_blocks: list[ContentBlock] = []
     structural_filled: list[str] = []
@@ -514,7 +636,7 @@ def align_page_to_scaffold(
         if bucket:
             block = bucket.pop(0)
             if kind == "team" and isinstance(block, TeamBlock):
-                sanitized = _sanitize_team_block(block)
+                sanitized = _sanitize_team_block(block, source_text)
                 if sanitized is None:
                     omitted.append(kind)
                     continue
@@ -549,6 +671,15 @@ def align_page_to_scaffold(
                     omitted.append(kind)
                     continue
                 block = sanitized
+            # `gallery` is deliberately NOT sanitized here. Its grounding runs
+            # after ``routers.generate._inject_image_walls`` has had its turn to
+            # fill the slot from the source, and after image refs are bound —
+            # only then is "this tile has no photo behind it" actually true.
+            # Dropping the block at this point would also cost the page its
+            # scaffolded POSITION: an awards page reads
+            # hero/gallery×3/about/gallery, and re-inserting the racks later
+            # would stack all four above the narrative they follow in the
+            # source. See routers.generate._drop_unbound_gallery_items.
             elif kind == "hero" and isinstance(block, HeroBlock):
                 block = _backfill_hero_image_query(
                     block, page_type=scaffold.page_type, brand_name=brand_name
@@ -576,6 +707,13 @@ def align_page_to_scaffold(
             "Page '%s' filled structural section(s) %s with placeholder defaults.",
             page.title,
             ", ".join(structural_filled),
+        )
+    if discarded:
+        logger.info(
+            "Page '%s' discarded LLM-authored deterministic section(s) %s — these "
+            "carry facts with external referents and are injected from the source.",
+            page.title,
+            ", ".join(sorted(set(discarded))),
         )
 
     dropped_kinds = {k: len(v) for k, v in by_kind.items() if v}

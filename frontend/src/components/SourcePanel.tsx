@@ -1,13 +1,16 @@
 import { useRef, useState } from 'react'
 
+import { facebookLinkWarning, isFacebookUrl } from '@/lib/sourceDetect'
 import type { GeneratorMode, SourceContent } from '@/lib/types'
 import { Button, Checkbox, Field, Input, Textarea } from '@/ui'
 
 interface SourcePanelProps {
   mode: GeneratorMode
   busy: boolean
-  /** Called when the user wants to scrape a URL (URL mode). */
-  onScrape: (url: string, opts: { crawl: boolean }) => void
+  /** Called when the user wants to read a link. The backend picks the reader
+   * from the URL itself, so this one handler covers websites and Facebook
+   * Pages alike — `accessToken` is only ever populated for the latter. */
+  onScrape: (url: string, opts: { crawl: boolean; accessToken?: string }) => void
   /** Called when a PDF/DOCX has been chosen and should be uploaded for preview. */
   onUpload: (file: File) => void
   /** Called when the user wants to generate from pasted content (Doc mode fallback). */
@@ -29,58 +32,123 @@ export function SourcePanel({
 }: SourcePanelProps) {
   const [url, setUrl] = useState('')
   const [crawl, setCrawl] = useState(true)
+  const [fbToken, setFbToken] = useState('')
   const [pastedText, setPastedText] = useState('')
   const [pastedTitle, setPastedTitle] = useState('')
 
   if (mode === 'url') {
+    // Detected on every keystroke so the form reacts to what the user already
+    // typed rather than asking them to classify their own link first.
+    const isFb = isFacebookUrl(url)
+    const warning = facebookLinkWarning(url)
+    const submit = () => {
+      if (!url.trim() || scrapeBusy) return
+      onScrape(url.trim(), {
+        crawl: isFb ? false : crawl,
+        accessToken: isFb ? fbToken : undefined,
+      })
+    }
+
     return (
       <div className="space-y-4">
         {/* Not a <Field>: the submit button sits next to the input, and wrapping
          * a button in the field's <label> makes clicking it also focus the input. */}
         <div>
           <label htmlFor="source-url" className="text-xs font-semibold text-ink-soft">
-            Website URL
+            {isFb ? 'Facebook Page link' : 'Website URL'}
           </label>
           <div className="mt-1.5 flex gap-2">
-            <Input
-              id="source-url"
-              type="url"
-              placeholder="https://example.com"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && url.trim() && !scrapeBusy) {
-                  e.preventDefault()
-                  onScrape(url.trim(), { crawl })
-                }
-              }}
-              className="flex-1"
-            />
+            <div className="relative flex-1">
+              <Input
+                id="source-url"
+                type="text"
+                placeholder="https://example.com or facebook.com/yourpage"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    submit()
+                  }
+                }}
+                className={isFb ? 'w-full pr-28' : 'w-full'}
+              />
+              {isFb && (
+                <span
+                  className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-md bg-[#1877F2]/10 px-2 py-0.5 text-[11px] font-semibold text-[#1877F2]"
+                  aria-live="polite"
+                >
+                  Facebook Page
+                </span>
+              )}
+            </div>
             <Button
               variant="primary"
               size="lg"
-              onClick={() => onScrape(url.trim(), { crawl })}
+              onClick={submit}
               disabled={!url.trim()}
               busy={!!scrapeBusy}
             >
-              {scrapeBusy ? (crawl ? 'Crawling…' : 'Fetching…') : 'Fetch site'}
+              {scrapeBusy
+                ? isFb
+                  ? 'Reading…'
+                  : crawl
+                    ? 'Crawling…'
+                    : 'Fetching…'
+                : isFb
+                  ? 'Read Page'
+                  : 'Fetch site'}
             </Button>
           </div>
           <p className="mt-1.5 text-xs text-ink-muted">
-            We render the page in headless Chromium, pull text, headings and image
-            candidates, and try to detect the logo and brand palette. You'll see a preview
-            before any AI work runs.
+            {isFb
+              ? "We'll read this Page's About section, contact details, opening hours, photos and posts, and use its profile picture as the brand mark. Nothing that isn't on the Page ends up on the site."
+              : 'We render the page in headless Chromium, pull text, headings and image candidates, and try to detect the logo and brand palette.'}{' '}
+            You'll see a preview before any AI work runs.
           </p>
+          {warning && (
+            <p className="mt-1.5 text-xs font-medium text-amber-700">{warning}</p>
+          )}
         </div>
 
+        {/* Same slot, different control. Swapping contents rather than
+         * unmounting keeps the layout from jumping mid-keystroke, which reads
+         * as the form breaking. */}
         <div className="rounded-xl border border-line bg-surface p-3">
-          <Checkbox
-            checked={crawl}
-            onChange={(e) => setCrawl(e.target.checked)}
-            disabled={scrapeBusy}
-            label="Discover sub-pages from the site"
-            description="We follow same-domain links up to 3 clicks away from the homepage (max ~20 extra pages) — including pages hidden from the main menu but linked from sub-pages like /services or /about. Adds roughly 15–30 seconds. Uncheck for a fast single-page generation."
-          />
+          {isFb ? (
+            <details>
+              <summary className="cursor-pointer text-xs font-semibold text-ink-soft">
+                Reading more from this Page (optional)
+              </summary>
+              <p className="mt-2 text-xs text-ink-muted">
+                Without a token we read what the Page shows publicly. A Page access
+                token — from a Page you administer — also gives us emails, structured
+                opening hours, posts and recommendations. Try it without one first;
+                we'll tell you exactly what was missing.
+              </p>
+              <Input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="Page access token"
+                value={fbToken}
+                onChange={(e) => setFbToken(e.target.value)}
+                disabled={scrapeBusy}
+                className="mt-2 w-full font-mono text-xs"
+              />
+              <p className="mt-1.5 text-[11px] text-ink-faint">
+                Used for this read only — never saved, never logged.
+              </p>
+            </details>
+          ) : (
+            <Checkbox
+              checked={crawl}
+              onChange={(e) => setCrawl(e.target.checked)}
+              disabled={scrapeBusy}
+              label="Discover sub-pages from the site"
+              description="We follow same-domain links up to 3 clicks away from the homepage (max ~20 extra pages) — including pages hidden from the main menu but linked from sub-pages like /services or /about. Adds roughly 15–30 seconds. Uncheck for a fast single-page generation."
+            />
+          )}
         </div>
       </div>
     )

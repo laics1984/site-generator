@@ -1,12 +1,18 @@
 import asyncio
 import logging
 import re
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.models.brand import BrandIdentity, BrandMood, HeroBackgroundHeight
+from app.models.brand import (
+    BrandIdentity,
+    BrandMood,
+    HeroBackgroundHeight,
+    default_hero_height,
+)
 from app.models.builder_schema import (
     BodySchema,
     GeneratedPage,
@@ -15,24 +21,43 @@ from app.models.builder_schema import (
 )
 from app.models.design_manifest import FooterArchetype, HeaderArchetype
 from app.models.content_blocks import (
+    DownloadItem,
+    DownloadLink,
+    DownloadsBlock,
+    GalleryBlock,
+    GalleryItem,
     ImageMetadata,
     IndustryCategoryLiteral,
     industry_locked_mood,
     LinkBarBlock,
     LinkBarLink,
     LinkCluster,
+    MapBlock,
+    MapItem,
     PagePlan,
+    ProfileBlock,
     ProfileCandidate,
+    ProfileContact,
+    SectionCandidate,
     ServiceItem,
     ServicesBlock,
     SitePlan,
+    SourceCard,
     SourceContent,
     TeamBlock,
     TeamMember,
+    VideoBlock,
+    VideoEmbed,
+    VideoItem,
 )
+from app.models.facebook import FacebookPage
 from app.models.industry import PageScaffold
+from app.services.facebook_authority import enforce_facebook_facts
+from app.services.facebook_source import to_contact_dict
 from app.services.industry_templates import get_template
 from app.services.design_brain import generate_design_language
+from app.services.translations import build_translated_pages
+from app.services.text_detection import prefetch_text_flags
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
 from app.services.planner import (
@@ -43,11 +68,28 @@ from app.services.planner import (
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
 from app.services.page_inference import DIRECTORY_MIN_PROFILES
+from app.services.source_injection import (
+    accumulate_by_slug,
+    companion_insert_index,
+    group_by_heading,
+    hero_insert_index,
+    insert_after_hero,
+    repeated_across_slugs,
+    source_pages,
+)
+from app.services.source_path import normalize_source_slug
 from app.services.image_refs import bind_image_refs
+from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
     looks_like_team_member_name,
     sanitize_blocks_against_source,
+)
+from app.services.profile_text import (
+    FOUNDERS_BAND_MAX,
+    clean_team_bio,
+    looks_like_founder_role,
+    looks_like_team_role,
 )
 from app.services.image_vision import (
     VisionAnnotation,
@@ -76,12 +118,37 @@ class GenerateRequest(BaseModel):
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
     color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
-    hero_height: HeroBackgroundHeight = "full"  # full-screen vs bounded photo hero, site-wide
+    # Full-screen vs bounded photo hero, site-wide. None = "Auto": defer to the
+    # design-brain pick, then the mood/industry default (see resolve_hero_height).
+    hero_height: HeroBackgroundHeight | None = None
+    # Every content image comes from Pexels, matched to each section's
+    # image_query; no photo the source supplied reaches the tree. The brand
+    # logo, document-card thumbnails and migrated blog/event images are
+    # unaffected — each depicts one specific artifact, not a decorated section.
+    # Applied by services/source_images.without_source_imagery.
+    stock_images_only: bool = False
     contact: dict[str, str] | None = None
     # Explicit chrome pins — win over the design director's fit/seed/diversity
     # pick (see design_director.compose_design_manifest). None → let it decide.
     header_archetype: HeaderArchetype | None = None
     footer_archetype: FooterArchetype | None = None
+
+
+def resolve_hero_height(
+    explicit: HeroBackgroundHeight | None,
+    chosen: HeroBackgroundHeight | None,
+    *,
+    mood: BrandMood | None,
+    industry: str | None,
+) -> HeroBackgroundHeight:
+    """Site-wide hero height, most-specific source first.
+
+    explicit (the user's own pick, "Auto" sends None) → the design-brain pick →
+    the deterministic industry/mood default. Mirrors how palette_choice and
+    font_choice defer to build_theme's pickers: a disabled or failed pass leaves
+    a fully-determined result, never an empty one.
+    """
+    return explicit or chosen or default_hero_height(mood, industry)
 
 
 def _market_cues_for(source: SourceContent) -> tuple[str, str]:
@@ -139,7 +206,7 @@ def _page_images_by_slug(source: SourceContent) -> dict[str, list[ImageMetadata]
     def add_page(page: SourceContent) -> None:
         if not page.image_metadata:
             return
-        slug = (page.url_path or "").strip("/").lower()
+        slug = normalize_source_slug(page.url_path)
         out.setdefault(slug, []).extend(page.image_metadata)
 
     add_page(source)
@@ -178,20 +245,103 @@ def _normalized_person_name(value: str | None) -> str:
     return " ".join(_person_name_tokens(value))
 
 
+def _page_name_labels(page: SourceContent) -> set[str]:
+    """Normalized names the page carries as its OWN title or headings.
+
+    Two readings of one piece of evidence. In ``_profile_pool_for`` these names
+    are blocked — a card echoing the page's own title is chrome, not a person.
+    In ``_profile_page_member`` a match is the opposite signal: the page is
+    titled after the person it carries, so it IS that person's profile page.
+    """
+    return {
+        norm
+        for norm in (
+            _normalized_person_name(page.title),
+            *(_normalized_person_name(h) for h in page.headings),
+        )
+        if norm
+    }
+
+
+def _url_slug_letters(url_path: str | None) -> str:
+    """The page's own path segment, punctuation stripped ("/profile/kevin-leong"
+    → "kevinleong"). Hand-written people slugs split names inconsistently, so
+    the separators carry no meaning worth keeping."""
+    if not url_path:
+        return ""
+    segment = url_path.rstrip("/").rsplit("/", 1)[-1]
+    return "".join(re.findall(r"[a-z0-9]+", segment.lower()))
+
+
+# Shortest slug that may stand for a whole given name ("ivy"), and shortest
+# multi-token run allowed to match inside a longer slug ("ivytan"). Below these
+# a coincidence is likelier than a naming.
+_MIN_NAME_SLUG = 3
+_MIN_NAME_RUN = 6
+
+
+def _url_path_names_person(url_path: str | None, name: str) -> bool:
+    """True when the page's own URL segment is built out of this person's name.
+
+    A detail page routinely carries a TEMPLATE title and a section heading
+    rather than the person's name — all nine MMTA committee pages are
+    ``<title>About MMTA</title>`` under an ``<h1>The Committee</h1>``, with the
+    name sitting in a plain ``div.name`` inside the card. The URL is then the
+    only part of the page that says who it is about.
+
+    Three shapes, because these slugs are written by hand: the whole name run
+    together (/profile/kueksersheentse), one given or family name
+    (/profile/ashley), or a run of the name surviving a misspelling elsewhere
+    in the slug (/profile/lohmingyuan for "Low Ming Yuan").
+    """
+    slug = _url_slug_letters(url_path)
+    tokens = _person_name_tokens(name)
+    if not slug or not tokens:
+        return False
+    if slug == "".join(tokens):
+        return True
+    if len(slug) >= _MIN_NAME_SLUG and slug in tokens:
+        return True
+    return any(
+        len(run) >= _MIN_NAME_RUN and run in slug
+        for start in range(len(tokens) - 1)
+        for run in ("".join(tokens[start:end]) for end in range(start + 2, len(tokens) + 1))
+    )
+
+
+def _page_is_about(page: SourceContent, name: str) -> bool:
+    """True when the page itself says it is this person's page.
+
+    Three independent readings, any one of which is enough — a site only has to
+    say it once, and each of the three is the only one that works somewhere:
+
+    1. Its ``<title>`` or a heading names them. The plainest case, and the one
+       template-driven CMS pages break: MMTA's nine committee pages all carry
+       ``<title>About MMTA</title>`` under an ``<h1>The Committee</h1>``.
+    2. Its URL names them (/profile/ashley) — usually the last thing left when
+       the markup is templated, and hand-written, so spelled loosely.
+    3. Its body LEADS with them: the first designated name element below the
+       chrome, by DOM hierarchy, is theirs (``scraper._leading_person_name``).
+       This is what reads MMTA's ``<div class="name">Ashley Jinivon</div>``, and
+       it is the reading that still works when a page is at /member/4417.
+    """
+    normalized = _normalized_person_name(name)
+    if not normalized:
+        return False
+    return (
+        normalized in _page_name_labels(page)
+        or _url_path_names_person(page.url_path, name)
+        or normalized == _normalized_person_name(page.subject_name)
+    )
+
+
 def _profile_pool_for(source: SourceContent) -> list[ProfileCandidate]:
     """Flatten entry + crawled profile candidates without duplicates."""
     profiles: list[ProfileCandidate] = []
     seen: set[tuple[str, str | None]] = set()
 
     def add_page(page: SourceContent) -> None:
-        blocked_names = {
-            norm
-            for norm in (
-                _normalized_person_name(page.title),
-                *(_normalized_person_name(h) for h in page.headings),
-            )
-            if norm
-        }
+        blocked_names = _page_name_labels(page)
         for profile in page.profile_candidates:
             key = (_normalized_person_name(profile.name), profile.photo_url)
             if not key[0] or key[0] in blocked_names or key in seen:
@@ -223,6 +373,28 @@ def _profile_match_score(member_name: str, profile: ProfileCandidate) -> float:
     if same_tail and overlap >= 0.8:
         return 0.86
     return 0.0
+
+
+async def _screen_source_images_for_text(
+    metadata: list[ImageMetadata],
+    prefetched: dict[str, str] | None = None,
+) -> None:
+    """Flag SOURCE images that carry their own headline, so none of them fills a
+    slot we draw ours over (services/text_detection.py).
+
+    Stock photography is never screened — Pexels ships photographs, not posters,
+    and these are `ImageMetadata`, which stock results never become.
+
+    Like the vision pass, an enhancement: any failure leaves the flags unset,
+    which is exactly how the pipeline behaved before OCR existed.
+    """
+    try:
+        with stage("ocr_text_screen"):
+            await prefetch_text_flags(metadata, prefetched=prefetched)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — OCR must not 500 a generation
+        logger.exception("OCR text screening failed; continuing without it")
 
 
 async def _annotate_source_images(
@@ -276,6 +448,13 @@ def _enrich_plan_profile_photos(
     Mutates the plan in place. Only concrete URLs from scraper-produced
     ProfileCandidate objects are applied, so older payloads and LLM-only plans
     keep using the existing photo_query fallback.
+
+    "Already used" is scoped to ONE PAGE. The rule it enforces is that a grid
+    must not show the same face twice — a page-level concern. Applied across the
+    plan it did the opposite of what it was for: the committee roster claimed
+    all nine portraits, and each member's own page, rendered later, found none
+    left and fell back to a monogram. A person's portrait belongs on their card
+    AND on their page.
     """
     if profiles is None:
         profiles = _profile_pool_for(source)
@@ -286,12 +465,16 @@ def _enrich_plan_profile_photos(
     if not profiles:
         return
 
-    used_urls: set[str] = set()
     for page in plan.pages:
+        used_urls: set[str] = set()
         for block in page.blocks:
-            if block.kind != "team":
+            if block.kind not in ("team", "profile"):
                 continue
-            for member in block.members:
+            # A profile block is one person; a team block is a list of them.
+            # Both want the same thing: this person's real portrait, matched by
+            # name, never a stock face.
+            people = [block] if block.kind == "profile" else block.members
+            for member in people:
                 scored = sorted(
                     (
                         (_profile_match_score(member.name, profile), profile)
@@ -310,6 +493,85 @@ def _enrich_plan_profile_photos(
                     used_urls.add(matched.photo_url)
 
 
+def _detail_page_href(profile_url: str | None) -> str | None:
+    """A roster card's link as a site-relative href, or None.
+
+    The source's path IS the generated slug (page_inference keys scaffolds off
+    ``url_path``), so the source URL's path is the link — no re-derivation, no
+    second spelling of a name the site already spelled.
+    """
+    if not profile_url:
+        return None
+    slug = urlparse(profile_url).path.strip("/").lower()
+    return f"/{slug}" if slug else None
+
+
+def _prune_dead_profile_links(plan: SitePlan) -> None:
+    """Drop member links to pages this site doesn't have.
+
+    The roster is the source's, the page list is the user's: they pick which
+    pages to generate, and a card pointing at a member page they left out would
+    be a 404 in the middle of the team grid. The card still renders — it just
+    stops being a link.
+    """
+    known = {f"/{page.slug}" for page in plan.pages}
+    for page in plan.pages:
+        for block in page.blocks:
+            if getattr(block, "kind", None) != "team":
+                continue
+            for member in block.members:
+                if member.profile_href and member.profile_href not in known:
+                    member.profile_href = None
+
+
+def _roster_members(accepted: list[ProfileCandidate]) -> list[TeamMember]:
+    """Build TeamMembers from vetted profiles, keeping only what each card
+    can vouch for.
+
+    These roster paths run from ``_ensure_scraped_team_blocks`` AFTER
+    ``align_page_to_scaffold`` and replace the block wholesale, so they never
+    pass through ``_sanitize_team_block`` — they must apply the same role/bio
+    cleaners themselves or the tightening is only half applied.
+
+    Grounding is deliberately skipped here: a ``ProfileCandidate`` bio is page
+    text by construction, so checking it against the page is guaranteed-true
+    work — and this is the up-to-24-member path.
+
+    The group-level personhood gate deliberately does NOT run here. It is a
+    question about a card RACK — does this group agree that it is people? — and
+    the only layer that sees the rack is `scraper._extract_profile_candidates`,
+    which now answers it once for every candidate that reaches this function.
+    Re-asking it card-by-card here is double jeopardy on evidence that is no
+    longer present: a lone card on a person's own page, and a roster whose
+    markup declared itself `class="team-member"`, both arrive vetted and both
+    look bare from here.
+    """
+    names = tuple(p.name for p in accepted)
+    # Only a ROSTER indexes people's pages. The lone card on a person's own page
+    # links BACK to the roster (MMTA's members carry a "Back" arrow), and reading
+    # that as this person's page would point their card at the committee grid.
+    # Same threshold, same reasoning as page_inference.ROSTER_MIN_PROFILES.
+    links_to_details = len(accepted) >= 2
+    members: list[TeamMember] = []
+    for profile in accepted:
+        others = tuple(n for n in names if n != profile.name)
+        role = profile.role or ""
+        members.append(
+            TeamMember(
+                name=profile.name,
+                role=role if looks_like_team_role(role) else "",
+                bio=clean_team_bio(profile.bio, other_names=others),
+                photo_url=profile.photo_url,
+                photo_alt=profile.photo_alt or profile.name,
+                photo_query=None,
+                profile_href=(
+                    _detail_page_href(profile.profile_url) if links_to_details else None
+                ),
+            )
+        )
+    return members
+
+
 def _scraped_team_members(
     source: SourceContent,
     annotations: dict[str, VisionAnnotation] | None = None,
@@ -318,7 +580,7 @@ def _scraped_team_members(
     """Deterministic team members built from scraped profile candidates."""
     if profiles is None:
         profiles = _profile_pool_for(source)
-    members: list[TeamMember] = []
+    accepted: list[ProfileCandidate] = []
     for profile in profiles:
         if not looks_like_team_member_name(profile.name):
             continue
@@ -326,17 +588,8 @@ def _scraped_team_members(
             continue
         if not _profile_photo_vision_ok(profile.photo_url, annotations):
             continue
-        members.append(
-            TeamMember(
-                name=profile.name,
-                role=profile.role or "",
-                bio=profile.bio,
-                photo_url=profile.photo_url,
-                photo_alt=profile.photo_alt or profile.name,
-                photo_query=None,
-            )
-        )
-    return members[:24]
+        accepted.append(profile)
+    return _roster_members(accepted[:24])
 
 
 def _directory_roster_members(
@@ -352,7 +605,7 @@ def _directory_roster_members(
     """
     if page_source is None:
         return []
-    members: list[TeamMember] = []
+    accepted: list[ProfileCandidate] = []
     seen: set[str] = set()
     for profile in page_source.profile_candidates or []:
         norm = _normalized_person_name(profile.name)
@@ -365,17 +618,92 @@ def _directory_roster_members(
         if not _profile_photo_vision_ok(profile.photo_url, annotations):
             continue
         seen.add(norm)
-        members.append(
-            TeamMember(
-                name=profile.name,
-                role=profile.role or "",
-                bio=profile.bio,
-                photo_url=profile.photo_url,
-                photo_alt=profile.photo_alt or profile.name,
-                photo_query=None,
-            )
-        )
-    return members[:24]
+        accepted.append(profile)
+    return _roster_members(accepted[:24])
+
+
+def _rostered_names(source: SourceContent) -> set[str]:
+    """Normalized names carried by some page's profile ROSTER (2+ cards).
+
+    The roster is what links to the detail pages, so a name appearing in one is
+    structural evidence that a page titled with that name is that person's
+    page. Scraping a lone card off a detail page is positional evidence only
+    (scraper._page_subject_profile), and on its own would read a photo under an
+    "Annual General Meeting" heading as a person. A 2+ page is always real card
+    extraction — the positional fallback never emits more than one.
+    """
+    names: set[str] = set()
+    for page in (source, *source.discovered_pages):
+        candidates = page.profile_candidates or []
+        if len(candidates) < 2:
+            continue
+        names |= {_normalized_person_name(p.name) for p in candidates}
+    names.discard("")
+    return names
+
+
+def _profile_page_block(
+    page_source: SourceContent | None,
+    annotations: dict[str, VisionAnnotation] | None = None,
+    rostered_names: set[str] | None = None,
+) -> ProfileBlock | None:
+    """The one person a detail page is about, as that page's profile block.
+
+    Three things have to agree: the page carries exactly one vetted profile
+    card, the page names that person as its own subject, and a roster elsewhere
+    on the site lists them. The first two are read page-scoped — the site-wide
+    ``_profile_pool_for`` deliberately drops a person whose name titles their
+    own page — and the third is what makes the pairing structural.
+
+    The bio stays. It used to be dropped because a separate about section
+    narrated it; a profile page's recipe has no about section now
+    (``page_inference._PROFILE_PAGE_SECTIONS``), so this block carries the
+    story next to the face — which is where a profile page tells it.
+    """
+    if page_source is None:
+        return None
+    roster = _directory_roster_members(page_source, annotations)
+    if len(roster) != 1:
+        return None
+    member = roster[0]
+    normalized = _normalized_person_name(member.name)
+    if not _page_is_about(page_source, member.name):
+        return None
+    if normalized not in (rostered_names or set()):
+        return None
+
+    candidate = next(
+        (
+            p
+            for p in page_source.profile_candidates or []
+            if _normalized_person_name(p.name) == normalized
+        ),
+        None,
+    )
+    return ProfileBlock(
+        name=member.name,
+        role=member.role or "",
+        bio=member.bio or member.description,
+        photo_url=member.photo_url,
+        photo_alt=member.photo_alt or member.name,
+        contacts=_profile_contacts(candidate),
+    )
+
+
+def _profile_contacts(candidate: ProfileCandidate | None) -> list[ProfileContact]:
+    """The person's own contact affordances, as their card states them."""
+    if candidate is None:
+        return []
+    contacts: list[ProfileContact] = []
+    if candidate.email:
+        contacts.append(ProfileContact(label=candidate.email, href=f"mailto:{candidate.email}"))
+    if candidate.phone:
+        contacts.append(ProfileContact(label=candidate.phone, href=f"tel:{candidate.phone}"))
+    for label, href in candidate.social_links:
+        if len(contacts) >= 4:  # ProfileBlock.contacts cap
+            break
+        contacts.append(ProfileContact(label=label, href=href))
+    return contacts
 
 
 def _ensure_scraped_team_blocks(
@@ -400,8 +728,12 @@ def _ensure_scraped_team_blocks(
     page's own full roster: the LLM keeps only a subset of a long listing, and
     ``_enrich_plan_profile_photos`` can only attach photos to the members the
     LLM kept, so a partially photo-bearing block must not short-circuit here.
+
+    A page carrying a single profile card instead gets that one person's card
+    (see ``_profile_page_member``) — the detail pages a directory links to.
     """
     scraped_members = _scraped_team_members(source, annotations, profiles)
+    rostered_names = _rostered_names(source)
     requested_team_slugs = team_section_slugs or set()
     directory_pages = directory_slugs or set()
     sources_by_slug = source_map or {}
@@ -449,7 +781,69 @@ def _ensure_scraped_team_blocks(
                 continue
             # Page-scoped roster came up empty — fall through to the generic path.
 
-        if not scraped_members:
+        # A detail page carrying exactly one profile card is that person's own
+        # page, and it gets a profile block — portrait, name, role, story,
+        # contact — right under the hero. The LLM is asked for one too (the
+        # scaffold requests `profile`); this is the fallback for when it omits
+        # the block or renames the person out of recognition.
+        # Home is exempt: its rhythm is designed, not inferred from one card.
+        profile_indexes = [
+            idx for idx, block in enumerate(page.blocks)
+            if getattr(block, "kind", None) == "profile"
+        ]
+        if not team_indexes and page.page_type != "home":
+            profile = _profile_page_block(
+                sources_by_slug.get(page.slug), annotations, rostered_names
+            )
+            if profile is not None and not profile_indexes:
+                page.blocks.insert(
+                    1 if page.blocks and getattr(page.blocks[0], "kind", None) == "hero" else 0,
+                    profile,
+                )
+                logger.info("Profile page: attached %s to /%s", profile.name, page.slug)
+                continue
+            if profile is not None and (profile.photo_url or profile.contacts):
+                # The LLM wrote the block itself; the page's own scraped card is
+                # the authority on this person's portrait AND contacts, so each
+                # backfills independently — `_enrich_plan_profile_photos` (run
+                # just before this) already fills photo_url on most matched
+                # profiles, and gating the contacts refill on a missing photo
+                # left it almost never firing.
+                for idx in profile_indexes:
+                    existing = page.blocks[idx]
+                    updates: dict[str, object] = {}
+                    if not existing.photo_url and profile.photo_url:
+                        updates["photo_url"] = profile.photo_url
+                        updates["photo_alt"] = profile.photo_alt
+                    if not existing.contacts and profile.contacts:
+                        updates["contacts"] = profile.contacts
+                    if not updates:
+                        continue
+                    page.blocks[idx] = existing.model_copy(update=updates)
+                    logger.info(
+                        "Profile page: refilled %s's %s on /%s",
+                        profile.name,
+                        "/".join(updates),
+                        page.slug,
+                    )
+            if profile_indexes:
+                continue
+
+        # A page's own cards outrank the site-wide pool. `_profile_pool_for`
+        # flattens every crawled page, so without this an /about team grid is
+        # filled from whatever roster the crawl found anywhere — which is how
+        # LumiBright's /about-us ended up showing cards scraped off /SECA-TRAC
+        # and /spill-control-absorbents. It is the same leak
+        # `_directory_roster_members` was written to stop between two listings,
+        # and nothing about it is directories-only; that function is already
+        # "this page's roster", so it is reused rather than re-spelled. The pool
+        # still covers the ordinary case: a page that asks for a team section
+        # and carries no cards of its own.
+        page_members = (
+            _directory_roster_members(sources_by_slug.get(page.slug), annotations)
+            or scraped_members
+        )
+        if not page_members:
             continue
 
         if team_indexes:
@@ -460,7 +854,7 @@ def _ensure_scraped_team_blocks(
                 page.blocks[idx] = TeamBlock(
                     heading=block.heading,
                     subheading=block.subheading,
-                    members=scraped_members,
+                    members=page_members,
                 )
             continue
 
@@ -476,9 +870,85 @@ def _ensure_scraped_team_blocks(
             TeamBlock(
                 heading="Meet the team",
                 subheading=None,
-                members=scraped_members,
+                members=page_members,
             ),
         )
+
+    _apply_homepage_team_policy(plan)
+
+
+# People a homepage team band shows before it stops reading as an introduction
+# and starts reading as a directory. Above this the roster belongs on its own
+# page and home links to it.
+_HOME_ROSTER_MAX = 4
+
+
+def _apply_homepage_team_policy(plan: SitePlan) -> None:
+    """Decide what people, if any, the homepage shows.
+
+    Runs after every other pass has filled the rosters, because both halves of
+    the decision need the REAL members — the count that survived portrait and
+    vision gating in ``_scraped_team_members``, and their job titles. Neither is
+    known at scaffold time, which is why ``page_inference._apply_team_placement``
+    deliberately leaves the homepage alone.
+
+    Three outcomes, in order:
+
+    * The roster lives on another page AND home's founders are a small group →
+      home shows just the founders. Two faces under "Meet the founders" is a
+      trust signal; the same 20-person grid on two pages is not.
+    * The roster lives on another page and there is no small founder group →
+      home drops the block entirely rather than restating the Team page.
+    * Nothing else carries the roster (the directory-entry weave, where home IS
+      the roster) → leave it alone. Narrowing here would silently delete people
+      the site has nowhere else to show.
+    """
+    home = next((p for p in plan.pages if p.page_type == "home"), None)
+    if home is None:
+        return
+    team_indexes = [
+        idx for idx, block in enumerate(home.blocks) if getattr(block, "kind", None) == "team"
+    ]
+    if not team_indexes:
+        return
+
+    roster_lives_elsewhere = any(
+        page is not home and any(getattr(b, "kind", None) == "team" for b in page.blocks)
+        for page in plan.pages
+    )
+    if not roster_lives_elsewhere:
+        return
+
+    first = team_indexes[0]
+    block = home.blocks[first]
+    founders = [m for m in block.members if looks_like_founder_role(m.role)]
+
+    if founders and len(founders) <= FOUNDERS_BAND_MAX:
+        # Keep an LLM-written heading; only the generic default is retitled,
+        # since "Meet the team" over two founders undersells what it shows.
+        heading = "Meet the founders" if block.heading == "Meet the team" else block.heading
+        home.blocks[first] = TeamBlock(
+            heading=heading,
+            subheading=block.subheading,
+            members=founders,
+        )
+        logger.info(
+            "Homepage team: narrowed to %d founder(s) — full roster lives on another page",
+            len(founders),
+        )
+        drop_from = 1
+    elif len(block.members) > _HOME_ROSTER_MAX:
+        logger.info(
+            "Homepage team: dropped a %d-member roster already shown on another page",
+            len(block.members),
+        )
+        drop_from = 0
+    else:
+        drop_from = 1
+
+    # One team band on the homepage at most, whichever branch ran.
+    for idx in reversed(team_indexes[drop_from:]):
+        del home.blocks[idx]
 
 
 def _profile_name_patterns(names: list[str]) -> set[str]:
@@ -500,6 +970,12 @@ def _profile_name_patterns(names: list[str]) -> set[str]:
     return patterns
 
 
+# The scraper's floor for a card it extracted STRUCTURALLY (0.8 without a role,
+# 0.9 with one). Below it sits the page-subject fallback's 0.75 — a real person,
+# but paired with their photo positionally rather than by card boundaries.
+_CARD_CONFIDENCE = 0.8
+
+
 def _strip_profile_faq_items(plan: SitePlan, source: SourceContent) -> None:
     """Drop FAQ items manufactured from profile listings ("Who is Ivy Tan…?").
 
@@ -510,10 +986,17 @@ def _strip_profile_faq_items(plan: SitePlan, source: SourceContent) -> None:
     FAQs survive untouched. Names come from the RAW profile_candidates, not
     ``_profile_pool_for`` — the pool blocks names that appear as headings,
     which on a directory page is every card title.
+
+    Real cards only (0.8+). A page-subject candidate is a positional pairing of
+    an h1 with a photo (scraper._page_subject_profile), and deleting a genuine
+    question because a page is headed "Annual General Meeting" is a worse
+    failure than leaving one manufactured Q&A in place.
     """
-    names = [p.name for p in source.profile_candidates or []]
+    names = [p.name for p in source.profile_candidates or [] if p.confidence >= _CARD_CONFIDENCE]
     for page_src in source.discovered_pages:
-        names.extend(p.name for p in page_src.profile_candidates or [])
+        names.extend(
+            p.name for p in page_src.profile_candidates or [] if p.confidence >= _CARD_CONFIDENCE
+        )
     patterns = _profile_name_patterns(names)
     if not patterns:
         return
@@ -562,6 +1045,76 @@ def _drop_hollow_team_pages(plan: SitePlan) -> None:
     plan.pages = [page for page in plan.pages if page.slug in keep_slugs]
 
 
+def _drop_unbound_gallery_items(pages: list[PagePlan]) -> None:
+    """Drop every gallery tile the source didn't supply a photo for.
+
+    A gallery asserts "these are our photos". A tile left holding only an LLM
+    ``image_query`` asserts it falsely: ``media.ImageResolver.resolve`` falls
+    through the scraped pool to Pexels, and a photo grid is the one place a
+    stranger's stock image reads as a lie about the client rather than as
+    decoration. A childcare site's "gallery" of stock children is worse than no
+    gallery, so an unbacked tile goes and an empty block goes with it — the rule
+    ``prompts.py`` states for the model ("a shorter honest page beats a padded
+    one"), enforced where the model can't be trusted to apply it.
+
+    Runs LAST, and that placement is the point. Alignment can't judge this: it
+    precedes ``_inject_image_walls``, which is what fills a gallery slot from
+    the source, and ``bind_image_refs``, which is what turns an ``image_ref``
+    into a URL — a ref the binder rejects (out of range, already used, wrong
+    shape) is indistinguishable from a good one until then. Only here is "this
+    tile has nothing behind it" actually true. Same shape as
+    ``_drop_hollow_team_pages``.
+    """
+    for page in pages:
+        kept: list = []
+        for block in page.blocks:
+            if not isinstance(block, GalleryBlock):
+                kept.append(block)
+                continue
+            items = [item for item in block.items if (item.image_url or "").strip()]
+            if items:
+                kept.append(block.model_copy(update={"items": items}))
+        page.blocks = kept
+
+
+def _drop_person_photos(pages: list[PagePlan]) -> None:
+    """Strip the portraits from every team/profile block, keeping the people.
+
+    The stock-images-only counterpart to ``_drop_unbound_gallery_items``, and
+    placed for the same reason: it runs on the FINISHED plan, after
+    ``_enrich_plan_profile_photos`` and ``_ensure_scraped_team_blocks`` have
+    built the roster. Cutting the photo earlier — on the source — would delete
+    the roster itself, because both roster passes skip a candidate that has no
+    photo (``if not profile.photo_url: continue``); a photo-less candidate is
+    not a photo-less member, it is not a member at all.
+
+    Names, roles, bios and profile links all survive. With ``photo_url`` gone,
+    all four renderers take the branch they already have for a person the source
+    gave no portrait — ``schema_builder._build_team`` / ``_build_profile`` and
+    ``section_content._team_content`` / ``_profile_content`` — and draw the
+    person's initials on the brand gradient (``media.monogram_avatar_url``).
+    That is not a fallback we are settling for here, it is the rule: a Pexels
+    stranger's face captioned with a real employee's name is a misattribution,
+    and "stock images only" is no licence to commit one.
+
+    ``photo_query`` goes too. Nothing renders it (the two team renderers read
+    ``photo_url`` or draw the monogram); its only reader is
+    ``schema_builder._stock_prewarm_slots``, which would otherwise spend a
+    Pexels round trip warming portraits no slot can ever use.
+    """
+    for page in pages:
+        for block in page.blocks:
+            if isinstance(block, TeamBlock):
+                for member in block.members:
+                    member.photo_url = None
+                    member.photo_alt = None
+                    member.photo_query = None
+            elif isinstance(block, ProfileBlock):
+                block.photo_url = None
+                block.photo_alt = None
+                block.photo_query = None
+
+
 async def _safe_extract_collections(source: SourceContent):
     """Blog/event entry extraction (content migration) — advisory, never
     load-bearing: any failure just means the site ships without migrated
@@ -584,6 +1137,16 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     LLM picks pages and sections freely. Kept for backward compatibility;
     new flows should use /with-pages for deterministic output.
     """
+    # Locale detection reads image URLs as domain evidence
+    # (_market_cues_for → detect_market), and the cues it produces steer every
+    # Pexels query toward the right market. Under stock_images_only those cues
+    # matter MORE, not less — they are the only thing keeping the imagery
+    # on-market — so they are computed from the source as RECEIVED, before the
+    # photography is cut away.
+    market_cue, place_cue = _market_cues_for(payload.source)
+    if payload.stock_images_only:
+        payload.source = without_source_imagery(payload.source)
+
     try:
         plan = await plan_site(payload.source)
     except LlmError as exc:
@@ -599,7 +1162,9 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
                 page.model_copy(
                     update={
                         "blocks": sanitize_blocks_against_source(
-                            page.blocks, payload.source.raw_text
+                            page.blocks,
+                            payload.source.raw_text,
+                            allow_stock_gallery=payload.stock_images_only,
                         )
                     }
                 )
@@ -624,6 +1189,15 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         (brand.extracted_palette[0] if brand and brand.extracted_palette else None)
         or plan.primary_color_hint
     )
+    # Resolved BEFORE the design-language pass, not inline in build_theme: the
+    # curated palettes are scheme-specific, so the model has to be shown the dark
+    # menu on a dark build or it can only ever pick something that gets discarded.
+    color_scheme = resolve_color_scheme(
+        payload.color_scheme_override,
+        brand.color_scheme if brand else None,
+        brand.logo_is_light if brand else None,
+        industry=plan.industry_category,
+    )
     # Design-language pass: the reasoning model picks a curated palette + font
     # pairing before theme construction. Empty/invalid picks change nothing —
     # build_theme falls back to its deterministic selection.
@@ -632,6 +1206,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         mood=mood,
         industry=plan.industry_category,
         seed_hex=seed_hex,
+        color_scheme=color_scheme,
     )
     theme = build_theme(
         seed_hex,
@@ -641,12 +1216,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         font_seed=(brand.name if brand else plan.site_name),
         industry=plan.industry_category,
         palette_mode="auto",
-        color_scheme=resolve_color_scheme(
-            payload.color_scheme_override,
-            brand.color_scheme if brand else None,
-            brand.logo_is_light if brand else None,
-            industry=plan.industry_category,
-        ),
+        color_scheme=color_scheme,
         palette_choice=language.palette,
         font_choice=language.font_pairing,
         # Diversity: steer the curated pick off palettes recent sites used
@@ -655,14 +1225,20 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
             "palette", site_key=(brand.name if brand else plan.site_name)
         ),
     )
-    theme.hero_background_height = payload.hero_height
+    theme.hero_background_height = resolve_hero_height(
+        payload.hero_height,
+        language.hero_height,
+        mood=mood,
+        industry=plan.industry_category,
+    )
 
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
     _enrich_plan_profile_photos(plan, payload.source, annotations)
     _ensure_scraped_team_blocks(plan, payload.source, annotations)
+    if payload.stock_images_only:
+        _drop_person_photos(plan.pages)
 
-    market_cue, place_cue = _market_cues_for(payload.source)
     collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
     site = await plan_to_site(
         plan,
@@ -677,6 +1253,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         social_links=_social_links_for(payload.source),
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
+        stock_only=payload.stock_images_only,
     )
     site.collections = await collections_task
     return site
@@ -700,7 +1277,15 @@ class GenerateWithPagesRequest(BaseModel):
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
     color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
-    hero_height: HeroBackgroundHeight = "full"  # full-screen vs bounded photo hero, site-wide
+    # Full-screen vs bounded photo hero, site-wide. None = "Auto": defer to the
+    # design-brain pick, then the mood/industry default (see resolve_hero_height).
+    hero_height: HeroBackgroundHeight | None = None
+    # Every content image comes from Pexels, matched to each section's
+    # image_query; no photo the source supplied reaches the tree. The brand
+    # logo, document-card thumbnails and migrated blog/event images are
+    # unaffected — each depicts one specific artifact, not a decorated section.
+    # Applied by services/source_images.without_source_imagery.
+    stock_images_only: bool = False
     contact: dict[str, str] | None = None
     jurisdiction: str | None = None
     legal_contact_email: str | None = None
@@ -709,12 +1294,36 @@ class GenerateWithPagesRequest(BaseModel):
     # pick (see design_director.compose_design_manifest). None → let it decide.
     header_archetype: HeaderArchetype | None = None
     footer_archetype: FooterArchetype | None = None
+    # The Facebook Page this site was read from, round-tripped from the preview.
+    # It is the authority on its own contact details, hours, reviews and counts:
+    # `facebook_authority.enforce_facebook_facts` rewrites those blocks from it
+    # after the LLM and the grounding net have both run. See services/facebook_source.py.
+    facebook_facts: FacebookPage | None = None
 
 
 @router.post("/with-pages", response_model=GeneratedSite)
 async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
-    # Split scaffolds: LLM-generated content pages vs. boilerplate legal pages
-    content_scaffolds = [s for s in payload.selected_pages if not s.is_legal]
+    # Locale detection reads image URLs as domain evidence
+    # (_market_cues_for → detect_market), and the cues it produces steer every
+    # Pexels query toward the right market. Under stock_images_only those cues
+    # matter MORE, not less — they are the only thing keeping the imagery
+    # on-market — so they are computed from the source as RECEIVED, before the
+    # photography is cut away.
+    market_cue, place_cue = _market_cues_for(payload.source)
+    if payload.stock_images_only:
+        payload.source = without_source_imagery(payload.source)
+
+    # Split scaffolds: LLM-generated content pages vs. boilerplate legal pages.
+    # Translated mirrors are held out of the content pass entirely — they're
+    # cloned from their counterpart's finished plan further down, so paying the
+    # planner to write them again would cost a full generation per language AND
+    # let the two versions drift apart visually.
+    content_scaffolds = [
+        s for s in payload.selected_pages if not s.is_legal and not s.locale
+    ]
+    translation_scaffolds = [
+        s for s in payload.selected_pages if not s.is_legal and s.locale
+    ]
     legal_scaffolds = [s for s in payload.selected_pages if s.is_legal]
 
     if not content_scaffolds:
@@ -722,6 +1331,14 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             status_code=400,
             detail="At least one non-legal page (e.g. Home) must be selected.",
         )
+
+    # A Facebook read hands us structured contact details, so fill the dict the
+    # caller left empty. It feeds the homepage's JSON-LD (an address promotes it
+    # to LocalBusiness) and the legal pages' contact address — neither of which
+    # the LLM ever gets to write.
+    contact = payload.contact
+    if not contact and payload.facebook_facts is not None:
+        contact = to_contact_dict(payload.facebook_facts) or None
 
     # Skip the second LLM call if the frontend already gave us the detection
     # from /api/pages/recipe. Falls back to the cached detector — if the recipe
@@ -760,7 +1377,11 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     )
 
     brand = payload.brand or BrandIdentity(
-        name=detected.site_name,
+        # `or`-guarded like every other site_name reader below: DetectedBrand
+        # heals a null the model wrote into "", and an empty brand name would
+        # otherwise render as a blank header rather than degrade to the source's
+        # own title.
+        name=detected.site_name or payload.source.title or "Untitled",
         tagline=detected.tagline,
         mood=mood,
         industry=industry,
@@ -772,6 +1393,15 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         (brand.extracted_palette[0] if brand.extracted_palette else None)
         or detected.primary_color_hint
     )
+    # Resolved BEFORE the design-language pass, not inline in build_theme: the
+    # curated palettes are scheme-specific, so the model has to be shown the dark
+    # menu on a dark build or it can only ever pick something that gets discarded.
+    color_scheme = resolve_color_scheme(
+        payload.color_scheme_override,
+        brand.color_scheme,
+        brand.logo_is_light,
+        industry=industry,
+    )
     # Design-language pass: the reasoning model picks a curated palette + font
     # pairing before theme construction. Empty/invalid picks change nothing —
     # build_theme falls back to its deterministic selection.
@@ -781,6 +1411,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             mood=mood,
             industry=industry,
             seed_hex=seed_hex,
+            color_scheme=color_scheme,
         )
     theme = build_theme(
         seed_hex,
@@ -788,19 +1419,19 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         font_seed=brand.name,
         industry=industry,
         palette_mode="auto",
-        color_scheme=resolve_color_scheme(
-            payload.color_scheme_override,
-            brand.color_scheme,
-            brand.logo_is_light,
-            industry=industry,
-        ),
+        color_scheme=color_scheme,
         palette_choice=language.palette,
         font_choice=language.font_pairing,
         # Diversity: steer the curated pick off palettes recent sites used
         # (rotates within the fit group only; fail-open empty set).
         avoid_palettes=await recent_choices("palette", site_key=brand.name),
     )
-    theme.hero_background_height = payload.hero_height
+    theme.hero_background_height = resolve_hero_height(
+        payload.hero_height,
+        language.hero_height,
+        mood=mood,
+        industry=industry,
+    )
 
     # Announcement/quick-links strap: claim it BEFORE planning so its text is
     # out of raw_text (the LLM must not also narrate it into a paragraph);
@@ -820,6 +1451,11 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     prefetch_task = asyncio.create_task(
         prefetch_image_pool(scraped_metadata, extra_urls=profile_urls)
     )
+    # OCR text screening rides the same window for the same reason: it is pure
+    # CPU, so it overlaps the GPU-bound content pass instead of adding to the
+    # wall clock. Unlike the vision judging below it does NOT contend for the
+    # GPU, which is why it can run here rather than after generation.
+    ocr_task = asyncio.create_task(_screen_source_images_for_text(scraped_metadata))
 
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
     # This is the heaviest LLM pass (it writes all page copy); time it so the
@@ -833,7 +1469,20 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             )
     except LlmError as exc:
         prefetch_task.cancel()
+        ocr_task.cancel()
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
+
+    # Per-batch failures no longer abort the run (see planner._run_item_safe) —
+    # the affected pages ship with scaffold defaults. Surface which ones, so a
+    # thin page is traceable to a failed call rather than to bad source content.
+    if scaffolded.degraded_slugs:
+        logger.warning(
+            "%d of %d page(s) fell back to scaffold defaults after a failed "
+            "content call: %s",
+            len(scaffolded.degraded_slugs),
+            len(content_scaffolds),
+            ", ".join(f"/{s}" for s in scaffolded.degraded_slugs),
+        )
 
     # Build the SitePlan that schema_builder consumes.
     plan = SitePlan(
@@ -858,6 +1507,28 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     _ensure_hub_child_links(plan.pages)
     if linkbar_cluster is not None:
         _inject_linkbar(plan.pages, linkbar_cluster)
+    _inject_downloads(plan.pages, payload.source)
+    # Picture racks the source stated in full — awards, accreditations, partner
+    # logos, photo albums — are placed from the source rather than described by
+    # the model. Gated on the scaffolds that asked for a gallery, so an album
+    # index can gain the albums it needs without a photo-rich services page
+    # growing one it didn't ask for.
+    _inject_image_walls(
+        plan.pages,
+        payload.source,
+        gallery_section_slugs={
+            s.slug for s in content_scaffolds if "gallery" in s.sections
+        },
+    )
+    # Embedded players, same deal. Last of the three injectors, so on a page that
+    # has both, the videos lead the picture racks — on a video page the videos
+    # ARE the page. Runs after alignment for the same reason the others do: the
+    # model never produces this block, so the slot is always omitted and there
+    # is nothing here to replace.
+    _inject_videos(plan.pages, payload.source)
+    # Embedded maps, last: unlike the racks above it places itself relative to
+    # the contact/locations section, so it needs the page's final shape.
+    _inject_maps(plan.pages, payload.source)
 
     # Legal pages will be appended after plan_to_site, but they need to appear in
     # the footer nav. Pass their titles + slugs through.
@@ -871,6 +1542,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         prefetched = await prefetch_task
     except Exception:  # noqa: BLE001 — prefetch is advisory, never load-bearing
         logger.exception("Vision image prefetch failed; continuing without it")
+    # Should already be done — it started with the prefetch and the content LLM
+    # ran meanwhile. Awaited here only so a slow scrape can't leave the flags
+    # half-written while sections resolve their backgrounds.
+    await ocr_task
     annotations = await _annotate_source_images(
         payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
     )
@@ -895,12 +1570,66 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         directory_slugs=directory_slugs,
     )
     _drop_hollow_team_pages(plan)
+    # After the last pass that can remove a page, so a member's link is checked
+    # against the pages the site actually ships.
+    _prune_dead_profile_links(plan)
+    if payload.stock_images_only:
+        _drop_person_photos(plan.pages)
+
+    # The Facebook Page is the authority on its own facts. This runs after the
+    # LLM AND after align_page_to_scaffold's grounding net, so it has the last
+    # word: verified contact details, hours, reviews and counts replace whatever
+    # the model wrote, and anything the Page never stated is dropped rather than
+    # left standing because no rule happened to catch it.
+    if payload.facebook_facts is not None:
+        plan.pages = enforce_facebook_facts(plan.pages, payload.facebook_facts)
 
     # Resolve LLM-bound image refs (block.image_ref → block.image_url) against
     # the same per-page photo lists the planner prompt showed the model.
     bound_image_urls = bind_image_refs(plan.pages, source_map)
+    # A gallery ref the binder rejected has nothing behind it — drop the tile
+    # rather than let it resolve a stock photo at render time. Suspended under
+    # stock_images_only, where a stock gallery is the point rather than the
+    # failure mode: with no source photography anywhere on the site, a tile
+    # resolving its image_query is consistent with every other slot, and
+    # deleting the block instead would silently drop a page the user chose.
+    if not payload.stock_images_only:
+        _drop_unbound_gallery_items(plan.pages)
 
-    market_cue, place_cue = _market_cues_for(payload.source)
+    # Translated mirrors clone their counterpart HERE — after image refs are
+    # bound and the roster/team passes have run — so a clone inherits the exact
+    # photos and blocks the source-language page ended up with, not the ones it
+    # was planned with.
+    if translation_scaffolds:
+        with stage("translations"):
+            plan.pages.extend(
+                await build_translated_pages(
+                    plan.pages,
+                    translation_scaffolds,
+                    _translation_sources(payload.source),
+                )
+            )
+
+    # Legal pages from boilerplate. Built BEFORE the site so plan_to_site sees
+    # the complete page list: it appends them to site.pages itself (still out of
+    # the page tree and primary nav), and a chrome archetype whose contract
+    # covers every page — the floating pill, which needs a photo hero
+    # everywhere — can hold them to it too.
+    contact_email = (
+        payload.legal_contact_email
+        or (contact or {}).get("email")
+        or "hello@example.com"
+    )
+    jurisdiction = payload.jurisdiction or "your country / state"
+    legal_builders = {"privacy": build_privacy_page, "terms": build_terms_page}
+    legal_page_list = [
+        legal_builders[legal.page_type](
+            plan.site_name, theme, contact_email=contact_email, jurisdiction=jurisdiction
+        )
+        for legal in legal_scaffolds
+        if legal.page_type in legal_builders
+    ]
+
     collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
     site = await plan_to_site(
         plan,
@@ -909,37 +1638,18 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         scraped_images=scraped_images,
         scraped_metadata=scraped_metadata,
         page_images=page_images,
-        contact=payload.contact,
+        contact=contact,
         extra_footer_nav=extra_footer_nav,
+        extra_pages=legal_page_list,
         market_cue=market_cue,
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
         reserved_image_urls=bound_image_urls,
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
+        stock_only=payload.stock_images_only,
     )
     site.collections = await collections_task
-
-    # Bolt on legal pages from boilerplate
-    contact_email = (
-        payload.legal_contact_email
-        or (payload.contact or {}).get("email")
-        or "hello@example.com"
-    )
-    jurisdiction = payload.jurisdiction or "your country / state"
-    for legal in legal_scaffolds:
-        if legal.page_type == "privacy":
-            site.pages.append(
-                build_privacy_page(
-                    plan.site_name, theme, contact_email=contact_email, jurisdiction=jurisdiction
-                )
-            )
-        elif legal.page_type == "terms":
-            site.pages.append(
-                build_terms_page(
-                    plan.site_name, theme, contact_email=contact_email, jurisdiction=jurisdiction
-                )
-            )
 
     return site
 
@@ -980,6 +1690,7 @@ def _align_pages_to_scaffolds(
                 seo_title=f"{s.title} — {brand_name}",
                 seo_description=s.description or "",
                 parent_slug=s.parent_slug,
+                menu_hidden=s.menu_hidden,
             )
 
         # Force scaffold identity (including hierarchy + nav priority)
@@ -991,6 +1702,7 @@ def _align_pages_to_scaffolds(
                 "parent_slug": s.parent_slug,
                 "nav_rank": s.nav_rank,
                 "from_source": s.from_source,
+                "menu_hidden": s.menu_hidden,
             }
         )
         # Enforce section structure (+ fact-grounding for fact-bearing kinds
@@ -1004,6 +1716,17 @@ def _align_pages_to_scaffolds(
         )
         aligned.append(match)
     return aligned
+
+
+def _translation_sources(source: SourceContent) -> dict[str, SourceContent]:
+    """slug → crawled page, so a clone can be filled with the owner's own words
+    in that language rather than a re-translation of our copy."""
+    out: dict[str, SourceContent] = {}
+    for page in source.discovered_pages:
+        slug = normalize_source_slug(page.url_path)
+        if slug:
+            out[slug] = page
+    return out
 
 
 def _social_links_for(source: SourceContent) -> list[tuple[str, str]]:
@@ -1035,15 +1758,556 @@ def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:
     if len(links) < 2:
         return
 
-    block = LinkBarBlock(
-        label=cluster.context_label or None,
-        links=links,
+    insert_after_hero(
+        home, LinkBarBlock(label=cluster.context_label or None, links=links)
     )
-    hero_index = next(
-        (i for i, b in enumerate(home.blocks) if b.kind == "hero"), None
+
+
+def _page_by_url_path(pages: list[PagePlan]) -> dict[str, PagePlan]:
+    """Map each generated page's slug to its PagePlan, keyed the same way
+    ``site_relative_href``/``_path_to_slug`` normalize a source url_path
+    (strip surrounding slashes, lowercase; empty string = homepage)."""
+    return {p.slug.strip("/").lower(): p for p in pages}
+
+
+def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
+    """Recreate each page's scraped document cards (e.g. a brochure offered in
+    EN/ZH/MS, or a resource library) as ONE downloads section per page.
+
+    Every DocumentCardCandidate found on a page (scraper._extract_document_cards
+    → SourceContent.document_cards) becomes one item of a SINGLE DownloadsBlock
+    for that page — never split across multiple blocks — so a document's
+    title/thumbnail stay grouped with its own download links, matching how the
+    source page presented them.
+
+    Unlike ``_inject_linkbar``, hrefs here are SUPPOSED to point off the
+    generated site's own page set — a document doesn't get its own generated
+    page — so there's no generated-slug gate. image_url/href are already
+    absolute (resolved at extraction time), which push_orchestrator later
+    re-hosts onto the CMS. Inserted right after the hero (scraper._strip_
+    document_card_lines already kept the LLM from also narrating this content
+    into its own services/about section, so there's nothing to duplicate).
+    """
+    pages_by_path = _page_by_url_path(pages)
+    for slug, cards in accumulate_by_slug(
+        source, lambda page: page.document_cards or []
+    ).items():
+        page = pages_by_path.get(slug)
+        if page is None:
+            continue
+        items = [
+            DownloadItem(
+                title=card.title,
+                image_url=card.image_url,
+                links=[
+                    DownloadLink(label=link.label, href=link.href)
+                    for link in card.links
+                ],
+            )
+            for card in cards
+        ]
+        # Right after the hero — same placement _inject_linkbar uses — not
+        # appended at the end, which would land it after an unrelated closing
+        # CTA. A resources/downloads section is top-of-page content.
+        insert_after_hero(page, DownloadsBlock(items=items))
+
+
+# Card kinds whose section IS its pictures — mirrors page_inference's set, which
+# decides the scaffold these blocks fill.
+_WALL_CARD_KINDS = frozenset({"gallery"})
+# GalleryBlock.items ceiling; every unique image is one media upload at push.
+_MAX_GALLERY_ITEMS = 24
+# Photos under one heading before it counts as an album rather than an
+# illustrated paragraph — mirrors page_inference._WALL_MIN_IMAGES.
+_MIN_ALBUM_PHOTOS = 3
+# Albums placed on one page. hero + 6 + cta = 8, inside _MAX_PAGE_SECTIONS (9),
+# so a spliced gallery page stays within the ceiling the scaffold respects.
+_MAX_GALLERY_BLOCKS = 6
+# Photos across all of a page's albums. Every unique image is one media upload
+# at push time, so an unbounded album index is a real cost, not just a long page.
+_MAX_PAGE_GALLERY_IMAGES = 48
+# Roles that are never a page's own photography. `portrait` is deliberately
+# absent: image_evidence.classify_role types any grid cell with a portraitish
+# aspect under 420px as one, which is exactly the shape of a gallery thumbnail
+# — the same misread that hides these photos from the planner prompt. Excluding
+# it here would drop the pictures this fallback exists to rescue, and on a page
+# the scaffold designated a gallery a photo of people IS the content.
+_NON_PHOTO_ROLES = frozenset({"logo", "decoration"})
+# Pages a URL must appear on before it reads as template chrome.
+_CHROME_IMAGE_MIN_PAGES = 2
+
+
+def _repeated_image_urls(source: SourceContent) -> set[str]:
+    """Image URLs appearing on 2+ crawled slugs — template chrome, not content.
+
+    A footer photo strip and a row of social icons are the template's, and they
+    are indistinguishable from content until the crawl finishes. On brightkids
+    the footer strip is the ONLY thing the section tree offers the gallery page,
+    so without this the "photo gallery" is six copies of the site's footer
+    furniture. The per-slug counting rule (and why it must not be per-record)
+    lives in ``source_injection.repeated_across_slugs``.
+    """
+    return repeated_across_slugs(
+        source,
+        lambda page: (meta.url for meta in page.image_metadata or [] if meta.url),
+        min_slugs=_CHROME_IMAGE_MIN_PAGES,
     )
-    insert_at = hero_index + 1 if hero_index is not None else 0
-    home.blocks.insert(insert_at, block)
+
+
+def _without_chrome(
+    wall: SectionCandidate, chrome: set[str]
+) -> SectionCandidate | None:
+    """A picture rack minus the template's own furniture; None if nothing is left.
+
+    A site-wide footer photo strip parses as a perfectly good picture rack —
+    tiles, no prose, empty alt — and on brightkids' gallery page it is the ONLY
+    rack the section tree offers, so the "photo gallery" shipped as six copies
+    of the footer. Real racks are unaffected: an awards page's badges live on
+    the awards page, so they are never repeated enough to look like chrome.
+    """
+    kept = [url for url in wall.image_urls if url not in chrome]
+    if not kept:
+        return None
+    if len(kept) == len(wall.image_urls):
+        return wall
+    return wall.model_copy(update={"image_urls": kept})
+
+
+def _photo_walls_from_metadata(
+    page: SourceContent, chrome: set[str]
+) -> list[SectionCandidate]:
+    """Albums the source states as photos-under-a-heading.
+
+    A PHP album viewer (``gallery-photo.php?id=107``) puts its ``<h3>`` in one
+    grid column and its tiles in bare sibling ``<div>``s, so
+    ``section_extraction``'s card scan reads the page's own SIDEBAR as the card
+    group and demotes the album title to a card whose body is a footer widget.
+    There is no rack in the tree for ``_inject_image_walls`` to place, and the
+    model cannot fill the gap either: those tiles declare ``width="100%;"``,
+    which ``scraper._parse_int`` reads as 100, so ``source_router``'s 200px
+    floor hides every album photo from the prompt.
+
+    The pictures themselves are never in doubt. ``scraper._image_context``
+    already attaches each one to its nearest preceding heading, and on an album
+    page that heading IS the album title — so the grouping is read off the
+    source rather than inferred. Used only where the tree yields nothing, so an
+    awards page keeps its own racks.
+    """
+    by_heading: dict[str, list[ImageMetadata]] = {}
+    for meta in page.image_metadata or []:
+        heading = (meta.context_heading or "").strip()
+        if not heading or not meta.url or meta.url in chrome:
+            continue
+        if meta.role in _NON_PHOTO_ROLES or meta.intent == "logo":
+            continue
+        by_heading.setdefault(heading, []).append(meta)
+
+    walls: list[SectionCandidate] = []
+    for heading, metas in by_heading.items():
+        if len(metas) < _MIN_ALBUM_PHOTOS:
+            continue
+        walls.append(
+            SectionCandidate(
+                heading=heading,
+                level=3,
+                card_kind="gallery",
+                cards=[
+                    SourceCard(
+                        title=(meta.alt or meta.caption or "").strip(),
+                        body="",
+                        image_url=meta.url,
+                    )
+                    for meta in metas
+                ],
+                image_urls=[meta.url for meta in metas],
+            )
+        )
+    return walls
+
+
+def _merge_album_walls(walls: list[SectionCandidate]) -> list[SectionCandidate]:
+    """Fold walls sharing a heading into one, deduping URLs across the page.
+
+    An album is often paginated (``?id=107`` and ``?id=107&gspg=2``), and every
+    page of it normalizes to the same slug — so the same album arrives as
+    several walls. Merging on the heading keeps it one section rather than two
+    called the same thing.
+    """
+    merged: dict[str, SectionCandidate] = {}
+    seen_urls: set[str] = set()
+    for wall in walls:
+        key = wall.heading.strip().lower()
+        fresh = [url for url in wall.image_urls if url not in seen_urls]
+        if not fresh:
+            continue
+        seen_urls.update(fresh)
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = wall.model_copy(update={"image_urls": fresh})
+            continue
+        existing.image_urls = [*existing.image_urls, *fresh]
+        existing.cards = [*existing.cards, *wall.cards]
+    return list(merged.values())
+
+
+def _place_walls(page: PagePlan, walls: list[SectionCandidate], *, gated: bool) -> None:
+    """Fill a page's gallery slots with source racks, splicing any surplus.
+
+    Replacing is the original behaviour and keeps an awards page's three racks
+    in their scaffolded slots. Splicing is what lets ONE scaffolded gallery
+    slot carry an album index's several albums — the album count isn't knowable
+    at scaffold time (it depends on the crawl budget and on how many pages an
+    album is paginated across), and asking the scaffold for N would only invite
+    N invented sections from a model that cannot see these photos anyway.
+
+    Replacing in place also preserves the scaffold's ORDER, which is why the
+    gallery grounding check is deferred to after this pass rather than run at
+    alignment: an awards page reads hero/gallery×3/about/gallery, and dropping
+    its unfilled slots first would stack all four racks above the narrative
+    they follow in the source.
+
+    ``gated`` means the scaffold asked this page for a gallery. Only then may a
+    rack be spliced — inserted where the scaffold left no slot at all, which is
+    what an album index needs when the model honestly omitted a section it had
+    nothing to write.
+    """
+    if not walls:
+        return
+    budget = _MAX_PAGE_GALLERY_IMAGES
+    blocks: list[GalleryBlock] = []
+    for wall in walls[:_MAX_GALLERY_BLOCKS]:
+        if budget <= 0:
+            break
+        block = _wall_gallery_block(wall, limit=min(_MAX_GALLERY_ITEMS, budget))
+        if not block.items:
+            continue
+        budget -= len(block.items)
+        blocks.append(block)
+    if not blocks:
+        return
+
+    slots = [i for i, b in enumerate(page.blocks) if b.kind == "gallery"]
+    if not slots:
+        if not gated:
+            return
+        # Right after the hero — same placement rule as _inject_downloads. The
+        # pictures ARE the page, so they lead it.
+        insert_at = hero_insert_index(page)
+        page.blocks[insert_at:insert_at] = blocks
+        return
+    for index, block in zip(slots, blocks):
+        page.blocks[index] = block
+    surplus = blocks[len(slots):]
+    if surplus and gated:
+        page.blocks[slots[-1] + 1: slots[-1] + 1] = surplus
+
+
+def _inject_image_walls(
+    pages: list[PagePlan],
+    source: SourceContent,
+    *,
+    gallery_section_slugs: set[str] | None = None,
+) -> None:
+    """Rebuild each page's picture racks from the source, verbatim.
+
+    An award / accreditation / partner-logo wall states its content entirely in
+    images: the tiles carry no prose, empty ``alt``, and often no title at all.
+    There is therefore nothing for the model to be faithful TO — asked to write
+    that section it can only invent, and the grounding net then deletes what it
+    invented, so the page ships with the section missing and the real badges
+    dropped. The images themselves are never in doubt, so they are placed here
+    rather than described.
+
+    Same precedent and placement as ``_inject_downloads``: content the source
+    stated exactly is re-attached deterministically instead of being narrated.
+    The heading is the source's own — "Winning Awards", "Registered With" — so
+    three racks stay three racks rather than merging into one gallery.
+
+    Only fills sections the scaffold already asked for, and only replaces a
+    gallery the model produced for that slot: page_inference turns a source
+    picture rack into a ``gallery`` section, so a match means this block was
+    always meant to be these images.
+
+    Walls are ACCUMULATED per generated page before being placed, because
+    several source pages routinely share one slug: a PHP album viewer serves
+    every album from ``gallery-photo.php?id=NNN``, and ``url_path`` carries no
+    query, so 28 albums normalize to ``gallery-photo``. Placing each source
+    page as it was read overwrote the same slot 28 times and shipped one album.
+
+    ``gallery_section_slugs`` — the scaffolds that asked for a gallery — gates
+    everything the original behaviour did not do: splicing a surplus album, and
+    inserting where alignment left no slot. Without it a photo-rich programmes
+    page would grow a gallery nobody asked for.
+    """
+    gated_slugs = gallery_section_slugs or set()
+    pages_by_path = _page_by_url_path(pages)
+    chrome = _repeated_image_urls(source)
+    # Kept as its own loop rather than routed through
+    # source_injection.accumulate_by_slug: what counts as a wall here depends on
+    # the SLUG (the gated metadata fallback below), which a per-page extractor
+    # cannot see. The accumulate-then-place rule it shares is documented there.
+    walls_by_slug: dict[str, list[SectionCandidate]] = {}
+    for source_page in source_pages(source):
+        slug = normalize_source_slug(source_page.url_path)
+        if slug not in pages_by_path:
+            continue
+        walls = [
+            stripped
+            for section in source_page.section_candidates
+            if section.card_kind in _WALL_CARD_KINDS and section.image_urls
+            if (stripped := _without_chrome(section, chrome)) is not None
+        ]
+        if not walls and slug in gated_slugs:
+            # A gallery page whose tree offered no rack — read the albums off
+            # the image metadata instead. Gated, so this never fires on a page
+            # that merely happens to be photo-rich.
+            walls = _photo_walls_from_metadata(source_page, chrome)
+        if walls:
+            walls_by_slug.setdefault(slug, []).extend(walls)
+
+    for slug, walls in walls_by_slug.items():
+        _place_walls(
+            pages_by_path[slug], _merge_album_walls(walls), gated=slug in gated_slugs
+        )
+
+
+# VideoBlock.items ceiling (mirrors the model's max_length).
+_MAX_VIDEO_ITEMS = 24
+# A video must be on MOST of the site before it reads as template furniture.
+# The flat two-slug rule that works for photos is wrong for video: a video index
+# re-shows what its topic pages show, and the entry page is itself crawled twice
+# (`/` and `/index.php`), so two slugs is the NORMAL count for real content.
+# See source_injection.repeated_across_slugs for what this cost.
+_VIDEO_CHROME_MIN_SLUGS = 3
+_VIDEO_CHROME_MIN_SHARE = 0.5
+# Distinct video groups placed on one page. Roomier than the source usually
+# needs, because `_topic_regrouped` turns one flat index into several real
+# sections — and `group_by_heading` DROPS groups past the cap, so a tight cap
+# here would silently lose videos that regrouping had just organised.
+_MAX_VIDEO_BLOCKS = 6
+
+
+def _topic_regrouped(
+    embeds: list[VideoEmbed], source: SourceContent, slug: str
+) -> list[VideoEmbed] | None:
+    """Re-label an index page's videos with the heading each carries elsewhere.
+
+    A video index states its structure by DELEGATION: every clip on it also
+    lives on the topic page it belongs to. brightkids' /gallery-video.php holds
+    fourteen, and the same fourteen are grouped on their own pages as "Super
+    BRAIN" (8), "Media Interview" (3) and "Testimony" (3). But group headings
+    are read from the page's own markup, and the index is one ``<section>``
+    under one ``<h1>``, so all fourteen collapse into a single undifferentiated
+    run — seven rows with no wayfinding, and the source's own taxonomy thrown
+    away even though the crawl already holds it.
+
+    The rule is symmetric, so it needs no notion of which page is "the index":
+    a page is an aggregator when its videos carry SEVERAL different headings on
+    other pages. /gallery-video sees three, so it adopts them. /super_brain sees
+    only one ("VIDEO GALLERY", from the index), so it keeps its own — which is
+    what stops the two pages from relabelling each other in a loop.
+
+    Returns None when it does not apply, and the caller keeps the page's own
+    grouping. Deliberately conservative: it also declines when the page already
+    grouped its own videos, and when regrouping would exceed
+    ``_MAX_VIDEO_BLOCKS`` — past that cap ``group_by_heading`` drops the
+    surplus, and losing videos to organise them is a bad trade.
+    """
+    if len({embed.context_heading.strip() for embed in embeds}) > 1:
+        return None  # the page grouped these itself; that is more authoritative
+
+    elsewhere: dict[str, str] = {}
+    for page in source_pages(source):
+        if normalize_source_slug(page.url_path) == slug:
+            continue
+        for embed in page.video_embeds or []:
+            heading = embed.context_heading.strip()
+            if heading and embed.embed_url not in elsewhere:
+                elsewhere[embed.embed_url] = heading
+
+    regrouped = [
+        embed.model_copy(update={"context_heading": heading})
+        if (heading := elsewhere.get(embed.embed_url))
+        else embed
+        for embed in embeds
+    ]
+    headings = {embed.context_heading.strip() for embed in regrouped}
+    if len(headings) < 2 or len(headings) > _MAX_VIDEO_BLOCKS:
+        return None
+    return regrouped
+
+
+def _inject_videos(pages: list[PagePlan], source: SourceContent) -> None:
+    """Recreate each page's embedded videos as video sections, verbatim.
+
+    Same precedent and placement as ``_inject_downloads``: content the source
+    stated exactly is re-attached deterministically instead of being narrated.
+    The stakes are higher here than anywhere else in this family. A video id is
+    an opaque 11-character string with an external referent — a model asked to
+    write one cannot be faithful, only lucky, and an unlucky guess embeds a
+    stranger's video on a client's site under the client's own caption. So the
+    model is never asked; see ``DETERMINISTIC_SECTION_KINDS``.
+
+    Grouped by the source's own group heading, so a page showing "Concerts" and
+    "Open Days" ships two sections rather than one merged wall. Videos with no
+    group heading fall together under the block model's default.
+
+    ACCUMULATED per generated page before placement, and chrome-filtered across
+    slugs — a sidebar or footer promo reel is the template's, not this page's.
+    Both rules, and the bugs behind them, live in ``services.source_injection``.
+    """
+    pages_by_path = _page_by_url_path(pages)
+    chrome = repeated_across_slugs(
+        source,
+        lambda page: (v.embed_url for v in page.video_embeds or []),
+        min_slugs=_VIDEO_CHROME_MIN_SLUGS,
+        min_share=_VIDEO_CHROME_MIN_SHARE,
+    )
+    by_slug = accumulate_by_slug(source, lambda page: page.video_embeds or [])
+    for slug, embeds in by_slug.items():
+        page = pages_by_path.get(slug)
+        if page is None:
+            continue
+        # A sitewide video is DEMOTED to the homepage, not deleted. Plenty of
+        # small businesses embed one promo clip on every page; treating that as
+        # furniture everywhere loses the site's only video — the same "no videos
+        # at all" outcome the chrome rule itself caused on brightkids. On the
+        # homepage it is almost certainly the intro it was meant to be, and every
+        # other page is spared the repetition.
+        excluded = frozenset() if page.is_homepage else chrome
+        # An index page borrows its sections from the topic pages its clips also
+        # live on, rather than shipping one flat run of fourteen.
+        embeds = _topic_regrouped(embeds, source, slug) or embeds
+        blocks = [
+            VideoBlock(
+                # A blank group heading heals to the model's default ("Videos"),
+                # which is why heading is a plain str — see VideoBlock.
+                heading=heading,
+                items=[
+                    VideoItem(
+                        embed_url=embed.embed_url,
+                        title=embed.title or None,
+                        thumbnail_url=embed.thumbnail_url,
+                    )
+                    for embed in group
+                ],
+            )
+            for heading, group in group_by_heading(
+                embeds,
+                key_of=lambda embed: embed.embed_url,
+                heading_of=lambda embed: embed.context_heading,
+                exclude=excluded,
+                max_groups=_MAX_VIDEO_BLOCKS,
+                max_items=_MAX_VIDEO_ITEMS,
+            )
+        ]
+        if not blocks:
+            continue
+        insert_at = hero_insert_index(page)
+        page.blocks[insert_at:insert_at] = blocks
+
+
+# MapBlock.items ceiling (mirrors the model's max_length).
+_MAX_MAP_ITEMS = 8
+# Distinct map groups placed on one page. Two headed groups is already a page
+# describing two places; beyond that it is a store locator.
+_MAX_MAP_BLOCKS = 2
+
+# Sections a map annotates rather than competes with. Placed just after the last
+# of these, so the pin sits with the address that names it. `locations` is
+# deliberately absent: a page carrying one is skipped outright below, so naming
+# it here would be a branch that can never run.
+_MAP_COMPANION_KINDS = ("contact",)
+
+
+def _inject_maps(pages: list[PagePlan], source: SourceContent) -> None:
+    """Recreate each page's embedded maps as map sections, verbatim.
+
+    The map is the single most consequential fact on a page for a business with
+    a shopfront, and it is one the model cannot restate: an embed URL encodes a
+    coordinate, so a rewritten one is a different place. Same treatment as
+    videos and downloads — never asked for, always replayed.
+
+    Two rules differ from ``_inject_videos``, both deliberate:
+
+    - **No ``repeated_across_slugs`` chrome filter.** For a promo reel,
+      appearing on every page proves it is template furniture. For a map it
+      proves the opposite: one address, stated everywhere, is what a business
+      with one shopfront does. Dropping it would delete the very thing this
+      pass exists to preserve, on exactly the sites that state it most clearly.
+      The `<header>/<nav>/<footer>` strip in ``scraper._extract_embeds`` remains
+      the chrome rule, and it is the right one — a footer map is furniture, a
+      body map is content, and the markup says which.
+    - **Yields to an existing locations block.** ``locations-map-cards`` already
+      renders a map per branch, synthesized from the address the model wrote.
+      Two maps of the same place, one pinned and one searched, reads as a bug.
+      The authored section keeps the page; see MapBlock's docstring.
+    """
+    pages_by_path = _page_by_url_path(pages)
+    by_slug = accumulate_by_slug(source, lambda page: page.map_embeds or [])
+    for slug, embeds in by_slug.items():
+        page = pages_by_path.get(slug)
+        if page is None or any(block.kind == "locations" for block in page.blocks):
+            continue
+        blocks = [
+            MapBlock(
+                # A blank group heading heals to the model's default ("Find us").
+                heading=heading,
+                items=[
+                    MapItem(embed_url=embed.embed_url, title=embed.title or None)
+                    for embed in group
+                ],
+            )
+            for heading, group in group_by_heading(
+                embeds,
+                key_of=lambda embed: embed.embed_url,
+                heading_of=lambda embed: embed.context_heading,
+                max_groups=_MAX_MAP_BLOCKS,
+                max_items=_MAX_MAP_ITEMS,
+            )
+        ]
+        if not blocks:
+            continue
+        insert_at = companion_insert_index(page, _MAP_COMPANION_KINDS)
+        page.blocks[insert_at:insert_at] = blocks
+
+
+def _wall_gallery_block(
+    wall: SectionCandidate, *, limit: int = _MAX_GALLERY_ITEMS
+) -> GalleryBlock:
+    """One source picture rack → a gallery of exactly those pictures.
+
+    ``image_url`` is set directly, which is what makes this deterministic: the
+    slot is already filled, so nothing downstream resolves a stock photo for it
+    and ``image_refs.bind_image_refs`` never gets to reject a badge for being
+    the wrong shape. ``image_query`` still has to be a non-empty string for the
+    model's schema, but it is dead weight once ``image_url`` is set — see
+    ``section_content._gallery_content``, which prefers the URL.
+
+    The album name falls through to ``caption``, never ``title``:
+    ``_gallery_content`` reads either as alt text, but ``schema_builder._build_
+    gallery`` runs ``_match_child_by_title`` on ``title``, so putting one album
+    name on nine tiles would link all nine at a child page.
+    """
+    captions = {card.image_url: card.title for card in wall.cards if card.image_url}
+    items: list[GalleryItem] = []
+    seen: set[str] = set()
+    for url in wall.image_urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        caption = (captions.get(url) or "").strip()
+        items.append(
+            GalleryItem(
+                title=caption or None,
+                caption=caption or wall.heading or None,
+                image_query=caption or wall.heading,
+                image_url=url,
+            )
+        )
+        if len(items) >= limit:
+            break
+    return GalleryBlock(heading=wall.heading, items=items)
 
 
 def _ensure_hub_child_links(pages: list[PagePlan]) -> None:

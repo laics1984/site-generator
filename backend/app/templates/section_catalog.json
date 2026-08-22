@@ -157,7 +157,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -575,7 +575,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -911,7 +911,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -1259,7 +1259,7 @@
                           "backgroundRepeat": "no-repeat",
                           "textAlign": "left",
                           "opacity": "100%",
-                          "color": "var(--builder-color-primary, #2563eb)",
+                          "color": "var(--builder-color-primary-ink, #2563eb)",
                           "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                           "width": "100%",
                           "fontSize": "13px",
@@ -1589,7 +1589,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -1954,7 +1954,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -2585,7 +2585,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -2973,7 +2973,7 @@
                           "backgroundRepeat": "no-repeat",
                           "textAlign": "left",
                           "opacity": "100%",
-                          "color": "var(--builder-color-primary, #2563eb)",
+                          "color": "var(--builder-color-primary-ink, #2563eb)",
                           "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                           "width": "100%",
                           "fontSize": "13px",
@@ -3666,7 +3666,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -3924,7 +3924,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -4187,7 +4187,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -4397,7 +4397,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -4747,7 +4747,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -5085,7 +5085,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -5205,6 +5205,11 @@
               "id": "bio",
               "kind": "text",
               "optional": true
+            },
+            {
+              "id": "profile_link",
+              "kind": "link",
+              "optional": true
             }
           ]
         }
@@ -5221,7 +5226,11 @@
             },
             "name": "Alicia Tan",
             "role": "Founder",
-            "bio": "Leads strategy and partnerships."
+            "bio": "Leads strategy and partnerships.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
           },
           {
             "photo": {
@@ -5230,7 +5239,11 @@
             },
             "name": "Marcus Ong",
             "role": "Design",
-            "bio": "Owns the design system and templates."
+            "bio": "Owns the design system and templates.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
           },
           {
             "photo": {
@@ -5239,7 +5252,11 @@
             },
             "name": "Nadia Rahman",
             "role": "Engineering",
-            "bio": "Builds the rendering pipeline."
+            "bio": "Builds the rendering pipeline.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
           }
         ]
       },
@@ -5320,7 +5337,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -5521,7 +5538,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "center",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "12px",
@@ -5554,6 +5571,1505 @@
                       "WebkitBoxOrient": "vertical",
                       "overflow": "hidden"
                     }
+                  },
+                  {
+                    "name": "Member Profile Link",
+                    "type": "link",
+                    "$slot": "profile_link",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "14px",
+                      "lineHeight": "1.4",
+                      "fontWeight": 700,
+                      "marginTop": "12px",
+                      "textDecoration": "none"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "team-founders",
+      "sectionType": "team",
+      "layoutVariant": "portraits",
+      "styleVariant": "plain",
+      "label": "Founders",
+      "description": "One to three large portraits with name, role and a short bio, on an open background rather than cards. For introducing the owners or founders of a business — not a full staff roster, which the Team Grid handles.",
+      "tags": [
+        "Team",
+        "People",
+        "Founders",
+        "Trust"
+      ],
+      "thumbnail": "team-grid",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "photo",
+              "kind": "image",
+              "optional": true
+            },
+            {
+              "id": "name",
+              "kind": "text"
+            },
+            {
+              "id": "role",
+              "kind": "text"
+            },
+            {
+              "id": "bio",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "profile_link",
+              "kind": "link",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Founders",
+        "heading": "The people who started it.",
+        "subheading": "Two or three faces, a short bio each — who you would actually be working with.",
+        "items": [
+          {
+            "photo": {
+              "src": "",
+              "alt": ""
+            },
+            "name": "Alicia Tan",
+            "role": "Co-Founder",
+            "bio": "Leads strategy and partnerships, and has run the studio since 2014.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
+          },
+          {
+            "photo": {
+              "src": "",
+              "alt": ""
+            },
+            "name": "Marcus Lee",
+            "role": "Co-Founder",
+            "bio": "Heads delivery, and still writes most of the tricky code himself.",
+            "profile_link": {
+              "innerText": "View profile",
+              "href": "#"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Team - Founders",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Founders Row",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "2Col",
+            "$repeat": "items",
+            "$gridFit": true,
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "56px",
+              "minHeight": "0px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "20px",
+                "minHeight": "0px"
+              },
+              "tablet": {
+                "gap": "36px",
+                "minHeight": "0px"
+              }
+            },
+            "content": [
+              {
+                "name": "Founder Cell",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "minHeight": "0px",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "gap": "10px",
+                  "padding": "0px",
+                  "borderRadius": "0px",
+                  "backgroundColor": "transparent",
+                  "border": "none",
+                  "boxShadow": "none",
+                  "maxWidth": "420px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "minHeight": "0px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Founder Photo",
+                    "type": "image",
+                    "$slot": "photo",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "200px",
+                      "height": "200px",
+                      "borderRadius": "9999px",
+                      "overflow": "hidden",
+                      "aspectRatio": "1 / 1",
+                      "marginBottom": "20px",
+                      "backgroundColor": "rgba(148,163,184,0.18)",
+                      "border": "3px solid rgba(255,255,255,0.96)",
+                      "boxShadow": "0 0 0 4px rgba(37,99,235,0.10), 0 14px 30px rgba(15,23,42,0.18)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "150px",
+                        "height": "150px"
+                      },
+                      "tablet": {
+                        "width": "136px",
+                        "height": "136px"
+                      }
+                    },
+                    "content": {
+                      "caption": ""
+                    }
+                  },
+                  {
+                    "name": "Founder Name",
+                    "type": "text",
+                    "$slot": "name",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "20px",
+                      "lineHeight": "1.25",
+                      "fontWeight": 800
+                    }
+                  },
+                  {
+                    "name": "Founder Role",
+                    "type": "text",
+                    "$slot": "role",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "12px",
+                      "lineHeight": "1.35",
+                      "fontWeight": 800,
+                      "letterSpacing": "0.08em",
+                      "textTransform": "uppercase"
+                    }
+                  },
+                  {
+                    "name": "Founder Bio",
+                    "type": "text",
+                    "$slot": "bio",
+                    "classes": "wt-clamp wt-clamp-4",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.66)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "16px",
+                      "lineHeight": "1.65",
+                      "marginTop": "8px",
+                      "maxWidth": "280px",
+                      "display": "-webkit-box",
+                      "WebkitLineClamp": "4",
+                      "WebkitBoxOrient": "vertical",
+                      "overflow": "hidden"
+                    }
+                  },
+                  {
+                    "name": "Founder Profile Link",
+                    "type": "link",
+                    "$slot": "profile_link",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "14px",
+                      "lineHeight": "1.4",
+                      "fontWeight": 700,
+                      "marginTop": "12px",
+                      "textDecoration": "none"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "profile-portrait-split",
+      "sectionType": "profile",
+      "layoutVariant": "split",
+      "styleVariant": "editorial",
+      "label": "Profile - Portrait Split",
+      "description": "One person's page: a large portrait beside their name, role, credentials, story and contact links. The default for a committee or practitioner detail page.",
+      "tags": [
+        "Profile",
+        "People",
+        "Bio"
+      ],
+      "thumbnail": "profile-portrait-split",
+      "slots": [
+        {
+          "id": "photo",
+          "kind": "image"
+        },
+        {
+          "id": "role",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "name",
+          "kind": "text"
+        },
+        {
+          "id": "credentials",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "bio",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contacts",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "cta",
+              "kind": "link"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "photo": {
+          "src": "",
+          "alt": "Ashley Jinivon"
+        },
+        "role": "Treasurer",
+        "name": "Ashley Jinivon",
+        "credentials": "MT-BC · Saint Mary-of-the-Woods College",
+        "bio": "Ashley completed her internship at the Mount Sinai Hospital Louis Armstrong Department of Music Therapy, where she earned a certificate in the Rhythm, Breath and Lullaby method for the neonatal intensive care unit.",
+        "contacts": [
+          {
+            "cta": {
+              "innerText": "Email Ashley",
+              "href": "#"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Profile - Portrait Split",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "36px"
+          }
+        },
+        "content": [
+          {
+            "name": "Profile Columns",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "56px",
+              "minHeight": "180px",
+              "alignItems": "center"
+            },
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.12
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "28px",
+                "minHeight": "0px"
+              },
+              "tablet": {
+                "gap": "36px",
+                "minHeight": "0px"
+              }
+            },
+            "content": [
+              {
+                "name": "Portrait Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "minHeight": "160px",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "justifyContent": "center"
+                },
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "responsiveStyles": {
+                  "mobile": {
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "minHeight": "0px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Portrait",
+                    "type": "image",
+                    "$slot": "photo",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "height": "auto",
+                      "backgroundColor": "rgba(148,163,184,0.12)",
+                      "aspectRatio": "4 / 5",
+                      "borderRadius": "28px",
+                      "maxWidth": "360px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "aspectRatio": "1 / 1",
+                        "maxWidth": "100%"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "name": "Identity Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "14px",
+                  "justifyContent": "center"
+                },
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "content": [
+                  {
+                    "name": "Name",
+                    "type": "text",
+                    "$slot": "name",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "40px",
+                      "lineHeight": "1.12",
+                      "fontWeight": 800,
+                      "letterSpacing": "-0.02em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "28px"
+                      },
+                      "tablet": {
+                        "fontSize": "34px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Role",
+                    "type": "text",
+                    "$slot": "role",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "16px",
+                      "lineHeight": "1.45",
+                      "fontWeight": 700,
+                      "letterSpacing": "0.01em"
+                    }
+                  },
+                  {
+                    "name": "Credentials",
+                    "type": "text",
+                    "$slot": "credentials",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.72)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    }
+                  },
+                  {
+                    "name": "Bio",
+                    "type": "text",
+                    "$slot": "bio",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.68)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "17px",
+                      "lineHeight": "1.75",
+                      "whiteSpace": "pre-line",
+                      "marginTop": "6px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "15px",
+                        "lineHeight": "1.65"
+                      },
+                      "tablet": {
+                        "fontSize": "16px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Contact Links",
+                    "type": "container",
+                    "$repeat": "contacts",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "display": "flex",
+                      "flexDirection": "row",
+                      "flexWrap": "wrap",
+                      "alignItems": "center",
+                      "justifyContent": "flex-start",
+                      "gap": "20px",
+                      "marginTop": "8px"
+                    },
+                    "content": [
+                      {
+                        "name": "Contact Cell",
+                        "type": "container",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "auto"
+                        },
+                        "classes": "builder-column-cell min-w-0",
+                        "content": [
+                          {
+                            "name": "Contact",
+                            "type": "link",
+                            "$slot": "cta",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "textAlign": "left",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-primary-ink, #2563eb)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "width": "auto",
+                              "fontSize": "14px",
+                              "lineHeight": "1.4",
+                              "fontWeight": 700,
+                              "textDecoration": "none"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "profile-centered",
+      "sectionType": "profile",
+      "layoutVariant": "centered",
+      "styleVariant": "formal",
+      "label": "Profile - Centered",
+      "description": "One person, centred under a circular portrait. The formal, institutional reading of a committee or board member's page; the circle also crops away a low-resolution photo's edges.",
+      "tags": [
+        "Profile",
+        "People",
+        "Formal"
+      ],
+      "thumbnail": "profile-centered",
+      "moods": [
+        "editorial",
+        "luxury",
+        "technical"
+      ],
+      "slots": [
+        {
+          "id": "photo",
+          "kind": "image"
+        },
+        {
+          "id": "role",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "name",
+          "kind": "text"
+        },
+        {
+          "id": "credentials",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "bio",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contacts",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "cta",
+              "kind": "link"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "photo": {
+          "src": "",
+          "alt": "Ashley Jinivon"
+        },
+        "role": "Treasurer",
+        "name": "Ashley Jinivon",
+        "credentials": "MT-BC · Saint Mary-of-the-Woods College",
+        "bio": "Ashley completed her internship at the Mount Sinai Hospital Louis Armstrong Department of Music Therapy, where she earned a certificate in the Rhythm, Breath and Lullaby method for the neonatal intensive care unit.",
+        "contacts": [
+          {
+            "cta": {
+              "innerText": "Email Ashley",
+              "href": "#"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Profile - Centered",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "36px"
+          }
+        },
+        "content": [
+          {
+            "name": "Profile Stack",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "16px",
+              "maxWidth": "680px",
+              "marginLeft": "auto",
+              "marginRight": "auto"
+            },
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.1
+            },
+            "content": [
+              {
+                "name": "Portrait",
+                "type": "image",
+                "$slot": "photo",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "200px",
+                  "height": "auto",
+                  "backgroundColor": "rgba(148,163,184,0.12)",
+                  "aspectRatio": "1 / 1",
+                  "borderRadius": "9999px",
+                  "maxWidth": "200px",
+                  "alignSelf": "center",
+                  "border": "4px solid rgba(255,255,255,0.96)",
+                  "boxShadow": "0 18px 44px rgba(15,23,42,0.18)"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "width": "148px",
+                    "maxWidth": "148px"
+                  }
+                }
+              },
+              {
+                "name": "Name",
+                "type": "text",
+                "$slot": "name",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.12",
+                  "fontWeight": 800,
+                  "letterSpacing": "-0.02em"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Role",
+                "type": "text",
+                "$slot": "role",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "16px",
+                  "lineHeight": "1.45",
+                  "fontWeight": 700,
+                  "letterSpacing": "0.01em"
+                }
+              },
+              {
+                "name": "Credentials",
+                "type": "text",
+                "$slot": "credentials",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.72)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "15px",
+                  "lineHeight": "1.5",
+                  "fontWeight": 600
+                }
+              },
+              {
+                "name": "Bio",
+                "type": "text",
+                "$slot": "bio",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.75",
+                  "whiteSpace": "pre-line",
+                  "marginTop": "6px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px",
+                    "lineHeight": "1.65"
+                  },
+                  "tablet": {
+                    "fontSize": "16px"
+                  }
+                }
+              },
+              {
+                "name": "Contact Links",
+                "type": "container",
+                "$repeat": "contacts",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "alignItems": "center",
+                  "justifyContent": "center",
+                  "gap": "20px",
+                  "marginTop": "8px"
+                },
+                "content": [
+                  {
+                    "name": "Contact Cell",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "auto"
+                    },
+                    "classes": "builder-column-cell min-w-0",
+                    "content": [
+                      {
+                        "name": "Contact",
+                        "type": "link",
+                        "$slot": "cta",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-primary-ink, #2563eb)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "auto",
+                          "fontSize": "14px",
+                          "lineHeight": "1.4",
+                          "fontWeight": 700,
+                          "textDecoration": "none"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "profile-banner",
+      "sectionType": "profile",
+      "layoutVariant": "banner",
+      "styleVariant": "bold",
+      "label": "Profile - Banner",
+      "description": "A brand-coloured band with the portrait overlapping its lower edge, name and story beneath. The modern founder or lead practitioner look — carries a page whose bio is short.",
+      "tags": [
+        "Profile",
+        "People",
+        "Bold"
+      ],
+      "thumbnail": "profile-banner",
+      "moods": [
+        "modern",
+        "playful",
+        "friendly"
+      ],
+      "slots": [
+        {
+          "id": "photo",
+          "kind": "image"
+        },
+        {
+          "id": "role",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "name",
+          "kind": "text"
+        },
+        {
+          "id": "credentials",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "bio",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "contacts",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "cta",
+              "kind": "link"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "photo": {
+          "src": "",
+          "alt": "Ashley Jinivon"
+        },
+        "role": "Treasurer",
+        "name": "Ashley Jinivon",
+        "credentials": "MT-BC · Saint Mary-of-the-Woods College",
+        "bio": "Ashley completed her internship at the Mount Sinai Hospital Louis Armstrong Department of Music Therapy, where she earned a certificate in the Rhythm, Breath and Lullaby method for the neonatal intensive care unit.",
+        "contacts": [
+          {
+            "cta": {
+              "innerText": "Email Ashley",
+              "href": "#"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Profile - Banner",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "0px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "36px"
+          }
+        },
+        "content": [
+          {
+            "name": "Brand Band",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "height": "200px",
+              "borderRadius": "28px",
+              "backgroundImage": "linear-gradient(135deg, var(--builder-color-secondary, #0f172a) 0%, var(--builder-color-primary, #2563eb) 100%)"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "height": "132px"
+              },
+              "tablet": {
+                "height": "168px"
+              }
+            },
+            "content": []
+          },
+          {
+            "name": "Profile Stack",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "16px",
+              "maxWidth": "720px",
+              "marginLeft": "auto",
+              "marginRight": "auto"
+            },
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.1
+            },
+            "content": [
+              {
+                "name": "Portrait",
+                "type": "image",
+                "$slot": "photo",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "180px",
+                  "height": "auto",
+                  "backgroundColor": "rgba(148,163,184,0.12)",
+                  "aspectRatio": "1 / 1",
+                  "borderRadius": "9999px",
+                  "maxWidth": "180px",
+                  "alignSelf": "center",
+                  "marginTop": "-114px",
+                  "border": "6px solid var(--builder-page-background, #ffffff)",
+                  "boxShadow": "0 18px 44px rgba(15,23,42,0.22)"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "width": "124px",
+                    "maxWidth": "124px",
+                    "marginTop": "-78px"
+                  },
+                  "tablet": {
+                    "width": "156px",
+                    "maxWidth": "156px",
+                    "marginTop": "-98px"
+                  }
+                }
+              },
+              {
+                "name": "Name",
+                "type": "text",
+                "$slot": "name",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.12",
+                  "fontWeight": 800,
+                  "letterSpacing": "-0.02em"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Role",
+                "type": "text",
+                "$slot": "role",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "16px",
+                  "lineHeight": "1.45",
+                  "fontWeight": 700,
+                  "letterSpacing": "0.01em"
+                }
+              },
+              {
+                "name": "Credentials",
+                "type": "text",
+                "$slot": "credentials",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.72)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "15px",
+                  "lineHeight": "1.5",
+                  "fontWeight": 600
+                }
+              },
+              {
+                "name": "Bio",
+                "type": "text",
+                "$slot": "bio",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.75",
+                  "whiteSpace": "pre-line",
+                  "marginTop": "6px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px",
+                    "lineHeight": "1.65"
+                  },
+                  "tablet": {
+                    "fontSize": "16px"
+                  }
+                }
+              },
+              {
+                "name": "Contact Links",
+                "type": "container",
+                "$repeat": "contacts",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "alignItems": "center",
+                  "justifyContent": "center",
+                  "gap": "20px",
+                  "marginTop": "8px"
+                },
+                "content": [
+                  {
+                    "name": "Contact Cell",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "auto"
+                    },
+                    "classes": "builder-column-cell min-w-0",
+                    "content": [
+                      {
+                        "name": "Contact",
+                        "type": "link",
+                        "$slot": "cta",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-primary-ink, #2563eb)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "auto",
+                          "fontSize": "14px",
+                          "lineHeight": "1.4",
+                          "fontWeight": 700,
+                          "textDecoration": "none"
+                        }
+                      }
+                    ]
                   }
                 ]
               }
@@ -5703,7 +7219,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -5784,6 +7300,7 @@
             "type": "3Col",
             "$repeat": "items",
             "$gridFit": true,
+            "lightbox": true,
             "styles": {
               "backgroundPosition": "center",
               "objectFit": "cover",
@@ -6006,7 +7523,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -6151,7 +7668,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "14px",
@@ -6368,7 +7885,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -6608,7 +8125,7 @@
                               "backgroundRepeat": "no-repeat",
                               "textAlign": "left",
                               "opacity": "100%",
-                              "color": "var(--builder-color-primary, #2563eb)",
+                              "color": "var(--builder-color-primary-ink, #2563eb)",
                               "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                               "width": "auto",
                               "fontSize": "16px",
@@ -6818,7 +8335,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -6963,7 +8480,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "11px",
@@ -8282,7 +9799,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -8585,7 +10102,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -9000,7 +10517,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -9725,7 +11242,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -10051,7 +11568,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -10161,6 +11678,11 @@
           "minItems": 3,
           "item": [
             {
+              "id": "icon",
+              "kind": "image",
+              "optional": true
+            },
+            {
               "id": "title",
               "kind": "text"
             },
@@ -10178,23 +11700,43 @@
         "items": [
           {
             "title": "Fast",
-            "description": "Built for speed end to end."
+            "description": "Built for speed end to end.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M13%202L4.5%2013.5H11l-1%208.5%208.5-11.5H12l1-8.5z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           },
           {
             "title": "Secure",
-            "description": "Sensible defaults, hardened."
+            "description": "Sensible defaults, hardened.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%202l8%203v6c0%205-3.4%209.7-8%2011-4.6-1.3-8-6-8-11V5l8-3z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           },
           {
             "title": "Flexible",
-            "description": "Adapts to your stack."
+            "description": "Adapts to your stack.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%208a4%204%200%20100%208%204%204%200%20000-8zm9.4%204l1.8%201.4-1.8%203.2-2.2-.7a7.6%207.6%200%2001-1.8%201l-.4%202.3h-3.6l-.4-2.3a7.6%207.6%200%2001-1.8-1l-2.2.7-1.8-3.2L4.6%2012l-1.8-1.4%201.8-3.2%202.2.7a7.6%207.6%200%20011.8-1L9%204.8h3.6l.4%202.3a7.6%207.6%200%20011.8%201l2.2-.7%201.8%203.2L21.4%2012z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           },
           {
             "title": "Observable",
-            "description": "Know what's happening."
+            "description": "Know what's happening.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M4%2020h16v2H4v-2zm2-8h3v7H6v-7zm5-6h3v13h-3V6zm5%203h3v10h-3V9z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           },
           {
             "title": "Scalable",
-            "description": "Grows with you."
+            "description": "Grows with you.",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%202l2%206%206%202-6%202-2%206-2-6-6-2%206-2%202-6zm7%2012l1%203%203%201-3%201-1%203-1-3-3-1%203-1%201-3z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
           }
         ]
       },
@@ -10273,7 +11815,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -10409,6 +11951,32 @@
                 },
                 "content": [
                   {
+                    "name": "Tile Icon",
+                    "type": "image",
+                    "$slot": "icon",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "contain",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "90%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "36px",
+                      "height": "36px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "28px",
+                        "height": "28px"
+                      },
+                      "tablet": {
+                        "width": "32px",
+                        "height": "32px"
+                      }
+                    }
+                  },
+                  {
                     "name": "Heading",
                     "type": "text",
                     "$slot": "title",
@@ -10461,7 +12029,22 @@
             ]
           }
         ]
-      }
+      },
+      "moods": [
+        "modern",
+        "technical",
+        "playful",
+        "editorial"
+      ],
+      "industries": [
+        "saas",
+        "agency",
+        "ecommerce",
+        "consultancy",
+        "professional-services",
+        "personal",
+        "other"
+      ]
     },
     {
       "id": "hero-bento",
@@ -10624,7 +12207,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "13px",
@@ -10961,7 +12544,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -11241,7 +12824,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "left",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "120px",
@@ -11970,7 +13553,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -12387,7 +13970,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "left",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -12741,7 +14324,7 @@
             "styles": {
               "textAlign": "left",
               "opacity": "100%",
-              "color": "var(--builder-color-primary, #2563eb)",
+              "color": "var(--builder-color-primary-ink, #2563eb)",
               "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
               "fontSize": "13px",
               "letterSpacing": "0.16em",
@@ -13115,7 +14698,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "center",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
                       "width": "100%",
                       "fontSize": "46px",
@@ -13593,7 +15176,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -13814,7 +15397,7 @@
                               "backgroundRepeat": "no-repeat",
                               "textAlign": "center",
                               "opacity": "100%",
-                              "color": "var(--builder-color-primary, #2563eb)",
+                              "color": "var(--builder-color-primary-ink, #2563eb)",
                               "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                               "width": "auto",
                               "display": "inline-flex",
@@ -14051,7 +15634,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -14461,7 +16044,7 @@
                       "backgroundRepeat": "no-repeat",
                       "textAlign": "center",
                       "opacity": "100%",
-                      "color": "var(--builder-color-primary, #2563eb)",
+                      "color": "var(--builder-color-primary-ink, #2563eb)",
                       "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                       "width": "auto",
                       "display": "inline-flex",
@@ -14900,7 +16483,7 @@
                   "backgroundRepeat": "no-repeat",
                   "textAlign": "center",
                   "opacity": "100%",
-                  "color": "var(--builder-color-primary, #2563eb)",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
                   "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
                   "width": "100%",
                   "fontSize": "13px",
@@ -15304,11 +16887,6 @@
           "id": "cta",
           "kind": "link",
           "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
-          "optional": true
         }
       ],
       "sampleContent": {
@@ -15372,22 +16950,6 @@
                 }
               },
               {
-                "name": "Menu",
-                "type": "menu",
-                "styles": {
-                  "width": "auto",
-                  "color": "{{header.fg}}"
-                },
-                "classes": "wt-header-ink",
-                "content": {
-                  "slot": "social",
-                  "variant": "social-inline",
-                  "menuLabel": "Social links",
-                  "colorMode": "manual"
-                },
-                "$if": "has_social"
-              },
-              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
@@ -15432,11 +16994,6 @@
         {
           "id": "cta",
           "kind": "link",
-          "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
           "optional": true
         }
       ],
@@ -15503,22 +17060,6 @@
                 }
               },
               {
-                "name": "Menu",
-                "type": "menu",
-                "styles": {
-                  "width": "auto",
-                  "color": "{{header.fg}}"
-                },
-                "classes": "wt-header-ink",
-                "content": {
-                  "slot": "social",
-                  "variant": "social-inline",
-                  "menuLabel": "Social links",
-                  "colorMode": "manual"
-                },
-                "$if": "has_social"
-              },
-              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
@@ -15548,7 +17089,7 @@
       "layoutVariant": "floating-pill",
       "styleVariant": "chrome",
       "label": "Header — floating-pill",
-      "description": "An inset rounded bar floating over the page; the page background shows around it. Overlay-native: floats over full-bleed heroes with its own chrome — no ink markers, no background reveal on scroll.",
+      "description": "An inset rounded frosted-glass bar floating over the page; the page shows around AND through it. Overlay-native: floats over full-bleed heroes with its own translucent chrome — no ink markers, no background reveal on scroll. Its ink, tint and hairline read --wt-pill-ink/-tint/-hairline with the built value as the fallback, so renderers can flip the pill light or dark to match the section under it as the page scrolls (behavior.adaptiveInk).",
       "tags": [
         "Chrome",
         "Header"
@@ -15563,11 +17104,6 @@
         {
           "id": "cta",
           "kind": "link",
-          "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
           "optional": true
         }
       ],
@@ -15586,8 +17122,8 @@
           "position": "sticky",
           "top": "0",
           "zIndex": "50",
-          "paddingTop": "14px",
-          "paddingBottom": "14px",
+          "paddingTop": "10px",
+          "paddingBottom": "10px",
           "paddingLeft": "24px",
           "paddingRight": "24px"
         },
@@ -15596,26 +17132,27 @@
             "name": "Header bar",
             "type": "container",
             "headerBar": true,
+            "backgroundTexture": "flat",
             "styles": {
               "display": "flex",
               "flexDirection": "row",
               "width": "100%",
               "alignItems": "center",
               "justifyContent": "space-between",
-              "maxWidth": "{{pill.maxWidthPx}}",
+              "maxWidth": "{{page.maxWidthPx}}",
               "marginLeft": "auto",
               "marginRight": "auto",
-              "paddingLeft": "24px",
-              "paddingRight": "24px",
-              "paddingTop": "12px",
-              "paddingBottom": "12px",
+              "paddingLeft": "20px",
+              "paddingRight": "20px",
+              "paddingTop": "8px",
+              "paddingBottom": "8px",
               "gap": "24px",
-              "backgroundColor": "{{header.bg@88}}",
-              "backdropFilter": "blur(12px) saturate(150%)",
-              "WebkitBackdropFilter": "blur(12px) saturate(150%)",
-              "border": "1px solid {{header.fg@10}}",
+              "backgroundColor": "var(--wt-pill-tint, {{glass.tint}})",
+              "backdropFilter": "{{glass.filter}}",
+              "WebkitBackdropFilter": "{{glass.filter}}",
+              "border": "1px solid var(--wt-pill-hairline, {{header.fg@10}})",
               "borderRadius": "{{pill.radiusPx}}",
-              "boxShadow": "0 2px 4px rgba(15,23,42,0.06), 0 12px 28px rgba(15,23,42,0.10)"
+              "boxShadow": "0 2px 4px rgba(0,0,0,0.05), 0 12px 28px rgba(0,0,0,0.09)"
             },
             "content": [
               {
@@ -15630,8 +17167,8 @@
                 "styles": {
                   "width": "100%",
                   "flex": "1 1 0%",
-                  "color": "{{header.fg}}",
-                  "fontSize": "15px"
+                  "color": "var(--wt-pill-ink, {{header.fg}})",
+                  "fontSize": "14px"
                 },
                 "content": {
                   "slot": "primary",
@@ -15641,36 +17178,22 @@
                 }
               },
               {
-                "name": "Menu",
-                "type": "menu",
-                "styles": {
-                  "width": "auto",
-                  "color": "{{header.fg}}"
-                },
-                "content": {
-                  "slot": "social",
-                  "variant": "social-inline",
-                  "menuLabel": "Social links",
-                  "colorMode": "manual"
-                },
-                "$if": "has_social"
-              },
-              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
                   "backgroundColor": "{{buttons.bg}}",
                   "color": "{{buttons.fg}}",
-                  "paddingTop": "10px",
-                  "paddingBottom": "10px",
-                  "paddingLeft": "20px",
-                  "paddingRight": "20px",
+                  "paddingTop": "8px",
+                  "paddingBottom": "8px",
+                  "paddingLeft": "18px",
+                  "paddingRight": "18px",
                   "borderRadius": "{{buttons.radiusPx}}",
                   "fontWeight": 600,
-                  "fontSize": "14px",
+                  "fontSize": "13px",
                   "textDecoration": "none",
                   "display": "inline-flex",
-                  "alignItems": "center"
+                  "alignItems": "center",
+                  "whiteSpace": "nowrap"
                 },
                 "$slot": "cta"
               }
@@ -15700,11 +17223,6 @@
         {
           "id": "cta",
           "kind": "link",
-          "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
           "optional": true
         }
       ],
@@ -15780,22 +17298,6 @@
                       "flex": "1 1 0%"
                     },
                     "content": [
-                      {
-                        "name": "Menu",
-                        "type": "menu",
-                        "styles": {
-                          "width": "auto",
-                          "color": "{{header.fg}}"
-                        },
-                        "classes": "wt-header-ink",
-                        "content": {
-                          "slot": "social",
-                          "variant": "social-inline",
-                          "menuLabel": "Social links",
-                          "colorMode": "manual"
-                        },
-                        "$if": "has_social"
-                      },
                       {
                         "name": "Header CTA",
                         "type": "link",
@@ -15884,11 +17386,6 @@
           "id": "cta",
           "kind": "link",
           "optional": true
-        },
-        {
-          "id": "has_social",
-          "kind": "flag",
-          "optional": true
         }
       ],
       "sampleContent": {
@@ -15950,22 +17447,6 @@
                   "menuLabel": "Primary navigation",
                   "colorMode": "manual"
                 }
-              },
-              {
-                "name": "Menu",
-                "type": "menu",
-                "styles": {
-                  "width": "auto",
-                  "color": "{{header.fg}}"
-                },
-                "classes": "wt-header-ink",
-                "content": {
-                  "slot": "social",
-                  "variant": "social-inline",
-                  "menuLabel": "Social links",
-                  "colorMode": "manual"
-                },
-                "$if": "has_social"
               },
               {
                 "name": "Header CTA",
@@ -16881,6 +18362,11 @@
           "optional": true
         },
         {
+          "id": "ghost_wordmark",
+          "kind": "text",
+          "optional": true
+        },
+        {
           "id": "tagline",
           "kind": "text",
           "optional": true
@@ -17141,6 +18627,3110 @@
           }
         ]
       }
+    },
+    {
+      "id": "downloads-info-card",
+      "sectionType": "downloads",
+      "layoutVariant": "card",
+      "styleVariant": "default",
+      "label": "Downloads",
+      "description": "A grid of downloadable-document cards — each its own title, thumbnail, and file link(s) (e.g. a brochure offered in several languages). Attach a file to each button from the Link panel.",
+      "tags": [
+        "Downloads",
+        "Files",
+        "PDF"
+      ],
+      "thumbnail": "downloads-info-card",
+      "slots": [
+        {
+          "id": "heading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "image",
+              "kind": "image",
+              "optional": true
+            },
+            {
+              "id": "title",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "links",
+              "kind": "list",
+              "item": [
+                {
+                  "id": "cta",
+                  "kind": "link"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "heading": "Downloads",
+        "items": [
+          {
+            "title": "Music Therapy General Flyer",
+            "image": {
+              "src": "",
+              "alt": ""
+            },
+            "links": [
+              {
+                "cta": {
+                  "innerText": "Download Flyer",
+                  "href": "#"
+                }
+              }
+            ]
+          },
+          {
+            "title": "Music Therapy for Mental Health",
+            "image": {
+              "src": "",
+              "alt": ""
+            },
+            "links": [
+              {
+                "cta": {
+                  "innerText": "English",
+                  "href": "#"
+                }
+              },
+              {
+                "cta": {
+                  "innerText": "Bahasa Malaysia",
+                  "href": "#"
+                }
+              },
+              {
+                "cta": {
+                  "innerText": "中文",
+                  "href": "#"
+                }
+              }
+            ]
+          },
+          {
+            "title": "Music Therapy for Aged Care",
+            "image": {
+              "src": "",
+              "alt": ""
+            },
+            "links": [
+              {
+                "cta": {
+                  "innerText": "English",
+                  "href": "#"
+                }
+              },
+              {
+                "cta": {
+                  "innerText": "Bahasa Malaysia",
+                  "href": "#"
+                }
+              },
+              {
+                "cta": {
+                  "innerText": "中文",
+                  "href": "#"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "tree": {
+        "name": "Downloads",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "alignItems": "center",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "44px",
+            "paddingRight": "20px",
+            "paddingBottom": "48px",
+            "paddingLeft": "20px",
+            "gap": "24px"
+          },
+          "tablet": {
+            "paddingTop": "56px",
+            "paddingRight": "32px",
+            "paddingBottom": "56px",
+            "paddingLeft": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Heading",
+            "type": "text",
+            "$slot": "heading",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-secondary, #0f172a)",
+              "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+              "width": "100%",
+              "fontSize": "32px",
+              "lineHeight": "1.15",
+              "letterSpacing": "-0.02em",
+              "fontWeight": 800
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "fontSize": "22px"
+              },
+              "tablet": {
+                "fontSize": "26px"
+              }
+            }
+          },
+          {
+            "name": "Document Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "3Col",
+            "$repeat": "items",
+            "$gridFit": true,
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "28px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "18px"
+              },
+              "tablet": {
+                "gap": "22px"
+              }
+            },
+            "content": [
+              {
+                "name": "Document Card",
+                "type": "container",
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "gap": "10px",
+                  "padding": "24px 20px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "rgba(255,255,255,0.94)",
+                  "border": "1px solid rgba(148,163,184,0.18)",
+                  "boxShadow": "0 16px 40px rgba(15,23,42,0.08)"
+                },
+                "content": [
+                  {
+                    "name": "Document Thumbnail",
+                    "type": "image",
+                    "$slot": "image",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "height": "auto",
+                      "aspectRatio": "4 / 3",
+                      "borderRadius": "14px"
+                    },
+                    "content": {
+                      "caption": ""
+                    }
+                  },
+                  {
+                    "name": "Document Title",
+                    "type": "text",
+                    "$slot": "title",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "16px",
+                      "lineHeight": "1.4",
+                      "fontWeight": 700
+                    }
+                  },
+                  {
+                    "name": "Download buttons",
+                    "type": "container",
+                    "$repeat": "links",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "flexDirection": "row",
+                      "flexWrap": "wrap",
+                      "alignItems": "center",
+                      "justifyContent": "center",
+                      "gap": "8px"
+                    },
+                    "content": [
+                      {
+                        "name": "Download button",
+                        "type": "link",
+                        "$slot": "cta",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "center",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-primary-ink, var(--builder-color-primary, #2563eb))",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "backgroundColor": "color-mix(in srgb, var(--builder-color-primary, #2563eb) 6%, #ffffff)",
+                          "border": "1px solid color-mix(in srgb, var(--builder-color-primary, #2563eb) 30%, #ffffff)",
+                          "paddingTop": "10px",
+                          "paddingRight": "18px",
+                          "paddingBottom": "10px",
+                          "paddingLeft": "18px",
+                          "borderRadius": "var(--builder-button-radius, 14px)",
+                          "textDecoration": "none",
+                          "display": "inline-flex",
+                          "alignItems": "center",
+                          "justifyContent": "center",
+                          "fontWeight": 600,
+                          "fontSize": "14px"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "features-bento-photo",
+      "sectionType": "features",
+      "layoutVariant": "bento",
+      "styleVariant": "photo-grid",
+      "label": "Bento Feature Grid (Photo)",
+      "description": "Modular bento grid of dark tiles in mixed sizes; each tile leads with its own photo where one is available and falls back to the brand's dark band colour where it is not. Satisfies the photo-topped card policy, so it competes with the image-card grid.",
+      "tags": [
+        "Features",
+        "Bento",
+        "Photo",
+        "Modular",
+        "Grid"
+      ],
+      "thumbnail": "features-bento-photo",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "image",
+              "kind": "image"
+            },
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "description",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Features",
+        "heading": "Everything you need, modular.",
+        "subheading": "A flexible set of capabilities arranged in a bento grid.",
+        "items": [
+          {
+            "image": {
+              "query": "team collaborating at a desk"
+            },
+            "title": "Fast",
+            "description": "Built for speed end to end."
+          },
+          {
+            "image": {
+              "query": "server room detail"
+            },
+            "title": "Secure",
+            "description": "Sensible defaults, hardened."
+          },
+          {
+            "image": {
+              "query": "designer sketching"
+            },
+            "title": "Flexible",
+            "description": "Adapts to your stack."
+          },
+          {
+            "image": {
+              "query": "analytics dashboard"
+            },
+            "title": "Observable",
+            "description": "Know what's happening."
+          },
+          {
+            "image": {
+              "query": "city skyline at dusk"
+            },
+            "title": "Scalable",
+            "description": "Grows with you."
+          }
+        ]
+      },
+      "tree": {
+        "name": "Features - Bento Photo",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingRight": "20px",
+            "paddingBottom": "64px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "84px",
+            "paddingRight": "32px",
+            "paddingBottom": "84px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Intro",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "14px",
+              "maxWidth": "640px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "10px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.14em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif))",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.08",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.66)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.65"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px"
+                  },
+                  "tablet": {}
+                }
+              }
+            ]
+          },
+          {
+            "name": "Bento Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "container",
+            "$bento": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "grid",
+              "gridTemplateColumns": "repeat(6, 1fr)",
+              "gridAutoFlow": "dense",
+              "gridAutoRows": "minmax(150px, auto)",
+              "gap": "16px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gridTemplateColumns": "repeat(2, 1fr)",
+                "gridAutoRows": "minmax(120px, auto)",
+                "gap": "12px"
+              },
+              "tablet": {
+                "gridTemplateColumns": "repeat(4, 1fr)",
+                "gap": "14px"
+              }
+            },
+            "content": [
+              {
+                "name": "Bento Tile",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "10px",
+                  "justifyContent": "flex-end",
+                  "padding": "28px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "var(--builder-color-secondary, #0f172a)",
+                  "backgroundSize": "cover",
+                  "border": "1px solid rgba(148,163,184,0.16)",
+                  "boxShadow": "0 1px 2px rgba(15,23,42,0.05), 0 8px 24px rgba(15,23,42,0.05)",
+                  "minHeight": "210px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "padding": "20px",
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "padding": "24px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Heading",
+                    "type": "text",
+                    "$slot": "title",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "#ffffff",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "22px",
+                      "fontWeight": 700,
+                      "lineHeight": "1.2",
+                      "letterSpacing": "-0.01em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "18px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Body",
+                    "type": "text",
+                    "$slot": "description",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(255,255,255,0.82)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "fontWeight": 400,
+                      "lineHeight": "1.5"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ],
+                "$styleSlot": {
+                  "slot": "image",
+                  "property": "backgroundImage",
+                  "format": "linear-gradient(rgba(15,23,42,0.35), rgba(15,23,42,0.78)), url('{}')"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "moods": [
+        "modern",
+        "technical",
+        "playful",
+        "editorial"
+      ],
+      "industries": [
+        "saas",
+        "agency",
+        "ecommerce",
+        "consultancy",
+        "professional-services",
+        "personal",
+        "other"
+      ]
+    },
+    {
+      "id": "services-bento-photo",
+      "sectionType": "services",
+      "layoutVariant": "bento",
+      "styleVariant": "photo-grid",
+      "label": "Bento Service Grid (Photo)",
+      "description": "Modular bento grid of dark tiles for service offerings; each tile leads with its own photo where one is available, otherwise the brand's dark band colour. Satisfies the photo-topped card policy.",
+      "tags": [
+        "Services",
+        "Bento",
+        "Photo",
+        "Modular",
+        "Grid"
+      ],
+      "thumbnail": "services-bento-photo",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "image",
+              "kind": "image"
+            },
+            {
+              "id": "title",
+              "kind": "text"
+            },
+            {
+              "id": "description",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Services",
+        "heading": "What we do, end to end.",
+        "subheading": "A modular set of services arranged in a bento grid.",
+        "items": [
+          {
+            "image": {
+              "query": "team collaborating at a desk"
+            },
+            "title": "Fast",
+            "description": "Built for speed end to end."
+          },
+          {
+            "image": {
+              "query": "server room detail"
+            },
+            "title": "Secure",
+            "description": "Sensible defaults, hardened."
+          },
+          {
+            "image": {
+              "query": "designer sketching"
+            },
+            "title": "Flexible",
+            "description": "Adapts to your stack."
+          },
+          {
+            "image": {
+              "query": "analytics dashboard"
+            },
+            "title": "Observable",
+            "description": "Know what's happening."
+          },
+          {
+            "image": {
+              "query": "city skyline at dusk"
+            },
+            "title": "Scalable",
+            "description": "Grows with you."
+          }
+        ]
+      },
+      "tree": {
+        "name": "Services - Bento Photo",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingRight": "20px",
+            "paddingBottom": "64px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "84px",
+            "paddingRight": "32px",
+            "paddingBottom": "84px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Intro",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "14px",
+              "maxWidth": "640px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "10px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.14em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif))",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.08",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.66)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.65"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px"
+                  },
+                  "tablet": {}
+                }
+              }
+            ]
+          },
+          {
+            "name": "Bento Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "container",
+            "$bento": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "grid",
+              "gridTemplateColumns": "repeat(6, 1fr)",
+              "gridAutoFlow": "dense",
+              "gridAutoRows": "minmax(150px, auto)",
+              "gap": "16px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gridTemplateColumns": "repeat(2, 1fr)",
+                "gridAutoRows": "minmax(120px, auto)",
+                "gap": "12px"
+              },
+              "tablet": {
+                "gridTemplateColumns": "repeat(4, 1fr)",
+                "gap": "14px"
+              }
+            },
+            "content": [
+              {
+                "name": "Bento Tile",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "10px",
+                  "justifyContent": "flex-end",
+                  "padding": "28px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "var(--builder-color-secondary, #0f172a)",
+                  "backgroundSize": "cover",
+                  "border": "1px solid rgba(148,163,184,0.16)",
+                  "boxShadow": "0 1px 2px rgba(15,23,42,0.05), 0 8px 24px rgba(15,23,42,0.05)",
+                  "minHeight": "210px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "padding": "20px",
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "padding": "24px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Heading",
+                    "type": "text",
+                    "$slot": "title",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "#ffffff",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "22px",
+                      "fontWeight": 700,
+                      "lineHeight": "1.2",
+                      "letterSpacing": "-0.01em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "18px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Body",
+                    "type": "text",
+                    "$slot": "description",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(255,255,255,0.82)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "fontWeight": 400,
+                      "lineHeight": "1.5"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ],
+                "$styleSlot": {
+                  "slot": "image",
+                  "property": "backgroundImage",
+                  "format": "linear-gradient(rgba(15,23,42,0.35), rgba(15,23,42,0.78)), url('{}')"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "moods": [
+        "modern",
+        "technical",
+        "playful",
+        "editorial"
+      ],
+      "industries": [
+        "saas",
+        "agency",
+        "ecommerce",
+        "consultancy",
+        "professional-services",
+        "personal",
+        "other"
+      ]
+    },
+    {
+      "id": "gallery-bento",
+      "sectionType": "gallery",
+      "layoutVariant": "bento",
+      "styleVariant": "photo-grid",
+      "label": "Bento Gallery",
+      "description": "Photo gallery arranged as a modular bento: one large lead image, periodic wide images and standard tiles. Tiles are click-to-enlarge and navigate as one set.",
+      "tags": [
+        "Gallery",
+        "Bento",
+        "Photo",
+        "Modular",
+        "Grid"
+      ],
+      "thumbnail": "gallery-bento",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "image",
+              "kind": "image"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Gallery",
+        "heading": "A look around.",
+        "subheading": "Moments from the work.",
+        "items": [
+          {
+            "image": {
+              "query": "bright studio interior"
+            }
+          },
+          {
+            "image": {
+              "query": "close up of hands working"
+            }
+          },
+          {
+            "image": {
+              "query": "team portrait candid"
+            }
+          },
+          {
+            "image": {
+              "query": "finished product detail"
+            }
+          },
+          {
+            "image": {
+              "query": "workshop wide shot"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Gallery - Bento",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingRight": "20px",
+            "paddingBottom": "64px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "84px",
+            "paddingRight": "32px",
+            "paddingBottom": "84px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Intro",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "14px",
+              "maxWidth": "640px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "10px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.14em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif))",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.08",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.66)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.65"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px"
+                  },
+                  "tablet": {}
+                }
+              }
+            ]
+          },
+          {
+            "name": "Bento Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "container",
+            "$bento": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "grid",
+              "gridTemplateColumns": "repeat(6, 1fr)",
+              "gridAutoFlow": "dense",
+              "gridAutoRows": "minmax(150px, auto)",
+              "gap": "16px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gridTemplateColumns": "repeat(2, 1fr)",
+                "gridAutoRows": "minmax(120px, auto)",
+                "gap": "12px"
+              },
+              "tablet": {
+                "gridTemplateColumns": "repeat(4, 1fr)",
+                "gap": "14px"
+              }
+            },
+            "content": [
+              {
+                "name": "Bento Tile",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "borderRadius": "20px",
+                  "overflow": "hidden",
+                  "backgroundColor": "var(--builder-color-secondary, #0f172a)",
+                  "minHeight": "150px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "minHeight": "0px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Gallery Image",
+                    "type": "image",
+                    "$slot": "image",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "height": "100%",
+                      "minHeight": "150px",
+                      "display": "block"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "minHeight": "120px"
+                      },
+                      "tablet": {
+                        "minHeight": "140px"
+                      }
+                    }
+                  }
+                ]
+              }
+            ],
+            "lightbox": true
+          }
+        ]
+      },
+      "moods": [
+        "modern",
+        "editorial",
+        "playful"
+      ],
+      "industries": [
+        "agency",
+        "personal",
+        "restaurant",
+        "ecommerce",
+        "nonprofit",
+        "other"
+      ]
+    },
+    {
+      "id": "video-grid",
+      "sectionType": "video",
+      "layoutVariant": "grid",
+      "styleVariant": "players",
+      "label": "Video Grid",
+      "description": "A grid of embedded video players, each with its own caption. Best for a video gallery, recorded events, or a set of programme clips. Two across, because a 16:9 player needs width to stay watchable.",
+      "tags": [
+        "Video",
+        "Media",
+        "Gallery"
+      ],
+      "thumbnail": "video-grid",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 2,
+          "item": [
+            {
+              "id": "video",
+              "kind": "video"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Videos",
+        "heading": "See us in action.",
+        "subheading": "A few moments from our programmes.",
+        "items": [
+          {
+            "video": {
+              "src": "https://www.youtube.com/embed/dQw4w9WgXcQ"
+            },
+            "caption": "Video 1"
+          },
+          {
+            "video": {
+              "src": "https://www.youtube.com/embed/aqz-KE-bpKQ"
+            },
+            "caption": "Video 2"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Video - Grid",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Video Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "2Col",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "24px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {
+                "gap": "20px"
+              }
+            },
+            "content": [
+              {
+                "name": "Video Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "12px",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "10px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Video Player",
+                    "type": "video",
+                    "$slot": "video",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "aspectRatio": "16 / 9",
+                      "display": "block",
+                      "border": "none",
+                      "borderRadius": "16px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(148,163,184,0.16)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": {}
+                  },
+                  {
+                    "name": "Video Caption",
+                    "type": "text",
+                    "$slot": "caption",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ],
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "video-feature",
+      "sectionType": "video",
+      "layoutVariant": "feature",
+      "styleVariant": "player",
+      "label": "Featured Video",
+      "description": "One embedded video at full width, with an optional heading above it. Best for a single introduction, tour, or showreel.",
+      "tags": [
+        "Video",
+        "Media",
+        "Feature"
+      ],
+      "thumbnail": "video-feature",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "video",
+              "kind": "video"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Watch",
+        "heading": "Take a look inside.",
+        "subheading": null,
+        "items": [
+          {
+            "video": {
+              "src": "https://www.youtube.com/embed/dQw4w9WgXcQ"
+            },
+            "caption": "Video 1"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Video - Feature",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Video Feature",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "24px",
+              "maxWidth": "900px",
+              "marginLeft": "auto",
+              "marginRight": "auto"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Video Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "12px",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "10px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Video Player",
+                    "type": "video",
+                    "$slot": "video",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "aspectRatio": "16 / 9",
+                      "display": "block",
+                      "border": "none",
+                      "borderRadius": "16px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(148,163,184,0.16)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": {}
+                  },
+                  {
+                    "name": "Video Caption",
+                    "type": "text",
+                    "$slot": "caption",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "map-grid",
+      "sectionType": "map",
+      "layoutVariant": "grid",
+      "styleVariant": "embeds",
+      "label": "Map Grid",
+      "description": "A grid of embedded maps, each with its own caption. Best for a business with several branches. Two across, because a map needs width before its street names are legible.",
+      "tags": [
+        "Map",
+        "Location",
+        "Branches"
+      ],
+      "thumbnail": "map-grid",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 2,
+          "item": [
+            {
+              "id": "map",
+              "kind": "video"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Find us",
+        "heading": "Come and see us.",
+        "subheading": null,
+        "items": [
+          {
+            "map": {
+              "src": "https://maps.google.com/maps?q=Metro+Prima+Kepong+Kuala+Lumpur&output=embed",
+              "title": "Map: Kepong branch"
+            },
+            "caption": "Kepong branch"
+          },
+          {
+            "map": {
+              "src": "https://maps.google.com/maps?q=Bandar+Menjalara+Kuala+Lumpur&output=embed",
+              "title": "Map: Menjalara branch"
+            },
+            "caption": "Menjalara branch"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Map - Grid",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Map Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "2Col",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "gap": "24px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {
+                "gap": "20px"
+              }
+            },
+            "content": [
+              {
+                "name": "Map Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "12px",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "10px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Map Frame",
+                    "type": "video",
+                    "$slot": "map",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "aspectRatio": "16 / 9",
+                      "display": "block",
+                      "border": "none",
+                      "borderRadius": "16px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(148,163,184,0.16)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": {}
+                  },
+                  {
+                    "name": "Map Caption",
+                    "type": "text",
+                    "$slot": "caption",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ],
+                "classes": "builder-column-cell flex-1 min-w-0 self-stretch"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "map-feature",
+      "sectionType": "map",
+      "layoutVariant": "feature",
+      "styleVariant": "embed",
+      "label": "Location Map",
+      "description": "One embedded map at full width, with an optional heading above it. Best for a single address, campus, or head office.",
+      "tags": [
+        "Map",
+        "Location",
+        "Contact"
+      ],
+      "thumbnail": "map-feature",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "map",
+              "kind": "video"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Find us",
+        "heading": "Come and see us.",
+        "subheading": null,
+        "items": [
+          {
+            "map": {
+              "src": "https://maps.google.com/maps?q=Metro+Prima+Kepong+Kuala+Lumpur&output=embed",
+              "title": "Map: Kepong branch"
+            },
+            "caption": "Kepong branch"
+          }
+        ]
+      },
+      "tree": {
+        "name": "Map - Feature",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Map Feature",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "$repeat": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "24px",
+              "maxWidth": "900px",
+              "marginLeft": "auto",
+              "marginRight": "auto"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "16px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Map Cell",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "12px",
+                  "minHeight": "0px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "gap": "10px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Map Frame",
+                    "type": "video",
+                    "$slot": "map",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "aspectRatio": "16 / 9",
+                      "display": "block",
+                      "border": "none",
+                      "borderRadius": "16px",
+                      "overflow": "hidden",
+                      "backgroundColor": "rgba(148,163,184,0.16)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "content": {}
+                  },
+                  {
+                    "name": "Map Caption",
+                    "type": "text",
+                    "$slot": "caption",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.5",
+                      "fontWeight": 600
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "stats-bento",
+      "sectionType": "stats",
+      "layoutVariant": "bento",
+      "styleVariant": "grid",
+      "label": "Bento Stat Grid",
+      "description": "Key numbers as a modular bento of brand-dark tiles, the lead figure given a large tile. An alternative to the single counter band.",
+      "tags": [
+        "Stats",
+        "Bento",
+        "Numbers",
+        "Modular",
+        "Grid"
+      ],
+      "thumbnail": "stats-bento",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "icon",
+              "kind": "image",
+              "optional": true
+            },
+            {
+              "id": "value",
+              "kind": "text"
+            },
+            {
+              "id": "label",
+              "kind": "text"
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "By the numbers",
+        "heading": "Measured, not claimed.",
+        "subheading": "A few figures that describe the work.",
+        "items": [
+          {
+            "value": "500+",
+            "label": "Projects delivered",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M4%2020h16v2H4v-2zm2-8h3v7H6v-7zm5-6h3v13h-3V6zm5%203h3v10h-3V9z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
+          },
+          {
+            "value": "12",
+            "label": "Years in practice",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%202a10%2010%200%20100%2020%2010%2010%200%20000-20zm1%205h-2v6l5%203%201-1.7-4-2.3V7z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
+          },
+          {
+            "value": "98%",
+            "label": "Client satisfaction",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M12%202a10%2010%200%20100%2020%2010%2010%200%20000-20zM8.5%209.5a1.5%201.5%200%20113%200%201.5%201.5%200%2001-3%200zm4%200a1.5%201.5%200%20113%200%201.5%201.5%200%2001-3%200zM12%2018a5%205%200%2001-4.6-3h9.2A5%205%200%200112%2018z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
+          },
+          {
+            "value": "40",
+            "label": "Specialists on staff",
+            "icon": {
+              "src": "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%20fill%3D%27%230f172a%27%3E%3Cpath%20d%3D%27M9%2012a4%204%200%20100-8%204%204%200%20000%208zm0%202c-3.3%200-8%201.7-8%204v3h16v-3c0-2.3-4.7-4-8-4zm9-2a3%203%200%20100-6%203%203%200%20000%206zm5%206v3h-3v-3c0-1.4-.7-2.5-1.8-3.3%203%20.4%204.8%201.8%204.8%203.3z%27%2F%3E%3C%2Fsvg%3E",
+              "alt": ""
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Stats - Bento",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "104px",
+          "paddingBottom": "104px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "60px",
+            "paddingRight": "20px",
+            "paddingBottom": "64px",
+            "paddingLeft": "20px",
+            "gap": "32px"
+          },
+          "tablet": {
+            "paddingTop": "84px",
+            "paddingRight": "32px",
+            "paddingBottom": "84px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Intro",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "14px",
+              "maxWidth": "640px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "10px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.14em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, var(--builder-font-body, system-ui, sans-serif))",
+                  "width": "100%",
+                  "fontSize": "40px",
+                  "lineHeight": "1.08",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "28px"
+                  },
+                  "tablet": {
+                    "fontSize": "34px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.66)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.65"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "15px"
+                  },
+                  "tablet": {}
+                }
+              }
+            ]
+          },
+          {
+            "name": "Bento Grid",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "type": "container",
+            "$bento": "items",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "grid",
+              "gridTemplateColumns": "repeat(6, 1fr)",
+              "gridAutoFlow": "dense",
+              "gridAutoRows": "minmax(150px, auto)",
+              "gap": "16px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gridTemplateColumns": "repeat(2, 1fr)",
+                "gridAutoRows": "minmax(120px, auto)",
+                "gap": "12px"
+              },
+              "tablet": {
+                "gridTemplateColumns": "repeat(4, 1fr)",
+                "gap": "14px"
+              }
+            },
+            "content": [
+              {
+                "name": "Bento Tile",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "gap": "10px",
+                  "justifyContent": "flex-end",
+                  "padding": "28px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "rgba(248,250,252,0.92)",
+                  "backgroundSize": "cover",
+                  "border": "1px solid rgba(148,163,184,0.16)",
+                  "boxShadow": "0 1px 2px rgba(15,23,42,0.05), 0 8px 24px rgba(15,23,42,0.05)",
+                  "minHeight": "150px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "padding": "20px",
+                    "minHeight": "0px"
+                  },
+                  "tablet": {
+                    "padding": "24px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Tile Icon",
+                    "type": "image",
+                    "$slot": "icon",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "contain",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "90%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "36px",
+                      "height": "36px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "28px",
+                        "height": "28px"
+                      },
+                      "tablet": {
+                        "width": "32px",
+                        "height": "32px"
+                      }
+                    }
+                  },
+                  {
+                    "name": "Heading",
+                    "type": "text",
+                    "$slot": "value",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "44px",
+                      "fontWeight": 800,
+                      "lineHeight": "1.0",
+                      "letterSpacing": "-0.03em"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "32px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Body",
+                    "type": "text",
+                    "$slot": "label",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "rgba(15,23,42,0.66)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "fontWeight": 500,
+                      "lineHeight": "1.4"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "moods": [
+        "modern",
+        "technical",
+        "playful",
+        "editorial"
+      ],
+      "industries": [
+        "saas",
+        "agency",
+        "ecommerce",
+        "consultancy",
+        "professional-services",
+        "personal",
+        "other"
+      ]
     }
   ]
 }

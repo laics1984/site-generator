@@ -2,6 +2,7 @@ import httpx
 from fastapi import APIRouter
 
 from app.config import settings
+from app.services import text_detection
 
 router = APIRouter(tags=["health"])
 
@@ -60,4 +61,25 @@ async def health_pexels() -> dict[str, object]:
         "status": "missing_key",
         "provider": "placeholder_fallback",
         "hint": "Set PEXELS_API_KEY in .env for topical photos. Get a free key at https://www.pexels.com/api/.",
+    }
+
+
+@router.get("/health/ocr")
+async def health_ocr() -> dict[str, object]:
+    """Reports whether the hero text-detection veto can actually run.
+
+    Unlike /health/pexels this does real work on first hit — it lazily loads
+    the rapidocr-onnxruntime model (~350ms, no network) to find out, since a
+    missing/broken wheel is otherwise silent (see text_detection._engine).
+    Cached process-lifetime after the first call either way.
+    """
+    if not settings.ocr_text_detection_enabled:
+        return {"status": "disabled"}
+    if text_detection.ocr_engine_available():
+        return {"status": "ok"}
+    return {
+        "status": "unavailable",
+        "hint": "rapidocr-onnxruntime is not importable — hero backgrounds fall "
+        "back to vision/naming signals only. Rebuild the image after a "
+        "requirements.txt change, or check the container logs for the import error.",
     }

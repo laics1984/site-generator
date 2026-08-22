@@ -28,18 +28,30 @@ import time
 import urllib.robotparser
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
-from urllib.parse import urljoin, urlparse
+from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 import httpx
 import trafilatura
 from bs4 import BeautifulSoup, Tag
-from playwright.async_api import async_playwright
 
 from app.config import settings
 from app.models.brand import BrandIdentity
-from app.models.content_blocks import ImageMetadata, ProfileCandidate, SourceContent
-from app.services.url_guard import UnsafeUrlError, assert_public_url, is_public_url
+from app.models.content_blocks import (
+    DocumentCardCandidate,
+    DocumentCardLink,
+    ImageMetadata,
+    MapEmbed,
+    NavLink,
+    ProfileCandidate,
+    SectionCandidate,
+    SourceContent,
+    VideoEmbed,
+)
+from app.services.brand_candidate import build_brand_candidate
+from app.services.browser import RenderError, browser_context, rendered_page
+from app.services.source_preview import ImageCandidate
+from app.services.url_guard import UnsafeUrlError, assert_public_url
 from app.services.timing import stage
 from app.services.fast_fetch import (
     FastFetchResult,
@@ -47,12 +59,37 @@ from app.services.fast_fetch import (
     try_fast_fetch,
 )
 from app.services.image_evidence import ImageEvidence, classify_role, parse_evidence
-from app.services.logo import extract_palette_from_image_bytes
+from app.services.image_urls import (
+    _IMG_EXT_OK,
+    BG_URL_RE,
+    absolute_url as _absolute_url,
+    image_src_from_tag as _image_src_from_tag,
+    looks_like_icon as _looks_like_icon,
+    looks_like_logo_url as _looks_like_logo_url,
+    tag_classes as _tag_classes,
+)
+from app.services.logo_extraction import LogoCandidate, extract_logo
+from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
+from app.services.map_embed import ParsedMap, parse_map_src
+from app.services.video_embed import ParsedVideo, parse_video_src
+from app.services.profile_text import (
+    has_contact_token,
+    is_boilerplate_line,
+    roster_is_people,
+)
 from app.services.nav_extraction import (
+    DOCUMENT_EXTENSIONS,
     extract_body_link_clusters,
     extract_nav_links,
     extract_social_links,
+    is_document_href,
+    social_links_from_anchors,
     strip_chrome_lines,
+    strip_chrome_sections,
+)
+from app.services.section_extraction import (
+    extract_section_candidates,
+    in_repeated_image_group as _in_repeated_image_group,
 )
 from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
 
@@ -62,31 +99,9 @@ logger = logging.getLogger(__name__)
 # --- public types ---------------------------------------------------------------
 
 
-@dataclass
-class ImageCandidate:
-    """One image candidate found on the page, with an intent guess."""
-
-    url: str
-    alt: str
-    width: int | None
-    height: int | None
-    intent: str  # 'hero' | 'about' | 'logo' | 'generic'
-    # Visual role measured from render evidence (image_evidence.classify_role).
-    # 'unknown' when the page came through the httpx fast path (no stamps).
-    role: str = "unknown"
-    evidence: ImageEvidence | None = None
-    # How the source site used this image: 'css_background' when it came from a
-    # CSS background-image (stamped attr, inline style or <style> block),
-    # 'inline' for <img>/og:image. Downstream, css_background images are kept
-    # out of side/featured slots and pinned to full-bleed background slots.
-    source_usage: str = "inline"
-    # Nearest preceding heading text — ties the image back to the source
-    # section it illustrated. Feeds the planner prompt (image_ref binding)
-    # and the matcher's lexical scoring.
-    context_heading: str = ""
-    # <figcaption> text when the image sits inside a <figure>.
-    caption: str = ""
-
+# `ImageCandidate` is defined in services/source_preview.py — every reader
+# (crawl, document upload, Facebook) emits the same one. Re-exported here
+# because this module's own call sites and tests reference `scraper.ImageCandidate`.
 
 @dataclass
 class ScrapeResult:
@@ -151,50 +166,12 @@ async def _robots_allows(url: str, user_agent: str) -> bool:
 # 403 anything that looks like a bot — `WebtreeSiteGenerator/x.y` would fail on
 # the first request. We still respect robots.txt and rate limits; the UA just
 # stops naive blocklist matching from rejecting us at the door.
-# Single source of truth in config (shared with the httpx fast-fetch path).
-BROWSER_USER_AGENT = settings.http_user_agent
+# Browser identity, stealth and resource blocking now live in services/browser.py
+# — three modules need a rendered page and only one of them is this crawler.
+# Re-exported here because call sites throughout this file still read them.
 
 # Used for the robots.txt check only — that endpoint isn't gated by WAFs.
 USER_AGENT = "WebtreeSiteGenerator/0.2 (+contact: hello@example.com)"
-
-# Headers a real Chrome on macOS sends. Many WAFs flag requests missing these.
-_BROWSER_HEADERS = {
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,*/*;q=0.8"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Ch-Ua": '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"macOS"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-}
-
-# Patched into every page on context creation to mask the most-obvious Playwright
-# tell. Doesn't beat sophisticated stealth detection but clears most checks.
-_STEALTH_INIT_SCRIPT = """
-Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-Object.defineProperty(navigator, 'plugins', {
-  get: () => [1, 2, 3, 4, 5].map(() => ({}))
-});
-Object.defineProperty(navigator, 'languages', {
-  get: () => ['en-US', 'en']
-});
-window.chrome = window.chrome || { runtime: {} };
-"""
-
-
-async def _route_block_heavy(route, request) -> None:
-    """Block media/font/websocket resources to speed up renders."""
-    if request.resource_type in {"media", "font", "websocket"}:
-        await route.abort()
-    else:
-        await route.continue_()
 
 
 async def _autoscroll(page, *, max_steps: int = 12, step_px: int = 1200) -> None:
@@ -307,107 +284,30 @@ async def _stamp_render_evidence(page) -> None:
 async def _goto_and_render(
     context, url: str, *, timeout_ms: int
 ) -> tuple[str, str]:
-    """Render a single URL inside an existing browser context.
+    """Render a single URL inside an existing browser context, crawler-style.
 
     Returns (final_url, html). Raises ScrapeError for 4xx/5xx responses, or for
     a URL that fails the SSRF guard (non-public host).
+
+    The navigation itself lives in ``browser.rendered_page``; what's left here
+    is the part only the crawler wants — a scroll pass and the render-evidence
+    stamps its image pipeline reads back off the DOM.
     """
     try:
-        await assert_public_url(url)
-    except UnsafeUrlError as exc:
-        raise ScrapeError(str(exc), status=400) from exc
-    page = await context.new_page()
-    try:
-        response = await page.goto(
-            url, wait_until="domcontentloaded", timeout=timeout_ms
-        )
-        if response is None:
-            raise ScrapeError(f"No response from {url}", status=502)
-        if response.status == 403:
-            raise ScrapeError(
-                f"{url} blocked our request (403). The site has bot-detection "
-                "active and won't render in a headless browser. Try pasting the "
-                "page content into the document tab instead, or pick a different "
-                "URL on the same site that's less protected (e.g. a blog post).",
-                status=403,
-            )
-        if response.status == 401:
-            raise ScrapeError(
-                f"{url} requires authentication (401). Paste the content "
-                "directly into the document tab instead.",
-                status=401,
-            )
-        if response.status == 429:
-            raise ScrapeError(
-                f"{url} is rate-limiting us (429). Wait a minute and try again.",
-                status=429,
-            )
-        if response.status >= 400:
-            raise ScrapeError(
-                f"Page returned {response.status} for {url}", status=502
-            )
-        try:
-            await page.wait_for_load_state("networkidle", timeout=3000)
-        except Exception:
-            pass
-        # Scroll the page in steps so IntersectionObserver / lazy-load reveals
-        # below-the-fold copy before we snapshot. Without this, paragraphs that
-        # only mount on scroll never make it into page.content().
-        await _autoscroll(page)
-        await _stamp_render_evidence(page)
-        html = await page.content()
-        final_url = page.url
-    finally:
-        await page.close()
-    return final_url, html
-
-
-async def _fetch_rendered_html(
-    url: str, *, timeout_ms: int | None = None
-) -> tuple[str, str]:
-    """Single-shot render — launches its own browser. Use _fetch_many for crawls."""
-    if timeout_ms is None:
-        timeout_ms = settings.playwright_goto_timeout_ms
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ],
-        )
-        context = await browser.new_context(
-            user_agent=BROWSER_USER_AGENT,
-            viewport={"width": 1366, "height": 900},
-            ignore_https_errors=True,
-            locale="en-US",
-            extra_http_headers=_BROWSER_HEADERS,
-        )
-        await context.add_init_script(_STEALTH_INIT_SCRIPT)
-        await context.route("**/*", _route_block_heavy)
-        try:
-            return await _goto_and_render(context, url, timeout_ms=timeout_ms)
-        finally:
-            await context.close()
-            await browser.close()
+        async with rendered_page(context, url, timeout_ms=timeout_ms) as page:
+            # Scroll the page in steps so IntersectionObserver / lazy-load
+            # reveals below-the-fold copy before we snapshot. Without this,
+            # paragraphs that only mount on scroll never reach page.content().
+            await _autoscroll(page)
+            await _stamp_render_evidence(page)
+            return page.url, await page.content()
+    except RenderError as exc:
+        raise ScrapeError(str(exc), status=exc.status) from exc
 
 
 # --- HTML parsing ---------------------------------------------------------------
 
 
-_IMG_EXT_OK = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")
-_LOGO_HINTS = ("logo", "brandmark", "wordmark", "header-logo")
-_BAD_IMG_HINTS = (
-    "tracking",
-    "pixel",
-    "spacer",
-    "blank",
-    "sprite",
-    "1x1",
-    "loader",
-    "loading",
-)
 _PROFILE_CONTAINER_HINTS = (
     "team",
     "member",
@@ -424,6 +324,8 @@ _PROFILE_CONTAINER_HINTS = (
     "director",
 )
 _PROFILE_NAME_HINTS = ("name", "person-name", "member-name", "profile-name")
+# A column holding the portrait and nothing else. See `_is_media_only`.
+_PROFILE_MEDIA_COLUMN_MAX_CHARS = 24
 _PROFILE_ROLE_HINTS = (
     "role",
     "title",
@@ -432,6 +334,38 @@ _PROFILE_ROLE_HINTS = (
     "job",
     "office",
 )
+# Job titles are short. "Deputy Director of Community Partnerships" is 5.
+_ROLE_MAX_WORDS = 8
+# Words that open a sentence about a person, never a job title.
+_PROSE_LEAD_TOKENS = frozenset(
+    {
+        "he", "she", "they", "him", "her", "his", "their", "them",
+        "we", "our", "us", "i", "my", "you", "your",
+        "it", "its", "this", "that", "these", "those",
+    }
+)
+# Chrome tags a profile card never lives inside. The container walk stops here
+# rather than paying for a second parse of the document just to decompose them
+# (_structural_text already re-parses once; twice per page is not worth it).
+_PROFILE_CHROME_TAGS = {"nav", "footer", "header", "aside", "form"}
+# A page builder emits its footer as a plain <div> (Divi: `et-l--footer`,
+# `et_pb_column_1_tb_footer`), which the tag set above cannot catch. Only
+# "footer" is safe to match on class: "header"/"nav" would also hit the
+# legitimate `section-header` / `card-header` wrappers real cards sit in.
+_PROFILE_CHROME_HINTS = ("footer",)
+
+# A CTA/nav link is short; a card wrapped entirely in an <a> is not, and its
+# text is real content that must not be discarded.
+_PROFILE_LINK_TEXT_MAX = 60
+_PROFILE_CARD_MAX_LINES = 12
+# A card holds a name, a title and a bio, and the bio itself is capped at 480
+# chars. A container carrying materially more prose than that is a section.
+_PROFILE_CARD_MAX_CHARS = 600
+# Headshots are square-ish or tall. Generous on both ends so a loosely cropped
+# card photo still passes; only measurably banner-shaped images are rejected.
+_PORTRAIT_MIN_ASPECT = 0.5
+_PORTRAIT_MAX_ASPECT = 1.6
+
 _GENERIC_PROFILE_NAMES = {
     "team",
     "our team",
@@ -443,8 +377,8 @@ _GENERIC_PROFILE_NAMES = {
     "leadership",
     "staff",
     # Name-shaped section headings (2+ capitalised tokens) that are never a
-    # person. _nearest_profile_container's fallback accepts any ancestor with
-    # an h2-h5, so ordinary content sections reach the name check.
+    # person. An inferred (unhinted) card no longer reads h2 at all, but a
+    # HINTED container still does, so these stay as the second line of defence.
     "our story",
     "our mission",
     "our values",
@@ -490,6 +424,36 @@ _NON_NAME_LEAD_TOKENS = {
     "upcoming", "featured", "popular", "top", "free",
 }
 
+# A real name never ENDS in a facility/offering noun. The mirror of the lead
+# set above, and the only defence against the card grid that is structurally
+# indistinguishable from a team grid: a photo, a two-capitalised-word label and
+# a paragraph describe "Innovation Centre" and "Marcus Ong" identically, so the
+# noun at the end of the label is the sole evidence separating a room or a
+# programme from a person. Glorykids' /school-life shipped as a six-person team
+# roster on the strength of "Innovation Centre", "Science Centre", "ICT Centre",
+# "Domestic-Science Centre" and two "… Programme :" labels — six candidates,
+# exactly DIRECTORY_MIN_PROFILES, so page_inference coerced the whole page type
+# to `team` and the real programme content never rendered.
+#
+# Nouns that double as common surnames are deliberately ABSENT (Hall, Cook,
+# Church, Field, Park, Green, Bishop, Marshall, Rivers, Banks, Camp): a false
+# positive here deletes a real person from a roster, which is the worse error.
+_NON_NAME_TAIL_TOKENS = {
+    "centre", "centres", "center", "centers",
+    "programme", "programmes", "program", "programs",
+    "academy", "kindergarten", "preschool", "nursery", "daycare",
+    "curriculum", "syllabus", "timetable", "schedule",
+    "classroom", "classrooms", "class", "classes",
+    "course", "courses", "lesson", "lessons",
+    "workshop", "workshops", "session", "sessions",
+    "package", "packages", "plan", "plans", "tier", "tiers",
+    "facility", "facilities", "department", "laboratory", "lab",
+    "studio", "gallery", "library", "playground", "canteen",
+    "admission", "admissions", "enrolment", "enrollment",
+    "trip", "trips", "excursion", "activity", "activities",
+    "fees", "policy", "policies",
+}
+
 # Lowercase tokens allowed inside a capitalised name ("Siti binti Rahman",
 # "Jan van der Berg"). Everything else lowercase marks a sentence fragment,
 # not a name.
@@ -498,86 +462,9 @@ _NAME_PARTICLES = {
     "del", "della", "von", "al", "el", "le", "la", "ter", "ten",
 }
 
-# Matches background-image / background shorthand containing a url().
-# Handles quoted and unquoted URLs, with optional whitespace.
-# Examples matched:
-#   background-image: url("https://example.com/hero.jpg")
-#   background-image: url('https://example.com/hero.jpg')
-#   background: #333 url(https://example.com/banner.webp) no-repeat center
-_BG_URL_RE = re.compile(
-    r'background(?:-image)?\s*:[^;{]*url\(\s*["\']?([^"\')\s]+)["\']?\s*\)',
-    re.IGNORECASE,
-)
-
-
-# Wix bakes the image transform into the URL PATH, e.g.
-#   …/media/{id}/v1/fill/w_119,h_79,al_c,q_80,…,blur_2,enc_avif,quality_auto/{file}
-# so a scraped <img src> (or srcset entry) frequently points at a tiny, blurred
-# blur-up placeholder rather than the real photo. We rewrite it to a crisp,
-# high-res variant with the blur removed. The media id encodes the original
-# dimensions (…_d_{W}_{H}…), so we can cap the long edge while preserving aspect
-# — the untransformed original can be 20 MB+, which would blow the CMS upload cap.
-_WIX_MEDIA_RE = re.compile(
-    r"^(https?://static\.wixstatic\.com/media/([^/?#]+))(?:/v1/[^?#]*)?",
-    re.IGNORECASE,
-)
-_WIX_DIMS_RE = re.compile(r"_d_(\d+)_(\d+)")
-_WIX_MAX_EDGE = 2560
-
-
-def _upgrade_source_image_url(url: str) -> str:
-    """Rewrite known image-CDN transform URLs to a crisp, full-size variant.
-
-    Only matches unambiguous image-CDN transform URLs, so it is a no-op for page
-    links — safe to run on every absolutized URL.
-    """
-    m = _WIX_MEDIA_RE.match(url)
-    if not m:
-        return url
-    base, media_id = m.group(1), m.group(2)
-    dims = _WIX_DIMS_RE.search(media_id)
-    if dims:
-        ow, oh = int(dims.group(1)), int(dims.group(2))
-        if ow > 0 and oh > 0:
-            # Cap the long edge and derive the short edge by FLOOR division —
-            # Wix validates the requested dims against the original aspect and
-            # 403s if the short edge doesn't match its own floor(…) computation.
-            if ow >= oh:
-                tw = min(ow, _WIX_MAX_EDGE)
-                th = max(1, oh * tw // ow)
-            else:
-                th = min(oh, _WIX_MAX_EDGE)
-                tw = max(1, ow * th // oh)
-            return f"{base}/v1/fill/w_{tw},h_{th},al_c,q_90/{media_id}"
-    # Original dimensions unknown → bare original (Wix serves it; usually small).
-    return base
-
-
-def _absolute_url(base: str, src: str) -> str | None:
-    if not src or src.startswith("data:"):
-        return None
-    return _upgrade_source_image_url(urljoin(base, src))
-
-
-def _looks_like_icon(url: str, alt: str) -> bool:
-    low = url.lower()
-    if any(h in low for h in _BAD_IMG_HINTS):
-        return True
-    if "favicon" in low:
-        return True
-    if alt and len(alt) > 0 and alt.lower() in {"icon", "logo icon"}:
-        return True
-    return False
-
-
-def _looks_like_logo_url(url: str) -> bool:
-    """True when the file NAME says logo (assets/logo.png, site-logo.svg).
-
-    Filename only — a path segment like /logos/ marks a partner-logo gallery,
-    and the query string could be anything.
-    """
-    basename = urlparse(url).path.rsplit("/", 1)[-1].lower()
-    return "logo" in basename
+# Background-image url() matcher — shared with section_extraction.py, which uses
+# it to recognise a badge tile built from a styled div. See image_urls.BG_URL_RE.
+_BG_URL_RE = BG_URL_RE
 
 
 def _parse_int(value: str | None) -> int | None:
@@ -585,122 +472,6 @@ def _parse_int(value: str | None) -> int | None:
         return None
     m = re.search(r"\d+", value)
     return int(m.group(0)) if m else None
-
-
-def _iter_srcset_candidates(srcset: str):
-    """Yield (url, descriptor) pairs from a srcset string.
-
-    A srcset URL may itself contain commas — Wix bakes its transform into the
-    path (``…/v1/fill/w_461,h_161,al_c,q_85,…/file.png``) and data URIs are
-    comma-heavy — so a naive ``split(",")`` shatters them and yields a garbage
-    trailing fragment. Per the HTML grammar, a candidate URL is a run of
-    non-whitespace and the (optional) descriptor follows after whitespace, with
-    candidates separated by commas; tokenize accordingly.
-    """
-    i, n = 0, len(srcset)
-    while i < n:
-        # Skip separators (whitespace and the commas between candidates).
-        while i < n and (srcset[i].isspace() or srcset[i] == ","):
-            i += 1
-        if i >= n:
-            break
-        # URL: everything up to the next whitespace (internal commas kept).
-        start = i
-        while i < n and not srcset[i].isspace():
-            i += 1
-        url = srcset[start:i]
-        descriptor = ""
-        if url.endswith(","):
-            # No descriptor — the comma directly separates candidates.
-            url = url.rstrip(",")
-        else:
-            while i < n and srcset[i].isspace():
-                i += 1
-            dstart = i
-            while i < n and srcset[i] != ",":
-                i += 1
-            descriptor = srcset[dstart:i].strip()
-            if i < n and srcset[i] == ",":
-                i += 1
-        if url:
-            yield url, descriptor
-
-
-def _best_srcset_candidate(srcset: str | None) -> tuple[str | None, float]:
-    """Return the highest-density/width URL from a srcset string and its score.
-
-    The score is the winning ``w``/``x`` descriptor (``x`` scaled by 1000 so any
-    density beats any raw width). A score of ``1.0`` means the winning candidate
-    carried no real descriptor, so callers can treat it as "no measured size
-    advantage" and keep a good base ``src``.
-    """
-    if not srcset:
-        return None, -1.0
-    best_url: str | None = None
-    best_score = -1.0
-    for url, descriptor in _iter_srcset_candidates(srcset):
-        descriptor = descriptor.lower()
-        score = 1.0
-        try:
-            if descriptor.endswith("w"):
-                score = float(descriptor[:-1])
-            elif descriptor.endswith("x"):
-                score = float(descriptor[:-1]) * 1000.0
-        except ValueError:
-            score = 1.0
-        if score > best_score:
-            best_score = score
-            best_url = url
-    return best_url, best_score
-
-
-def _image_src_from_tag(img: Tag) -> str | None:
-    """Prefer real responsive image URLs over placeholders."""
-    src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-    if isinstance(src, list):
-        src = src[0] if src else None
-    src = src if isinstance(src, str) else None
-
-    srcset = (
-        img.get("srcset")
-        or img.get("data-srcset")
-        or img.get("data-lazy-srcset")
-    )
-    if isinstance(srcset, list):
-        srcset = srcset[0] if srcset else None
-    srcset = srcset if isinstance(srcset, str) else None
-    srcset_candidate, srcset_score = _best_srcset_candidate(srcset)
-
-    source = img.find_previous_sibling("source")
-    if source is None and isinstance(img.parent, Tag) and img.parent.name == "picture":
-        sources = [s for s in img.parent.find_all("source") if isinstance(s, Tag)]
-        source = sources[-1] if sources else None
-    if isinstance(source, Tag):
-        source_srcset = source.get("srcset") or source.get("data-srcset")
-        if isinstance(source_srcset, list):
-            source_srcset = source_srcset[0] if source_srcset else None
-        picture_candidate, picture_score = _best_srcset_candidate(
-            source_srcset if isinstance(source_srcset, str) else None
-        )
-        if picture_candidate:
-            srcset_candidate, srcset_score = picture_candidate, picture_score
-
-    src_low = (src or "").lower().split("?", 1)[0]
-    if srcset_candidate and (
-        not src
-        or _looks_like_icon(src, "")
-        or src_low.endswith(".svg")
-        or "placeholder" in src_low
-    ):
-        return srcset_candidate
-    # A responsive <img> usually keeps a small/medium fallback in `src` while the
-    # full-resolution variants live only in `srcset`. Prefer the largest srcset
-    # candidate so figure images are captured at full size — but only when it
-    # carries a real width/density descriptor (score > 1); a descriptor-less
-    # 1-URL srcset is no better than `src`, so keep the base then.
-    if srcset_candidate and srcset_score > 1.0:
-        return srcset_candidate
-    return src or srcset_candidate
 
 
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
@@ -724,12 +495,6 @@ def _image_context(tag: Tag) -> tuple[str, str]:
         if isinstance(figcaption, Tag):
             caption = figcaption.get_text(" ", strip=True)[:160]
     return heading, caption
-
-
-def _tag_classes(tag: Tag) -> str:
-    return " ".join(
-        tag.get("class") if isinstance(tag.get("class"), list) else []
-    ).lower()
 
 
 def _bg_about_hint(tag: Tag) -> bool:
@@ -883,6 +648,22 @@ def _extract_bg_images(
     return candidates
 
 
+_GRID_MIN_CELLS = 3
+
+
+def _in_image_grid(img: Tag, evidence: ImageEvidence | None) -> bool:
+    """True when this image is one cell of a repeating rack of images.
+
+    Rendered pages already know: the stamper counts similar-sized sibling cells
+    into ``grid_count``. The fast path has no measurements, so it asks the DOM
+    the same question. Both answers mean the same thing: this picture is one of
+    a set, so its small size is the design rather than a sign of decoration.
+    """
+    if evidence is not None:
+        return evidence.grid_count >= _GRID_MIN_CELLS
+    return _in_repeated_image_group(img, min_cells=_GRID_MIN_CELLS)
+
+
 def _extract_images(
     soup: BeautifulSoup, base_url: str
 ) -> list[ImageCandidate]:
@@ -925,8 +706,14 @@ def _extract_images(
             # never finished loading.
             width = evidence.natural_width or width or evidence.width or None
             height = evidence.natural_height or height or evidence.height or None
-        # Drop tiny declared sizes (decoration / icons)
-        if (width and width < 200) or (height and height < 120):
+        # Drop tiny declared sizes (decoration / icons) — unless the image is
+        # one cell of a repeating rack, where small IS the expected size. A
+        # logo/badge wall runs at ~150x60 per tile, so this filter deleted the
+        # entire content of every awards, accreditation and partner section it
+        # met. classify_role makes the same exception on measured geometry.
+        if (
+            (width and width < 200) or (height and height < 120)
+        ) and not _in_image_grid(img, evidence):
             continue
 
         if evidence is not None:
@@ -978,7 +765,292 @@ def _extract_images(
     # Rendered pages: hero = the measured lead visual, not DOM order.
     _promote_hero_by_evidence(candidates)
 
-    return candidates[:30]  # cap
+    # Cap. Roomier than a page's worth of photos needs, because a badge wall is
+    # legitimately image-dense — an accreditation page can carry 20+ marks on
+    # top of the site's ordinary furniture, and truncating mid-wall drops real
+    # content rather than trimming noise.
+    return candidates[:48]
+
+
+# Embed boilerplate, not a caption. YouTube's own iframe snippet ships
+# title="YouTube video player" on every player ever pasted, so without this every
+# video on a site gets the same meaningless heading. Sibling of
+# _DOCUMENT_CARD_TITLE_STOPWORDS: a card with no real title gets none.
+_VIDEO_TITLE_STOPWORDS = frozenset(
+    {
+        "youtube video player",
+        "youtube video",
+        "vimeo video player",
+        "vimeo video",
+        "embedded video",
+        "video player",
+        "video",
+    }
+)
+
+# Attributes a lazy-loading shim parks the real src in. Plain `src` is checked
+# first; these are what WP Rocket / LiteSpeed / lozad rewrite it to.
+_EMBED_SRC_ATTRS = ("src", "data-src", "data-lazy-src", "data-litespeed-src")
+
+# Ancestors to climb looking for an embed's own caption before giving up.
+_EMBED_TITLE_MAX_DEPTH = 4
+
+# Boundaries neither the caption nor the group-heading search may cross. Outside
+# the embed's own section, any heading belongs to unrelated content.
+_EMBED_SCOPE_TAGS = ("section", "article", "main", "body", "html")
+
+# Player embeds carrying all of these are a muted looping backdrop, not content.
+_VIDEO_BACKDROP_PARAMS = ("autoplay=1", "mute=1")
+
+# Embeds of one kind kept per page. Roomier than any real gallery needs.
+_MAX_PAGE_VIDEOS = 24
+
+# Maps kept per page. A branch directory legitimately pins several; past this
+# the page is a store locator, which a generated site serves as a list.
+_MAX_PAGE_MAPS = 8
+
+# Elements that can hold a third-party embed. `lite-youtube` and `<embed>` are
+# facade/legacy players; a map only ever arrives as a real `<iframe>`, but the
+# walk is shared so the whitelists — not the tag names — do the deciding.
+_EMBED_TAGS = ["iframe", "lite-youtube", "embed"]
+
+
+def _is_hidden_embed(tag: Tag) -> bool:
+    """True for a frame the page never shows the reader.
+
+    Tag managers and conversion pixels ship as 0x0 `display:none` iframes inside
+    `<noscript>`; brightkids' homepage carries two of them. They are not video,
+    but a whitelist alone would not stop a hidden *YouTube* frame either, and a
+    player nobody can see is not this page's content.
+    """
+    style = (tag.get("style") or "")
+    if isinstance(style, str):
+        flat = style.replace(" ", "").lower()
+        if "display:none" in flat or "visibility:hidden" in flat:
+            return True
+    for attr in ("width", "height"):
+        raw = tag.get(attr)
+        if isinstance(raw, str):
+            try:
+                if int(raw.strip().rstrip("px") or 0) <= 2:
+                    return True
+            except ValueError:
+                pass
+    return tag.find_parent("noscript") is not None
+
+
+def _is_backdrop_embed(src: str) -> bool:
+    """True for a hero background player — decoration, not a watchable item.
+
+    A muted autoplaying loop behind a headline is styling. Promoting it into a
+    video section would put a controls-less, silent clip in a grid of things the
+    reader is invited to watch.
+    """
+    low = src.lower()
+    if not all(param in low for param in _VIDEO_BACKDROP_PARAMS):
+        return False
+    return "loop=1" in low or "controls=0" in low
+
+
+def _embed_title(tag: Tag) -> str:
+    """The source's own caption for one embed, or "" — never a guess.
+
+    Deliberately NOT ``_image_context``. That takes the nearest PRECEDING
+    heading, which is right for an image (captions sit under figures) and wrong
+    here: a video card puts its caption AFTER the player, so every embed but the
+    first would inherit its predecessor's title. Verified on brightkids, where
+    that misattribution shifted all four gallery captions by one.
+
+    Instead climb to the smallest ancestor that holds a heading and no OTHER
+    iframe — that container is the card, and its heading is this video's. An
+    embed standing alone in a section with no heading gets "", which is correct:
+    a wrong caption is worse than none.
+    """
+    for attr in ("title", "aria-label"):
+        raw = tag.get(attr)
+        if isinstance(raw, str) and raw.strip():
+            if raw.strip().lower() not in _VIDEO_TITLE_STOPWORDS:
+                return raw.strip()[:160]
+
+    node: Tag = tag
+    for _ in range(_EMBED_TITLE_MAX_DEPTH):
+        parent = node.parent
+        if not isinstance(parent, Tag) or parent.name in _EMBED_SCOPE_TAGS:
+            # Never climb out of the embed's own section. Past that boundary the
+            # next heading belongs to different content entirely — a video in an
+            # unheaded section would take the PRECEDING section's title.
+            break
+        if len(parent.find_all("iframe")) > 1:
+            # A container shared with other players — its heading names the
+            # group, not this video.
+            break
+        for heading in parent.find_all(_HEADING_TAGS):
+            text = heading.get_text(" ", strip=True)
+            if text:
+                return text[:160]
+        node = parent
+
+    figure = tag.find_parent("figure")
+    if isinstance(figure, Tag):
+        figcaption = figure.find("figcaption")
+        if isinstance(figcaption, Tag):
+            return figcaption.get_text(" ", strip=True)[:160]
+    return ""
+
+
+def _embed_context_heading(tag: Tag, card_titles: set[str]) -> str:
+    """The heading naming the GROUP this embed belongs to, or "".
+
+    Not ``_image_context`` either, and for the same reason one step up: the
+    nearest PRECEDING heading is usually the previous card's caption, so
+    grouping on it splits one "Super ESP" video wall into four groups of one.
+
+    Two bounds make this honest:
+
+    - **Scoped to the embed's own ``<section>``.** Walking back arbitrarily far
+      always finds *some* heading, and on a page whose video sits in an
+      unheaded section that heading belongs to unrelated content further up —
+      brightkids' homepage video would have been filed under "Announcement".
+      No section-like ancestor, or no heading in it, means "".
+    - **Card captions are skipped**, since a card's own title names one video,
+      not the group.
+    """
+    scope = next(
+        (
+            parent
+            for parent in tag.parents
+            if isinstance(parent, Tag) and parent.name in _EMBED_SCOPE_TAGS
+        ),
+        None,
+    )
+    if scope is None or scope.name in ("body", "html"):
+        return ""
+    for heading in scope.find_all(_HEADING_TAGS):
+        text = heading.get_text(" ", strip=True)
+        if text and text.strip().lower() not in card_titles:
+            return text[:120]
+    return ""
+
+
+def _embed_src(tag: Tag) -> str | None:
+    """The URL one embed element points at, lazy-loading shims included."""
+    raw = next(
+        (
+            value
+            for attr in _EMBED_SRC_ATTRS
+            if isinstance(value := tag.get(attr), str) and value.strip()
+        ),
+        None,
+    )
+    if raw is not None:
+        return raw
+    # <lite-youtube videoid="ID"> — a facade widget, no src at all.
+    videoid = tag.get("videoid") or tag.get("data-video-id")
+    return f"https://www.youtube.com/embed/{videoid}" if videoid else None
+
+
+@dataclass
+class _PageEmbeds:
+    """Third-party frames one page carries, split by what they turned out to be."""
+
+    videos: list["VideoEmbed"] = field(default_factory=list)
+    maps: list["MapEmbed"] = field(default_factory=list)
+
+
+def _extract_embeds(soup: BeautifulSoup, base_url: str) -> _PageEmbeds:
+    """Every renderable third-party frame the page embeds, in DOM order.
+
+    ONE walk, two whitelists. A page's `<iframe>`s are overwhelmingly trackers,
+    chat widgets and social plugins — brightkids' homepage carries four, of
+    which three are Google Tag Manager and a Facebook like-box — so each frame
+    is offered to ``parse_video_src`` and then ``parse_map_src``, and anything
+    neither claims is dropped. Adding a third kind of embed is a parser module
+    and a branch here, not another traversal: the hidden/chrome/caption rules
+    below are the expensive part and they are kind-agnostic.
+
+    Runs on whatever markup the caller parsed — static HTML or the Playwright
+    render — so a JS-injected embed is covered without special handling: an
+    ``<iframe>`` is a `sub_frame` request, which ``browser.block_heavy_resources``
+    does not abort, and ``page.content()`` serializes the main frame's DOM
+    whether or not the child frame ever loaded.
+
+    Chrome is stripped the same way ``_extract_document_cards`` strips it: a
+    promo reel in the site-wide footer is the template's, not this page's. For
+    videos that is belt-and-braces with ``source_injection.repeated_across_slugs``;
+    for maps it is the ONLY chrome rule, because a map repeated across pages is
+    usually the business's own address rather than furniture (see
+    ``routers.generate._inject_maps``).
+    """
+    work = BeautifulSoup(str(soup), "lxml")
+    for tag in work.find_all(("header", "nav", "footer", "script", "style")):
+        tag.decompose()
+
+    # Pass 1 — which embeds survive, what kind each is, and what each card calls
+    # itself.
+    videos: list[tuple[Tag, ParsedVideo, str]] = []
+    maps: list[tuple[Tag, ParsedMap, str]] = []
+    seen: set[str] = set()
+    for tag in work.find_all(_EMBED_TAGS):
+        if not isinstance(tag, Tag) or _is_hidden_embed(tag):
+            continue
+        raw = _embed_src(tag)
+        if not raw:
+            continue
+        if not _is_backdrop_embed(raw) and len(videos) < _MAX_PAGE_VIDEOS:
+            video = parse_video_src(raw, base_url)
+            if video is not None:
+                if video.embed_url in seen:
+                    continue
+                seen.add(video.embed_url)
+                videos.append((tag, video, _embed_title(tag)))
+                continue
+        if len(maps) < _MAX_PAGE_MAPS:
+            pin = parse_map_src(raw, base_url)
+            if pin is not None and pin.embed_url not in seen:
+                seen.add(pin.embed_url)
+                maps.append((tag, pin, _embed_title(tag) or pin.place or ""))
+
+    # Pass 2 — group headings, which need every card's title first so a card's
+    # own caption is never mistaken for the heading naming the whole group.
+    # Scoped per kind: a video's caption must not suppress a map's heading.
+    video_titles = _card_titles(videos)
+    map_titles = _card_titles(maps)
+    return _PageEmbeds(
+        videos=[
+            VideoEmbed(
+                provider=parsed.provider,  # type: ignore[arg-type]
+                video_id=parsed.video_id,
+                embed_url=parsed.embed_url,
+                thumbnail_url=parsed.thumbnail_url,
+                title=title,
+                context_heading=_embed_context_heading(tag, video_titles),
+            )
+            for tag, parsed, title in videos
+        ],
+        maps=[
+            MapEmbed(
+                provider=parsed.provider,  # type: ignore[arg-type]
+                embed_url=parsed.embed_url,
+                title=title,
+                context_heading=_embed_context_heading(tag, map_titles),
+            )
+            for tag, parsed, title in maps
+        ],
+    )
+
+
+def _card_titles(found: list[tuple[Tag, Any, str]]) -> set[str]:
+    return {title.strip().lower() for _, _, title in found} - {""}
+
+
+def _extract_videos(soup: BeautifulSoup, base_url: str) -> list["VideoEmbed"]:
+    """Every YouTube/Vimeo player the page embeds, in DOM order."""
+    return _extract_embeds(soup, base_url).videos
+
+
+def _extract_maps(soup: BeautifulSoup, base_url: str) -> list["MapEmbed"]:
+    """Every embedded map the page carries, in DOM order."""
+    return _extract_embeds(soup, base_url).maps
 
 
 def _attr_haystack(tag: Tag) -> str:
@@ -1014,7 +1086,8 @@ def _text_lines(tag: Tag) -> list[str]:
 
 
 def _looks_like_person_name(value: str) -> bool:
-    text = _clean_line(value).strip(" :|-")
+    raw = _clean_line(value)
+    text = raw.strip(" :|-")
     if not text:
         return False
     low = text.lower()
@@ -1022,10 +1095,22 @@ def _looks_like_person_name(value: str) -> bool:
         return False
     if "@" in text or "http" in low:
         return False
+    # A trailing colon introduces a value ("Full Programme :", "Opening Hours:")
+    # — the card is a label/value pair, not a name plaque. Read off the RAW text
+    # because the strip above erases exactly this evidence.
+    if raw.endswith(":"):
+        return False
+    # A name is one person. "&" and "/" join things — "Spill Control & Absorbent",
+    # "Parking Lock, Wheel Chock/Clamp & Fender". Unlike the tail-token denylist
+    # below this carries no industry vocabulary, so it holds on any site.
+    if "&" in text or "/" in text:
+        return False
     tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
     if len(tokens) < 2 or len(tokens) > 7:
         return False
     if tokens[0].lower() in _NON_NAME_LEAD_TOKENS:
+        return False
+    if tokens[-1].lower() in _NON_NAME_TAIL_TOKENS:
         return False
     # Every token must be capitalised (or a known name particle): rejects
     # sentence fragments like "Serving Penang since 1998" while keeping
@@ -1037,52 +1122,192 @@ def _looks_like_person_name(value: str) -> bool:
     return True
 
 
-def _nearest_profile_container(img: Tag) -> Tag | None:
+def _cta_link_texts(container: Tag) -> set[str]:
+    """Text of the container's short <a>/<button> descendants, lowercased.
+
+    Short link text is a CTA or a nav label ("Read More", "View Profile"). A
+    card wrapped entirely in an <a> has *long* text, and that text is the real
+    content — hence the length bound rather than excluding all link text.
+    """
+    texts: set[str] = set()
+    for el in container.find_all(["a", "button"]):
+        if not isinstance(el, Tag):
+            continue
+        text = _clean_line(el.get_text(" ", strip=True))
+        if text and len(text) <= _PROFILE_LINK_TEXT_MAX:
+            texts.add(text.lower())
+    return texts
+
+
+def _looks_like_profile_card(tag: Tag) -> bool:
+    """True when a container is plausibly ONE person's card.
+
+    Replaces the old "any ancestor holding an h2-h5" fallback, which on a site
+    without profile class names resolved to the whole section — every line in it
+    then became that person's bio.
+    """
+    if len([i for i in tag.find_all("img") if isinstance(i, Tag)]) != 1:
+        return False
+    if tag.find("form") is not None:
+        return False
+    lines = _text_lines(tag)
+    # A card names its person. A bare image wrapper (Divi's
+    # `span.et_pb_image_wrap`, and every builder's equivalent) carries no text
+    # at all, and would otherwise clear the size ceilings *trivially* — zero
+    # lines is under any maximum. Claiming it as the card is worse than
+    # claiming nothing: it is the innermost ancestor, so it wins the fallback
+    # immediately, and returning it non-None suppresses the sibling-column
+    # fallback that layouts like these actually need.
+    if not lines:
+        return False
+    if len(lines) > _PROFILE_CARD_MAX_LINES:
+        return False
+    return sum(len(line) for line in lines) <= _PROFILE_CARD_MAX_CHARS
+
+
+def _nearest_profile_container(img: Tag) -> tuple[Tag | None, bool]:
+    """Return (container, hinted) for a portrait.
+
+    ``hinted`` is True only when the container declared itself a profile card
+    via class/id (``_PROFILE_CONTAINER_HINTS``). An inferred card gets less
+    trust — see ``_extract_profile_name``.
+    """
     current = img.parent
     fallback: Tag | None = None
     depth = 0
     while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 7:
+        # Chrome is never a profile card. Walking past it would pull nav labels
+        # and footer copy into the bio.
+        if current.name in _PROFILE_CHROME_TAGS:
+            return None, False
         if _has_any_hint(current, _PROFILE_CONTAINER_HINTS):
             img_count = len([i for i in current.find_all("img") if isinstance(i, Tag)])
-            if img_count > 1 and fallback is not None:
-                return fallback
-            return current
-        if fallback is None and current.find(["h2", "h3", "h4", "h5"]):
+            if img_count > 1:
+                # A hinted container holding several portraits is the section,
+                # not the card. Without a card-shaped descendant we cannot say
+                # which text belongs to this person — emit nothing rather than
+                # attributing the whole section to them.
+                return fallback, False
+            return current, True
+        if fallback is None and _looks_like_profile_card(current):
             fallback = current
         current = current.parent
         depth += 1
-    return fallback
+    return fallback, False
+
+
+def _in_profile_chrome(img: Tag) -> bool:
+    """True when a portrait sits in site chrome rather than page content.
+
+    ``_nearest_profile_container`` stops at ``_PROFILE_CHROME_TAGS`` on the way
+    up; the sibling walk below has no such stop, and a footer's link column
+    reads exactly like a card's text column to it — an image in a theme-builder
+    footer plus the nav labels beside it would become a "person" named after a
+    menu item.
+    """
+    if img.find_parent(list(_PROFILE_CHROME_TAGS)) is not None:
+        return True
+    # Stop below <body>: WordPress stamps page-level state onto the body class
+    # ("et-tb-has-footer" says the theme HAS a footer template, not that this
+    # element is in it), and matching there condemns every image on the page.
+    for parent in img.parents:
+        if not isinstance(parent, Tag) or parent.name in {"body", "html"}:
+            break
+        if _has_any_hint(parent, _PROFILE_CHROME_HINTS):
+            return True
+    return False
+
+
+def _is_media_only(tag: Tag) -> bool:
+    """True when this subtree holds the portrait and essentially nothing else.
+
+    Not *zero* text — a caption, a photo credit or a stray nbsp shouldn't
+    disqualify a column — but far below a name plus a line of copy.
+    """
+    return (
+        len(_clean_line(tag.get_text(" ", strip=True))) <= _PROFILE_MEDIA_COLUMN_MAX_CHARS
+    )
+
+
+def _profile_text_sibling(children: list[Tag], owner_index: int) -> Tag | None:
+    """The closest sibling that names a person — nearest first, never one with
+    an image of its own.
+
+    Both rules exist for flat grids. Laid out as
+    ``[photoA][textA][photoB][textB]``, a document-order scan from photoB would
+    walk back to textA and caption one person's portrait with another's name;
+    nearest-first pairs each photo with its own copy. Equidistant neighbours
+    break towards the FOLLOWING one, because a caption follows its photo — in
+    that same grid photoB sits one step from both textA and textB, and only
+    reading forwards gets it right. A two-column split that puts the copy
+    first is unaffected: there the text column is the sole candidate.
+
+    A sibling carrying its own <img> is another person's cell, never this
+    one's text column.
+    """
+    ranked = sorted(
+        (i for i in range(len(children)) if i != owner_index),
+        key=lambda i: (abs(i - owner_index), 0 if i > owner_index else 1),
+    )
+    for index in ranked:
+        sibling = children[index]
+        if sibling.find("img") is not None:
+            continue
+        # A card names one person; a *section* names itself in an h1/h2 and
+        # then talks about something else. Without this, an about split —
+        # image one side, "Our Story" and prose the other — reads as a person,
+        # because the loose any-text-line scan below accepts any two
+        # capitalised words. The scan has to stay available: page builders
+        # routinely put the name in an unheaded text module.
+        if sibling.find(["h1", "h2"]) is not None:
+            continue
+        if not _extract_profile_name(sibling):
+            continue
+        if len(_clean_line(sibling.get_text(" ", strip=True))) < 24:
+            continue
+        return sibling
+    return None
 
 
 def _row_text_sibling_for_profile(img: Tag) -> Tag | None:
-    """Fallback for layouts where portrait and profile copy live in sibling columns."""
+    """Find a portrait's copy when it lives in a SIBLING subtree.
+
+    The split-column profile: portrait on one side, name and bio on the other,
+    with no ancestor holding both and only them. ``_nearest_profile_container``
+    walks *up* and meets nothing but text-less wrappers, so the copy has to be
+    found by walking *across*.
+
+    Structural, deliberately not name-based. Requiring ``row``/``col``/``grid``
+    class names read the layout through one family of page builders (Divi,
+    Bootstrap, WPBakery) and gave up silently on every site built with flex
+    utilities, semantic element names, hashed CSS-module classes, or a table.
+    The signal that holds everywhere is the one that sends us sideways to begin
+    with: the portrait's own subtree carries no text, and a sibling's does.
+    """
+    if _in_profile_chrome(img):
+        return None
     current = img.parent
     depth = 0
     while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 6:
-        children = [child for child in current.find_all(recursive=False) if isinstance(child, Tag)]
-        if len(children) >= 2:
-            row_hints = _has_any_hint(current, ("row", "columns", "grid")) or any(
-                _has_any_hint(child, ("column", "col", "cell")) for child in children
-            )
-            if row_hints:
-                owner = next(
-                    (
-                        child
-                        for child in children
-                        if child is img or child.find(lambda t: t is img) is not None
-                    ),
-                    None,
-                )
-                if owner is not None:
-                    for sibling in children:
-                        if sibling is owner:
-                            continue
-                        if not _extract_profile_name(sibling):
-                            continue
-                        text = _clean_line(sibling.get_text(" ", strip=True))
-                        if len(text) < 24:
-                            continue
-                        return sibling
+        children = [c for c in current.find_all(recursive=False) if isinstance(c, Tag)]
+        owner_index = next(
+            (
+                i
+                for i, child in enumerate(children)
+                if child is img or child.find(lambda t: t is img) is not None
+            ),
+            None,
+        )
+        if owner_index is None:
+            break
+        # Climb only while the portrait's subtree stays a media column. Once an
+        # ancestor picks up the copy, THAT ancestor is the card, and scanning
+        # its siblings would reach into the next person's.
+        if not _is_media_only(children[owner_index]):
+            break
+        match = _profile_text_sibling(children, owner_index)
+        if match is not None:
+            return match
         current = current.parent
         depth += 1
     return None
@@ -1100,22 +1325,54 @@ def _find_text_by_hints(container: Tag, hints: tuple[str, ...]) -> str | None:
     return None
 
 
-def _extract_profile_name(container: Tag) -> str | None:
+def _extract_profile_name(container: Tag, *, allow_h2: bool = True) -> str | None:
+    """Find the person's name in a profile container.
+
+    ``allow_h2=False`` for a container we merely *inferred* is a card (no
+    class/id hint). A card names its person in an h3-h5 or a hinted element; an
+    h2 is a SECTION heading, and accepting one is how an ordinary content
+    section whose heading is two capitalised words ("Rahman Wellness") used to
+    become a team member. The loose any-text-line scan is likewise hint-only.
+    """
     hinted = _find_text_by_hints(container, _PROFILE_NAME_HINTS)
     if hinted and _looks_like_person_name(hinted):
         return hinted
 
-    for heading in container.find_all(["h2", "h3", "h4", "h5"]):
+    levels = ["h2", "h3", "h4", "h5"] if allow_h2 else ["h3", "h4", "h5"]
+    for heading in container.find_all(levels):
         if not isinstance(heading, Tag):
             continue
         text = _clean_line(heading.get_text(" ", strip=True))
         if _looks_like_person_name(text):
             return text
 
+    if not allow_h2:
+        return None
     for line in _text_lines(container)[:5]:
         if _looks_like_person_name(line):
             return line
     return None
+
+
+def _looks_like_role_line(line: str) -> bool:
+    """True when a line reads as a job title rather than prose.
+
+    A role is a LABEL — "Chairperson", "Founder & Speaker", "Head of Clinical
+    Services". The positional scan below takes the lines just after the name,
+    and on the very common card that carries NO role those lines are the first
+    sentence of the bio. "Her interests include music, reading and travelling."
+    is short, capitalised and free of contact tokens, so every other filter
+    waves it through and it lands in the role slot under the person's name.
+    """
+    words = line.split()
+    if len(words) > _ROLE_MAX_WORDS:
+        return False
+    # Trailing full stops mark a sentence, but not on "Ph.D." or "Jr." — so
+    # only once the line is long enough to BE a sentence.
+    if line.endswith((".", "!", "?")) and len(words) >= 4:
+        return False
+    lead = words[0].lower().strip(",.:;") if words else ""
+    return lead not in _PROSE_LEAD_TOKENS
 
 
 def _extract_profile_role(container: Tag, name: str) -> str | None:
@@ -1124,6 +1381,7 @@ def _extract_profile_role(container: Tag, name: str) -> str | None:
         return hinted
 
     lines = _text_lines(container)
+    cta_texts = _cta_link_texts(container)
     try:
         name_index = next(i for i, line in enumerate(lines) if line == name)
     except StopIteration:
@@ -1131,17 +1389,40 @@ def _extract_profile_role(container: Tag, name: str) -> str | None:
     for line in lines[name_index + 1 : name_index + 4]:
         if line == name or _looks_like_person_name(line):
             continue
-        if len(line) <= 90:
-            return line
+        if len(line) > 90:
+            continue
+        # The positional fallback used to accept the next short line outright,
+        # which made "Read More" and phone numbers look like job titles.
+        if line.lower() in cta_texts or is_boilerplate_line(line):
+            continue
+        if has_contact_token(line):
+            continue
+        if not _looks_like_role_line(line):
+            continue
+        return line
     return None
 
 
 def _extract_profile_bio(container: Tag, name: str, role: str | None) -> str | None:
+    """Keep the card's own factual lines; drop chrome.
+
+    Filters by line *kind*, not length: a directory card packs credentials,
+    served populations and an address as short separate lines, and those are
+    the bio. What must not survive is CTA/nav text, contact details, and copy
+    belonging to the rest of the page.
+    """
+    cta_texts = _cta_link_texts(container)
     kept: list[str] = []
     for line in _text_lines(container):
         if line == name or (role and line == role):
             continue
         if len(line) <= 3:
+            continue
+        if line.lower() in cta_texts:
+            continue
+        if is_boilerplate_line(line):
+            continue
+        if has_contact_token(line):
             continue
         kept.append(line)
     if not kept:
@@ -1153,12 +1434,274 @@ def _extract_profile_bio(container: Tag, name: str, role: str | None) -> str | N
     return bio[:480]
 
 
+def _has_portrait_aspect(
+    width: int | None, height: int | None, evidence: ImageEvidence | None
+) -> bool:
+    """True unless the image is measurably too wide to be a headshot.
+
+    Portraits are square-ish or tall. Banners, logo lockups and hero strips are
+    wide. Unknown dimensions keep the benefit of the doubt — most real cards
+    declare no width/height and carry no render evidence.
+    """
+    if evidence is not None and evidence.height:
+        ratio = evidence.width / evidence.height
+    elif width and height:
+        ratio = width / height
+    else:
+        return True
+    return _PORTRAIT_MIN_ASPECT <= ratio <= _PORTRAIT_MAX_ASPECT
+
+
+# Elements a page uses to NAME something, in the two ways markup expresses it:
+# by tag rank, or by a class/id that says "this is the name".
+_NAME_ELEMENT_TAGS = ("h1", "h2", "h3", "h4", "h5")
+
+
+def _leading_person_name(soup: BeautifulSoup) -> str | None:
+    """The person the page's BODY leads with, read off the DOM hierarchy.
+
+    Walks the body in document order and stops at the first *designated* name
+    element — one ranked as a heading, or one a class/id marks as a name — whose
+    text reads as a person's. Chrome is skipped: a nav or footer names people on
+    every page of the site, so a match there says nothing about this page.
+
+    This is the third way a page can say whose page it is, beside its <title>
+    and its URL, and the only one that survives MMTA's committee pages: their
+    <title> is the template "About MMTA", their h1 is the section banner "The
+    Committee", and the person is named a level down in <div class="name"> —
+    invisible to any title-or-heading reading.
+
+    Elements are examined outermost-first, so a wrapper holding the whole card
+    is seen before the name inside it; it fails the person-name test on length
+    and the walk continues inward.
+    """
+    body = soup.body or soup
+    chrome = list(_PROFILE_CHROME_TAGS)
+    for el in body.find_all(True):
+        if not isinstance(el, Tag):
+            continue
+        if el.name not in _NAME_ELEMENT_TAGS and not _has_any_hint(el, _PROFILE_NAME_HINTS):
+            continue
+        text = _clean_line(el.get_text(" ", strip=True))
+        if not _looks_like_person_name(text):
+            continue
+        if el.find_parent(chrome) is not None:
+            continue
+        return text
+    return None
+
+
+def _page_subject_profile(
+    soup: BeautifulSoup, base_url: str, portraits: list[tuple[str, str]]
+) -> ProfileCandidate | None:
+    """One candidate for a page that IS a person's profile, not a card grid.
+
+    A committee member's own page doesn't card its person: the name is the
+    page's h1 and the portrait sits loose in the content column, so the card
+    walk finds no container — and would not read the name anyway, since a card
+    names its person in an h3-h5. Named by the h1, photographed by the image
+    whose alt echoes that name, or by the page's only portrait-shaped photo (a
+    member page carries exactly one). Consulted only when no card matched, so a
+    directory page is unaffected.
+
+    The h1 is the whole claim: this page is ABOUT that person. A name-shaped h2
+    is a section heading inside a page about something else ("Rahman Wellness"
+    over a clinic's story), which is why the card walk distrusts h2 as well.
+    """
+    name = None
+    for heading in soup.find_all("h1"):
+        if not isinstance(heading, Tag):
+            continue
+        text = _clean_line(heading.get_text(" ", strip=True))
+        if _looks_like_person_name(text):
+            name = text
+            break
+    if name is None:
+        return None
+
+    matched = next((p for p in portraits if name.lower() in p[1].lower()), None)
+    if matched is None and len(portraits) == 1:
+        matched = portraits[0]
+    if matched is None:
+        return None
+
+    # The page IS this person — any mailto:/tel:/social link in its body
+    # (outside chrome shared by every page) is fair to attribute to them, the
+    # same way a card's own anchors are attributed to it above.
+    body = soup.body or soup
+    chrome = list(_PROFILE_CHROME_TAGS)
+    anchors = [
+        a
+        for a in body.find_all("a", href=True)
+        if isinstance(a, Tag) and a.find_parent(chrome) is None
+    ]
+    email, phone = _contacts_from_anchors(anchors)
+    social = social_links_from_anchors(anchors, base_url)
+
+    photo_url, alt = matched
+    return ProfileCandidate(
+        name=name,
+        role=None,
+        # The page's prose is its own about section's material, not a card bio.
+        bio=None,
+        photo_url=photo_url,
+        photo_alt=alt or f"{name} portrait",
+        source_url=base_url,
+        email=email,
+        phone=phone,
+        social_links=[(link.label, link.href) for link in social],
+        # Below a real card's 0.8: the pairing is positional, not structural.
+        confidence=0.75,
+    )
+
+
+def _card_anchors(img: Tag, container: Tag) -> list[Tag]:
+    """Links belonging to THIS card, portrait-first.
+
+    The portrait's own ancestor link can only be this person's; the container's
+    links are next. Nothing wider — on a grid the row above a card holds its
+    neighbours' links too.
+    """
+    anchors: list[Tag] = []
+    ancestor = img.find_parent("a")
+    if isinstance(ancestor, Tag):
+        anchors.append(ancestor)
+    anchors.extend(a for a in container.find_all("a") if isinstance(a, Tag))
+    return anchors
+
+
+def _contacts_from_anchors(anchors: list[Tag]) -> tuple[str | None, str | None]:
+    """(email, phone) from mailto:/tel: hrefs among the given anchors.
+
+    Shared by the card-scoped and whole-page extractors below — a directory
+    card's and a solo profile page's own contact links are read the same way,
+    just over a different anchor set.
+    """
+    email: str | None = None
+    phone: str | None = None
+    for anchor in anchors:
+        href = anchor.get("href")
+        if not isinstance(href, str):
+            continue
+        value = href.strip()
+        low = value.lower()
+        if email is None and low.startswith("mailto:"):
+            # "mailto: a@b.my" — the space after the scheme is common enough.
+            address = value.split(":", 1)[1].strip()
+            if "@" in address:
+                email = address
+        elif phone is None and low.startswith("tel:"):
+            number = value.split(":", 1)[1].strip()
+            if number:
+                phone = number
+    return email, phone
+
+
+def _profile_card_contacts(
+    img: Tag, container: Tag, base_url: str
+) -> tuple[str | None, str | None, list[NavLink]]:
+    """(email, phone, social_links) the card offers for this person.
+
+    A directory card's mailto:/tel:/social links are how the source says to
+    reach that person — the profile block renders them beside the portrait
+    rather than leaving them buried in a bio.
+    """
+    anchors = _card_anchors(img, container)
+    email, phone = _contacts_from_anchors(anchors)
+    social = social_links_from_anchors(anchors, base_url)
+    return email, phone, social
+
+
+def _profile_card_link(img: Tag, container: Tag, base_url: str) -> str | None:
+    """The detail page this roster card points at, if it has one.
+
+    A directory that gives its people their own pages says so in the card: the
+    portrait is wrapped in the link, or a "view profile" control carries it
+    (MMTA's committee grid puts it on a badge icon beside the email). That is
+    the source's own statement of where the person's page lives — worth more
+    than anything inferable from the URL or the name, and the only evidence
+    that survives a template whose slugs are hand-spelled.
+
+    The portrait's own ancestor link is preferred: it can only belong to this
+    card. The container is searched second, and nothing wider — on a grid the
+    row above a card holds its neighbours' links too.
+
+    Only real pages qualify. ``_is_crawlable_link`` drops off-site links (a
+    member's own practice) and asset URLs; mail/phone/anchor hrefs are not
+    pages; and a link back to the page the card is ON is chrome — the "Back"
+    arrow on a detail page's own card, not a link to a detail page.
+    """
+    here = _normalize_crawl_url(base_url)
+    entry_host = urlparse(base_url).netloc
+
+    for anchor in _card_anchors(img, container):
+        href = anchor.get("href")
+        if not isinstance(href, str) or not href.strip():
+            continue
+        if href.strip().lower().startswith(("mailto:", "tel:", "javascript:", "#")):
+            continue
+        absolute = _absolute_url(base_url, href.strip())
+        if not absolute:
+            continue
+        normalized = _normalize_crawl_url(absolute)
+        if not normalized or normalized == here:
+            continue
+        if not _is_crawlable_link(normalized, entry_host):
+            continue
+        return normalized
+    return None
+
+
+def _confirm_profiles_against_sections(
+    profiles: list[ProfileCandidate], sections: list["SectionCandidate"]
+) -> list[ProfileCandidate]:
+    """Drop candidates the section classifier says are not people.
+
+    ``_extract_profile_candidates`` decides one card at a time, from one
+    portrait and the text beside it — and at that range a facility card and a
+    staff card are the same object: a square photo, a short capitalised title,
+    a paragraph. The group is what disambiguates, and only the section pass sees
+    the group.
+
+    So the two are composed rather than duplicated: the portrait walk proposes,
+    the group-level classifier confirms. A candidate whose name is a card title
+    inside a section classified anything other than ``people`` is overruled.
+    Candidates that match no card title are left alone — a loose portrait, or
+    the whole-page subject fallback, was never a group member to begin with.
+    """
+    if not profiles or not sections:
+        return profiles
+    rejected: set[str] = set()
+    for section in sections:
+        if section.card_kind == "people":
+            continue
+        for card in section.cards:
+            title = " ".join(card.title.split()).strip(" :").lower()
+            if title:
+                rejected.add(title)
+    if not rejected:
+        return profiles
+    kept = [p for p in profiles if " ".join(p.name.split()).strip(" :").lower() not in rejected]
+    if len(kept) != len(profiles):
+        logger.info(
+            "Section classifier overruled %d portrait-anchored profile(s): "
+            "their cards belong to a non-people group",
+            len(profiles) - len(kept),
+        )
+    return kept
+
+
 def _extract_profile_candidates(
     soup: BeautifulSoup, base_url: str
 ) -> list[ProfileCandidate]:
     """Extract likely profile cards where a portrait and nearby person text agree."""
     profiles: list[ProfileCandidate] = []
+    # Per-candidate: did the card's own markup declare itself a profile? Fed to
+    # the group gate below, where a declared card needs no further evidence.
+    declared: list[bool] = []
     seen: set[tuple[str, str | None]] = set()
+    # Photos that cleared every image-level gate, for the page-subject fallback.
+    portraits: list[tuple[str, str]] = []
 
     for img in soup.find_all("img"):
         if not isinstance(img, Tag):
@@ -1179,16 +1722,42 @@ def _extract_profile_candidates(
         evidence = parse_evidence(img.get("data-webtree-evidence"))
         if evidence is not None and (evidence.width < 80 or evidence.height < 80):
             continue
-
-        container = _nearest_profile_container(img)
-        if container is None:
-            container = _row_text_sibling_for_profile(img)
-        if container is None:
+        # A logo or a wide banner sitting in a section whose heading happens to
+        # be name-shaped would otherwise be cropped into a circle and captioned
+        # with that heading.
+        if _looks_like_logo_url(photo_url):
             continue
-        name = _extract_profile_name(container)
+        if not _has_portrait_aspect(width, height, evidence):
+            continue
+        # For the page-subject fallback only, the shape has to be MEASURED —
+        # `_has_portrait_aspect` passes unknown dimensions on benefit of the
+        # doubt, which a card's structure earns and a loose photo does not (a
+        # dimensionless banner under a name-shaped h1 would become a portrait).
+        if (evidence is not None and evidence.height) or (width and height):
+            portraits.append((photo_url, alt))
+
+        container, hinted = _nearest_profile_container(img)
+        name = (
+            _extract_profile_name(container, allow_h2=hinted)
+            if container is not None
+            else None
+        )
         if not name:
+            # The ancestor walk found no container, or found one that names
+            # nobody — a page-builder layout that puts the portrait and the
+            # copy in SIBLING columns looks like both. Either way the walk has
+            # nothing to offer, so try across rather than up. Gating this on
+            # `container is None` alone is how a text-less wrapper silently
+            # cost a whole team grid its photos.
+            container = _row_text_sibling_for_profile(img)
+            hinted = False
+            name = _extract_profile_name(container) if container is not None else None
+        if container is None or not name:
             continue
         role = _extract_profile_role(container, name)
+        card_email, card_phone, card_social = _profile_card_contacts(
+            img, container, base_url
+        )
         key = (name.lower(), photo_url)
         if key in seen:
             continue
@@ -1201,11 +1770,263 @@ def _extract_profile_candidates(
                 photo_url=photo_url,
                 photo_alt=alt or f"{name} portrait",
                 source_url=base_url,
+                profile_url=_profile_card_link(img, container, base_url),
+                email=card_email,
+                phone=card_phone,
+                social_links=[(link.label, link.href) for link in card_social],
                 confidence=0.9 if role else 0.8,
             )
         )
+        declared.append(hinted)
 
+    # A roster agrees with itself. The walk above decides one card at a time, and
+    # at that range a product tile and a staff card are the same object — so the
+    # group has to earn being read as people before any of it is believed. See
+    # `profile_text.roster_is_people` for why this is neither geometry nor
+    # vocabulary. Deliberately BEFORE the subject fallback: a rejected card rack
+    # should still let a page that is genuinely about one person be recognised.
+    if profiles and not roster_is_people(profiles, declared=declared):
+        logger.info(
+            "Dropped %d portrait-anchored profile(s) on %s: the group carries no "
+            "person evidence (no role, bio or contact) — a card rack, not a roster",
+            len(profiles),
+            base_url,
+        )
+        profiles = []
+
+    if not profiles:
+        subject = _page_subject_profile(soup, base_url, portraits)
+        if subject is not None:
+            return [subject]
     return profiles[:24]
+
+
+# --- document cards (downloadable PDFs/DOCs presented with a title/thumbnail) ---
+#
+# Same structural idea as _extract_profile_candidates, applied to a different
+# distinctive anchor: instead of a portrait, a document-extension <a href>.
+# Deliberately makes NO assumption about class names or markup conventions —
+# it must work on any site's resource/brochure listing, not just one that
+# happens to use a particular convention.
+
+# A document card holds a title and a short "Download" line, not prose — much
+# tighter than a profile card's bio allowance.
+_DOCUMENT_CARD_MAX_LINES = 8
+_DOCUMENT_CARD_MAX_CHARS = 400
+
+# Boilerplate lead words that must never be mistaken for a card's title (a
+# card with no separate title — just "Download <a>PDF</a>" — gets no title
+# rather than a misleading one).
+_DOCUMENT_CARD_TITLE_STOPWORDS = frozenset(
+    {"download", "downloads", "download now", "get file", "get the file"}
+)
+
+
+def _looks_like_document_card(tag: Tag) -> bool:
+    """True when a container is plausibly ONE document's card: at most one
+    thumbnail, no form, and text short enough to be a title plus a download
+    line — not a whole grid of several cards."""
+    if len([i for i in tag.find_all("img") if isinstance(i, Tag)]) > 1:
+        return False
+    if tag.find("form") is not None:
+        return False
+    lines = _text_lines(tag)
+    if len(lines) > _DOCUMENT_CARD_MAX_LINES:
+        return False
+    return sum(len(line) for line in lines) <= _DOCUMENT_CARD_MAX_CHARS
+
+
+def _document_anchors(tag: Tag, base_url: str) -> list[Tag] | None:
+    """Every ``<a href>`` inside ``tag``, or None when any of them is NOT a
+    document link — a card must not straddle a mix of document and nav/other
+    links, so one stray link disqualifies the whole container."""
+    anchors = [a for a in tag.find_all("a", href=True) if isinstance(a, Tag)]
+    if not anchors:
+        return None
+    for a in anchors:
+        href = _absolute_url(base_url, str(a.get("href")))
+        if not href or not is_document_href(href):
+            return None
+    return anchors
+
+
+def _nearest_document_card(a: Tag, base_url: str) -> Tag | None:
+    """Walk up from a document anchor to the LARGEST ancestor that still (a)
+    contains only document links and (b) looks like a single card. Growing
+    stops the moment either condition would break — e.g. a grid wrapper
+    holding several cards fails (b) via its multiple thumbnails, the same way
+    _nearest_profile_container stops at a container holding >1 portrait.
+    """
+    current = a.parent
+    best: Tag | None = None
+    depth = 0
+    while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 6:
+        if current.name in _PROFILE_CHROME_TAGS:
+            break
+        if _document_anchors(current, base_url) is None:
+            break
+        if not _looks_like_document_card(current):
+            break
+        best = current
+        current = current.parent
+        depth += 1
+    return best
+
+
+# A title is a heading, not a sentence — bounds it away from a prose fragment
+# ("...a report you can download here in passing") that happens to precede a
+# document link inline within the same paragraph.
+_DOCUMENT_CARD_TITLE_MAX_CHARS = 100
+
+
+def _document_card_title(container: Tag, anchors: list[Tag]) -> str | None:
+    """The card's title: text from a DIRECT CHILD of ``container`` that does
+    not itself hold any of the card's document anchors.
+
+    This is the key structural signal: a real card title lives in its own
+    sibling element ("<p>Title</p><div>Download <a>...</a></div>"), while a
+    PDF mentioned inline in running prose shares the SAME element as the
+    anchor ("<p>...you can <a>download here</a>...</p>") — that container's
+    only element child IS the anchor, so no sibling title text exists and
+    None is returned correctly.
+    """
+    anchor_ids = {id(a) for a in anchors}
+    for child in container.find_all(recursive=False):
+        if not isinstance(child, Tag):
+            continue
+        # find_all searches descendants only, so a bare <a> CHILD must also be
+        # checked against itself, not just its (nonexistent) sub-anchors.
+        if id(child) in anchor_ids or any(
+            id(a) in anchor_ids for a in child.find_all("a")
+        ):
+            continue
+        text = _clean_line(child.get_text(" ", strip=True))
+        if not text or len(text) > _DOCUMENT_CARD_TITLE_MAX_CHARS:
+            continue
+        if text.strip().rstrip(":").lower() in _DOCUMENT_CARD_TITLE_STOPWORDS:
+            continue
+        return text
+    return None
+
+
+def _extract_document_cards(
+    soup: BeautifulSoup, base_url: str
+) -> list["DocumentCardCandidate"]:
+    """Extract likely downloadable-document cards: a title, an optional
+    thumbnail, and one-or-more document-file links, grouped the way the
+    source page visually grouped them (one enclosing card), not flattened
+    into a single list of buttons."""
+    work = BeautifulSoup(str(soup), "lxml")
+    for tag in work.find_all(("header", "nav", "footer", "script", "style", "noscript")):
+        tag.decompose()
+
+    cards: list[DocumentCardCandidate] = []
+    seen_containers: set[int] = set()
+    seen_link_sets: set[frozenset[str]] = set()
+
+    for a in work.find_all("a", href=True):
+        if not isinstance(a, Tag):
+            continue
+        href = _absolute_url(base_url, str(a.get("href")))
+        if not href or not is_document_href(href):
+            continue
+        container = _nearest_document_card(a, base_url)
+        if container is None or id(container) in seen_containers:
+            continue
+        seen_containers.add(id(container))
+
+        anchors = _document_anchors(container, base_url) or []
+        links: list[DocumentCardLink] = []
+        for link_a in anchors:
+            label = _clean_line(link_a.get_text(" ", strip=True))
+            link_href = _absolute_url(base_url, str(link_a.get("href")))
+            if not label or not link_href:
+                continue
+            links.append(DocumentCardLink(label=label, href=link_href))
+        if not links:
+            continue
+        key = frozenset(link.href for link in links)
+        if key in seen_link_sets:
+            continue
+        seen_link_sets.add(key)
+
+        img = next((i for i in container.find_all("img") if isinstance(i, Tag)), None)
+        image_url = None
+        if img is not None:
+            src = _image_src_from_tag(img)
+            resolved = _absolute_url(base_url, src or "")
+            alt = (img.get("alt") or "").strip() if isinstance(img.get("alt"), str) else ""
+            if resolved and not _looks_like_icon(resolved, alt):
+                image_url = resolved
+
+        title = _document_card_title(container, anchors)
+        # Qualifying bar: a bare single link with no title and no thumbnail
+        # isn't a "card" — it's an ordinary link (a nav item that happens to
+        # point at a PDF, an inline mention in prose). Requiring at least one
+        # of {title, image, >1 link} keeps those out without relying on any
+        # site-specific markup convention.
+        if title is None and image_url is None and len(links) <= 1:
+            continue
+
+        cards.append(
+            DocumentCardCandidate(title=title, image_url=image_url, links=links)
+        )
+
+    return cards[:20]
+
+
+def _strip_document_card_lines(text: str, cards: list[DocumentCardCandidate]) -> str:
+    """Remove each document card's title + link labels from raw_text.
+
+    Without this, the LLM sees the same titles ("Music Therapy for Mental
+    Health") as ordinary page text and invents its OWN services/about section
+    narrating them — duplicating, in a second disconnected section, content
+    the deterministic downloads block (routers.generate._inject_downloads)
+    already renders with real buttons. Same reasoning as nav_extraction.
+    strip_linkbar_lines: claim the text before planning, not after.
+    """
+    exact_lines = {
+        _clean_line(card.title).strip().lower() for card in cards if card.title
+    }
+    label_groups = [
+        [link.label.strip().lower() for link in card.links if link.label]
+        for card in cards
+    ]
+    label_groups = [g for g in label_groups if g]
+    if not exact_lines and not label_groups:
+        return text
+
+    def _is_link_label_line(line: str) -> bool:
+        low = _clean_line(line).strip().lower()
+        for labels in label_groups:
+            remainder = low
+            matched = False
+            for label in labels:
+                replaced = re.sub(re.escape(label), " ", remainder, count=1)
+                if replaced != remainder:
+                    matched = True
+                    remainder = replaced
+            if not matched:
+                continue
+            # A leading "Download " boilerplate word is not one of the card's
+            # OWN link labels, but must not keep the remainder non-empty
+            # either — strip it too before judging what's left over.
+            for stopword in _DOCUMENT_CARD_TITLE_STOPWORDS:
+                remainder = re.sub(re.escape(stopword), " ", remainder)
+            # Only a line that's essentially *made of* this card's link labels
+            # (nothing meaningful left over) is dropped — a short unrelated
+            # line that merely contains a label as a substring must not match.
+            if len(re.sub(r"[^a-z0-9]", "", remainder)) < 5:
+                return True
+        return False
+
+    kept = [
+        line
+        for line in text.split("\n")
+        if _clean_line(line).strip().lower() not in exact_lines
+        and not _is_link_label_line(line)
+    ]
+    return "\n".join(kept)
 
 
 def _about_hint(img: Tag) -> bool:
@@ -1223,8 +2044,13 @@ def _guess_intent(img: Tag, prior: list[ImageCandidate]) -> str:
     """
     Cheap heuristic for pages without render evidence: first big image we see
     is "hero"; subsequent are "about" or "generic" based on nearby text.
+
+    One cell of a repeating rack is never the hero, however early it appears.
+    On a page whose first content is a badge wall the "first big image" rule
+    crowned an award medal, which then rendered as the page's lead visual AND
+    as a tile in its own wall.
     """
-    if not any(c.intent == "hero" for c in prior):
+    if not any(c.intent == "hero" for c in prior) and not _in_image_grid(img, None):
         return "hero"
     return "about" if _about_hint(img) else "generic"
 
@@ -1249,70 +2075,12 @@ def _promote_hero_by_evidence(candidates: list[ImageCandidate]) -> None:
     best.intent = "hero"
 
 
-def _extract_logo_candidate(soup: BeautifulSoup, base_url: str) -> str | None:
-    """
-    Try in this order:
-    1. <link rel="apple-touch-icon"> (usually 180x180+)
-    2. <link rel="icon"> with sizes >= 96
-    3. <meta property="og:image">
-    4. <img> with class/alt/src containing "logo"
-    """
-    # apple-touch-icon
-    apple = soup.find("link", rel=lambda v: v and "apple-touch-icon" in v)
-    if isinstance(apple, Tag):
-        href = apple.get("href")
-        if isinstance(href, str):
-            return _absolute_url(base_url, href)
-
-    # link rel="icon" with biggest sizes
-    icon_tags = soup.find_all("link", rel=lambda v: v and "icon" in v)
-    best_icon: tuple[int, str] | None = None
-    for tag in icon_tags:
-        if not isinstance(tag, Tag):
-            continue
-        sizes = tag.get("sizes")
-        href = tag.get("href")
-        if not isinstance(href, str):
-            continue
-        size_n = 0
-        if isinstance(sizes, str) and "x" in sizes:
-            try:
-                size_n = int(sizes.split("x")[0])
-            except ValueError:
-                size_n = 0
-        if best_icon is None or size_n > best_icon[0]:
-            best_icon = (size_n, href)
-    if best_icon and best_icon[0] >= 96:
-        return _absolute_url(base_url, best_icon[1])
-
-    # og:image (carries brand colour even if not strictly a logo)
-    og = soup.find("meta", attrs={"property": "og:image"})
-    if isinstance(og, Tag):
-        content = og.get("content")
-        if isinstance(content, str):
-            return _absolute_url(base_url, content)
-
-    # <img> tags containing "logo"
-    for img in soup.find_all("img"):
-        if not isinstance(img, Tag):
-            continue
-        haystack = " ".join(
-            v
-            for v in (
-                str(img.get("src") or ""),
-                str(img.get("alt") or ""),
-                str(img.get("class") or ""),
-            )
-        ).lower()
-        if any(h in haystack for h in _LOGO_HINTS):
-            src = img.get("src") or img.get("data-src")
-            if isinstance(src, str):
-                return _absolute_url(base_url, src)
-
-    # Final fallback — favicon
-    if best_icon:
-        return _absolute_url(base_url, best_icon[1])
-    return None
+def _extract_logo_candidate(
+    soup: BeautifulSoup, base_url: str, *, site_name: str | None = None
+) -> LogoCandidate | None:
+    """The page's brand mark, with provenance. See services/logo_extraction.py —
+    a real logo outranks a favicon, and an og:image is a palette source only."""
+    return extract_logo(soup, base_url, site_name=site_name)
 
 
 # Block-level tags whose text we keep in the structural fallback pass. These
@@ -1430,7 +2198,24 @@ def _extract_headings(soup: BeautifulSoup) -> list[str]:
     return deduped[:50]
 
 
+# How many links one page contributes. The cap exists so a sitemap-style page
+# can't balloon SourceContent; it is applied AFTER crawlable links are sorted to
+# the front (see below), so the crawl frontier is never the thing that loses out.
+_MAX_LINKS_PER_PAGE = 200
+
+
 def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
+    """Absolute links on the page, crawlable same-host ones first.
+
+    The order is load-bearing: this list is the crawl's seed frontier
+    (``scrape_url`` passes it as ``seed_links``), and the cap used to be applied
+    to raw document order. On a page carrying a mega-menu and a footer sitemap,
+    the first 50 links are all chrome, external and asset URLs — so genuine
+    content links were cut before ``_is_crawlable_link`` ever saw them, and the
+    crawl silently explored a fraction of the site.
+
+    Sorting is stable, so within each group document order is preserved.
+    """
     out: list[str] = []
     seen = set()
     for a in soup.find_all("a", href=True):
@@ -1443,7 +2228,10 @@ def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
         if abs_url and abs_url not in seen and abs_url.startswith(("http://", "https://")):
             seen.add(abs_url)
             out.append(abs_url)
-    return out[:50]
+
+    entry_host = urlparse(base_url).netloc
+    out.sort(key=lambda url: 0 if _is_crawlable_link(url, entry_host) else 1)
+    return out[:_MAX_LINKS_PER_PAGE]
 
 
 def _extract_meta_string(soup: BeautifulSoup, *names: str) -> str | None:
@@ -1461,45 +2249,6 @@ def _extract_meta_string(soup: BeautifulSoup, *names: str) -> str | None:
 # --- brand candidate -----------------------------------------------------------
 
 
-async def _build_brand_candidate(
-    site_name: str | None,
-    logo_url: str | None,
-) -> BrandIdentity | None:
-    if not logo_url:
-        return None
-    if not await is_public_url(logo_url):
-        logger.warning("Refusing to fetch logo from non-public URL %s", logo_url)
-        return None
-    try:
-        async with httpx.AsyncClient(
-            timeout=settings.robots_fetch_timeout_seconds,
-            follow_redirects=True,
-            headers={"User-Agent": USER_AGENT},
-        ) as client:
-            resp = await client.get(logo_url)
-            resp.raise_for_status()
-            image_bytes = resp.content
-    except httpx.HTTPError as exc:
-        logger.warning("Failed to fetch logo %s: %s", logo_url, exc)
-        return None
-
-    try:
-        # PIL decode + quantize is CPU-bound — keep it off the event loop.
-        extraction = await asyncio.to_thread(extract_palette_from_image_bytes, image_bytes)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to extract palette from %s: %s", logo_url, exc)
-        return None
-
-    return BrandIdentity(
-        name=site_name or "Untitled",
-        logo_url=logo_url,
-        logo_data_url=extraction.logo_data_url,
-        extracted_palette=extraction.palette,
-        logo_is_light=extraction.logo_is_light,
-        mood=None,
-    )
-
-
 # --- top-level orchestration ----------------------------------------------------
 
 
@@ -1511,7 +2260,7 @@ class _ParsedPage:
     site_name: str | None
     source_content: SourceContent
     image_candidates: list[ImageCandidate]
-    logo_url: str | None
+    logo: LogoCandidate | None
 
 
 def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True) -> _ParsedPage:
@@ -1544,6 +2293,21 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
     headings = _extract_headings(soup)
     image_candidates = _extract_images(soup, final_url)
     profile_candidates = _extract_profile_candidates(soup, final_url)
+    document_cards = _extract_document_cards(soup, final_url)
+    embeds = _extract_embeds(soup, final_url)
+    # The page's own section tree. `headings` above is the flat, level-less
+    # version of the same markup — kept for the callers that only want a
+    # keyword bag, while the planner is grounded on the tree.
+    section_candidates = extract_section_candidates(
+        soup, final_url, person_name=_looks_like_person_name
+    )
+    profile_candidates = _confirm_profiles_against_sections(
+        profile_candidates, section_candidates
+    )
+    if document_cards:
+        # Claim the cards' text before the LLM ever sees it — otherwise it
+        # narrates the same titles into an invented, disconnected section.
+        extracted_text = _strip_document_card_lines(extracted_text, document_cards)
     # Fast-path role stamping: without render evidence every candidate is
     # role="unknown", which lets a nav logo or a grid headshot win the hero
     # background. The filename and the profile-card structure are evidence we
@@ -1561,7 +2325,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
             if candidate.url in profile_photo_urls and candidate.role == "unknown":
                 candidate.role = "portrait"
     links = _extract_links(soup, final_url)
-    logo_url = _extract_logo_candidate(soup, final_url)
+    logo = _extract_logo_candidate(soup, final_url, site_name=site_name)
     nav_links = extract_nav_links(soup, final_url)
     body_link_clusters = extract_body_link_clusters(soup, final_url)
     social_links = extract_social_links(soup, final_url)
@@ -1579,6 +2343,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         body_link_clusters=body_link_clusters,
         social_links=social_links,
         url_path=urlparse(final_url).path or "/",
+        subject_name=_leading_person_name(soup),
         image_metadata=[
             ImageMetadata(
                 url=c.url,
@@ -1594,22 +2359,28 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
             for c in image_candidates
         ],
         profile_candidates=profile_candidates,
+        section_candidates=section_candidates,
+        document_cards=document_cards,
+        video_embeds=embeds.videos,
+        map_embeds=embeds.maps,
     )
     return _ParsedPage(
         final_url=final_url,
         site_name=site_name,
         source_content=source_content,
         image_candidates=image_candidates,
-        logo_url=logo_url,
+        logo=logo,
     )
 
 
 # --- bounded crawl --------------------------------------------------------------
 
 
-# Asset extensions to never crawl — these aren't pages.
+# Asset extensions to never crawl — these aren't pages. Document extensions
+# are sourced from nav_extraction.DOCUMENT_EXTENSIONS so the "is this a
+# document" test stays in lockstep with find_document_link_clusters.
 _NON_PAGE_EXTENSIONS = (
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    *DOCUMENT_EXTENSIONS,
     ".zip", ".gz", ".tar", ".7z", ".rar",
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif", ".ico",
     ".mp3", ".mp4", ".mov", ".webm", ".wav", ".m4a",
@@ -1642,6 +2413,43 @@ def _normalize_crawl_url(url: str) -> str | None:
     return f"{parsed.scheme}://{host}{path}{('?' + parsed.query) if parsed.query else ''}"
 
 
+# A translated mirror (/bm/committee, /zh/about, /fr-fr/produits) duplicates the
+# whole site under one language segment. The translations are real content the
+# owner maintains, but they carry no NEW structure, so on a bounded frontier
+# they must not outrank pages we haven't seen in any language — MMTA's nine
+# committee-member pages lost all 20 slots to /bm/* and /zh/* copies of pages
+# already queued. Mirrors are crawled last (the `deferred` queue in
+# _crawl_extra_pages), never dropped; page_inference then pairs each one with
+# the page it translates.
+
+
+def _path_key(url: str) -> str:
+    """Lowercased path of a URL, without its trailing slash — the identity we
+    compare translated paths against."""
+    path = (urlparse(url).path or "/").lower()
+    return path[:-1] if len(path) > 1 and path.endswith("/") else path
+
+
+def _is_locale_mirror(path: str, *, entry_locale: str | None, known_paths: set[str]) -> bool:
+    """True when ``path`` is a translated copy of the site we're already crawling.
+
+    ``entry_locale`` is the entry URL's own locale segment, so scraping
+    https://site.com/bm keeps /bm/* and treats it as the source language.
+    """
+    segments = [s for s in path.split("/") if s]
+    if not segments:
+        return False
+    segment = locale_segment(path)
+    if segment is None or segment == entry_locale:
+        return False
+    if len(segments) == 1:
+        # A bare /zh, /de — the language switcher's landing page.
+        return segment not in AMBIGUOUS_LOCALE_SEGMENTS
+    # Deeper paths need evidence: /zh/about mirrors /about. Without a known
+    # counterpart, /it/support may well be a real IT section.
+    return "/" + "/".join(segments[1:]) in known_paths
+
+
 def _is_crawlable_link(url: str, entry_host: str) -> bool:
     parsed = urlparse(url)
     if parsed.netloc.lower() != entry_host.lower():
@@ -1672,7 +2480,9 @@ async def _crawl_extra_pages(
     timeout_ms: int,
     respect_robots: bool,
     extra_seed_urls: list[str] | None = None,
+    fallback_seed_urls: list[str] | None = None,
     already_seen: set[str] | None = None,
+    priority_seed_urls: set[str] | None = None,
     on_progress: "Callable[[int, str], Awaitable[None]] | None" = None,
     is_cancelled: "Callable[[], bool] | None" = None,
 ) -> tuple[list[_ParsedPage], list[str]]:
@@ -1683,13 +2493,30 @@ async def _crawl_extra_pages(
     sliding-window pool of ``_CRAWL_WORKERS`` workers (per-host politeness still
     gates the real request rate), so one slow page no longer stalls the rest.
 
+    Translated mirrors of the entry language (/zh/about beside /about) are
+    crawled only after every other queued page — see ``_is_locale_mirror``.
+    Roster/profile-card links (a committee page's links to its own members)
+    jump to the *front* instead: they're what a Team block on the generated
+    site actually needs, and a plain FIFO frontier lets them get crowded out
+    by nav/footer links when a site has more pages than the crawl budget —
+    see ``priority_seed_urls`` and the ``profile_candidates`` check below.
+
     The leftover frontier is what the BFS had queued but didn't process when
     the cap was hit. The router surfaces this so the frontend can offer
     "Crawl N more" without restarting from scratch.
 
     ``extra_seed_urls`` lets a resume call (POST /api/scrape/extend) seed the
     BFS with the prior crawl's leftover frontier.  ``already_seen`` lets the
-    resume call avoid re-fetching URLs from the prior pass.
+    resume call avoid re-fetching URLs from the prior pass. ``priority_seed_urls``
+    lets the caller mark some of ``seed_links``/``extra_seed_urls`` (e.g. the
+    entry page's own profile-card links, when the entry page is itself a
+    roster) as high-priority up front.
+
+    ``fallback_seed_urls`` (the site's own sitemap) is queued LAST, behind every
+    link the entry page actually shows. A sitemap is a complete inventory rather
+    than a statement of importance, so it must not outrank the owner's own
+    navigation — its job is to reach pages the link graph hides, not to reorder
+    the ones it doesn't.
     """
     entry_parsed = urlparse(entry_final_url)
     entry_host = entry_parsed.netloc
@@ -1704,21 +2531,74 @@ async def _crawl_extra_pages(
     # against a single host trigger 429s within seconds on real WAF'd sites.
     politeness = await get_politeness(entry_host)
 
+    # The entry's own locale segment (None for an unprefixed site) — whatever
+    # language the user pointed us at is the source language; every *other*
+    # language's mirror is recognized against the paths we already know.
+    entry_locale = locale_segment(urlparse(entry_final_url).path or "/")
+    known_paths: set[str] = set()
+
+    def _register_paths(urls) -> None:
+        """Record same-host paths as pages this site is known to have."""
+        for url in urls:
+            if urlparse(url).netloc.lower() == entry_host.lower():
+                known_paths.add(_path_key(url))
+
+    _register_paths([entry_final_url, *seen])
+
     # depth 1 frontier seeded from the entry's links + any explicit extra seeds.
     # Each entry carries a discovery index so results can be re-sorted into the
     # deterministic (depth, discovery) order the old lockstep batches produced.
+    #
+    # `deferred` holds translated mirrors of pages we're already crawling. They
+    # are real pages the owner maintains, so they stay in the queue — but they
+    # only get fetched once nothing untranslated is left, otherwise a mirrored
+    # site spends its whole budget saying the same things twice.
+    # Queue items carry a tier (0 = untranslated, 1 = mirror) so the tier drives
+    # the result order too, not just fetch order: downstream ranking reads
+    # earlier pages as closer to the entry, and a translation of /about must
+    # never outrank /about because the header happened to list it first.
+    #
+    # `priority` holds roster/profile-card links — a committee page's links to
+    # its own members. They're drained before `frontier` so they win the page
+    # budget over nav/footer/unrelated links when the site has more pages than
+    # the crawl can afford, instead of losing out just because they happened
+    # to be discovered later or appear lower in the page's HTML.
     discovery_count = 0
-    frontier: deque[tuple[str, int, int]] = deque()
-    for link in [*(extra_seed_urls or []), *seed_links]:
+    priority: deque[tuple[str, int, int, int]] = deque()
+    frontier: deque[tuple[str, int, int, int]] = deque()
+    deferred: deque[tuple[str, int, int, int]] = deque()
+
+    def _enqueue(norm: str, depth: int, *, priority_link: bool = False) -> None:
+        nonlocal discovery_count
+        is_mirror = _is_locale_mirror(
+            _path_key(norm), entry_locale=entry_locale, known_paths=known_paths
+        )
+        if is_mirror:
+            queue = deferred
+        elif priority_link:
+            queue = priority
+        else:
+            queue = frontier
+        queue.append((norm, depth, discovery_count, 1 if is_mirror else 0))
+        discovery_count += 1
+
+    # Register every candidate path before queueing: /about must be known when
+    # /bm/about is classified, whatever order the entry page lists them in.
+    _all_seeds = [
+        *(extra_seed_urls or []),
+        *seed_links,
+        *(fallback_seed_urls or []),
+    ]
+    _register_paths(_all_seeds)
+    for link in _all_seeds:
         norm = _normalize_crawl_url(link)
         if not norm or norm in seen:
             continue
         if not _is_crawlable_link(norm, entry_host):
             continue
         seen.add(norm)
-        frontier.append((norm, 1, discovery_count))
-        discovery_count += 1
-        if len(frontier) >= max_pages * 3:  # cap how many we even queue
+        _enqueue(norm, 1, priority_link=norm in (priority_seed_urls or ()))
+        if len(priority) + len(frontier) + len(deferred) >= max_pages * 3:  # cap how many we even queue
             break
 
     # Sliding-window worker pool instead of lockstep batches: with batches of 3,
@@ -1726,8 +2606,13 @@ async def _crawl_extra_pages(
     # pull from the shared frontier as they free up. Per-host politeness (slots
     # + min-delay) still bounds effective concurrency against a single host, and
     # a dedicated semaphore keeps Playwright tab pressure at the old level.
-    collected: list[tuple[int, int, _ParsedPage]] = []  # (depth, discovery, page)
+    # (tier, depth, discovery, page)
+    collected: list[tuple[int, int, int, _ParsedPage]] = []
     in_flight = 0
+    # Flips the first time nothing untranslated is queued *or* in flight. Until
+    # then workers idle rather than start a mirror, so a translation can never
+    # take a slot from a page no other language covers.
+    mirrors_unlocked = False
     new_work = asyncio.Event()
     pw_sem = asyncio.Semaphore(_CRAWL_PLAYWRIGHT_CONCURRENCY)
     stop_logged = False
@@ -1819,27 +2704,39 @@ async def _crawl_extra_pages(
             politeness.record_success()
             return depth, parsed
 
+    async def _wait_for_work() -> None:
+        """Park until another worker's fetch reports in (short timeout guards
+        the clear/set race without busy-spinning)."""
+        new_work.clear()
+        try:
+            await asyncio.wait_for(new_work.wait(), timeout=0.1)
+        except asyncio.TimeoutError:
+            # asyncio.TimeoutError is the builtin TimeoutError on the 3.11
+            # runtime here, but a distinct class on ≤3.10 — catch the asyncio
+            # one so this stays portable across both.
+            pass
+
     async def _worker() -> None:
-        nonlocal in_flight, discovery_count
+        nonlocal in_flight, mirrors_unlocked
         while True:
             if _should_stop():
                 return
-            if not frontier:
-                if in_flight == 0:
-                    return  # no queued work and nobody can produce more
-                # Another worker's in-flight fetch may expand the frontier —
-                # wait for a completion signal (short timeout guards the
-                # clear/set race without busy-spinning).
-                new_work.clear()
-                try:
-                    await asyncio.wait_for(new_work.wait(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    # asyncio.TimeoutError is the builtin TimeoutError on the
-                    # 3.11 runtime here, but a distinct class on ≤3.10 — catch
-                    # the asyncio one so this stays portable across both.
-                    pass
-                continue
-            url, depth, _discovered = frontier.popleft()
+            if not priority and not frontier:
+                if not mirrors_unlocked:
+                    if in_flight:
+                        # An in-flight fetch may still expand the frontier with
+                        # untranslated pages (a roster page's member links).
+                        # Idling here is what keeps a mirror from taking their
+                        # slot — an empty frontier is not an exhausted one.
+                        await _wait_for_work()
+                        continue
+                    mirrors_unlocked = True
+                if not deferred:
+                    if in_flight == 0:
+                        return  # no queued work and nobody can produce more
+                    await _wait_for_work()
+                    continue
+            url, depth, _discovered, _tier = (priority or frontier or deferred).popleft()
             in_flight += 1
             try:
                 depth, parsed = await _fetch_one((url, depth))
@@ -1848,7 +2745,7 @@ async def _crawl_extra_pages(
                 new_work.set()
             if parsed is None or len(collected) >= max_pages:
                 continue
-            collected.append((depth, _discovered, parsed))
+            collected.append((_tier, depth, _discovered, parsed))
             if on_progress is not None:
                 try:
                     await on_progress(len(collected), parsed.final_url)
@@ -1859,6 +2756,22 @@ async def _crawl_extra_pages(
             # haven't hit the depth cap.
             if depth >= max_depth:
                 continue
+            _register_paths(parsed.source_content.links)
+            # A page with a real roster (>= page_inference.ROSTER_MIN_PROFILES
+            # cards) names its own members' pages via each card's profile_url —
+            # the same signal page_inference.roster_detail_links reads after
+            # the crawl. Those links jump the queue (see `priority` above) so
+            # a Team block's member pages don't lose the page budget to nav
+            # or footer links just because this roster wasn't crawled first.
+            candidates = getattr(parsed.source_content, "profile_candidates", None) or []
+            priority_urls: set[str] = set()
+            if len(candidates) >= 2:
+                for candidate in candidates:
+                    if not candidate.profile_url:
+                        continue
+                    norm_p = _normalize_crawl_url(candidate.profile_url)
+                    if norm_p:
+                        priority_urls.add(norm_p)
             for child in parsed.source_content.links:
                 norm = _normalize_crawl_url(child)
                 if not norm or norm in seen:
@@ -1866,27 +2779,47 @@ async def _crawl_extra_pages(
                 if not _is_crawlable_link(norm, entry_host):
                     continue
                 seen.add(norm)
-                frontier.append((norm, depth + 1, discovery_count))
-                discovery_count += 1
+                _enqueue(norm, depth + 1, priority_link=norm in priority_urls)
             new_work.set()
 
-    if frontier:
-        worker_count = min(_CRAWL_WORKERS, max(1, len(frontier)))
+    if priority or frontier or deferred:
+        queued = len(priority) + len(frontier) + len(deferred)
+        worker_count = min(_CRAWL_WORKERS, max(1, queued))
         await asyncio.gather(*(_worker() for _ in range(min(worker_count, max_pages))))
 
     # Restore the deterministic (depth, discovery) order the old lockstep
     # batches produced — downstream ranking treats earlier pages as closer to
-    # the entry page.
-    collected.sort(key=lambda t: (t[0], t[1]))
-    parsed_pages = [p for _d, _i, p in collected]
+    # the entry page — with translated mirrors sorted behind their tier.
+    collected.sort(key=lambda t: (t[0], t[1], t[2]))
+    parsed_pages = [p for _t, _d, _i, p in collected]
 
-    # Whatever the frontier still holds when we stop is "unvisited" — surface
-    # it so callers can resume via /api/scrape/extend.
-    unvisited = [url for url, _depth, _i in frontier]
+    # Whatever the queues still hold when we stop is "unvisited" — surface it so
+    # callers can resume via /api/scrape/extend. Untranslated pages lead, so a
+    # "crawl N more" pass keeps picking up new content before translations.
+    unvisited = [url for url, _depth, _i, _tier in (*priority, *frontier, *deferred)]
     return parsed_pages, unvisited
 
 
 # --- top-level orchestration ----------------------------------------------------
+
+
+async def _sitemap_seed_urls(entry_final_url: str) -> list[str]:
+    """The site's sitemap URLs, for use as a last-resort crawl frontier.
+
+    Wholly advisory — ``probe_sitemap`` already swallows every error and returns
+    an empty result, and this adds a belt-and-braces guard so a surprise here can
+    never take down a crawl that would otherwise have succeeded on links alone.
+    Cost is one or two plain HTTP round-trips (1-3s) against a crawl measured in
+    tens of seconds.
+    """
+    try:
+        from app.services.sitemap import probe_sitemap
+
+        result = await probe_sitemap(entry_final_url)
+    except Exception as exc:  # noqa: BLE001 — advisory seed, never load-bearing
+        logger.debug("sitemap seed unavailable for %s: %s", entry_final_url, exc)
+        return []
+    return list(result.urls)
 
 
 async def scrape_url(
@@ -1920,85 +2853,91 @@ async def scrape_url(
             status=403,
         )
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ],
-        )
-        context = await browser.new_context(
-            user_agent=BROWSER_USER_AGENT,
-            viewport={"width": 1366, "height": 900},
-            ignore_https_errors=True,
-            locale="en-US",
-            extra_http_headers=_BROWSER_HEADERS,
-        )
-        await context.add_init_script(_STEALTH_INIT_SCRIPT)
-        await context.route("**/*", _route_block_heavy)
+    async with browser_context() as context:
+        # Try httpx-first for the entry too — same speed-win as for crawl
+        # pages. Only spin up the Chromium tab when we actually need it.
+        final_url: str
+        html: str
+        fast_entry = await try_fast_fetch(url, timeout_seconds=10.0)
+        if isinstance(fast_entry, FastFetchResult):
+            final_url, html = fast_entry.final_url, fast_entry.html
+            logger.info("entry httpx-fast for %s", url)
+        else:
+            try:
+                final_url, html = await _goto_and_render(
+                    context, url, timeout_ms=15000
+                )
+            except ScrapeError:
+                raise
+            except asyncio.TimeoutError as exc:
+                raise ScrapeError(f"Timeout fetching {url}", status=408) from exc
+            except Exception as exc:  # noqa: BLE001
+                raise ScrapeError(f"Failed to fetch {url}: {exc}", status=502) from exc
 
-        try:
-            # Try httpx-first for the entry too — same speed-win as for crawl
-            # pages. Only spin up the Chromium tab when we actually need it.
-            final_url: str
-            html: str
-            fast_entry = await try_fast_fetch(url, timeout_seconds=10.0)
-            if isinstance(fast_entry, FastFetchResult):
-                final_url, html = fast_entry.final_url, fast_entry.html
-                logger.info("entry httpx-fast for %s", url)
-            else:
-                try:
-                    final_url, html = await _goto_and_render(
-                        context, url, timeout_ms=15000
-                    )
-                except ScrapeError:
-                    raise
-                except asyncio.TimeoutError as exc:
-                    raise ScrapeError(f"Timeout fetching {url}", status=408) from exc
-                except Exception as exc:  # noqa: BLE001
-                    raise ScrapeError(f"Failed to fetch {url}: {exc}", status=502) from exc
+        entry = await asyncio.to_thread(
+            _parse_rendered_html, html, final_url, require_text=True
+        )
+        entry.source_content.url_path = None  # primary page has no path tag
 
-            entry = await asyncio.to_thread(
-                _parse_rendered_html, html, final_url, require_text=True
+        unvisited_urls: list[str] = []
+        if crawl:
+            # If the entry page IS the roster (the user pasted the committee
+            # page directly), its member links deserve the same front-of-queue
+            # treatment a roster discovered mid-crawl gets — see `priority`
+            # in _crawl_extra_pages.
+            entry_candidates = getattr(entry.source_content, "profile_candidates", None) or []
+            priority_seed_urls: set[str] | None = None
+            if len(entry_candidates) >= 2:
+                priority_seed_urls = {
+                    norm
+                    for c in entry_candidates
+                    if c.profile_url
+                    for norm in (_normalize_crawl_url(c.profile_url),)
+                    if norm
+                }
+            # The site's own inventory, as a LAST-resort seed set. The BFS
+            # only ever sees pages some crawled page links to, so anything
+            # reachable solely from a page beyond the budget — or from no
+            # page at all — was previously invisible. Advisory: any failure
+            # yields no URLs and the crawl proceeds on links alone.
+            sitemap_seeds: list[str] = []
+            if settings.crawl_seed_from_sitemap:
+                with stage("crawl_sitemap_seed"):
+                    sitemap_seeds = await _sitemap_seed_urls(final_url)
+            logger.info(
+                "crawling up to %d extra pages from %s (%d sitemap seed(s))",
+                crawl_max_pages, final_url, len(sitemap_seeds),
             )
-            entry.source_content.url_path = None  # primary page has no path tag
+            with stage("crawl_extra_pages"):
+                discovered, unvisited_urls = await _crawl_extra_pages(
+                context,
+                entry_final_url=final_url,
+                seed_links=entry.source_content.links,
+                fallback_seed_urls=sitemap_seeds,
+                max_pages=crawl_max_pages,
+                max_depth=crawl_max_depth,
+                timeout_ms=12000,
+                respect_robots=respect_robots,
+                priority_seed_urls=priority_seed_urls,
+                on_progress=on_progress,
+                is_cancelled=is_cancelled,
+            )
+            entry.source_content.discovered_pages = [
+                p.source_content for p in discovered
+            ]
+            # With the full page set known, body link clusters repeated
+            # across pages are template chrome — purge their labels from
+            # every page's raw_text so they don't read as content. Section
+            # headings repeated the same way are chrome for the same reason.
+            strip_chrome_lines(entry.source_content)
+            strip_chrome_sections(entry.source_content)
+            logger.info(
+                "crawl found %d additional pages, %d more in unvisited frontier",
+                len(discovered),
+                len(unvisited_urls),
+            )
 
-            unvisited_urls: list[str] = []
-            if crawl:
-                logger.info("crawling up to %d extra pages from %s", crawl_max_pages, final_url)
-                with stage("crawl_extra_pages"):
-                    discovered, unvisited_urls = await _crawl_extra_pages(
-                    context,
-                    entry_final_url=final_url,
-                    seed_links=entry.source_content.links,
-                    max_pages=crawl_max_pages,
-                    max_depth=crawl_max_depth,
-                    timeout_ms=12000,
-                    respect_robots=respect_robots,
-                    on_progress=on_progress,
-                    is_cancelled=is_cancelled,
-                )
-                entry.source_content.discovered_pages = [
-                    p.source_content for p in discovered
-                ]
-                # With the full page set known, body link clusters repeated
-                # across pages are template chrome — purge their labels from
-                # every page's raw_text so they don't read as content.
-                strip_chrome_lines(entry.source_content)
-                logger.info(
-                    "crawl found %d additional pages, %d more in unvisited frontier",
-                    len(discovered),
-                    len(unvisited_urls),
-                )
-        finally:
-            await context.close()
-            await browser.close()
-
-    brand_candidate = await _build_brand_candidate(
-        entry.site_name, entry.logo_url
-    )
+    brand_candidate = await build_brand_candidate(entry.site_name, entry.logo)
 
     return ScrapeResult(
         url=url,
@@ -2045,39 +2984,18 @@ async def extend_crawl(
     except UnsafeUrlError as exc:
         raise ScrapeError(str(exc), status=400) from exc
 
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ],
+    async with browser_context() as context:
+        discovered, unvisited = await _crawl_extra_pages(
+            context,
+            entry_final_url=entry_url,
+            seed_links=[],  # primary entry not re-rendered
+            max_pages=max_more,
+            max_depth=crawl_max_depth,
+            timeout_ms=12000,
+            respect_robots=respect_robots,
+            extra_seed_urls=seed_urls,
+            already_seen=set(already_seen),
         )
-        context = await browser.new_context(
-            user_agent=BROWSER_USER_AGENT,
-            viewport={"width": 1366, "height": 900},
-            ignore_https_errors=True,
-            locale="en-US",
-            extra_http_headers=_BROWSER_HEADERS,
-        )
-        await context.add_init_script(_STEALTH_INIT_SCRIPT)
-        await context.route("**/*", _route_block_heavy)
-        try:
-            discovered, unvisited = await _crawl_extra_pages(
-                context,
-                entry_final_url=entry_url,
-                seed_links=[],  # primary entry not re-rendered
-                max_pages=max_more,
-                max_depth=crawl_max_depth,
-                timeout_ms=12000,
-                respect_robots=respect_robots,
-                extra_seed_urls=seed_urls,
-                already_seen=set(already_seen),
-            )
-        finally:
-            await context.close()
-            await browser.close()
 
     return ExtendCrawlResult(
         additional_pages=[p.source_content for p in discovered],

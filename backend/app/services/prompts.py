@@ -31,11 +31,22 @@ INPUT
    the energy of eyebrows, headlines and CTAs — a restaurant should not read
    like a SaaS dashboard.
 3. `pages_requested` — the EXACT pages to produce. A page's `page_source`
-   (title, headings, raw_text, images), when present, is THAT page's factual
-   basis: preserve its real names, services, prices, addresses, hours and
-   numbers. Rephrase and reorganise for clarity and SEO, but never state a
+   (title, headings, sections, raw_text, images), when present, is THAT page's
+   factual basis: preserve its real names, services, prices, addresses, hours
+   and numbers. Rephrase and reorganise for clarity and SEO, but never state a
    fact it doesn't support. Without `page_source`, ground the page in the
    top-level `source` and the brand summary.
+
+SOURCE SECTIONS — `page_source.sections` is the source page's own structure;
+authoritative about SHAPE, and it beats `headings`. One source section → ONE
+output section, in order; never merge, split, or move a card between them.
+- `cards` → a block WITH items (services/features/team/process/gallery),
+  one item per card. NEVER `about`: its body is one string, so cards flatten
+  into a fake bullet list. required_sections names one per card group.
+- prose-only → `about`; never invent cards. `meta` is a card's own label line.
+- Only `card_kind: people` may be a `team`. `offerings`/`steps`/`gallery`
+  are never people — "Innovation Centre" is a room.
+- NEVER write markdown (`**bold**`, `-`/`•` bullets). Text renders literally.
 
 FIDELITY RULES — these override every other instruction:
 - Use ONLY facts present in the source. Improving language is encouraged;
@@ -80,6 +91,18 @@ REAL PHOTOS — `page_source.images` lists the page's ACTUAL photos as
 Strongly prefer them over stock:
 - When a section matches a photo (its `near` heading or `alt` topic), set the
   block's `image_ref` to that photo's `ref` number.
+- NEVER bind `image_ref` to a photo whose `role` is "background" for a
+  content section (about, features, services, team, gallery, or a split-hero
+  side image) — that role means the source used it as a decorative CSS
+  backdrop, not a photo of the section's subject, and it will read as
+  meaningless there. A "background"-role photo is only appropriate for a
+  hero whose `layout` is "background".
+- NEVER bind a photo whose `role` is "portrait" (a staff/committee headshot)
+  to anything but a team member or a testimonial author. A headshot on a
+  services or features card shows a stranger's face where the card's SUBJECT
+  should be — the single most common way a generated page looks wrong. Those
+  cards want a photo of the work being done; leave `image_ref` unset and let
+  `image_query` fetch one.
 - Use only `ref` numbers from the list, each at most once across the page.
 - Still fill `image_query` (2-6 word stock phrase) as fallback.
 
@@ -140,6 +163,11 @@ PER PAGE
   conversion ask. The homepage hero may keep its primary CTA.
 - Preserve real proper nouns, prices and contact details verbatim.
 - CTAs use action verbs ("Book a call", "Get a quote") — never "Click here".
+- A `cta_label` is 2-4 words and must DELIVER what its headline promised: a
+  headline asking the reader to join takes "Become a member", not "Learn more
+  about our committee". Never paste a source navigation link into the slot —
+  the button and the headline must be the same journey, and a label that reads
+  like a sentence is always the wrong one.
 - SEO titles 50-60 chars, primary keyword near the start, unique per page.
   Interior pages: "[Primary benefit/service] | [Brand name]".
 - SEO descriptions 140-160 chars, include the primary keyword naturally,
@@ -152,6 +180,31 @@ PER PAGE
 - ALWAYS fill visual query fields (image_query / background_query /
   avatar_query / photo_query) with concrete 2-6 word stock phrases — they
   describe imagery, not facts, so they're always fine to write.
+- For CONTENT sections (about, features, services, team, gallery), DEFAULT to
+  a query that depicts PEOPLE doing or receiving the thing being described,
+  in a real setting — e.g. "dentist examining patient smiling", not "dental
+  clinic interior" or a bare mood word. This is the majority case: it's what
+  makes a business feel real and builds trust.
+  Exception — when an item's actual subject is a THING, not a person's
+  action (a menu dish, a product, a finished portfolio/project piece, a room
+  or space, a piece of equipment), write a concrete, real photo of THAT
+  thing instead of inventing an unrelated person to stand next to it. This
+  is the norm, not a fallback, for gallery items, ecommerce/product
+  features, restaurant menu photography, and agency/creative portfolio
+  pieces — a real dish or product shot beats a generic person-holding-object
+  stock photo every time.
+  Either way, never write a vague single-word phrase ("modern", "abstract",
+  "professional") alone; pair it with a concrete subject and action/detail.
+  Save textural/atmospheric phrasing (gradients, skylines, textures) for
+  `background_query` on cta/hero-wash slots, where an abstract backdrop is
+  intentional — never for a content section's own featured photo, whether
+  its subject is a person or a thing.
+- Never write a negative or downbeat word into any visual query ("stressed",
+  "tired", "empty", "alone", "arguing", "sad", "bored"). Aim for confident,
+  upbeat energy appropriate to the brand's mood — warm and cheerful for
+  hospitality/childcare/lifestyle brands, composed and confident for
+  professional-services/technical brands — but never dour, chaotic, or
+  negative, whatever the industry.
 - Every string field you DO emit must be a non-null string; omitting an
   optional block always beats filling it with a placeholder.
 
@@ -173,12 +226,13 @@ _SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
     "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, audience?, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; give EVERY item an image_query so its card carries a photo; audience = short who-it\'s-for badge like "Ages 2-4" only when the source states it)',
     "testimonials": '- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews with real names only)',
     "about": '- about: { kind:"about", heading, body, image_alt?, image_query, image_ref? }',
-    "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (1-20 Q&As copied from the source — ONLY questions the source page itself asks; if the page has no Q&A content, omit the block; NEVER turn people, staff or profile listings into questions)',
+    "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (transcribe EVERY genuine Q&A the source page asks — this is the one block where you must NOT curate or pick a "representative" subset; include all of them, up to 50; if the page has no Q&A content, omit the block; NEVER turn people, staff or profile listings into questions)',
     "cta": '- cta: { kind:"cta", headline, subheadline?, cta_label, cta_href, background_query, image_ref? }',
     "contact": '- contact: { kind:"contact", heading, subheading?, email?, phone? }  (email/phone only if in source)',
     "pricing": '- pricing: { kind:"pricing", heading, subheading?, tiers:[{name, price, description?, features:[string], cta_label, cta_href, highlighted:boolean}] }  (2-4 real tiers)',
-    "team": '- team: { kind:"team", heading, subheading?, members:[{name, role, bio?, photo_query}] }  (real people only — copy names and roles exactly as the source spells them)',
-    "gallery": '- gallery: { kind:"gallery", heading, subheading?, items:[{title?, caption?, image_query, image_ref?}] }  (1-12 items)',
+    "team": '- team: { kind:"team", heading, subheading?, members:[{name, role, bio?, photo_query}] }  (real people only — copy names and roles exactly as the source spells them. role and bio must be that person\'s OWN text from the source: if the source gives a person no title, leave role ""; if it gives them no bio, OMIT bio. Never compose one, never reuse another person\'s, and never put page copy, buttons, or contact details in either field.)',
+    "profile": '- profile: { kind:"profile", name, role?, credentials?, bio?, contacts?:[{label, href}] }  (THE one person this page is about — the page\'s own subject, never a list. Copy the name, role and story exactly as the page states them; if it gives no title leave role "", if no qualifications omit credentials. Never compose a bio, never borrow another person\'s, and put contact details in `contacts` (label + mailto:/tel:/https href) rather than in the bio — this includes an email, a phone number, AND any social media profile the page gives for this specific person, e.g. {label:"LinkedIn", href:"https://linkedin.com/in/..."}.)',
+    "gallery": '- gallery: { kind:"gallery", heading, subheading?, items:[{title?, caption?, image_query, image_ref?}] }  (1-24 items; include EVERY genuine photo the source page shows — tiles are click-to-enlarge, so a full set reads as a real gallery)',
     "menu": '- menu: { kind:"menu", heading, subheading?, categories:[{name, items:[{name, description?, price?}]}] }  (real menu items only)',
     "process": '- process: { kind:"process", heading, subheading?, steps:[{title, description}] }  (1-6 real steps)',
     "timeline": '- timeline: { kind:"timeline", heading, subheading?, items:[{year, title, description?}] }  (1-10 real dated milestones)',
@@ -210,7 +264,17 @@ Hard rules:
 - Preserve real proper nouns, prices, contact details from the source verbatim.
 - SEO titles 50-60 chars. SEO descriptions 140-160 chars, built from the real subject matter.
 - ALWAYS produce specific, visual image_query / background_query / avatar_query phrases
-  (these describe stock imagery, not facts).
+  (these describe stock imagery, not facts). For content sections (about, features,
+  services, team), DEFAULT to a phrase that depicts PEOPLE doing or receiving the thing
+  described, in a real setting — that's the majority case and builds trust. Exception:
+  when an item's real subject is a THING, not a person's action (a menu dish, a product,
+  a portfolio piece, a room/space), write a concrete real photo of that thing instead of
+  forcing in an unrelated person — this is the norm for gallery items, ecommerce/product
+  features, restaurant menu photos, and agency portfolio pieces. Either way, never a bare
+  mood word ("modern", "abstract") alone. Reserve atmospheric/textural phrasing for
+  background_query on hero/cta backdrops only. Never write a negative or downbeat word
+  into any visual query ("stressed", "tired", "empty", "alone", "sad") — aim for confident,
+  upbeat energy appropriate to the brand's mood, never dour or negative.
 
 Pick `industry_category` from: restaurant, agency, saas, professional-services, ecommerce,
 consultancy, nonprofit, childcare, personal, other.

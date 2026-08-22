@@ -21,6 +21,7 @@ from app.services.header_footer import (
     HEADER_DIVIDER_SUBTLE,
     build_footer,
     build_header,
+    built_value,
 )
 from app.services.theme import build_theme
 
@@ -253,7 +254,9 @@ class HeaderArchetypeTest(unittest.TestCase):
         # to its "None" preset.
         self.assertNotIn("boxShadow", header.styles)
         bar = _find(header, "Header bar")
-        self.assertTrue(bar.styles["backgroundColor"].startswith("rgba("))
+        # Through the adaptive-ink wrapper: the pane's built value is what the
+        # renderer paints until it decides to flip the pill (see built_value).
+        self.assertTrue(built_value(bar.styles["backgroundColor"]).startswith("rgba("))
         self.assertIn("borderRadius", bar.styles)
         self.assertIn("backdropFilter", bar.styles)
 
@@ -590,15 +593,56 @@ class TemplateVarietySeedTest(unittest.TestCase):
         block = FeaturesBlock(
             heading="What we do",
             items=[
-                FeatureItem(title=f"Thing {i}", description="Useful.")
+                FeatureItem(
+                    title=f"Thing {i}", description="Useful.", image_query="a workshop"
+                )
                 for i in range(3)
             ],
         )
-        # Card imagery is synthesized from titles, so the photo-topped policy
-        # is a hard site rule — every seed must yield the same image-card grid.
+        # Imagery the SOURCE supplied makes the photo-topped policy a hard site
+        # rule — every seed must yield the same image-card grid. (Imagery merely
+        # synthesized from card titles no longer counts: see
+        # section_content._items_have_real_images.)
         for seed in ("Acme", "Globex", "Initech"):
             t, _ = block_to_section(block, mood="modern", variety_seed=seed)
             self.assertEqual(t["id"], "features-image-cards", seed)
+
+    def _text_features(self):
+        from app.models.content_blocks import FeatureItem, FeaturesBlock
+
+        return FeaturesBlock(
+            heading="What we do",
+            items=[
+                FeatureItem(title=f"Thing {i}", description="Useful.") for i in range(3)
+            ],
+        )
+
+    def _picks(self, block, mood):
+        from app.services.section_content import block_to_section
+
+        return {
+            block_to_section(block, mood=mood, industry="saas", variety_seed=seed)[0]["id"]
+            for seed in ("Acme", "Globex", "Initech", "Umbrella", "Soylent")
+        }
+
+    def test_the_seed_never_overrules_the_moods_layout_choice(self):
+        """`modern` ranks bento first (_MOOD_LAYOUT_PREFERENCE), and with no
+        source imagery nothing outranks that — so every brand gets the bento.
+
+        The seed used to rotate the whole preference head, which displaced the
+        mood's own pick and left `modern` on a card grid."""
+        self.assertEqual(self._picks(self._text_features(), "modern"), {"features-bento"})
+
+    def test_the_seed_still_varies_where_the_mood_is_indifferent(self):
+        # `technical` ranks the grid family top, and that family holds two
+        # photo-less members — a tie the mood does not resolve, so the brand
+        # seed decides which one and same-mood sites still differ.
+        picks = self._picks(self._text_features(), "technical")
+        self.assertGreater(len(picks), 1, "variety seed had no effect")
+        self.assertTrue(
+            picks <= {"features-card-grid", "features-two-col"},
+            f"seed escaped the mood's chosen family: {picks}",
+        )
 
 
 class PaletteAvoidanceTest(unittest.TestCase):
@@ -653,6 +697,43 @@ class PaletteAvoidanceTest(unittest.TestCase):
             avoid_palettes={slug},  # history says avoid — the LLM pick still wins
         )
         self.assertEqual(theme.palette_slug, slug)
+
+    def test_dark_avoidance_rotates_within_the_dark_set(self):
+        """Dark builds now take part in diversity at all.
+
+        Before the dark catalogue the dark path recorded no slug, so history had
+        nothing to steer with and consecutive dark sites converged."""
+        base = build_theme(
+            None, color_scheme="dark", industry="saas", font_seed="Acme"
+        )
+        self.assertIsNotNone(base.palette_slug)
+        shifted = build_theme(
+            None,
+            color_scheme="dark",
+            industry="saas",
+            font_seed="Acme",
+            avoid_palettes={base.palette_slug},
+        )
+        self.assertNotEqual(shifted.palette_slug, base.palette_slug)
+        # Avoidance rotates taste but never widens the fit — still a dark pick.
+        self.assertTrue(str(shifted.palette_slug).startswith("dark-"))
+
+    def test_dark_saturated_avoidance_falls_back_to_base_pick(self):
+        from app.services.theme import curated_palette_options
+
+        base = build_theme(None, color_scheme="dark", industry="saas", font_seed="Acme")
+        every = {
+            str(o["slug"])
+            for o in curated_palette_options("saas", mood="modern", scheme="dark")
+        }
+        saturated = build_theme(
+            None,
+            color_scheme="dark",
+            industry="saas",
+            font_seed="Acme",
+            avoid_palettes=every,
+        )
+        self.assertEqual(saturated.palette_slug, base.palette_slug)
 
 
 class OverlayCapabilityContractTest(unittest.TestCase):

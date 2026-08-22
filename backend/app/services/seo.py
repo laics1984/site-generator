@@ -58,6 +58,8 @@ def build_structured_data(
     if faq_items:
         schemas.append(_build_faq_page(faq_items))
 
+    schemas.extend(_build_video_object(v) for v in extract_video_items(blocks))
+
     return schemas or None
 
 
@@ -160,6 +162,43 @@ def _extract_faq_items(blocks: list[Any]) -> list[tuple[str, str]]:
     return items
 
 
+# Videos described per page. Enough for a real gallery without bloating <head>.
+_MAX_VIDEO_OBJECTS = 10
+
+
+def extract_video_items(blocks: list[Any]) -> list[Any]:
+    """Every VideoItem on the page, in order, capped for <head> sanity."""
+    items: list[Any] = []
+    for block in blocks:
+        if getattr(block, "kind", None) != "video":
+            continue
+        for item in getattr(block, "items", []):
+            if getattr(item, "embed_url", None):
+                items.append(item)
+    return items[:_MAX_VIDEO_OBJECTS]
+
+
+def _build_video_object(item: Any) -> dict[str, Any]:
+    """One VideoObject.
+
+    `uploadDate` is deliberately OMITTED. Google wants it for video rich
+    results, and we do not know it — the source page states a player, not a
+    publication date. Synthesizing one would be the same class of error as
+    synthesizing the video id itself: a fabricated fact that reads as
+    authoritative. The object is still valid schema.org without it.
+    """
+    schema: dict[str, Any] = {
+        "@context": "https://schema.org",
+        "@type": "VideoObject",
+        "name": (getattr(item, "title", None) or "").strip() or "Video",
+        "embedUrl": item.embed_url,
+    }
+    thumbnail = getattr(item, "thumbnail_url", None)
+    if thumbnail:
+        schema["thumbnailUrl"] = thumbnail
+    return schema
+
+
 # ---------------------------------------------------------------------------
 # og:image extraction from the rendered element tree
 # ---------------------------------------------------------------------------
@@ -184,8 +223,20 @@ def extract_og_image(elements: list[BuilderElement]) -> str | None:
 
 
 def _find_image_src(el: BuilderElement) -> str | None:
+    """First real image URL in the subtree — `type == "image"` nodes only.
+
+    The type check is load-bearing. `content.src` is not image-specific: a
+    `video` node holds an embed URL there (a Google Maps iframe on
+    locations-map-cards, a YouTube player on a video section). Without the
+    gate, a page whose hero has no background image published its Maps or
+    YouTube URL as the og:image, which serves a broken social card.
+    """
     content = el.content
-    if isinstance(content, BuilderElementContent) and content.src:
+    if (
+        getattr(el, "type", None) == "image"
+        and isinstance(content, BuilderElementContent)
+        and content.src
+    ):
         src = content.src
         if isinstance(src, str) and src.startswith(("http://", "https://")):
             return src

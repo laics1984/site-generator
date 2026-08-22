@@ -22,6 +22,10 @@ interface PagePickerProps {
   onConfirm: () => void
   onBack: () => void
   busy: boolean
+  /** One landing page instead of the industry fan-out (a Facebook Page read). */
+  singlePage?: boolean
+  /** Sections gated on the facts the source holds — overrides the industry pattern. */
+  homepageSections?: string[]
 }
 
 interface TreeNode {
@@ -118,6 +122,8 @@ export function PagePicker({
   onConfirm,
   onBack,
   busy,
+  singlePage,
+  homepageSections,
 }: PagePickerProps) {
   const [inferred, setInferred] = useState<PageScaffold[]>([])
   const [template, setTemplate] = useState<IndustryTemplate | null>(null)
@@ -133,7 +139,11 @@ export function PagePicker({
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetchPageRecipe(source, industryOverride ?? undefined)
+    fetchPageRecipe(source, {
+      industryOverride: industryOverride ?? undefined,
+      singlePage,
+      homepageSections,
+    })
       .then((res) => {
         if (cancelled) return
         setInferred(res.inferred_pages)
@@ -610,7 +620,9 @@ function SourceContextBanner({
   const sourceLabel =
     source.source_kind === 'url'
       ? source.source_ref
-      : source.source_ref || source.title || 'Pasted document'
+      : source.source_kind === 'facebook'
+        ? `${source.title || 'Facebook Page'} · Facebook`
+        : source.source_ref || source.title || 'Pasted document'
   const charCount = (source.raw_text || '').length
   const headingCount = (source.headings || []).length
 

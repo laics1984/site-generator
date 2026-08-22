@@ -24,6 +24,11 @@ BrandMood = Literal[
 ]
 
 
+# Where a scraped brand mark came from. Ranked best-first by
+# services/logo_extraction.py; "og-image" is a palette source only.
+LogoSource = Literal["logo", "icon", "og-image"]
+
+
 PageWidthMode = Literal["contained", "full"]
 
 # Mirrors MotionIntensity in webtree/builder/src/lib/site-navigation.ts. The
@@ -113,6 +118,48 @@ HERO_BANDED_MIN_HEIGHT = "460px"
 # "banded" = bounded-height full-bleed photo hero.
 HeroBackgroundHeight = Literal["full", "banded"]
 
+# Deterministic hero-height fallback, used when the design-brain pass is off,
+# fails, or defers (see services/design_brain.DesignLanguage.hero_height). The
+# split is about what the visitor came to do: a full screen of photography sells
+# atmosphere, a shorter band gets content to the fold for someone who came to
+# read, compare or act.
+MOOD_HERO_HEIGHT: dict[BrandMood, HeroBackgroundHeight] = {
+    "luxury": "full",       # the imagery IS the pitch
+    "editorial": "full",    # storytelling opens on an image
+    "playful": "full",      # energy needs room
+    "friendly": "full",
+    "modern": "banded",     # SaaS/fintech: the value prop is the copy
+    "technical": "banded",  # precise, dense, get to the substance
+}
+
+# Industry overrides, applied ahead of the mood table (same precedence as
+# _INDUSTRY_SPECS in services/hero_director.py). Keys are IndustryCategory
+# values (see prompts.DETECT_BRAND_PROMPT); only industries with a clear lean
+# are listed, everything else falls through to MOOD_HERO_HEIGHT. Note most of
+# these read "friendly" via INDUSTRY_MOOD, so without this table a restaurant
+# and a healthcare practice would land on the same height.
+INDUSTRY_HERO_HEIGHT: dict[str, HeroBackgroundHeight] = {
+    "restaurant": "full",   # appetite is sold by the photograph
+    "nonprofit": "full",    # emotional connection before the ask
+    "childcare": "full",    # parents buy the room their child will be in
+    "personal": "full",     # portfolio: the work opens the page
+    "agency": "full",       # show, don't claim
+    "saas": "banded",       # the value prop is the copy, not the screenshot
+    "professional-services": "banded",
+    "consultancy": "banded",
+    "ecommerce": "banded",  # the product grid below the fold is the shop
+}
+
+
+def default_hero_height(
+    mood: BrandMood | None, industry: str | None
+) -> HeroBackgroundHeight:
+    """Deterministic hero height from industry, else mood, else full-screen."""
+    by_industry = INDUSTRY_HERO_HEIGHT.get((industry or "").strip().lower())
+    if by_industry is not None:
+        return by_industry
+    return MOOD_HERO_HEIGHT.get(mood, "full") if mood else "full"
+
 
 class ThemeTokens(BaseModel):
     """
@@ -189,8 +236,20 @@ class ThemeTokens(BaseModel):
 
     def to_builder_styles(self) -> dict[str, Any]:
         """Serialize as the exact `BuilderStyles` shape the webtree builder expects."""
+        # Lazy import: app.services.theme imports ColorPalette etc. from this
+        # module at load time, so a top-level import here would be circular.
+        from app.services.style_tokens import brand_ink
+
         colors = {
             "primary": self.palette.primary,
+            # AA-corrected primary, for catalog text printed directly in the
+            # brand hue (Eyebrow labels, role lines, badges) — `primary` alone
+            # is picked for button fills, where a lower ratio against white is
+            # normal for a large filled shape. Keep in lockstep with builder
+            # src/lib/builder-styles.ts (toBuilderCssVars) and webtree-public
+            # lib/styles.ts (buildCssVars), which also derive it on the fly if
+            # this key is ever missing from an older stored payload.
+            "primaryInk": brand_ink(self),
             "secondary": self.palette.secondary,
             "accent": self.palette.accent,
             "text": self.palette.text,
@@ -265,6 +324,25 @@ class BrandIdentity(BaseModel):
         description=(
             "Whether the visible logo mark itself is predominantly light-colored. "
             "Used to choose a contrast-safe header background."
+        ),
+    )
+    logo_source: LogoSource | None = Field(
+        default=None,
+        description=(
+            "Where the logo came from: a real mark ('logo'), a declared favicon / "
+            "touch icon ('icon'), or the og:image social card ('og-image'). "
+            "None for an uploaded logo. Provenance is kept separate from the URL "
+            "because the palette extractor can use a source the header must not "
+            "render — see `logo_render_ok`."
+        ),
+    )
+    logo_render_ok: bool = Field(
+        default=True,
+        description=(
+            "Whether this logo may be drawn as the header/footer brand mark. "
+            "False for an og:image or an icon too small to survive the header's "
+            "52px lockup; those still seed the palette. Uploaded logos default "
+            "True. Header and footer must gate on THIS, not on logo_url."
         ),
     )
     mood: BrandMood | None = None

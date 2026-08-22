@@ -331,6 +331,9 @@ export function getResponsiveNodeStyles(
       slot === 'footer' ||
       slot === 'social'
     )
+  // Social menus render as a row of brand glyphs (MenuBlock), so they keep the
+  // horizontal run on mobile that the other footer menus give up.
+  const isSocialMenu = type === 'menu' && (slot === 'social' || variant === 'social-inline')
   const isHeaderLink = type === 'link' && parentType === 'header'
   const hasMenuSibling = siblingTypes.includes('menu')
   const hasImageSibling = siblingTypes.includes('image')
@@ -533,7 +536,7 @@ export function getResponsiveNodeStyles(
     if (!hasDeviceOverride('display')) mergedStyles.display = 'none'
   }
 
-  if (device === 'Mobile' && isFooterMenu) {
+  if (device === 'Mobile' && isFooterMenu && !isSocialMenu) {
     if (!hasDeviceOverride('width')) mergedStyles.width = '100%'
     if (!hasDeviceOverride('flexDirection')) mergedStyles.flexDirection = 'column'
     if (!hasDeviceOverride('alignItems')) mergedStyles.alignItems = 'flex-start'

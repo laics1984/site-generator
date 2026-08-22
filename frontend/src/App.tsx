@@ -14,7 +14,6 @@ import { SourcePanel } from '@/components/SourcePanel'
 import { WorkspaceHeader } from '@/components/WorkspaceHeader'
 import {
   cancelCrawlJob,
-  deleteCrawlJob,
   exportSiteDocument,
   extendCrawl,
   generateFromSource,
@@ -26,6 +25,7 @@ import {
   type GeneratePayload,
   type GenerateWithPagesPayload,
 } from '@/lib/api'
+import { isFacebookUrl } from '@/lib/sourceDetect'
 import type {
   BrandIdentity,
   BrandMood,
@@ -35,7 +35,7 @@ import type {
   DetectedBrand,
   GeneratedSite,
   GeneratorMode,
-  HeroHeight,
+  HeroHeightChoice,
   IndustryCategory,
   PageScaffold,
   ScrapePreview as ScrapePreviewType,
@@ -67,7 +67,9 @@ export default function App() {
   // 'auto' → send null so the backend decides from the logo (light logo ⇒ dark).
   const [colorScheme, setColorScheme] = useState<ColorSchemeChoice>('auto')
   // Hero photo-background height, site-wide. 'full' = full-screen hero (default).
-  const [heroHeight, setHeroHeight] = useState<HeroHeight>('full')
+  const [heroHeight, setHeroHeight] = useState<HeroHeightChoice>('auto')
+  // Dress the whole site in Pexels stock and ignore the source's own photos.
+  const [stockImagesOnly, setStockImagesOnly] = useState(false)
   const [themePreview, setThemePreview] = useState<BuilderStylesShape | null>(null)
   const [googleFonts, setGoogleFonts] = useState<string[]>([])
 
@@ -82,7 +84,7 @@ export default function App() {
     url: string
     probe: SitemapProbeResult
   } | null>(null)
-  // Wall-clock label for the inline "Crawl more" step.
+  // Wall-clock label fo189 "Crawl more" step.
   const [extendBusy, setExtendBusy] = useState(false)
   // Live job state during async crawls (queued/running). null once done/cancelled.
   const [activeJob, setActiveJob] = useState<CrawlJob | null>(null)
@@ -166,11 +168,21 @@ export default function App() {
    */
   async function handleScrape(
     url: string,
-    opts: { crawl: boolean } = { crawl: true },
+    opts: { crawl: boolean; accessToken?: string } = { crawl: true },
   ) {
     setError(null)
     setScrapeResult(null)
     setPendingScope(null)
+    // A Facebook Page has no sitemap and nothing to crawl — probing it would
+    // just cost a round trip before the read the user actually asked for.
+    if (isFacebookUrl(url)) {
+      await runScrape(url, {
+        crawl: false,
+        maxPages: 0,
+        accessToken: opts.accessToken,
+      })
+      return
+    }
     if (!opts.crawl) {
       // Crawl disabled → no need to probe; go direct, single page only.
       await runScrape(url, { crawl: false, maxPages: 0 })
@@ -198,7 +210,7 @@ export default function App() {
    *  crawls don't hang the HTTP request and the user can see progress. */
   async function runScrape(
     url: string,
-    opts: { crawl: boolean; maxPages: number },
+    opts: { crawl: boolean; maxPages: number; accessToken?: string },
   ) {
     setScrapeBusy(true)
     setError(null)
@@ -210,6 +222,7 @@ export default function App() {
       started = await startCrawl(url, {
         crawl: opts.crawl,
         crawlMaxPages: opts.maxPages || undefined,
+        accessToken: opts.accessToken,
       })
       // Poll loop. 1s cadence — backend job emits progress per page.
       // Hard ceiling at 10 minutes to avoid runaway loops on stuck jobs.
@@ -236,8 +249,12 @@ export default function App() {
         }
         await new Promise((r) => setTimeout(r, 1000))
       }
-      // Best-effort cleanup of the job row.
-      if (started) deleteCrawlJob(started.job_id)
+      // Deliberately NOT deleted here. The backend hands an identical crawl
+      // (same URL + options, within the retention window) straight back
+      // instead of re-rendering every page, and deleting the row the instant
+      // polling finished meant that could never hit — a double-click or a
+      // Back-then-Fetch re-crawled the whole site. Rows are swept by the
+      // backend on the next kickoff.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Scrape failed')
     } finally {
@@ -370,7 +387,8 @@ export default function App() {
       brand: effectiveBrand(),
       mood_override: mood,
       color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
-      hero_height: heroHeight,
+      hero_height: heroHeight === 'auto' ? null : heroHeight,
+      stock_images_only: stockImagesOnly,
     }
     setBusy(true)
     setError(null)
@@ -405,8 +423,13 @@ export default function App() {
       brand: effectiveBrand(),
       mood_override: mood,
       color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
-      hero_height: heroHeight,
+      hero_height: heroHeight === 'auto' ? null : heroHeight,
+      stock_images_only: stockImagesOnly,
       detected_brand: detectedBrand,
+      // The Page stays the authority on its own contact details, hours,
+      // reviews and counts — the backend rewrites those blocks from it after
+      // the LLM has run. Riding on the payload means a regenerate keeps it too.
+      facebook_facts: scrapeResult?.facebook_facts ?? null,
     }
     setBusy(true)
     setError(null)
@@ -540,7 +563,7 @@ export default function App() {
       detail: confirmedSource
         ? sourceLabel(confirmedSource) ?? 'Confirmed'
         : mode === 'url'
-          ? 'Scrape a website'
+          ? 'Paste a website or Facebook link'
           : 'Upload a document',
       status: confirmedSource ? 'done' : 'current',
       onClick: confirmedSource ? backToSource : undefined,
@@ -608,6 +631,8 @@ export default function App() {
                 setColorScheme={setColorScheme}
                 heroHeight={heroHeight}
                 setHeroHeight={setHeroHeight}
+                stockImagesOnly={stockImagesOnly}
+                setStockImagesOnly={setStockImagesOnly}
               />
             </div>
           </section>
@@ -637,6 +662,8 @@ export default function App() {
                     onConfirm={handlePagesConfirm}
                     onBack={backToSource}
                     busy={busy}
+                    singlePage={isSinglePageSource(confirmedSource)}
+                    homepageSections={scrapeResult?.facebook_sections}
                   />
                 ) : scrapeResult ? (
                   <ScrapePreview
@@ -689,11 +716,35 @@ export default function App() {
   )
 }
 
+/**
+ * True when the source carries one page's worth of grounded facts, so the page
+ * picker should default to home + legal instead of the industry template's
+ * fan-out.
+ *
+ * A Facebook Page always is. A document is when `split_into_pages` found no
+ * page-topic headings and handed back no `discovered_pages`: `infer_page_scaffolds`
+ * then falls into the industry-template branch and returns 7-9 scaffolds, 5-7 of
+ * them content pages that each cost an LLM call to invent material the document
+ * never described — which the fidelity net strips back to almost nothing anyway.
+ * A document that DID yield discovered pages keeps its fan-out, and the picker's
+ * optional pool still lets the user add pages back either way.
+ */
+function isSinglePageSource(source: SourceContent): boolean {
+  if (source.source_kind === 'facebook') return true
+  if (source.source_kind === 'pdf' || source.source_kind === 'docx') {
+    return (source.discovered_pages?.length ?? 0) === 0
+  }
+  return false
+}
+
 /** A short human label for where the content came from — host for scrapes,
  * filename for uploads. */
 function sourceLabel(source: SourceContent | null): string | null {
   if (!source) return null
   const ref = source.source_ref || ''
+  // A Facebook ref's host is always "facebook.com", which tells the user
+  // nothing — the Page's own name is the identifying part.
+  if (source.source_kind === 'facebook') return source.title || 'Facebook Page'
   if (!ref) return source.title || null
   if (/^https?:\/\//i.test(ref)) {
     try {

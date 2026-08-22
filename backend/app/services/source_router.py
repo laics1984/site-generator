@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
-from app.models.content_blocks import ImageMetadata, SourceContent
+from app.models.content_blocks import ImageMetadata, SectionCandidate, SourceContent
 from app.models.industry import PageScaffold
+from app.services.source_path import is_record_url, normalize_source_slug
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +63,17 @@ _PAGE_TYPE_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 
 def _normalize_slug(value: str | None) -> str:
-    """Strip slashes; lowercase. Empty string ⇒ homepage."""
-    if not value:
-        return ""
-    return value.strip("/").lower()
+    """Strip slashes; lowercase; drop a page extension. "" ⇒ homepage.
+
+    Applied to BOTH sides of the match — the scraped ``url_path`` and the
+    scaffold's own slug — because the two only meet if they normalize
+    identically. See ``source_path``.
+    """
+    return normalize_source_slug(value)
 
 
 def _path_to_slug(url_path: str | None) -> str:
-    if not url_path or url_path == "/":
-        return ""
-    return _normalize_slug(url_path)
+    return normalize_source_slug(url_path)
 
 
 def _trailing_segment(slug: str) -> str:
@@ -96,6 +98,31 @@ def _source_haystack(page: SourceContent) -> str:
     return " ".join(parts).lower()
 
 
+def pages_by_source_slug(
+    pages: list[SourceContent],
+) -> dict[str, list[SourceContent]]:
+    """Every crawled page grouped by the slug it normalizes to, order preserved.
+
+    Normally one page per slug. Not always: a PHP album viewer serves 28 albums
+    from ``gallery-photo.php?id=NNN``, and ``url_path`` carries no query, so all
+    28 land on ``gallery-photo``. Indexing first-wins silently dropped 27 of
+    them along with every photo they held.
+
+    The representative (first element) is the query-less URL where there is one
+    — that's the page; the rest are its records. See ``source_path.is_record_url``.
+    """
+    grouped: dict[str, list[SourceContent]] = {}
+    for page in pages:
+        slug = _path_to_slug(page.url_path)
+        if slug:
+            grouped.setdefault(slug, []).append(page)
+    for group in grouped.values():
+        if len(group) > 1:
+            # Stable, so the records keep crawl order behind their page.
+            group.sort(key=lambda p: is_record_url(p.source_ref))
+    return grouped
+
+
 def match_scaffolds_to_pages(
     scaffolds: list[PageScaffold],
     primary_source: SourceContent,
@@ -110,15 +137,14 @@ def match_scaffolds_to_pages(
     discovered = primary_source.discovered_pages or []
 
     # Index discovered pages by normalized slug derived from url_path.
+    grouped = pages_by_source_slug(discovered)
     by_slug: dict[str, SourceContent] = {}
     by_trailing: dict[str, SourceContent] = {}
-    for page in discovered:
-        slug = _path_to_slug(page.url_path)
-        if slug and slug not in by_slug:
-            by_slug[slug] = page
-            trailing = _trailing_segment(slug)
-            if trailing and trailing not in by_trailing:
-                by_trailing[trailing] = page
+    for slug, pages in grouped.items():
+        by_slug[slug] = pages[0]
+        trailing = _trailing_segment(slug)
+        if trailing and trailing not in by_trailing:
+            by_trailing[trailing] = pages[0]
 
     out: dict[str, SourceContent] = {}
     for scaffold in scaffolds:
@@ -160,6 +186,51 @@ def match_scaffolds_to_pages(
         out[scaffold.slug] = primary_source
         logger.debug("Routed scaffold %r to entry source (fallback)", scaffold.slug)
 
+    # FAQ content is often spread across more than one URL (e.g. a dedicated
+    # /faq page plus a /support or /help page) — combine every keyword-matching
+    # page's text into the routed source so none of it is silently dropped.
+    for scaffold in scaffolds:
+        if scaffold.is_legal or scaffold.page_type != "faq":
+            continue
+        primary = out.get(scaffold.slug)
+        if primary is None:
+            continue
+        extras = [
+            page
+            for page in _match_by_keywords_all("faq", discovered)
+            if page is not primary
+        ]
+        if extras:
+            out[scaffold.slug] = _combine_sources(primary, extras)
+            logger.debug(
+                "Combined %d extra FAQ source(s) into scaffold %r",
+                len(extras), scaffold.slug,
+            )
+
+    # A gallery's albums are served from its OWN url — gallery-photo.php?id=107
+    # — so every crawled record normalizes to the gallery's slug and only the
+    # first survived indexing. Merge them back, media included: the album titles
+    # ground the page's copy and the photos are what the page is for. Keyed on
+    # the exact slug rather than _match_by_keywords_all, because unlike FAQ
+    # content spread over /faq and /support, these are records of one page.
+    for scaffold in scaffolds:
+        if scaffold.is_legal or scaffold.page_type != "gallery":
+            continue
+        primary = out.get(scaffold.slug)
+        if primary is None:
+            continue
+        extras = [
+            page
+            for page in grouped.get(_normalize_slug(scaffold.slug), [])
+            if page is not primary
+        ]
+        if extras:
+            out[scaffold.slug] = _combine_sources(primary, extras, include_media=True)
+            logger.debug(
+                "Combined %d album record(s) into gallery scaffold %r",
+                len(extras), scaffold.slug,
+            )
+
     return out
 
 
@@ -177,6 +248,65 @@ def _match_by_keywords(
             if kw in haystack:
                 return page
     return None
+
+
+def _match_by_keywords_all(
+    page_type: str,
+    discovered: list[SourceContent],
+) -> list[SourceContent]:
+    """Every discovered page whose path/title/headings mention this page_type
+    (not just the first) — used to aggregate content spread across multiple
+    matching URLs, e.g. FAQ content on both /faq and /support."""
+    keywords = _PAGE_TYPE_KEYWORDS.get(page_type, ())
+    if not keywords:
+        return []
+    return [page for page in discovered if any(kw in _source_haystack(page) for kw in keywords)]
+
+
+def _combine_sources(
+    primary: SourceContent,
+    extras: list[SourceContent],
+    *,
+    include_media: bool = False,
+) -> SourceContent:
+    """Merge extra pages' text into the primary source so downstream generation
+    (chunking, item extraction) sees content from every matching URL as one
+    page. Only raw_text/headings are combined — title/url_path/images/links
+    stay the primary's, since those describe the routed page's own identity.
+
+    ``include_media`` additionally merges image_metadata and section_candidates,
+    and is the exception that proves the rule above. A merged FAQ page's images
+    belong to a DIFFERENT page (/support has its own furniture) and would be
+    misattributed; an album page's photos are records of the page they merge
+    into — ``gallery-photo.php?id=107`` is not another page, it is the gallery
+    showing one of its albums. Its pictures ARE the gallery's content.
+    """
+    raw_text = "\n\n".join(
+        text for text in (primary.raw_text, *(p.raw_text for p in extras)) if text
+    )
+    headings = list(primary.headings)
+    seen = {h.strip().lower() for h in headings if h.strip()}
+    for page in extras:
+        for h in page.headings:
+            key = h.strip().lower()
+            if key and key not in seen:
+                headings.append(h)
+                seen.add(key)
+    update: dict[str, object] = {"raw_text": raw_text, "headings": headings}
+    if include_media:
+        metadata = list(primary.image_metadata or [])
+        seen_urls = {meta.url for meta in metadata if meta.url}
+        for page in extras:
+            for meta in page.image_metadata or []:
+                if meta.url and meta.url not in seen_urls:
+                    metadata.append(meta)
+                    seen_urls.add(meta.url)
+        sections = list(primary.section_candidates or [])
+        for page in extras:
+            sections.extend(page.section_candidates or [])
+        update["image_metadata"] = metadata
+        update["section_candidates"] = sections
+    return primary.model_copy(update=update)
 
 
 def split_raw_text(
@@ -283,6 +413,39 @@ def _image_prompt_entry(ref: int, meta: ImageMetadata) -> dict[str, object]:
     return entry
 
 
+# Per-section caps for the prompt tree. A section is a summary of the source's
+# shape, not a transcript — the full text is still in raw_text underneath.
+_PROMPT_MAX_SECTIONS = 12
+_PROMPT_MAX_CARDS = 12
+_PROMPT_CARD_BODY_CHARS = 200
+_PROMPT_SECTION_PROSE_CHARS = 400
+
+
+def _section_prompt_entry(section: SectionCandidate) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "heading": section.heading,
+        "level": section.level,
+    }
+    if section.prose:
+        entry["prose"] = section.prose[:_PROMPT_SECTION_PROSE_CHARS]
+    if section.cards:
+        entry["card_kind"] = section.card_kind
+        entry["cards"] = [
+            {
+                k: v
+                for k, v in (
+                    ("title", card.title),
+                    ("body", card.body[:_PROMPT_CARD_BODY_CHARS]),
+                    ("meta", card.meta or None),
+                    ("has_image", bool(card.image_url) or None),
+                )
+                if v
+            }
+            for card in section.cards[:_PROMPT_MAX_CARDS]
+        ]
+    return entry
+
+
 def excerpt_for_prompt(
     source: SourceContent,
     *,
@@ -298,6 +461,14 @@ def excerpt_for_prompt(
     page (from :func:`split_raw_text`) verbatim, bypassing the ``max_chars`` cut
     — the chunk is already budgeted, so re-truncating it would drop content.
 
+    ``sections`` is the page's own structure (services/section_extraction.py):
+    which heading opens a section, and which cards sit inside it. Without it the
+    model sees only ``headings`` — a flat, level-less list in which an h2 that
+    spans four cards and an h3 that titles one of them are indistinguishable —
+    and it has to rebuild the tree by guesswork. That guesswork is what merged
+    Glorykids' six sections into one. ``raw_text`` stays as the full-fidelity
+    fallback for pages whose markup yields no tree.
+
     Returns a JSON-serialisable dict.
     """
     raw_text = source.raw_text or ""
@@ -309,6 +480,11 @@ def excerpt_for_prompt(
         "raw_text": body,
         "raw_text_char_count": len(raw_text),
     }
+    sections = source.section_candidates or []
+    if sections:
+        payload["sections"] = [
+            _section_prompt_entry(s) for s in sections[:_PROMPT_MAX_SECTIONS]
+        ]
     images = promptable_images(source)
     if images:
         payload["images"] = [

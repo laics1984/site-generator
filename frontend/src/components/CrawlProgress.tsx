@@ -31,7 +31,15 @@ export function CrawlProgress({ job, onCancel, pagesCap }: CrawlProgressProps) {
   }, [job.started_at])
 
   const pagesDone = job.progress?.pages_done ?? 0
-  const pct = pagesCap && pagesCap > 0 ? Math.min(100, Math.round((pagesDone / pagesCap) * 100)) : null
+  // A Facebook Page read fetches no pages, so it reports a percentage and a
+  // readable step instead of a tally. Showing "Pages fetched: 0" throughout
+  // would read as a stalled crawl.
+  const isFacebook = job.options?.source === 'facebook'
+  const pct = isFacebook
+    ? (job.progress?.percent ?? null)
+    : pagesCap && pagesCap > 0
+      ? Math.min(100, Math.round((pagesDone / pagesCap) * 100))
+      : null
 
   const isQueued = job.status === 'queued'
   const isRunning = job.status === 'running'
@@ -48,7 +56,7 @@ export function CrawlProgress({ job, onCancel, pagesCap }: CrawlProgressProps) {
           <Spinner className="h-4 w-4 text-brand-600" />
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold text-ink">
-              {isQueued ? 'Queued…' : 'Crawling…'}
+              {isQueued ? 'Queued…' : isFacebook ? 'Reading the Page…' : 'Crawling…'}
             </div>
             <div className="truncate text-xs text-ink-muted">{job.entry_url}</div>
           </div>
@@ -57,8 +65,16 @@ export function CrawlProgress({ job, onCancel, pagesCap }: CrawlProgressProps) {
         <div className="mt-3">
           <div className="flex items-baseline justify-between text-xs">
             <div className="text-ink-soft">
-              Pages fetched: <span className="font-semibold">{pagesDone}</span>
-              {pagesCap ? <span className="text-ink-muted"> / {pagesCap}</span> : null}
+              {isFacebook ? (
+                <span className="font-semibold">
+                  {job.progress?.current_step || 'Starting…'}
+                </span>
+              ) : (
+                <>
+                  Pages fetched: <span className="font-semibold">{pagesDone}</span>
+                  {pagesCap ? <span className="text-ink-muted"> / {pagesCap}</span> : null}
+                </>
+              )}
             </div>
             <div className="text-ink-muted">
               {elapsed > 0 ? `${elapsed.toFixed(0)}s elapsed` : ''}
@@ -78,7 +94,7 @@ export function CrawlProgress({ job, onCancel, pagesCap }: CrawlProgressProps) {
           </div>
         </div>
 
-        {job.progress?.current_url && (
+        {!isFacebook && job.progress?.current_url && (
           <div className="mt-2 truncate text-[11px] text-ink-muted">
             <span className="font-medium text-ink-soft">Now:</span>{' '}
             <span className="font-mono">{job.progress.current_url}</span>
@@ -87,7 +103,7 @@ export function CrawlProgress({ job, onCancel, pagesCap }: CrawlProgressProps) {
       </div>
 
       <Button variant="ghost" onClick={onCancel} disabled={!isRunning} className="text-rose-700 hover:bg-rose-50 hover:text-rose-800">
-        Cancel crawl
+        {isFacebook ? 'Cancel' : 'Cancel crawl'}
       </Button>
     </div>
   )

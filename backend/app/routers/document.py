@@ -2,7 +2,7 @@
 Document endpoints.
 
 - ``/preview`` accepts a PDF/DOCX upload and returns the same response shape as
-  /api/scrape/preview so the frontend's ScrapePreview component can render either
+  a crawl job's result so the frontend's ScrapePreview component can render either
   source kind without branching.
 - ``/export`` renders a scraped/inferred site into an editable .docx content
   brief that re-imports through ``/preview`` (the scrape → document bridge).
@@ -10,9 +10,9 @@ Document endpoints.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from dataclasses import asdict, dataclass
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -30,6 +30,7 @@ from app.services.doc_parser import (
 from app.services.doc_structure import DocImageRef, split_into_pages
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.page_inference import infer_page_scaffolds
+from app.services.source_preview import ImageCandidate, source_preview_payload
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +39,6 @@ router = APIRouter(prefix="/api/document", tags=["document"])
 _DOCX_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
-
-
-@dataclass
-class _ImageCandidate:
-    """Mirror of scraper.ImageCandidate so the frontend ImageCandidate type
-    works for both sources without changes."""
-
-    url: str
-    alt: str
-    width: int | None
-    height: int | None
-    intent: str
 
 
 _FILE_SIZE_LIMIT = 20 * 1024 * 1024  # 20 MB
@@ -81,13 +70,13 @@ def _is_feature_sized(img: DocImage) -> bool:
     return min(img.width, img.height) >= _MIN_FEATURE_SHORT_SIDE
 
 
-def _candidates_from_source(source: SourceContent) -> list["_ImageCandidate"]:
+def _candidates_from_source(source: SourceContent) -> list[ImageCandidate]:
     """Flatten placed per-page image metadata into the preview's candidate list."""
-    out: list[_ImageCandidate] = []
+    out: list[ImageCandidate] = []
     for page in [source, *source.discovered_pages]:
         for meta in page.image_metadata:
             out.append(
-                _ImageCandidate(
+                ImageCandidate(
                     url=meta.url,
                     alt=meta.alt,
                     width=meta.width,
@@ -102,7 +91,7 @@ def _candidates_from_source(source: SourceContent) -> list["_ImageCandidate"]:
 async def document_preview(file: UploadFile = File(...)) -> dict:
     """Parse an uploaded PDF/DOCX and return SourceContent + brand candidate.
 
-    Response shape matches /api/scrape/preview so the frontend can reuse the
+    Response shape matches a crawl job's `result` so the frontend can reuse the
     ScrapePreview → PagePicker → Generate flow with no source-kind branching.
     """
     if not file.filename:
@@ -117,10 +106,20 @@ async def document_preview(file: UploadFile = File(...)) -> dict:
             detail=f"File too large ({len(contents) // 1024} KB). Max 20 MB.",
         )
 
+    # Every step below is blocking CPU — PyMuPDF/python-docx, a base64 pass over
+    # each image, a per-pixel palette walk, and a model_dump over the resulting
+    # base64. On the event loop a 20 MB PDF stalls every other request on this
+    # worker, /health included. Same move (and same reason) as the crawler's
+    # `asyncio.to_thread(_parse_rendered_html, ...)` in services/scraper.py.
     try:
-        parsed = parse_document(contents, file.filename)
+        return await asyncio.to_thread(_build_preview, contents, file.filename)
     except DocParseError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+
+def _build_preview(contents: bytes, filename: str) -> dict:
+    """The synchronous parse → split → payload pipeline, run off the loop."""
+    parsed = parse_document(contents, filename)
 
     # Separate a logo seed from feature imagery: a small cover graphic becomes the
     # brand logo (and is kept out of the hero pool), while feature-sized images
@@ -159,17 +158,14 @@ async def document_preview(file: UploadFile = File(...)) -> dict:
     source_content = split_into_pages(parsed, images=feature_refs)
     image_candidates = _candidates_from_source(source_content)
 
-    return {
-        "url": file.filename,
-        "final_url": file.filename,
-        "source_content": source_content.model_dump(mode="json"),
-        "brand_candidate": (
-            brand_candidate.model_dump(mode="json") if brand_candidate else None
-        ),
-        "image_candidates": [asdict(c) for c in image_candidates],
-        "fetched_at": 0.0,
-        "discovered_count": len(source_content.discovered_pages),
-    }
+    return source_preview_payload(
+        url=filename,
+        final_url=filename,
+        source_content=source_content,
+        brand_candidate=brand_candidate,
+        image_candidates=image_candidates,
+        fetched_at=0.0,
+    )
 
 
 class ExportRequest(BaseModel):
@@ -192,16 +188,21 @@ async def document_export(payload: ExportRequest) -> StreamingResponse:
     re-uploading via ``/preview`` regenerates the site from the document.
     """
     industry = payload.industry or "other"
-    scaffolds = infer_page_scaffolds(
-        payload.source, industry=industry, site_name=payload.site_name
+    # Both are pure-CPU tree walks (page inference, then a python-docx write) —
+    # off the loop for the same reason /preview's parse is.
+    scaffolds = await asyncio.to_thread(
+        infer_page_scaffolds,
+        payload.source,
+        industry=industry,
+        site_name=payload.site_name,
     )
     if not scaffolds:
         raise HTTPException(
             status_code=422, detail="No pages could be inferred from this source."
         )
 
-    docx_bytes = build_site_document(
-        payload.source, scaffolds, site_name=payload.site_name
+    docx_bytes = await asyncio.to_thread(
+        build_site_document, payload.source, scaffolds, site_name=payload.site_name
     )
     filename = _safe_filename(payload.site_name or payload.source.title or "website")
 

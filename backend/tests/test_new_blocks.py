@@ -219,3 +219,150 @@ class ProcessStepsMoodPreferenceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProfileBlockTest(unittest.TestCase):
+    """A person's own page: portrait, identity, story, contact.
+
+    The block exists because a roster grid rendering a single card got
+    everything slightly wrong — thumbnail portrait, name restated under a hero
+    that already said it, nowhere for the contact details a directory carries.
+    """
+
+    def _block(self, **overrides):
+        from app.models.content_blocks import ProfileBlock, ProfileContact
+
+        defaults = dict(
+            name="Ashley Jinivon",
+            role="Treasurer",
+            credentials="MT-BC",
+            bio="Ashley holds an equivalency degree.\nShe works with preterm infants.",
+            photo_url="https://x/ashley.jpg",
+            photo_alt="Ashley Jinivon",
+            contacts=[
+                ProfileContact(label="ashley@x.my", href="mailto:ashley@x.my")
+            ],
+        )
+        defaults.update(overrides)
+        return ProfileBlock(**defaults)
+
+    def _fill(self, template_id, block):
+        from app.services.section_content import _profile_content
+
+        return asyncio.run(
+            fill_template(
+                get_template(template_id), _profile_content(block), resolve_image=_stub_image
+            )
+        )
+
+    def test_every_variant_renders_the_whole_person(self):
+        block = self._block()
+        for template_id in ("profile-portrait-split", "profile-centered", "profile-banner"):
+            with self.subTest(template=template_id):
+                rendered = str(self._fill(template_id, block).model_dump())
+
+                self.assertIn("https://x/ashley.jpg", rendered)
+                self.assertIn("Ashley Jinivon", rendered)
+                self.assertIn("preterm infants", rendered)
+                self.assertIn("mailto:ashley@x.my", rendered)
+
+    def test_a_person_without_a_portrait_gets_their_monogram(self):
+        # Never a stock face: a stranger's portrait under a real name is a
+        # misattribution. An empty photo slot would also make all three
+        # variants infeasible, since every one declares `photo` required.
+        from app.services.section_content import _profile_content
+
+        content = _profile_content(self._block(photo_url=None))
+
+        self.assertEqual(content["photo"], {"monogram": "Ashley Jinivon", "alt": "Ashley Jinivon"})
+        rendered = str(self._fill("profile-portrait-split", self._block(photo_url=None)).model_dump())
+        self.assertNotIn("images.example", rendered)
+
+    def test_mood_picks_the_variant(self):
+        """Through the real path: block_to_section applies the content
+        preference and the mood gate together.
+
+        These are the generator's actual BrandMood values. The test used to pass
+        "bold"/"classic"/"elegant"/"minimal", which the catalog declared but the
+        generator never produces — so it exercised the gating mechanism while
+        profile-centered was unreachable on every real site."""
+        block = self._block()
+        picks = {
+            mood: block_to_section(block, mood=mood)[0]["id"]
+            for mood in ("modern", "playful", "friendly", "editorial", "luxury", "technical")
+        }
+
+        # Expressive moods take the brand-coloured banner…
+        for mood in ("modern", "playful", "friendly"):
+            self.assertEqual(picks[mood], "profile-banner", mood)
+        # …restrained ones the formal, institutional centred layout.
+        for mood in ("editorial", "luxury", "technical"):
+            self.assertEqual(picks[mood], "profile-centered", mood)
+
+    def test_the_split_catches_a_brand_with_no_mood(self):
+        # The split declares no moods, so it is the ungated default.
+        block = self._block()
+        self.assertEqual(block_to_section(block, mood=None)[0]["id"], "profile-portrait-split")
+
+    def test_contactless_profile_drops_the_link_row(self):
+        rendered = str(self._fill("profile-centered", self._block(contacts=[])).model_dump())
+
+        self.assertIn("Ashley Jinivon", rendered)
+        self.assertNotIn("mailto:", rendered)
+
+    def test_name_leads_and_the_designation_follows_it(self):
+        # Every profile page is written this way, including the sources these
+        # are built from: MMTA's own stylesheet is `.name` then `.designation`.
+        from app.services.section_content import _profile_content
+
+        for template_id in ("profile-portrait-split", "profile-centered", "profile-banner"):
+            with self.subTest(template=template_id):
+                rendered = self._fill(template_id, self._block()).model_dump()
+
+                order = []
+
+                def walk(node):
+                    if isinstance(node, dict):
+                        if node.get("name") in ("Name", "Role"):
+                            order.append(node["name"])
+                        for value in node.values():
+                            walk(value)
+                    elif isinstance(node, list):
+                        for item in node:
+                            walk(item)
+
+                walk(rendered)
+                self.assertEqual(order, ["Name", "Role"])
+
+        # And the designation is styled as a title, not micro-type.
+        content = _profile_content(self._block())
+        self.assertEqual(content["role"], "Treasurer")
+
+    def test_the_portrait_is_centred_in_every_variant(self):
+        for template_id in ("profile-portrait-split", "profile-centered", "profile-banner"):
+            with self.subTest(template=template_id):
+                rendered = self._fill(template_id, self._block()).model_dump()
+
+                def find(node, name):
+                    if isinstance(node, dict):
+                        if node.get("name") == name:
+                            return node
+                        for value in node.values():
+                            hit = find(value, name)
+                            if hit is not None:
+                                return hit
+                    elif isinstance(node, list):
+                        for item in node:
+                            hit = find(item, name)
+                            if hit is not None:
+                                return hit
+                    return None
+
+                portrait = find(rendered, "Portrait")
+                if template_id == "profile-portrait-split":
+                    # Centred inside its column rather than hugging its left edge.
+                    cell = find(rendered, "Portrait Cell")
+                    self.assertEqual(cell["styles"]["alignItems"], "center")
+                    self.assertEqual(cell["styles"]["justifyContent"], "center")
+                else:
+                    self.assertEqual(portrait["styles"]["alignSelf"], "center")

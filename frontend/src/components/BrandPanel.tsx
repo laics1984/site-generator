@@ -1,12 +1,13 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
-import { extractBrandFromLogo } from '@/lib/api'
+import { checkPexelsHealth, extractBrandFromLogo } from '@/lib/api'
+import { Checkbox } from '@/ui'
 import type {
   BrandExtractionResult,
   BrandIdentity,
   BrandMood,
   ColorSchemeChoice,
-  HeroHeight,
+  HeroHeightChoice,
 } from '@/lib/types'
 
 const MOODS: { id: BrandMood; label: string; hint: string }[] = [
@@ -24,7 +25,8 @@ const SCHEMES: { id: ColorSchemeChoice; label: string; hint: string }[] = [
   { id: 'dark', label: 'Dark', hint: 'Dark pages' },
 ]
 
-const HERO_HEIGHTS: { id: HeroHeight; label: string; hint: string }[] = [
+const HERO_HEIGHTS: { id: HeroHeightChoice; label: string; hint: string }[] = [
+  { id: 'auto', label: 'Auto', hint: 'Chosen from mood + industry' },
   { id: 'full', label: 'Full screen', hint: 'Immersive hero' },
   { id: 'banded', label: 'Banded', hint: 'Content closer to top' },
 ]
@@ -42,8 +44,10 @@ interface BrandPanelProps {
   setMood: (mood: BrandMood) => void
   colorScheme: ColorSchemeChoice
   setColorScheme: (scheme: ColorSchemeChoice) => void
-  heroHeight: HeroHeight
-  setHeroHeight: (height: HeroHeight) => void
+  heroHeight: HeroHeightChoice
+  setHeroHeight: (height: HeroHeightChoice) => void
+  stockImagesOnly: boolean
+  setStockImagesOnly: (value: boolean) => void
 }
 
 export function BrandPanel({
@@ -60,10 +64,30 @@ export function BrandPanel({
   setColorScheme,
   heroHeight,
   setHeroHeight,
+  stockImagesOnly,
+  setStockImagesOnly,
 }: BrandPanelProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // Without a key every stock slot renders as an on-brand gradient. That is a
+  // valid output, not an error, so this warns at the point of choice rather
+  // than disabling the control — a greyed-out box explains nothing.
+  const [pexelsReady, setPexelsReady] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    checkPexelsHealth()
+      .then((res) => {
+        if (!cancelled) setPexelsReady(res.status === 'configured')
+      })
+      .catch(() => {
+        if (!cancelled) setPexelsReady(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   async function handleLogoUpload(file: File) {
     setBusy(true)
@@ -154,9 +178,11 @@ export function BrandPanel({
         <div className="text-sm font-medium text-slate-700">Hero height</div>
         <p className="mt-1 text-xs text-slate-500">
           Photo heroes fill the screen, or sit in a shorter band so page content
-          starts higher. Editable later in the builder.
+          starts higher. <span className="font-medium">Auto</span> lets the design
+          brain choose from the brand's mood and industry. Editable later in the
+          builder.
         </p>
-        <div className="mt-2 grid grid-cols-2 gap-2">
+        <div className="mt-2 grid grid-cols-3 gap-2">
           {HERO_HEIGHTS.map((h) => {
             const active = h.id === heroHeight
             return (
@@ -177,6 +203,22 @@ export function BrandPanel({
             )
           })}
         </div>
+      </div>
+
+      <div>
+        <Checkbox
+          checked={stockImagesOnly}
+          onChange={(e) => setStockImagesOnly(e.target.checked)}
+          label="Stock images only"
+          description="Every photo comes from Pexels stock, matched to each section. The source's own images are ignored. Your logo, document thumbnails and blog post images are kept, and team cards show initials rather than a stranger's face."
+        />
+        {stockImagesOnly && pexelsReady === false && (
+          <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
+            No Pexels key configured — stock slots will render as on-brand
+            gradients. Set <span className="font-mono">PEXELS_API_KEY</span> in
+            the repo-root <span className="font-mono">.env</span>.
+          </p>
+        )}
       </div>
 
       <div>

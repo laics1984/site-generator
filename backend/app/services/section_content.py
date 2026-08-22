@@ -21,7 +21,7 @@ that descriptions cannot guarantee.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal
 from urllib.parse import quote_plus
 
@@ -37,18 +37,25 @@ from app.models.content_blocks import (
     GalleryBlock,
     HeroBlock,
     LocationsBlock,
+    MapBlock,
     MenuBlock,
     PricingBlock,
     ProcessBlock,
+    ProfileBlock,
     ServicesBlock,
     TeamBlock,
     TestimonialsBlock,
+    VideoBlock,
     VisualPolicy,
 )
+from app.services.icons import icons_for_items
+from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
+from app.services.style_tokens import brand_ink
 from app.services.template_filler import get_template, templates_for_type
 from app.services.theme import (
     _adjust_lightness,
     _contrast,
+    _ensure_contrast_against,
     _hex_to_rgb,
     _relative_luminance,
     _text_for_background,
@@ -57,9 +64,16 @@ from app.services.theme import (
 
 
 def _link(label: str | None, href: str | None) -> dict[str, str] | None:
-    if not label:
+    """Link slot value, or None when the button can't be rendered honestly.
+
+    A missing href is as disqualifying as a missing label: template_filler
+    drops a None slot's node, whereas a "#" href ships a button that looks
+    live and goes nowhere. schema_builder's CTA resolution pass blanks both
+    fields for exactly this reason (see `_resolve_block_cta_hrefs`).
+    """
+    if not label or not href:
         return None
-    return {"innerText": label, "href": href or "#"}
+    return {"innerText": label, "href": href}
 
 
 def _image(query: str | None, alt: str | None) -> dict[str, str] | None:
@@ -94,7 +108,7 @@ def _hero_content(b: HeroBlock) -> dict[str, Any]:
         "eyebrow": b.eyebrow,
         "headline": b.headline,
         "body": b.subheadline,
-        "primary_cta": {"innerText": b.primary_cta_label, "href": b.primary_cta_href},
+        "primary_cta": _link(b.primary_cta_label, b.primary_cta_href),
         "secondary_cta": _link(b.secondary_cta_label, b.secondary_cta_href),
         "image": _featured_image(b.image_query, b.image_url, b.image_alt or b.headline),
     }
@@ -122,19 +136,35 @@ def _item_image(item: Any, alt_fallback: str) -> dict[str, str] | None:
     return _image(getattr(item, "image_query", None) or alt_fallback, alt_fallback)
 
 
+def _attach_icons(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Give every item an `icon` value, or none of them one.
+
+    Only the icon-bearing templates declare the slot, so this is inert
+    everywhere else — an undeclared slot is simply never bound. The
+    all-or-nothing rule is the point: a grid where three tiles carry a glyph and
+    two don't reads as a rendering fault, not a design.
+    """
+    names = icons_for_items(items)
+    if not names:
+        return items
+    for item, name in zip(items, names):
+        item["icon"] = {"icon": name, "alt": ""}
+    return items
+
+
 def _features_content(b: FeaturesBlock) -> dict[str, Any]:
     return {
         "eyebrow": "Features",
         "heading": b.heading,
         "subheading": b.subheading,
-        "items": [
+        "items": _attach_icons([
             {
                 "title": i.title,
                 "description": i.description,
                 "image": _item_image(i, i.title),
             }
             for i in b.items
-        ],
+        ]),
     }
 
 
@@ -181,7 +211,7 @@ def _cta_content(b: CtaBlock) -> dict[str, Any]:
         "eyebrow": None,
         "heading": b.headline,
         "body": b.subheadline,
-        "primary_cta": {"innerText": b.cta_label, "href": b.cta_href},
+        "primary_cta": _link(b.cta_label, b.cta_href),
         "secondary_cta": None,
         # A background photo (dark overlay applied by the template) when the LLM
         # supplied an atmospheric query or bound a real photo — else selection
@@ -214,10 +244,53 @@ def _contact_content(b: ContactBlock) -> dict[str, Any]:
     }
 
 
+def _profile_content(b: ProfileBlock) -> dict[str, Any]:
+    """One person's own page — portrait, identity, story, contact.
+
+    The photo slot is always filled: with this person's real portrait, or with
+    their monogram. Never a stock face (same rule as team cards — a stranger's
+    portrait under a real name is a misattribution), and never nothing, because
+    every profile variant declares `photo` required and an empty slot would
+    make all three infeasible.
+    """
+    photo = (
+        {"src": b.photo_url, "alt": b.photo_alt or b.name}
+        if b.photo_url
+        else {"monogram": b.name, "alt": b.name}
+    )
+    return {
+        "photo": photo,
+        "name": b.name,
+        # The designation sits UNDER the name, as profile pages have always
+        # written it — not as an eyebrow above it.
+        "role": b.role or None,
+        "credentials": b.credentials,
+        "bio": b.bio,
+        # A contact with no href renders as an empty row rather than a link, so
+        # it is dropped here instead of downstream.
+        "contacts": [
+            {"cta": link}
+            for contact in b.contacts
+            if (link := _link(contact.label, contact.href))
+        ],
+    }
+
+
+def _profile_preference(content: dict[str, Any], b: ProfileBlock) -> list[str]:
+    """Mood-specific variants first; the split is the universal fallback.
+
+    Ordering, not gating — `mood_allows` has already removed whichever of the
+    two mood-scoped variants doesn't suit the brand (banner is bold/modern,
+    centered is classic/elegant). The split declares no moods, so it always
+    survives to catch a brand that is neither.
+    """
+    return ["profile-banner", "profile-centered", "profile-portrait-split"]
+
+
 def _team_content(b: TeamBlock) -> dict[str, Any]:
     # A source that reuses one photo across members would otherwise repeat the
-    # same image down the grid; the second use falls back to a resolver query so
-    # each card gets a distinct image.
+    # same image down the grid; the second use falls back to a monogram so each
+    # card gets a distinct image.
     used_photo_urls: set[str] = set()
 
     def member_photo(member: Any) -> dict[str, str] | None:
@@ -228,10 +301,14 @@ def _team_content(b: TeamBlock) -> dict[str, Any]:
                 "src": url,
                 "alt": member.photo_alt or member.name,
             }
-        return _image(member.photo_query, member.name)
+        # No portrait of THIS person: show their initials, never a stock photo.
+        # These are real, named people, and a stranger's face under a real name
+        # is a misattribution. Resolved in template_filler, which has the theme
+        # colours this mapper does not.
+        return {"monogram": member.name, "alt": member.name}
 
     return {
-        "eyebrow": "Team",
+        "eyebrow": "Founders" if _is_founders_band(b) else "Team",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
@@ -240,6 +317,15 @@ def _team_content(b: TeamBlock) -> dict[str, Any]:
                 "name": m.name,
                 "role": m.role,
                 "bio": getattr(m, "bio", None) or getattr(m, "description", None),
+                # The card links to the person's own page where the source's
+                # roster did. Members without one resolve to None, which
+                # template_filler drops — the card renders exactly as before.
+                "profile_link": _link(
+                    f"View {m.name.split()[0]}'s profile" if m.name else "View profile",
+                    getattr(m, "profile_href", None),
+                )
+                if getattr(m, "profile_href", None)
+                else None,
             }
             for m in b.members
         ],
@@ -261,6 +347,54 @@ def _gallery_content(b: GalleryBlock) -> dict[str, Any]:
                     if i.image_url
                     else _image(i.image_query, i.title or i.caption or "")
                 )
+            }
+            for i in b.items
+        ],
+    }
+
+
+def _video_content(b: VideoBlock) -> dict[str, Any]:
+    """Videos → catalog slots. The one mapper with nothing to resolve.
+
+    ``embed_url`` is already canonical (services.video_embed), so the `{src}`
+    goes straight into the video node — the same path locations-map-cards uses
+    for its Google Map. Nothing here falls back to a stock query, because there
+    is no stock equivalent of a specific video: an item with no embed simply
+    does not exist (VideoItem.embed_url is required).
+    """
+    return {
+        "eyebrow": "Videos",
+        "heading": b.heading,
+        "subheading": b.subheading,
+        "items": [
+            {
+                "video": {"src": i.embed_url, "title": i.title or "Embedded video"},
+                "caption": i.title or None,
+            }
+            for i in b.items
+        ],
+    }
+
+
+def _map_content(b: MapBlock) -> dict[str, Any]:
+    """Maps → catalog slots. Nothing to resolve, same as `_video_content`.
+
+    ``title`` rides along into the iframe's accessible name. Without it every
+    map on the published site announces itself as "Embedded video" — the
+    renderer's default, which is correct for the element type and wrong for
+    this use of it.
+    """
+    return {
+        "eyebrow": "Find us",
+        "heading": b.heading,
+        "subheading": b.subheading,
+        "items": [
+            {
+                "map": {
+                    "src": i.embed_url,
+                    "title": f"Map: {i.title}" if i.title else "Location map",
+                },
+                "caption": i.title or None,
             }
             for i in b.items
         ],
@@ -300,7 +434,9 @@ def _menu_content(b: MenuBlock) -> dict[str, Any]:
 def _stats_content(b: Any) -> dict[str, Any]:
     return {
         "heading": b.heading,
-        "items": [{"value": i.value, "label": i.label} for i in b.items],
+        "items": _attach_icons(
+            [{"value": i.value, "label": i.label} for i in b.items]
+        ),
     }
 
 
@@ -315,7 +451,16 @@ def _clients_content(b: Any) -> dict[str, Any]:
 def maps_embed_url(name: str, address: str) -> str:
     """Keyless Google Maps embed URL for a branch (renders via the video/iframe
     element — see the locations catalog template). Name + address together give
-    the place search its best chance of pinning the exact business."""
+    the place search its best chance of pinning the exact business.
+
+    A SEARCH, not a pin: this is the best available when the only input is prose
+    the model wrote. When the source page framed its own map, that URL is the
+    more precise artefact and is replayed instead — see ``MapBlock``.
+
+    ``quote_plus`` also encodes the comma between name and address, which
+    matters downstream: the CMS splits any ``src`` on top-level commas to
+    support multi-layer CSS backgrounds (``MediaUrlResolver::normalize``).
+    """
     return f"https://maps.google.com/maps?q={quote_plus(f'{name}, {address}')}&output=embed"
 
 
@@ -349,7 +494,10 @@ def _locations_content(b: LocationsBlock) -> dict[str, Any]:
                 if i.phone
                 else None,
                 "whatsapp_cta": _link("WhatsApp us", wa) if wa else None,
-                "map": {"src": maps_embed_url(i.name, i.address)},
+                "map": {
+                    "src": maps_embed_url(i.name, i.address),
+                    "title": f"Map: {i.name}",
+                },
             }
         )
     return {
@@ -372,7 +520,7 @@ def _pricing_content(b: PricingBlock) -> dict[str, Any]:
                 "price": t.price,
                 "description": t.description,
                 "features": [{"feature": f"✓ {f}"} for f in t.features],
-                "cta": {"innerText": t.cta_label, "href": t.cta_href},
+                "cta": _link(t.cta_label, t.cta_href),
             }
             for t in b.tiers
         ],
@@ -388,8 +536,11 @@ _MAPPERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "cta": _cta_content,
     "faq": _faq_content,
     "contact": _contact_content,
+    "profile": _profile_content,
     "team": _team_content,
     "gallery": _gallery_content,
+    "video": _video_content,
+    "map": _map_content,
     "process": _process_content,
     "menu": _menu_content,
     "pricing": _pricing_content,
@@ -433,26 +584,76 @@ def _cta_preference(content: dict[str, Any], b: CtaBlock) -> list[str]:
     return ["cta-banner", "cta-minimal"]
 
 
-def _most_items_have_images(content: dict[str, Any]) -> bool:
-    """True when the section's cards can lead with photos: 2+ items and every
-    item carries an image value (bound scraped photo or stock query)."""
+def _items_have_real_images(block: Any) -> bool:
+    """True when the cards carry imagery the SOURCE actually provided: 2+ items
+    and every one has a bound scraped photo (`image_url`, resolved from
+    `image_ref`) or a planner-written `image_query`.
+
+    Read from the BLOCK, not the mapped content dict, and that distinction is
+    the whole rule. `_item_image` backfills a query-less card from its own
+    title, so a content-level test ("does each item have an image value?") is
+    true for every features/services section ever built — which made the
+    photo-topped policy unconditional and left the text layouts unreachable.
+
+    Cards still get that title fallback when a photo layout is chosen; it just
+    no longer *forces* one. A site whose source had no feature photography is
+    free to stay on a text layout instead of filling a grid with stock images
+    searched on phrases like "24/7 Support".
+    """
+    items = getattr(block, "items", None) or []
+    if len(items) < 2:
+        return False
+    return all(
+        getattr(i, "image_url", None) or getattr(i, "image_query", None) for i in items
+    )
+
+
+def _items_have_audience(content: dict[str, Any]) -> bool:
+    """True when the cards actually carry a who-it's-for badge.
+
+    `services-programs-age` is the badge-carrying variant — its own description
+    says the badge "reads as 'For startups' etc. for other audiences", so it is
+    not childcare-only. But forcing it on a section with no audiences at all
+    gives every friendly brand a programme layout whose defining element is
+    absent: a restaurant's dishes rendered as programme cards with no badge.
+    Gate on the content that makes the variant mean something.
+    """
     items = content.get("items") or []
-    return len(items) >= 2 and all(i.get("image") for i in items)
+    return bool(items) and any(i.get("ideal") for i in items)
+
+
+def _is_founders_band(block: Any) -> bool:
+    """True for a short roster where EVERY member is a founder/owner.
+
+    "Every" is deliberate: a 3-person slice of a staff roster that happens to
+    include the founder is still a staff roster, and titling it "the founders"
+    would misdescribe the other two.
+    """
+    members = getattr(block, "members", None) or []
+    return 0 < len(members) <= FOUNDERS_BAND_MAX and all(
+        looks_like_founder_role(getattr(m, "role", None)) for m in members
+    )
 
 
 def _features_preference(content: dict[str, Any], b: FeaturesBlock) -> list[str]:
     # Photo-topped cards whenever every card has an image to lead with —
     # landing-page practice: show it, don't just say it.
-    if _most_items_have_images(content):
+    if _items_have_real_images(b):
         return ["features-image-cards", "features-card-grid", "features-two-col"]
-    # Match column count to item count: 3+ -> 3-col grid, 1-2 -> 2-col.
-    return ["features-card-grid"] if len(b.items) >= 3 else ["features-two-col", "features-card-grid"]
+    # With no source imagery the layout FAMILY is a mood decision, not a content
+    # one — see _MOOD_LAYOUT_PREFERENCE, which already ranks bento first for
+    # `modern` and `playful`, grid for `technical`, editorial for `editorial`.
+    # Hardcoding the card grid here silently overrode all of that. Express only
+    # what the item count actually dictates: a three-column grid holding two
+    # cards reads as a mistake, so a short section still asks for two-col.
+    return [] if len(b.items) >= 3 else ["features-two-col"]
 
 
 def _services_preference(content: dict[str, Any], b: ServicesBlock) -> list[str]:
-    if _most_items_have_images(content):
+    if _items_have_real_images(b):
         return ["services-image-cards", "services-offer-grid", "services-two-col"]
-    return ["services-offer-grid"] if len(b.items) >= 3 else ["services-two-col", "services-offer-grid"]
+    # As above: mood picks the family, the item count picks the column count.
+    return [] if len(b.items) >= 3 else ["services-two-col"]
 
 
 def _testimonials_preference(content: dict[str, Any], b: TestimonialsBlock) -> list[str]:
@@ -468,6 +669,7 @@ _PREFERENCE: dict[str, Callable[[dict[str, Any], Any], list[str]]] = {
     "features": _features_preference,
     "services": _services_preference,
     "testimonials": _testimonials_preference,
+    "profile": _profile_preference,
 }
 
 
@@ -618,6 +820,20 @@ def mood_preferred_ids(mood: BrandMood | None, section_type: str) -> list[str]:
     return [t["id"] for t in ordered]
 
 
+def _mood_rank(mood: BrandMood | None, template_id: str) -> int:
+    """How highly `mood` ranks a template's layout family (lower = preferred).
+
+    Families the mood doesn't name share one rank at the end, so they tie with
+    each other rather than with anything the mood actually asked for. With no
+    mood every template ties, which leaves the variety seed free to pick.
+    """
+    pref = _MOOD_LAYOUT_PREFERENCE.get(mood) if mood else None
+    if not pref:
+        return 0
+    family = _layout_family(template_id)
+    return pref.index(family) if family in pref else len(pref)
+
+
 def mood_allows(template: dict[str, Any], mood: BrandMood | None) -> bool:
     """A template with a ``moods`` list is only offered to those brand moods
     (e.g. playful kindergarten styling never lands on a law firm). Templates
@@ -628,6 +844,25 @@ def mood_allows(template: dict[str, Any], mood: BrandMood | None) -> bool:
     return mood in allowed
 
 
+def industry_allows(template: dict[str, Any], industry: str | None) -> bool:
+    """A template with an ``industries`` list is only offered to those industries.
+
+    The sibling of `mood_allows`, and the reason both exist: mood was the only
+    lever, so an industry-specific layout could only be gated by the mood its
+    industry happens to lean toward — which leaks (every *friendly* brand got
+    the childcare-derived variants, not just childcare). Templates without the
+    field — the whole pre-existing catalog — are industry-neutral.
+
+    Free-text industries are matched case-insensitively against the controlled
+    IndustryCategory values a catalog entry declares; an unknown industry simply
+    matches nothing gated, which is the safe direction.
+    """
+    allowed = template.get("industries")
+    if not allowed:
+        return True
+    return (industry or "").strip().lower() in {a.lower() for a in allowed}
+
+
 def select_template(
     section_type: str,
     content: dict[str, Any],
@@ -635,9 +870,14 @@ def select_template(
     preferred_ids: list[str] | None = None,
     explicit_id: str | None = None,
     mood: BrandMood | None = None,
+    industry: str | None = None,
 ) -> dict[str, Any] | None:
     """Choose a catalog template for a section: feasibility filter, then preference."""
-    candidates = [t for t in templates_for_type(section_type) if mood_allows(t, mood)]
+    candidates = [
+        t
+        for t in templates_for_type(section_type)
+        if mood_allows(t, mood) and industry_allows(t, industry)
+    ]
     if not candidates:
         return None
     feasible = [t for t in candidates if is_feasible(t, content)]
@@ -846,6 +1086,53 @@ def _is_own_surface(styles: dict[str, Any]) -> bool:
     return bg not in (None, "transparent", "rgba(0,0,0,0)")
 
 
+# A "panelled" section holds its whole message inside ONE inset card that paints
+# its own fill — the banner-CTA pattern (a rounded, bordered gradient panel
+# floating on the page background). That panel is the section's colour
+# statement, and it only works when the band behind it stays quiet: paint the
+# band dark and the panel's brand fill lands on a near-identical colour, so its
+# border and corner radius read as a rendering accident rather than a frame.
+# Templates like `cta-banner` say as much by defaulting their own root to the
+# page background — this keeps the luminance pass from overriding that intent.
+_PANEL_MIN_RADIUS_PX = 16
+_PX = re.compile(r"(-?[\d.]+)\s*px")
+
+
+def _radius_px(styles: dict[str, Any]) -> float:
+    """First px value in `borderRadius`, or 0 for absent/non-px (%, var()) radii."""
+    m = _PX.search(str(styles.get("borderRadius") or ""))
+    return float(m.group(1)) if m else 0.0
+
+
+def _lone_inset_panel(node: BuilderElement) -> bool:
+    """True when exactly ONE of `node`'s children is a rounded, self-filled
+    container — the inset-panel shape. A card GRID never matches: its cards are
+    self-filled siblings, so the count is >1. Buttons never match either: they
+    are `link`s, not containers."""
+    children = node.content if isinstance(node.content, list) else []
+    surfaced = [
+        c for c in children if c.type == "container" and _is_own_surface(c.styles or {})
+    ]
+    return len(surfaced) == 1 and _radius_px(surfaced[0].styles or {}) >= _PANEL_MIN_RADIUS_PX
+
+
+def _has_inset_panel(node: BuilderElement, depth: int = 0) -> bool:
+    """Whether a section is panelled (see `_lone_inset_panel`). Descends only
+    through fill-less wrapper containers — a template may centre its panel in a
+    plain max-width wrapper — and stops at the first element that paints
+    something, so nothing nested inside a panel or card counts."""
+    if _lone_inset_panel(node):
+        return True
+    if depth >= 2:
+        return False
+    children = node.content if isinstance(node.content, list) else []
+    return any(
+        _has_inset_panel(c, depth + 1)
+        for c in children
+        if c.type == "container" and not _is_own_surface(c.styles or {})
+    )
+
+
 def _recolor_text_for_dark(
     node: BuilderElement, color: str, *, inside_surface: bool = False
 ) -> None:
@@ -876,7 +1163,20 @@ def apply_luminance_rhythm(
     step + hairline border on forced anchor collisions (§3.3 step 4). Returns the
     plans so the caller can run the legacy rhythm over the non-participants.
     Mutates `sections` in place. See SECTION_VISUAL_POLICY_SPEC.md §6/§7.
+
+    A panelled section (its content sits in one inset, self-filled card — see
+    `_has_inset_panel`) is forced LIGHT before the plan resolves, so the panel
+    keeps a quiet backdrop to sit on. Overriding at the input stage rather than
+    repainting afterwards keeps alternation and the separator rule honest: the
+    neighbouring sections flip around the forced band instead of colliding with
+    it unannounced.
     """
+    inputs = [
+        replace(s, band_override="light")
+        if s.participates and s.band_override is None and _has_inset_panel(section)
+        else s
+        for s, section in zip(inputs, sections)
+    ]
     plans = resolve_section_bands(inputs)
     for section, plan in zip(sections, plans):
         if plan.band is None:
@@ -901,6 +1201,15 @@ _RGBA = _re.compile(
 )
 _HEX6 = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _VAR_TOKEN = _re.compile(r"var\(\s*(--builder-[a-z-]+)")
+# The catalog's only color-mix() shape: two colors (each independently a
+# var(--builder-*, #fallback) or a literal hex) blended in sRGB by a literal
+# percent. Must be checked before _VAR_TOKEN below — a bare .search() there
+# would otherwise grab the var() embedded inside this expression and treat
+# the whole mix as that token's raw, fully-opaque color.
+_COLOR_MIX = _re.compile(
+    r"color-mix\(\s*in\s+srgb\s*,\s*(.+?)\s+([\d.]+)%\s*,\s*(.+?)\s*\)\s*$",
+    _re.IGNORECASE,
+)
 
 
 def _token_hex(token: str, theme: ThemeTokens) -> str | None:
@@ -910,6 +1219,7 @@ def _token_hex(token: str, theme: ThemeTokens) -> str | None:
     p = theme.palette
     return {
         "--builder-color-primary": p.primary,
+        "--builder-color-primary-ink": brand_ink(theme),
         "--builder-color-secondary": p.secondary,
         "--builder-color-accent": p.accent,
         "--builder-color-text": p.text,
@@ -944,6 +1254,21 @@ def _parse_color(
         return None
     if v.lower() in ("transparent", "none", "currentcolor", "inherit"):
         return None
+    cm = _COLOR_MIX.match(v)
+    if cm:
+        c1 = _parse_color(cm.group(1).strip(), theme)
+        c2 = _parse_color(cm.group(3).strip(), theme)
+        if c1 is None or c2 is None:
+            return None
+        pct = max(0.0, min(100.0, float(cm.group(2)))) / 100.0
+        (r1, g1, b1), a1 = c1
+        (r2, g2, b2), a2 = c2
+        rgb = (
+            round(pct * r1 + (1 - pct) * r2),
+            round(pct * g1 + (1 - pct) * g2),
+            round(pct * b1 + (1 - pct) * b2),
+        )
+        return rgb, pct * a1 + (1 - pct) * a2
     m = _VAR_TOKEN.search(v)
     if m:
         hexv = _token_hex(m.group(1), theme)
@@ -997,6 +1322,221 @@ def _has_real_photo(styles: dict[str, Any]) -> bool:
                 if not m.group(1).strip().lower().startswith("data:"):
                     return True
     return False
+
+
+# --- filled-panel passes --------------------------------------------------------
+#
+# A catalog template paints its brand fills with `var(--builder-color-*)` tokens,
+# which the renderer resolves per theme — so the template cannot know what its
+# own gradient will end up looking like, and cannot guarantee the ink printed on
+# it stays readable. `cta-banner` is the case that bites: its panel ramps
+# secondary → primary, and on a mid-luminance brand (teal #0891b2) white lands at
+# 3.7:1, which is under AA for anything but large text; on an amber or lime brand
+# even the headline fails. These passes run over the ASSEMBLED tree, where both
+# the fill and the inks on it are known, and resolve the tokens to concrete hexes
+# the audit can also read (ux_audit._color_of returns None for a gradient, so a
+# token-painted fill is invisible to it).
+
+# AA thresholds. Large text (WCAG: ≥24px, or ≥18.66px bold) is allowed 3:1, but a
+# floor is not a target on a marketing surface — and a gradient means part of the
+# line always sits at the weakest end — so display type is held to 3.5:1.
+_FILL_MIN_CONTRAST = 4.5
+_FILL_MIN_CONTRAST_LARGE = 3.5
+_LARGE_TEXT_PX = 24.0
+_LARGE_BOLD_PX = 18.66
+_PX_VALUE = _re.compile(r"(-?[\d.]+)\s*px")
+# `var(--builder-color-x, #fallback)` / `var(--builder-page-background)`
+_VAR_COLOR = _re.compile(r"var\(\s*(--builder-[a-z-]+)\s*(?:,[^)]*)?\)")
+_HEX_LITERAL = _re.compile(r"#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
+
+
+def _first_px(value: object) -> float | None:
+    m = _PX_VALUE.search(str(value or ""))
+    return float(m.group(1)) if m else None
+
+
+def _is_large_text(styles: dict[str, Any]) -> bool:
+    """WCAG "large text": ≥24px, or ≥18.66px at bold. A fluid clamp() reads as
+    its smallest px value, which is the size that has to pass."""
+    size = _first_px(styles.get("fontSize"))
+    if size is None:
+        return False
+    try:
+        weight = int(styles.get("fontWeight") or 400)
+    except (TypeError, ValueError):
+        weight = 400
+    return size >= _LARGE_TEXT_PX or (weight >= 700 and size >= _LARGE_BOLD_PX)
+
+
+def _inks_printed_on(node: BuilderElement, theme: ThemeTokens) -> list[tuple[tuple[int, int, int], float, float]]:
+    """Every ink printed directly on `node`'s own fill, as
+    (rgb, alpha, min_contrast). Stops at any descendant carrying its own surface
+    — a white button on the panel brings its own background, so its label is
+    that button's problem, not the fill's."""
+    out: list[tuple[tuple[int, int, int], float, float]] = []
+
+    def visit(el: BuilderElement, *, root: bool = False) -> None:
+        st = el.styles or {}
+        if not root and _is_own_surface(st):
+            return
+        if el.type in ("text", "link"):
+            parsed = _parse_color(st.get("color"), theme)
+            if parsed is not None:
+                rgb, alpha = parsed
+                floor = _FILL_MIN_CONTRAST_LARGE if _is_large_text(st) else _FILL_MIN_CONTRAST
+                out.append((rgb, alpha, floor))
+        if isinstance(el.content, list):
+            for child in el.content:
+                visit(child)
+
+    visit(node, root=True)
+    return out
+
+
+def _darkened_for_inks(
+    stop_hex: str, inks: list[tuple[tuple[int, int, int], float, float]]
+) -> str:
+    """`stop_hex` pushed away from every ink until each clears its own floor.
+
+    Translucent inks are composited over the stop before measuring — an
+    rgba(255,255,255,0.86) subheading reads dimmer than pure white, so it needs
+    a darker stop, and the composite shifts as the stop moves. Two rounds settle
+    it (each `_ensure_contrast_against` call is itself iterative)."""
+    result = stop_hex
+    for _ in range(2):
+        for rgb, alpha, floor in inks:
+            effective = _to_hex(
+                _composite(rgb, alpha, _hex_to_rgb(result)) if alpha < 1.0 else rgb
+            )
+            if _contrast(effective, result) < floor:
+                result = _ensure_contrast_against(effective, result, min_ratio=floor)
+    return result
+
+
+def enforce_fill_contrast(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """Resolve brand-token colour stops in opaque gradient fills to concrete
+    hexes, darkened until the ink printed on them meets AA. In place.
+
+    Only fills with no photo are touched (a photo's own overlay is tuned
+    separately in `image_styling.photo_background`), and only `var(--builder-*)`
+    tokens and hex literals are rewritten — rgba() stops are decorative
+    highlights layered over the real fill, so moving them would change the
+    design rather than its contrast.
+    """
+    def visit(el: BuilderElement) -> None:
+        st = el.styles or {}
+        if _has_opaque_gradient(st) and not _has_real_photo(st):
+            inks = _inks_printed_on(el, theme)
+            if inks:
+                new_styles = dict(st)
+                changed = False
+                for key in ("background", "backgroundImage"):
+                    css = new_styles.get(key)
+                    if not isinstance(css, str) or "gradient(" not in css:
+                        continue
+
+                    def fix(hex_value: str) -> str:
+                        return _darkened_for_inks(_expand_hex(hex_value), inks)
+
+                    def sub_var(m: _re.Match[str]) -> str:
+                        concrete = _token_hex(m.group(1), theme)
+                        return fix(concrete) if concrete else m.group(0)
+
+                    rewritten = _HEX_LITERAL.sub(
+                        lambda m: fix(m.group(0)), _VAR_COLOR.sub(sub_var, css)
+                    )
+                    if rewritten != css:
+                        new_styles[key] = rewritten
+                        changed = True
+                if changed:
+                    el.styles = new_styles
+        if isinstance(el.content, list):
+            for child in el.content:
+                visit(child)
+
+    for section in sections:
+        visit(section)
+
+
+# Measure cap for a panel's centred headline. Without one the line runs the full
+# inner width of a 1280px panel — ~60 characters on a single line that stops just
+# short of the padding, which reads as a strip of text rather than a headline.
+# `cta-gradient`, the sibling template, caps its content at 760px for the same
+# reason. `balance` splits the wrap evenly instead of leaving one orphan word.
+_PANEL_HEADING_MAX_WIDTH = "820px"
+
+
+def polish_inset_panels(sections: list[BuilderElement]) -> None:
+    """Fix the two things a template can't know about its own inset panel: the
+    headline has no measure cap, and the panel's hairline was authored for a
+    light page. In place.
+
+    A dark-filled panel with a DARK hairline has no visible edge at all (over
+    the ink end it disappears, over the brand end it muddies); what reads on a
+    filled panel is a light inner hairline, so the border is flipped to match
+    the fill it actually sits on.
+    """
+    for section in sections:
+        if not _has_inset_panel(section):
+            continue
+        panel = _find_panel(section)
+        if panel is None:
+            continue
+        st = dict(panel.styles or {})
+        border = st.get("border")
+        if isinstance(border, str) and border and _fill_is_dark(st):
+            st["border"] = "1px solid rgba(255,255,255,0.14)"
+            panel.styles = st
+        heading = _first_text(panel)
+        if heading is not None and "maxWidth" not in (heading.styles or {}):
+            heading.styles = {
+                **(heading.styles or {}),
+                "maxWidth": _PANEL_HEADING_MAX_WIDTH,
+                "marginLeft": "auto",
+                "marginRight": "auto",
+                "textWrap": "balance",
+            }
+
+
+def _find_panel(node: BuilderElement, depth: int = 0) -> BuilderElement | None:
+    """The inset panel `_has_inset_panel` matched (same walk, returns the node)."""
+    children = node.content if isinstance(node.content, list) else []
+    surfaced = [
+        c for c in children if c.type == "container" and _is_own_surface(c.styles or {})
+    ]
+    if len(surfaced) == 1 and _radius_px(surfaced[0].styles or {}) >= _PANEL_MIN_RADIUS_PX:
+        return surfaced[0]
+    if depth >= 2:
+        return None
+    for child in children:
+        if child.type == "container" and not _is_own_surface(child.styles or {}):
+            found = _find_panel(child, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _fill_is_dark(styles: dict[str, Any]) -> bool:
+    """Whether a panel's own fill reads dark — judged on its LIGHTEST colour
+    stop, the one a hairline has to survive against."""
+    text = " ".join(
+        str(styles.get(k) or "") for k in ("background", "backgroundImage", "backgroundColor")
+    )
+    lums = [
+        _relative_luminance(_expand_hex(m.group(0))) for m in _HEX_LITERAL.finditer(text)
+    ]
+    return bool(lums) and max(lums) < 0.5
+
+
+def _first_text(node: BuilderElement) -> BuilderElement | None:
+    if node.type == "text":
+        return node
+    if isinstance(node.content, list):
+        for child in node.content:
+            found = _first_text(child)
+            if found is not None:
+                return found
+    return None
 
 
 _WHATSAPP_HREF = re.compile(r"(?:^whatsapp:|//wa\.me/|//api\.whatsapp\.com/)", re.IGNORECASE)
@@ -1325,11 +1865,151 @@ def apply_section_rhythm(sections: list[BuilderElement]) -> None:
         surface_next = not surface_next
 
 
+# Image slots that are a decorative MARK, not the card's lead photograph. A
+# variant carrying only these does not satisfy "cards lead with a photo", so it
+# must not slip past the photo-topped policy on a technicality — an icon grid is
+# still a text grid. Kept as ids rather than a catalog flag so there is no new
+# field to keep in lockstep across the two catalogs.
+_DECORATIVE_IMAGE_SLOTS = frozenset({"icon", "logo", "badge", "avatar"})
+
+
+def _layout_family(template_id: str) -> str | None:
+    """A template's `layoutVariant` — the compositional family it belongs to
+    (grid, bento, editorial, split…), as distinct from its `styleVariant`."""
+    template = get_template(template_id)
+    return template.get("layoutVariant") if template else None
+
+
+def _leads_with_photo(template: dict[str, Any] | None) -> bool:
+    """True when a template's repeating items each lead with a photograph.
+
+    Derived from the template's own slot shape. Optionality is deliberately NOT
+    the test: `features-image-cards` declares its lead image optional while
+    `features-bento-photo` declares it required, so it discriminates nothing.
+    """
+    if not template:
+        return False
+    for slot in template.get("slots", []):
+        if slot.get("kind") != "list":
+            continue
+        if any(
+            i.get("kind") == "image" and i.get("id") not in _DECORATIVE_IMAGE_SLOTS
+            for i in slot.get("item", [])
+        ):
+            return True
+    return False
+
+
+def _policy_template_id(
+    kind: str,
+    content: dict[str, Any],
+    block: ContentBlock,
+    mood: BrandMood | None,
+    requested: str | None = None,
+    industry: str | None = None,
+) -> str | None:
+    """The template a block's own CONTENT dictates, overruling `requested`.
+
+    These are site policy, not styling, so they beat the design-brain's explicit
+    id, mood ordering and the variety rotation alike. Returns None when nothing
+    is dictated — i.e. when `requested` is free to stand.
+
+    Shared with `selectable_templates`, which offers exactly the variants this
+    function would NOT overrule, so the menu can never propose a pick that
+    selection then discards in silence.
+    """
+    # Photo-topped cards: when every card carries an image, show the photo.
+    if kind in ("features", "services") and _items_have_real_images(block):
+        # Friendly/playful brands (childcare et al) get the badge-carrying
+        # program cards. This is the MORE SPECIFIC rule and stays absolute:
+        # those cards carry the age/audience badge the brief depends on, and no
+        # other variant declares that slot, so letting one compete would drop
+        # it. Checked before the photo allowance below for exactly that reason.
+        if (
+            kind == "services"
+            and mood in ("friendly", "playful")
+            and _items_have_audience(content)
+        ):
+            return "services-programs-age"
+        forced = f"{kind}-image-cards"
+        if requested:
+            wanted = get_template(requested)
+            # A variant whose own items carry images already satisfies "cards
+            # lead with a photo", so it competes rather than being overruled.
+            if _leads_with_photo(wanted):
+                return None
+            # And the rule is about the SAME grid minus its photos — its own
+            # rationale is that the design brain "would otherwise happily
+            # re-select the text-only grid". A different layout family is a
+            # compositional choice, not a way of losing the photos by accident:
+            # `features-card-grid` is `features-image-cards` with the pictures
+            # taken out, but a bento's mixed-size tiles or an editorial list are
+            # different objects, and each family carries its own photo variant
+            # for when photos are what's wanted. Without this, one policy killed
+            # four of six features layouts and three of six services layouts.
+            if wanted and wanted.get("layoutVariant") != _layout_family(forced):
+                return None
+        return forced
+    # Same shape of rule for people: a short, all-founder roster is a founders
+    # band, not a staff directory. Identity, not imagery — nothing competes.
+    if kind == "team" and _is_founders_band(block):
+        return "team-founders"
+    return None
+
+
+def selectable_templates(
+    block: ContentBlock,
+    *,
+    mood: BrandMood | None = None,
+    industry: str | None = None,
+) -> list[dict[str, Any]]:
+    """The catalog templates `block_to_section` could actually land on for this
+    block — the menu the design brain is allowed to offer.
+
+    Empty when there is nothing to decide: the kind is unsupported, content
+    policy has already fixed the template, or nothing is feasible (in which case
+    `select_template` ignores an explicit id and degrades to the deterministic
+    pool anyway).
+
+    This exists because the two sides had drifted. The prompt listed every
+    mood-allowed variant while `select_template` additionally required
+    `is_feasible`, so a features section with two items was still offered
+    `features-bento` (which needs three). The model would pick it, the pick was
+    silently discarded, and that section quietly fell back to the deterministic
+    default — the very convergence this pass exists to break, with nothing in
+    the output to show for it. Both sides now read this one function.
+    """
+    kind = block.kind
+    mapper = _MAPPERS.get(kind)
+    if mapper is None:
+        return []
+    content = mapper(block)
+    candidates = [
+        t
+        for t in templates_for_type(kind)
+        if mood_allows(t, mood) and industry_allows(t, industry)
+    ]
+    # "Everything policy would not overrule" — asked of `_policy_template_id`
+    # itself rather than reimplemented here, so the menu and the selector cannot
+    # drift. A kind under a hard lock (founders band) yields nothing; a kind
+    # under the photo rule yields its photo-leading variants.
+    return [
+        t
+        for t in candidates
+        if is_feasible(t, content)
+        and _policy_template_id(
+            kind, content, block, mood, requested=t["id"], industry=industry
+        )
+        is None
+    ]
+
+
 def block_to_section(
     block: ContentBlock,
     *,
     explicit_id: str | None = None,
     mood: BrandMood | None = None,
+    industry: str | None = None,
     is_homepage: bool = True,
     hero_scroll_target_kind: str | None = None,
     variety_seed: str | None = None,
@@ -1355,16 +2035,12 @@ def block_to_section(
     if mapper is None:
         return None
     content = mapper(block)
-    # Photo-topped card grids are a hard site policy, not a stylistic choice:
-    # when every card carries an image, the image variant wins even over the
-    # design-brain's explicit pick (which draws from ALL variants and would
-    # otherwise happily re-select the text-only grid).
-    if kind in ("features", "services") and _most_items_have_images(content):
-        explicit_id = f"{kind}-image-cards"
-        # Friendly/playful brands (childcare et al) get the badge-carrying
-        # program cards instead — same photo-topped policy, warmer framing.
-        if kind == "services" and mood in ("friendly", "playful"):
-            explicit_id = "services-programs-age"
+    explicit_id = (
+        _policy_template_id(
+            kind, content, block, mood, requested=explicit_id, industry=industry
+        )
+        or explicit_id
+    )
     pref_fn = _PREFERENCE.get(kind)
     content_pref = pref_fn(content, block) if pref_fn else []
     # Content leads the layout choice so available imagery is actually used.
@@ -1378,21 +2054,44 @@ def block_to_section(
     # so different brands lead with different (still feasible, still
     # mood-gated) variants; one brand stays idempotent, and every direct call
     # without a seed keeps the legacy order.
-    has_image_signal = bool(content.get("image")) or _most_items_have_images(content)
+    has_image_signal = bool(content.get("image")) or _items_have_real_images(block)
     if variety_seed and not has_image_signal:
         deduped: list[str] = []
         for pid in preferred:
             if pid not in deduped:
                 deduped.append(pid)
-        if len(deduped) > 1:
+        # The seed may reorder, but it may never promote a layout the MOOD ranks
+        # worse than the one already leading — and never a photo-led variant
+        # when the source supplied no photography. Rotating the whole head used
+        # to displace the mood's own pick, which is why `modern`, whose top
+        # layout family is bento, still landed on a card grid.
+        #
+        # The bound is "no worse than the leader" rather than "exactly the
+        # leader's rank" on purpose: where a content preference has already
+        # pinned the layout (cta_preference always leads with the banner), the
+        # mood never got a say, and locking to that leader's rank would freeze
+        # the section to one layout for every brand. This keeps the seed's
+        # variety exactly where mood is silent, and removes it where mood spoke.
+        leader = _mood_rank(mood, deduped[0]) if deduped else 0
+        head = [
+            pid
+            for pid in deduped
+            if _mood_rank(mood, pid) <= leader
+            and not _leads_with_photo(get_template(pid))
+        ]
+        if len(head) > 1:
             from app.services.diversity import seeded_index
 
-            offset = seeded_index(
-                variety_seed, f"template:{kind}", min(3, len(deduped))
-            )
-            preferred = deduped[offset:] + deduped[:offset]
+            offset = seeded_index(variety_seed, f"template:{kind}", len(head))
+            head = head[offset:] + head[:offset]
+            preferred = head + [pid for pid in deduped if pid not in head]
     template = select_template(
-        kind, content, preferred_ids=preferred, explicit_id=explicit_id, mood=mood
+        kind,
+        content,
+        preferred_ids=preferred,
+        explicit_id=explicit_id,
+        mood=mood,
+        industry=industry,
     )
     if template is None:
         return None

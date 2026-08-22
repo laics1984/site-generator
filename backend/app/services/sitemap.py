@@ -22,6 +22,7 @@ from __future__ import annotations
 import gzip
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from urllib.parse import urljoin, urlparse
 from xml.etree import ElementTree as ET
@@ -67,12 +68,60 @@ async def probe_sitemap(entry_url: str) -> SitemapProbeResult:
 
     On any error or missing sitemaps, returns SitemapProbeResult(has_sitemap=False).
     Callers can then fall back to BFS-only crawling.
+
+    Results are cached per ORIGIN for ``_CACHE_TTL``. There are two callers per
+    crawl — the UI's scope probe (POST /api/scrape/probe) and the crawl's own
+    frontier seeding — and re-running this is not cheap: an index sitemap can
+    pull up to ``_MAX_SUB_SITEMAPS`` documents of up to ``_SITEMAP_MAX_BYTES``
+    each, all of it parsed. The origin (not the full URL) is the key because the
+    lookup only ever depends on scheme + host.
     """
     parsed = urlparse(entry_url)
     if parsed.scheme not in ("http", "https"):
         return SitemapProbeResult(has_sitemap=False, total_urls=0)
     base = f"{parsed.scheme}://{parsed.netloc}"
 
+    cached = _cache_get(base)
+    if cached is not None:
+        logger.debug("sitemap probe cache hit for %s", base)
+        return cached
+
+    result = await _probe_uncached(base)
+    _cache_put(base, result)
+    return result
+
+
+# origin → (stored_at, result). Small and bounded: one entry per host probed.
+_CACHE: dict[str, tuple[float, SitemapProbeResult]] = {}
+_CACHE_TTL = 600.0  # 10 min — matches the robots.txt cache in scraper.py
+_CACHE_MAX_ENTRIES = 64
+
+
+def _cache_get(base: str) -> SitemapProbeResult | None:
+    entry = _CACHE.get(base)
+    if entry is None:
+        return None
+    stored_at, result = entry
+    if time.monotonic() - stored_at >= _CACHE_TTL:
+        _CACHE.pop(base, None)
+        return None
+    return result
+
+
+def _cache_put(base: str, result: SitemapProbeResult) -> None:
+    _CACHE[base] = (time.monotonic(), result)
+    # Drop the oldest entries rather than growing without bound. Insertion order
+    # is good enough — this is a same-session convenience, not a hit-rate game.
+    while len(_CACHE) > _CACHE_MAX_ENTRIES:
+        _CACHE.pop(next(iter(_CACHE)))
+
+
+def clear_cache() -> None:
+    """Drop every cached probe (tests / ops)."""
+    _CACHE.clear()
+
+
+async def _probe_uncached(base: str) -> SitemapProbeResult:
     async with httpx.AsyncClient(
         timeout=_HTTP_TIMEOUT,
         follow_redirects=True,

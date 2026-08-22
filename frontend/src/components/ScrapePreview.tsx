@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { FacebookFactsPanel } from '@/components/FacebookFactsPanel'
 import { exportSiteDocument } from '@/lib/api'
 import type { ScrapePreview as ScrapePreviewType } from '@/lib/types'
 import { Button } from '@/ui'
@@ -58,13 +59,17 @@ export function ScrapePreview({
   const otherImages = preview.image_candidates.filter((c) => c.intent !== 'hero')
 
   const isDocument = sc.source_kind === 'pdf' || sc.source_kind === 'docx'
+  const isFacebook = sc.source_kind === 'facebook'
+  const facts = preview.facebook_facts
   const bannerLabel = isDocument
     ? `${sc.source_kind.toUpperCase()} parsed`
-    : 'Scrape OK'
-  const sourceLabel = isDocument ? 'File' : 'Source'
+    : isFacebook
+      ? 'Facebook Page read'
+      : 'Scrape OK'
+  const sourceLabel = isDocument ? 'File' : isFacebook ? 'Page' : 'Source'
 
   const unvisitedCount = preview.unvisited_count ?? preview.unvisited_urls?.length ?? 0
-  const canCrawlMore = !isDocument && unvisitedCount > 0 && !!onCrawlMore
+  const canCrawlMore = !isDocument && !isFacebook && unvisitedCount > 0 && !!onCrawlMore
 
   return (
     <div className="space-y-4">
@@ -79,7 +84,15 @@ export function ScrapePreview({
             additional page{preview.discovered_count === 1 ? '' : 's'} discovered.
           </div>
         )}
+        {isFacebook && (
+          <div className="mt-1">
+            Building one landing page — a Page carries about one page's worth of
+            real content.
+          </div>
+        )}
       </div>
+
+      {facts && <FacebookFactsPanel facts={facts} />}
 
       {canCrawlMore && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">

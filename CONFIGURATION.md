@@ -109,6 +109,24 @@ which endpoint is an application decision, not a serving one. Unset both
 | `CONTENT_MIGRATION_ENABLED` | `true` | Migrate blog/event listings as CMS entries. |
 | `CONTENT_MIGRATION_MAX_ENTRIES` | `12` | Cap on migrated entries. |
 
+## Facebook Page reading
+
+A Facebook URL pasted into the normal link field is routed to the Facebook
+reader rather than the crawler (`services/source_detect.py`). Graph API first
+when a token is available, a public-page render otherwise.
+
+| Variable | Default | Description |
+|---|---|---|
+| `FACEBOOK_ACCESS_TOKEN` | `None` | **Secret.** Page access token. Unlocks emails, structured hours, posts and recommendations, and avoids the login wall. A per-request token from the UI overrides it and is held in memory only — never written to the jobs table or logged. |
+| `FACEBOOK_GRAPH_BASE_URL` | `https://graph.facebook.com` | Graph API host. |
+| `FACEBOOK_GRAPH_VERSION` | `v21.0` | Graph API version. |
+| `FACEBOOK_TIMEOUT_SECONDS` | `15.0` | Graph request / public render timeout. |
+| `FACEBOOK_MAX_POSTS` | `25` | Posts read for grounding text and photos. |
+| `FACEBOOK_MAX_REVIEWS` | `12` | Recommendations read as testimonials. |
+| `FACEBOOK_MIN_RAW_TEXT_CHARS` | `200` | Below this, a Page is refused (422) rather than padded into a site. Higher than the document path's 80 because a Page always yields a name plus a category. |
+| `FACEBOOK_RENDER_FALLBACK_ENABLED` | `true` | `false` requires a token instead of rendering the public Page. |
+| `FACEBOOK_LOGO_VISION_CHECK` | `true` | Ask the vision judge whether the profile picture is a mark or a photograph; a photograph is demoted to palette-only so the header falls back to the wordmark. No-op unless `OLLAMA_VISION_MODEL` is set. |
+
 ## Network, security & infrastructure
 
 | Variable | Default | Description |

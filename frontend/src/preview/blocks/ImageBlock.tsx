@@ -15,6 +15,9 @@ export function ImageBlock({ node }: { node: PublicBlockNode }) {
   const alt = getStringField(node, 'alt', 'title') || ''
   const href = getStringField(node, 'href') || ''
   const ariaLabel = getStringField(node, 'ariaLabel') || undefined
+  // Editorial caption, surfaced by the gallery lightbox (which falls back to
+  // `alt` when absent). Not rendered inline — no block in the catalog draws one.
+  const caption = getStringField(node, 'caption') || ''
   const isHero =
     getBooleanField(node, 'priority') || getStringField(node, 'fetchpriority') === 'high'
   const nodeClasses = getNodeClasses(node)
@@ -75,6 +78,7 @@ export function ImageBlock({ node }: { node: PublicBlockNode }) {
       src={src}
       alt={alt}
       style={imgStyle}
+      data-wt-caption={caption || undefined}
       loading={isHero ? 'eager' : 'lazy'}
       fetchPriority={isHero ? 'high' : 'auto'}
     />

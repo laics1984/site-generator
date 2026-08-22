@@ -44,6 +44,12 @@ class LogoExtraction:
     seed_hex: str | None          # the top recommended primary color
     logo_data_url: str            # the original logo as base64 data URL
     logo_is_light: bool           # whether the visible logo pixels are light
+    # Decoded pixel size, and whether the source was a vector. The *declared*
+    # size of an icon (`<link sizes>`) is a claim; this is the truth, and it's
+    # what decides whether a mark survives the header's 52px lockup. None for
+    # SVG — a vector has no intrinsic raster size and scales to any lockup.
+    size: tuple[int, int] | None = None
+    is_vector: bool = False
 
 
 def _rgb_to_hex(r: int, g: int, b: int) -> str:
@@ -138,6 +144,7 @@ def _extract_palette_from_svg_bytes(
             seed_hex="#2563eb",
             logo_data_url=logo_data_url,
             logo_is_light=False,
+            is_vector=True,
         )
 
     logo_is_light = _is_light_logo([(r, g, b, 255) for r, g, b in rgb_values])
@@ -167,6 +174,7 @@ def _extract_palette_from_svg_bytes(
             seed_hex="#2563eb",
             logo_data_url=logo_data_url,
             logo_is_light=logo_is_light,
+            is_vector=True,
         )
 
     candidates.sort(reverse=True)
@@ -177,6 +185,7 @@ def _extract_palette_from_svg_bytes(
         seed_hex=palette[0],
         logo_data_url=logo_data_url,
         logo_is_light=logo_is_light,
+        is_vector=True,
     )
 
 
@@ -212,6 +221,7 @@ def extract_palette_from_image_bytes(
 
     # Resize for speed (logos rarely benefit from full-res analysis).
     w, h = img.size
+    decoded_size = (w, h)
     if w > 256:
         ratio = 256 / w
         img = img.resize((256, int(h * ratio)), Image.Resampling.LANCZOS)
@@ -238,6 +248,7 @@ def extract_palette_from_image_bytes(
             seed_hex="#2563eb",
             logo_data_url=_to_data_url(image_bytes, img.format or "PNG"),
             logo_is_light=logo_is_light,
+            size=decoded_size,
         )
 
     # Quantise via median cut.
@@ -270,6 +281,7 @@ def extract_palette_from_image_bytes(
         seed_hex=seed,
         logo_data_url=_to_data_url(image_bytes, img.format or "PNG"),
         logo_is_light=logo_is_light,
+        size=decoded_size,
     )
 
 
