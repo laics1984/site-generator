@@ -802,13 +802,40 @@ _MOOD_LAYOUT_PREFERENCE: dict[BrandMood, list[str]] = {
 }
 
 
-def mood_preferred_ids(mood: BrandMood | None, section_type: str) -> list[str]:
-    """Template ids for `section_type`, ordered by the mood's layout preference.
+def layout_preference(
+    mood: BrandMood | None, layout_bias: tuple[str, ...] = ()
+) -> list[str]:
+    """The layout-variant families this site prefers, best-first.
 
-    Templates whose `layoutVariant` isn't in the mood's list sort last (stable).
-    Returns [] for an unknown/None mood, so callers fall back to today's behavior.
+    The design scheme's ``layout_bias`` is PREFIXED onto the mood's list rather
+    than replacing it: a scheme states which compositions it is built around,
+    but the mood still orders everything the scheme didn't mention, so a
+    bento-led scheme on a luxury brand still prefers centered over banner
+    underneath. Duplicates collapse to their first (scheme) position.
+
+    Empty result — no mood and no bias — means callers keep today's behaviour,
+    where every template ties and the variety seed is free to pick.
     """
-    pref = _MOOD_LAYOUT_PREFERENCE.get(mood) if mood else None
+    mood_pref = _MOOD_LAYOUT_PREFERENCE.get(mood) if mood else None
+    combined: list[str] = []
+    for family in (*layout_bias, *(mood_pref or ())):
+        if family not in combined:
+            combined.append(family)
+    return combined
+
+
+def mood_preferred_ids(
+    mood: BrandMood | None,
+    section_type: str,
+    layout_bias: tuple[str, ...] = (),
+) -> list[str]:
+    """Template ids for `section_type`, ordered by the site's layout preference.
+
+    Templates whose `layoutVariant` isn't in the list sort last (stable).
+    Returns [] when neither a mood nor a scheme bias says anything, so callers
+    fall back to today's behavior.
+    """
+    pref = layout_preference(mood, layout_bias)
     if not pref:
         return []
     rank = {variant: i for i, variant in enumerate(pref)}
@@ -820,14 +847,20 @@ def mood_preferred_ids(mood: BrandMood | None, section_type: str) -> list[str]:
     return [t["id"] for t in ordered]
 
 
-def _mood_rank(mood: BrandMood | None, template_id: str) -> int:
-    """How highly `mood` ranks a template's layout family (lower = preferred).
+def _mood_rank(
+    mood: BrandMood | None, template_id: str, layout_bias: tuple[str, ...] = ()
+) -> int:
+    """How highly this site ranks a template's layout family (lower = preferred).
 
-    Families the mood doesn't name share one rank at the end, so they tie with
-    each other rather than with anything the mood actually asked for. With no
-    mood every template ties, which leaves the variety seed free to pick.
+    Families nothing names share one rank at the end, so they tie with each
+    other rather than with anything the mood or scheme actually asked for. With
+    neither, every template ties, which leaves the variety seed free to pick.
+
+    Reads the same combined order as ``mood_preferred_ids`` — the two must
+    agree, since this function is the bound on how far the variety rotation may
+    reorder that function's output.
     """
-    pref = _MOOD_LAYOUT_PREFERENCE.get(mood) if mood else None
+    pref = layout_preference(mood, layout_bias)
     if not pref:
         return 0
     family = _layout_family(template_id)
@@ -2013,6 +2046,7 @@ def block_to_section(
     is_homepage: bool = True,
     hero_scroll_target_kind: str | None = None,
     variety_seed: str | None = None,
+    layout_bias: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Map a block to (template, content). Returns None if the kind is unsupported.
 
@@ -2025,6 +2059,13 @@ def block_to_section(
     convergence design_brain.py documents. Content preference and explicit ids
     are never rotated: imagery use and the LLM's deliberate picks still lead.
     None (the default, and every direct test call) keeps the legacy order.
+
+    ``layout_bias`` is the design scheme's compositional lean (see
+    services/design_schemes.py), prefixed onto the mood's ordering by
+    ``layout_preference``. It changes which feasible variant leads, never which
+    variants exist: ``is_feasible``, ``mood_allows`` and ``industry_allows`` in
+    ``select_template`` remain the hard gates, and the imagery policy above
+    still overrules both.
 
     For a hero, ``is_homepage`` / ``hero_scroll_target_kind`` drive the interior-
     page CTA policy (see ``apply_hero_cta_policy``); the default (homepage hero)
@@ -2045,7 +2086,7 @@ def block_to_section(
     content_pref = pref_fn(content, block) if pref_fn else []
     # Content leads the layout choice so available imagery is actually used.
     # Mood remains a fallback/tiebreaker among still-feasible variants.
-    preferred = list(content_pref or []) + mood_preferred_ids(mood, kind)
+    preferred = list(content_pref or []) + mood_preferred_ids(mood, kind, layout_bias)
     # Imagery-led preference is a HARD signal (show the photo, don't say it).
     # Text-only sections have no such anchor — their preference head is just
     # a sensible default, and "always the default" is exactly the per-mood
@@ -2072,11 +2113,11 @@ def block_to_section(
         # mood never got a say, and locking to that leader's rank would freeze
         # the section to one layout for every brand. This keeps the seed's
         # variety exactly where mood is silent, and removes it where mood spoke.
-        leader = _mood_rank(mood, deduped[0]) if deduped else 0
+        leader = _mood_rank(mood, deduped[0], layout_bias) if deduped else 0
         head = [
             pid
             for pid in deduped
-            if _mood_rank(mood, pid) <= leader
+            if _mood_rank(mood, pid, layout_bias) <= leader
             and not _leads_with_photo(get_template(pid))
         ]
         if len(head) > 1:

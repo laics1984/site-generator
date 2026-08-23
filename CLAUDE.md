@@ -104,6 +104,69 @@ modules — the largest are `schema_builder.py` 4.5k, `scraper.py` 2.6k,
    `os.environ` — keep it that way. The frontend reads no `import.meta.env`; it
    uses relative paths through the Vite proxy.
 
+## Design schemes — the anti-sameness layer
+
+`services/design_schemes.py` is the **single home** for every value that used to
+be one answer per mood. A `DesignScheme` bundles shape (`radius_scale`,
+`card_treatment`, shadow, texture, divider), density (`padding_scale`,
+`card_padding_scale`, `container_max_width`, type ratio, heading weight/tracking,
+eyebrow treatment), composition (`layout_bias`, `hero_policy`, chrome affinity)
+and colour expression (`section_rotation`, `inverted_cta`). Sixteen are authored;
+all 60 (mood, industry) cells offer ≥3.
+
+**Selection is the chrome machinery, reused, not a second one**: fit list →
+`diversity.pick_diverse` seeded on the brand name → history avoidance on the
+`"scheme"` area. **Threading is the `palette_choice`/`avoid_palettes` idiom,
+reused**: `build_theme(scheme_choice=, avoid_schemes=)` at the same three
+generation call sites, slug onto `ThemeTokens.design_scheme` (internal like
+`palette_slug`, **absent from `to_builder_styles()`** — the wire payload is
+unchanged), and every pass reads it back with `design_schemes.for_theme(theme)`.
+So a new axis is a data edit, not a parameter threaded through the pipeline.
+
+**Every field defers** (`None` / `"inherit"` / empty tuple) to the per-mood
+tables it layers over — `MOOD_SPECS`, `_MOOD_LAYOUT_PREFERENCE`,
+`_DIVIDER_SHAPE_BY_MOOD`, `hero_director._MOOD_SPECS`, `_HEADER_FIT`/`_FOOTER_FIT`,
+all untouched. That is what makes `DESIGN_SCHEMES_ENABLED=false` a true no-op
+rather than a second code path, and `conftest` pins it off for the rest of the
+suite (a scheme moves radius, density, measure, layout order and hero policy per
+brand, so a structural assertion elsewhere would really be asserting whichever
+scheme that fixture's name hashed to).
+
+Gates use the section catalog's vocabulary and semantics: `moods` and
+`industries` are hard, **empty = neutral wildcard**, and `industry_affinity` is a
+soft rank that never excludes. A gate in the wrong vocabulary is a silent off
+switch — `test_design_schemes.GateVocabularyTest` fails on any unreal value, on
+an unreachable scheme, and on any cell with fewer than three candidates.
+
+**Scales, not absolutes.** `padding_scale` multiplies what the template chose;
+the catalog's root paddings vary on purpose (72px ×30, 104px ×10, 128, 140) and
+one flat number would destroy that composition.
+
+Three renderer rules the schemes must obey, all invisible from Python:
+
+- **`gap` and card `minHeight` are the renderer's.**
+  `webtree-public/lib/responsiveRuntime.ts` pins them on 21 node **names** with
+  `!important` at desktop and tablet (mobile returns `{}`). An inline value
+  loses on the published site and wins in both editors — a three-way divergence.
+  `apply_density_scale` owns **vertical padding** instead; the name sets are
+  mirrored as `RENDERER_PINNED_GAP_NAMES` / `RENDERER_PINNED_MIN_HEIGHT_NAMES`
+  and a test parses the TS to catch drift.
+- **Lengths are strings.** Vue's `:style` drops `width: 24` as invalid; React
+  appends `px`. Use `scaled_px`.
+- **Texture deletes gradients.** `SectionBlock.vue` swaps a gradient for
+  `var(--builder-color-primary)` when `backgroundTexture` is set — a section gets
+  one or the other, never both.
+
+Chrome affinity **narrows** the fit list; reordering it would be a no-op, since
+the picker takes a seeded index across the whole list. Still an intersection,
+never an addition, and always ≥2 candidates so diversity has room. The pill's
+`force_background=True` outranks any `hero_policy` — broken chrome beats taste —
+and every contrast pass runs downstream of the scheme's, so no scheme can ship
+an illegible page. Builder side: `design-manifest.ts` parses `design_scheme` and
+labels the `scheme` decision area; nothing else cross-repo changed.
+
+Tests: `test_design_schemes.py`. Docs: [docs/DESIGN_ENGINE.md](docs/DESIGN_ENGINE.md).
+
 ## Adding a new section block
 
 Catalog entry in the builder + sync, then wire the generator:

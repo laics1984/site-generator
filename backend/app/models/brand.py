@@ -185,6 +185,12 @@ class ThemeTokens(BaseModel):
     # design manifest's palette decision + the diversity history — NOT part of
     # BuilderStyles.
     palette_slug: str | None = None
+    # The design scheme (services/design_schemes.py) this theme was built under.
+    # Internal, exactly like `palette_slug`: it feeds the manifest's `scheme`
+    # decision, the diversity history, and every downstream styling pass, which
+    # reads it off the theme it was already handed rather than taking a new
+    # parameter. NOT part of BuilderStyles — the CMS wire payload is unchanged.
+    design_scheme: str | None = None
     # The ui-ux-pro-max style this mood embodies (design lineage / debug metadata).
     style: str = ""
     # Section background rotation drives visual rhythm (avoid wall-of-white).

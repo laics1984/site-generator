@@ -244,6 +244,14 @@ class Settings(BaseSettings):
     # the same chrome picks. Disabling is a safe no-op — archetype selection
     # falls back to the purely seeded (per-brand idempotent) rotation.
     diversity_engine_enabled: bool = True
+    # Off switch for design schemes (services/design_schemes.py): the style-pack
+    # layer that gives each (mood, industry) cell several distinct visual
+    # languages instead of one. Disabling is a safe no-op — every scheme field
+    # defers to the per-mood tables that were the sole authority before it
+    # (MOOD_SPECS, _MOOD_LAYOUT_PREFERENCE, _DIVIDER_SHAPE_BY_MOOD, the
+    # hero-director specs), so output is byte-identical to the pre-scheme
+    # generator. Ships off; flipped on once verified against real sources.
+    design_schemes_enabled: bool = False
 
     # Full-bleed photo/abstract background hero on EVERY page (not just the
     # homepage), so the transparent floating header engages site-wide. Imagery

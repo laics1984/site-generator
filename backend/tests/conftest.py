@@ -97,6 +97,28 @@ def _offline_facebook():
 
 
 @pytest.fixture(autouse=True)
+def _no_design_schemes():
+    """Pin design schemes off for every test.
+
+    Same reasoning as the diversity fixture below, one level up: a scheme
+    changes radius, density, measure, card frame, layout order and hero policy
+    per brand, so a structural assertion written against "the" generated tree
+    would really be an assertion about whichever scheme that fixture's brand
+    name happened to hash to. Scheme behaviour is tested explicitly in
+    tests/test_design_schemes.py, which turns the flag on itself.
+
+    Pinned here rather than relying on the config default, so this suite keeps
+    asserting the deferring path after the default is flipped on.
+    """
+    original = settings.design_schemes_enabled
+    settings.design_schemes_enabled = False
+    try:
+        yield
+    finally:
+        settings.design_schemes_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_diversity():
     """Disable the diversity engine's SQLite history for every test.
 

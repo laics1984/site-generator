@@ -1511,6 +1511,8 @@ def build_theme(
     palette_choice: str | None = None,
     font_choice: str | None = None,
     avoid_palettes: set[str] | None = None,
+    scheme_choice: str | None = None,
+    avoid_schemes: set[str] | None = None,
 ) -> ThemeTokens:
     """
     Top-level factory. `seed_hex` is the primary color (usually from the logo).
@@ -1543,6 +1545,14 @@ def build_theme(
     palette slug takes that curated palette directly on either scheme; a valid
     font slug takes that pairing from the mood's pool. Invalid or None choices
     change nothing: the deterministic selection above runs exactly as before.
+
+    `scheme_choice`/`avoid_schemes` are the design-scheme half, deliberately the
+    same shape: an explicit slug pins the style pack, otherwise it is chosen from
+    the (mood, industry) fit list by the same seeded rotation and steered off
+    what recent sites used. Schemes override the mood's shape/density/composition
+    defaults (see services/design_schemes.py); with the kill switch off, or a
+    slug that doesn't resolve, the neutral scheme defers on every axis and this
+    factory returns exactly what it returned before the feature existed.
     """
     raw = (seed_hex or "").strip().lower()
     has_seed = raw.startswith("#") and len(raw) == 7
@@ -1610,6 +1620,25 @@ def build_theme(
     spec = MOOD_SPECS[mood]
     pairing = pairing_by_slug(spec, font_choice) or _pick_pairing(spec, font_seed, industry)
 
+    # The design scheme layers over the mood spec. Lazy import: design_schemes
+    # reads BrandMood/archetype vocabularies and services.diversity, none of
+    # which import theme — but keeping it local documents that theme.py is the
+    # leaf here, and costs nothing after first call.
+    from app.config import settings as _settings
+    from app.services import design_schemes
+
+    scheme = (
+        design_schemes.select_scheme(
+            seed=font_seed or "site",
+            mood=mood,
+            industry=industry,
+            choice=scheme_choice,
+            avoid=avoid_schemes,
+        )
+        if _settings.design_schemes_enabled
+        else design_schemes.NEUTRAL_SCHEME
+    )
+
     # Button background needs ≥4.5:1 against white text.
     button_bg = palette.primary
     button_text = _text_for_background(button_bg)
@@ -1623,18 +1652,30 @@ def build_theme(
             "google_fonts": list(pairing.google_fonts),
         }
     )
-    buttons = Buttons(background=button_bg, text=button_text, radius=spec.radius)
+    # Radius is the scheme's most visible single lever: the same mood reads as
+    # Swiss (hard corners) or as Soft UI (18px+) on it alone. Bounds match the
+    # Buttons validator, and the floor is 0 rather than 1 so a scheme can ask
+    # for genuinely square corners.
+    radius = max(0, min(48, round(spec.radius * scheme.radius_scale)))
+    buttons = Buttons(background=button_bg, text=button_text, radius=radius)
     page = PageTokens.model_validate(
         {
             "widthMode": spec.page_width_mode,
-            "maxWidth": 1280,
+            # The measure. Reaches the page as --builder-page-max-width, which
+            # 117 catalog nodes already center their content against, so a
+            # scheme changes the column width of the whole site with one number.
+            "maxWidth": max(320, min(1920, scheme.container_max_width)),
             "background": palette.background,
         }
     )
 
     # Section rhythm: alternate light tints to avoid a wall of white. CTAs get
     # the inverted treatment via inverted_cta=True (CTA section uses photo bg).
-    section_rotation: list[str] = ["background", "surface", "background"]
+    section_rotation: list[str] = list(scheme.section_rotation) or [
+        "background",
+        "surface",
+        "background",
+    ]
 
     return ThemeTokens(
         palette=palette,
@@ -1643,15 +1684,25 @@ def build_theme(
         page=page,
         mood=mood,
         section_rotation=section_rotation,  # type: ignore[arg-type]
-        inverted_cta=True,
-        type_scale_ratio=spec.type_scale_ratio,
-        use_glass=spec.use_glass,
-        background_strategy=_INDUSTRY_BACKGROUND_STRATEGY.get(  # type: ignore[arg-type]
-            (industry or "").strip().lower(), spec.background_strategy
+        inverted_cta=scheme.inverted_cta if scheme.inverted_cta is not None else True,
+        type_scale_ratio=max(
+            1.1, min(1.6, scheme.type_scale_ratio or spec.type_scale_ratio)
         ),
-        shadow_scale=spec.shadow_scale,  # type: ignore[arg-type]
+        use_glass=spec.use_glass if scheme.use_glass is None else scheme.use_glass,
+        # Precedence: scheme > industry pin > mood default. The industry table is
+        # the researched brief and the scheme is the site's chosen language, so
+        # the scheme wins — but only when it states a strategy at all.
+        background_strategy=(  # type: ignore[arg-type]
+            scheme.background_strategy
+            or _INDUSTRY_BACKGROUND_STRATEGY.get(
+                (industry or "").strip().lower(), spec.background_strategy
+            )
+        ),
+        shadow_scale=scheme.shadow_scale or spec.shadow_scale,  # type: ignore[arg-type]
         display_font=pairing.display_font or pairing.heading_font,
         color_scheme=color_scheme,  # type: ignore[arg-type]
         palette_slug=palette_slug,
+        design_scheme=None if scheme.is_neutral else scheme.slug,
+        motion_intensity=scheme.motion_intensity,
         style=spec.style,
     )

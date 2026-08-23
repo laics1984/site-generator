@@ -1224,6 +1224,12 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         avoid_palettes=await recent_choices(
             "palette", site_key=(brand.name if brand else plan.site_name)
         ),
+        # Same for the design scheme — the widest single choice on the site, so
+        # two consecutive generations landing on one is the most visible way a
+        # batch converges.
+        avoid_schemes=await recent_choices(
+            "scheme", site_key=(brand.name if brand else plan.site_name)
+        ),
     )
     theme.hero_background_height = resolve_hero_height(
         payload.hero_height,
@@ -1425,6 +1431,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         # Diversity: steer the curated pick off palettes recent sites used
         # (rotates within the fit group only; fail-open empty set).
         avoid_palettes=await recent_choices("palette", site_key=brand.name),
+        avoid_schemes=await recent_choices("scheme", site_key=brand.name),
     )
     theme.hero_background_height = resolve_hero_height(
         payload.hero_height,

@@ -284,6 +284,7 @@ def plan_site_heroes(
     seed: str,
     hero_height: HeroBackgroundHeight = "full",
     force_background: bool = False,
+    hero_policy: str = "inherit",
 ) -> dict[str, HeroDirective]:
     """Assign every page a HeroDirective, keyed by slug.
 
@@ -293,6 +294,11 @@ def plan_site_heroes(
     ``hero_height``: the site-wide photo-hero height (theme.hero_background_height).
     "banded" is a SHORTER PHOTO HERO, so it selects the background treatment —
     see the policy branch below.
+    ``hero_policy``: the design scheme's hero language — "fullbleed-all",
+    "hero-led" (full-bleed homepage, compact interiors) or "editorial-mix" (the
+    mood's rotation everywhere). "inherit" defers to
+    ``settings.hero_fullbleed_all_pages``, which is what every site got before
+    schemes existed and is still the default.
     ``force_background``: the site's chrome REQUIRES a photo hero on every page
     (the floating-pill header: it floats over the first section with its own
     chrome, and only a full-screen or banded photo hero gives it something to
@@ -323,7 +329,28 @@ def plan_site_heroes(
     # was read by no template on the page. Banded is also self-justifying against
     # the "interiors stay compact" rule that keeps the full-bleed hero out of the
     # rotations: at 460px this IS the compact variant.
-    if settings.hero_fullbleed_all_pages or hero_height == "banded" or force_background:
+    # The design scheme's say (services/design_schemes.py). Precedence, highest
+    # first, and each level is a genuine authority rather than a preference:
+    #
+    #   force_background  the floating-pill header CANNOT render over anything
+    #                     else, so chrome beats taste. Handled below.
+    #   hero_policy       the scheme states which heroes this site's visual
+    #                     language is built on.
+    #   settings          the global default, which is what every site got
+    #                     before schemes existed.
+    #
+    # "banded" stays orthogonal: it is a shorter PHOTO hero, not a different
+    # template, and hero-background-bold is the only catalog hero that reads
+    # --builder-hero-min-height. So a banded site takes the background branch
+    # whatever the scheme says, or the height token it emits is read by nothing
+    # on the page — the exact bug the comment above records.
+    fullbleed_everywhere = settings.hero_fullbleed_all_pages
+    if hero_policy == "fullbleed-all":
+        fullbleed_everywhere = True
+    elif hero_policy in ("hero-led", "editorial-mix"):
+        fullbleed_everywhere = False
+
+    if fullbleed_everywhere or hero_height == "banded" or force_background:
         directives = {
             page.slug: (
                 HeroDirective(
@@ -342,6 +369,14 @@ def plan_site_heroes(
     for page in pages:
         if page.is_homepage or page.page_type == "home":
             directive = spec.homepage
+            # "hero-led": the homepage still opens on the full-bleed photo — the
+            # first impression is the one place atmosphere always pays — while
+            # interiors take the mood's compact rotation below. "editorial-mix"
+            # declines even that, because a scheme built on type or on an
+            # asymmetric composition should say so on the page that sets the
+            # site's tone, not only on its subpages.
+            if hero_policy == "hero-led":
+                directive = _BACKGROUND
             if has_source_background:
                 directive = HeroDirective(
                     "hero-background-bold", "background", pin_source_background=True
