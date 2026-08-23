@@ -474,6 +474,18 @@ export interface CrawlJob {
   elapsed_seconds: number | null
 }
 
+/** A CMS this generator can push into. The backend owns the list — the frontend
+ * reads no import.meta.env, so it can't know the hosts, and a push names a
+ * target by `name` rather than by URL (see backend services/cms_targets.py). */
+export interface CmsTarget {
+  name: string
+  /** host:port of the CMS API — derived, so it always says where bytes go. */
+  label: string
+  api_base_url: string
+  /** True when the target is not this machine. Drives the warning treatment. */
+  is_remote: boolean
+}
+
 export interface CmsConnectionTest {
   ok: boolean
   existing_page_count: number
@@ -491,6 +503,10 @@ export interface CmsPushStep {
   detail: string
   data: Record<string, unknown>
   error: string | null
+  /** The step succeeded, but not the way it was asked to — the push carried on
+   * and there is something to fix in the CMS afterwards. Distinct from `error`,
+   * which aborts. */
+  warning?: string | null
 }
 
 export interface CmsPushReport {
@@ -499,8 +515,9 @@ export interface CmsPushReport {
   steps: CmsPushStep[]
   /** pageId → slug (not a URL, despite the name — see push_orchestrator.py). */
   page_urls: Record<string, string>
-  /** Deep link into the webtree admin suite for the pushed entity. Present only
-   * when the backend has ADMIN_APP_BASE_URL configured; the UI hides the CTA
-   * otherwise rather than guessing a URL. */
+  /** Deep link into the webtree admin suite for the pushed entity, for the
+   * target this push actually went to. Present only when that target has an
+   * admin origin configured; the UI hides the CTA otherwise rather than
+   * guessing a URL — or, worse, offering a localhost link after a remote push. */
   admin_url?: string | null
 }

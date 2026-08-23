@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
+  listCmsTargets,
   pushToCms,
   testCmsConnection,
   type CmsCredentials,
 } from '@/lib/api'
 import { pagePath } from '@/lib/previewNav'
-import type { CmsPushReport, GeneratedSite } from '@/lib/types'
+import type { CmsPushReport, CmsTarget, GeneratedSite } from '@/lib/types'
 import {
   Banner,
   Button,
@@ -44,6 +45,13 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
     password: '',
     entityToken: '',
   })
+  // Which CMS this lands in. The backend owns the list; an install that never
+  // configured a second one gets exactly one and no picker is rendered.
+  const [targets, setTargets] = useState<CmsTarget[]>([])
+  const [targetName, setTargetName] = useState<string | null>(null)
+  // Mirrors targetName for the async guard in handleTest — reading state inside
+  // a settled promise would read the value captured when it was created.
+  const targetRef = useRef<string | null>(null)
   // 'existing' → push into the entity named by the token; 'new' → create one.
   const [entityMode, setEntityMode] = useState<'existing' | 'new'>('existing')
   const [newEntity, setNewEntity] = useState({
@@ -62,27 +70,66 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
   } | null>(null)
   const [report, setReport] = useState<CmsPushReport | null>(null)
 
+  useEffect(() => {
+    let cancelled = false
+    listCmsTargets()
+      .then((list) => {
+        if (cancelled || list.length === 0) return
+        setTargets(list)
+        setTargetName(list[0].name)
+        targetRef.current = list[0].name
+      })
+      // Degrade to today's behaviour: no picker, no `target` on the wire, and
+      // the backend uses its default. Not worth an error banner — the push
+      // still works, and the operator has nothing to act on.
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const target = targets.find((t) => t.name === targetName) ?? null
+
   // In create-new mode there is no token to validate against — send an empty
   // one so the backend's test-connection just verifies the login.
   const effectiveCreds: CmsCredentials =
     entityMode === 'new' ? { ...creds, entityToken: '' } : creds
 
-  function switchMode(mode: 'existing' | 'new') {
-    setEntityMode(mode)
-    // A prior test/report no longer applies once the target changes.
+  /** A prior test/report no longer describes where this push is going. */
+  function resetDestination() {
     setTestResult(null)
     setReport(null)
     setError(null)
   }
 
+  function switchMode(mode: 'existing' | 'new') {
+    setEntityMode(mode)
+    resetDestination()
+  }
+
+  function switchTarget(name: string) {
+    setTargetName(name)
+    targetRef.current = name
+    resetDestination()
+    // An entity API token identifies a tenant on ONE CMS — it means nothing on
+    // another. Credentials are left alone: a wrong login announces itself on the
+    // re-test that switching targets forces anyway.
+    setCreds((prev) => ({ ...prev, entityToken: '' }))
+  }
+
   async function handleTest() {
+    const requested = targetName
     setBusy(true)
     setError(null)
     setTestResult(null)
     try {
-      const res = await testCmsConnection(effectiveCreds)
+      const res = await testCmsConnection(effectiveCreds, requested ?? undefined)
+      // Flipping the target mid-flight must not let a stale "Connected" badge
+      // land against the new one — resetting on change alone doesn't cover this.
+      if (targetRef.current !== requested) return
       setTestResult({ ok: res.ok, existingCount: res.existing_page_count })
     } catch (err) {
+      if (targetRef.current !== requested) return
       setError(err instanceof Error ? err.message : 'Connection test failed')
     } finally {
       setBusy(false)
@@ -90,6 +137,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
   }
 
   async function handlePush() {
+    const requested = targetName
     setBusy(true)
     setError(null)
     setReport(null)
@@ -107,12 +155,17 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
           entityMode === 'new' && newEntity.url.trim()
             ? newEntity.url.trim()
             : undefined,
+        target: requested ?? undefined,
       })
+      // Same stale guard as handleTest: a report that landed after the operator
+      // switched CMS would read as a report about the new one.
+      if (targetRef.current !== requested) return
       setReport(res)
       if (!res.success) {
         setError(res.error || 'Push failed; see step results below.')
       }
     } catch (err) {
+      if (targetRef.current !== requested) return
       setError(err instanceof Error ? err.message : 'Push failed')
     } finally {
       setBusy(false)
@@ -144,6 +197,26 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
       <div className="space-y-4">
         <Card title="1 · Connect" description="Your webtree account credentials.">
           <div className="space-y-3">
+            {targets.length > 1 && (
+              <Field
+                label="CMS"
+                hint="Credentials are per-CMS — switching clears the test result and entity token."
+              >
+                <Segmented
+                  ariaLabel="CMS to push into"
+                  className="w-full"
+                  value={targetName ?? targets[0].name}
+                  onChange={switchTarget}
+                  options={targets.map((t) => ({ value: t.name, label: t.label }))}
+                />
+              </Field>
+            )}
+            {target?.is_remote && (
+              <Banner tone="warn" title="This is a live CMS">
+                Pages, images and theme go straight to <strong>{target.label}</strong>.
+                Anything you push here is real.
+              </Banner>
+            )}
             <Field label="Email">
               <Input
                 type="email"
@@ -224,7 +297,11 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
                     placeholder="e.g. Acme Studios"
                   />
                 </Field>
-                <Field label="Website URL" optional>
+                <Field
+                  label="Website URL"
+                  optional
+                  hint="Must be unique across the whole CMS. Leave blank if unsure — you can set it later."
+                >
                   <Input
                     type="url"
                     value={newEntity.url}
@@ -278,6 +355,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
         >
           {entityMode === 'new' ? 'Create entity & push' : 'Push'} {site.pages.length} page
           {site.pages.length === 1 ? '' : 's'}
+          {targets.length > 1 && target ? ` to ${target.label}` : ''}
         </Button>
 
         {error && (
@@ -350,22 +428,31 @@ function PushReportView({ report, site }: { report: CmsPushReport; site: Generat
               key={i}
               className={
                 'flex items-start gap-2 rounded-lg border p-2 text-xs ' +
-                (step.ok ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50')
+                (!step.ok
+                  ? 'border-rose-200 bg-rose-50'
+                  : step.warning
+                    ? 'border-amber-200 bg-amber-50'
+                    : 'border-emerald-200 bg-emerald-50')
               }
             >
               <span
                 className={
                   'mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white ' +
-                  (step.ok ? 'bg-emerald-600' : 'bg-rose-600')
+                  (!step.ok ? 'bg-rose-600' : step.warning ? 'bg-amber-600' : 'bg-emerald-600')
                 }
               >
-                {step.ok ? '✓' : '!'}
+                {step.ok ? (step.warning ? '!' : '✓') : '!'}
               </span>
               <div className="min-w-0 flex-1">
                 <div className="font-medium text-ink">{step.name}</div>
                 <div className="text-ink-muted">
                   {step.ok ? step.detail || 'OK' : step.error || step.detail || 'Failed'}
                 </div>
+                {/* Succeeded, but not as asked — the push carried on and there is
+                    something left to fix in the CMS. */}
+                {step.warning && (
+                  <div className="mt-1 font-medium text-amber-800">{step.warning}</div>
+                )}
               </div>
             </li>
           ))}

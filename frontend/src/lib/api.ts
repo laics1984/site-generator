@@ -5,6 +5,7 @@ import type {
   ColorScheme,
   CmsConnectionTest,
   CmsPushReport,
+  CmsTarget,
   CrawlJob,
   DetectedBrand,
   ExtendCrawlResult,
@@ -301,8 +302,15 @@ export interface CmsCredentials {
   entityToken: string
 }
 
+/** Which CMS installs this generator can push into, default target first.
+ * Only the backend knows these — the frontend reads no import.meta.env. */
+export async function listCmsTargets(): Promise<CmsTarget[]> {
+  return jsonRequest('/api/cms/targets')
+}
+
 export async function testCmsConnection(
   creds: CmsCredentials,
+  target?: string,
 ): Promise<CmsConnectionTest> {
   return jsonRequest('/api/cms/test-connection', {
     method: 'POST',
@@ -310,6 +318,7 @@ export async function testCmsConnection(
       email: creds.email,
       password: creds.password,
       entity_token: creds.entityToken,
+      target: target ?? null,
     }),
   })
 }
@@ -324,6 +333,9 @@ export interface PushPayload {
   createEntity?: boolean
   newEntityName?: string
   newEntityUrl?: string
+  /** Which CMS to land in — a `name` from listCmsTargets(), never a URL.
+   * Omitted ⇒ the backend's default target. */
+  target?: string
 }
 
 export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
@@ -340,6 +352,7 @@ export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
       create_entity: payload.createEntity ?? false,
       new_entity_name: payload.newEntityName ?? null,
       new_entity_url: payload.newEntityUrl ?? null,
+      target: payload.target ?? null,
     }),
   })
 }

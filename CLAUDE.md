@@ -660,6 +660,58 @@ markup here.
 
 Tests: `test_seo.py`, `test_ux_audit.py`.
 
+## Pushing to a live CMS
+
+The destination is chosen **per push**, not per process: `services/cms_targets.py`
+resolves a name (`"default"` / `"remote"`) to a `CmsTarget`, and `CmsClient`
+already took `base_url` as a constructor arg, so `for_target()` is the whole
+seam. The default target is derived from `cms_api_base_url` / `admin_app_base_url`
+— still the one home for "where the local CMS is", and still what compose
+rewrites for container networking. `CMS_REMOTE_API_BASE_URL` adds the second;
+unset, there is one target and the publish drawer is byte-identical to before,
+the same restraint `ADMIN_APP_BASE_URL` already uses.
+
+Four rules, each of which was a live bug or a real trap:
+
+- **The wire carries a NAME, never a URL.** `POST /api/cms/push` is
+  unauthenticated (SECURITY.md) and forwards the operator's CMS credentials; a
+  caller-supplied base URL would make it a credential-forwarding proxy to any
+  host. It is also what keeps `url_guard`'s "fixed, known hosts … don't route
+  through this guard" true. Same reason there is no `CMS_PASSWORD` setting:
+  credentials are typed per push and never stored.
+- **Label and remoteness are DERIVED**, never configured — `label` is the API
+  `host:port` and `is_remote` is "not this machine". A hostname on the push
+  button reports where bytes actually go; a label typed once into `.env` goes
+  stale in silence. `.env` currently says `CMS_API_BASE_URL=http://host.docker.internal`
+  with no port, so even `"Local"` would already be a half-truth.
+- **The already-hosted check reads the TARGET, not settings.** `_is_cms_hosted`
+  is the extracted half of `_needs_upload` / `_needs_upload_document`; a
+  settings-derived host is wrong for every push that doesn't go to the default
+  CMS. `push_orchestrator` imports no `settings` at all now — that is the proof.
+  Its `media_host` sibling is deliberately absent: `upload_media` returns the
+  CDN URL the CMS minted, so nothing ever constructs one, and the `/storage/` +
+  `/api/image/` path arm is already host-agnostic.
+- **`_admin_url()` takes the target.** Reading the global setting meant a
+  successful production push handed back a `localhost:5000` deep link —
+  plausible, silent, and pointing at an entity that isn't there.
+
+Two remote-only failure modes are handled and should stay that way: a redirected
+`login` is refused with a descriptive error rather than followed (httpx turns a
+301 on POST into a GET, half-applying a push) — one check on login is enough,
+since a server that redirects `/api/auth/login` redirects everything; and a
+duplicate `entity_url` retries **once** without it and records a `PushStep.warning`,
+because that column is `nullable` but `unique` across a whole CMS, so on a shared
+production one a site's own address may already belong to another tenant. Detect
+it on the `errors` **key** — Laravel's message text is translatable.
+
+Not needed, and adding them would be debt: no 429/back-off logic (no admin route
+is throttled) and no CORS work (the browser talks to the *local* backend; the
+backend talks to the CMS server-to-server with no `Origin`). No compose edit
+either — the whole root `.env` already flows through `env_file`, and a remote
+origin must *not* get the `host.docker.internal` rewrite.
+
+Tests: `test_cms_targets.py`, `test_push_orchestrator.py`.
+
 ## Gotchas
 
 - **Docker dependency skew.** Compose mounts only `./backend/app`, so code edits

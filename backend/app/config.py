@@ -94,6 +94,8 @@ class Settings(BaseSettings):
         "reasoning_base_url",
         "reasoning_model",
         "reasoning_api_key",
+        "cms_remote_api_base_url",
+        "cms_remote_admin_base_url",
         mode="before",
     )
     @classmethod
@@ -382,6 +384,23 @@ class Settings(BaseSettings):
     # the frontend turns into an "Open in webtree admin" link. Left unset, the
     # frontend simply omits the link rather than guessing a host.
     admin_app_base_url: str | None = None
+
+    # --- A second CMS you can pick per push ---------------------------------
+    # The two settings above define the DEFAULT push target. Set these to point
+    # a locally-run generator at a live CMS: the publish drawer then grows a
+    # target picker and each push chooses where it lands, with no restart and
+    # no .env edit between sites. Left unset there is exactly one target and
+    # the UI is byte-identical to before — the same restraint as
+    # admin_app_base_url. Two flat scalars rather than a nested targets map,
+    # mirroring the reasoning_* precedent for "a second endpoint with its own
+    # settings"; services/cms_targets.py is the only reader, so a third target
+    # is a change there and nowhere else.
+    #
+    # Must be the ADMIN API origin: the CMS's routes/api.php can serve admin
+    # and public routes on separate hosts (ADMIN_API_DOMAIN +
+    # ALLOW_LEGACY_SHARED_API_HOST), and the push only ever calls admin routes.
+    cms_remote_api_base_url: str | None = None
+    cms_remote_admin_base_url: str | None = None
 
     # SQLite file for durable crawl-job state (services/db.py). Inside the
     # container this lives on the mounted data volume.

@@ -77,11 +77,31 @@ test, so the suite is deterministic and offline.
   filename (no header injection).
 - Crawl bounds use Pydantic `Field(ge=, le=)` — no unbounded crawls.
 
+## Push targets: why the wire carries a name, not a URL
+
+A push chooses its destination CMS per request, so a locally-run generator can
+write into a live CMS (`services/cms_targets.py`). The request body names a
+target — `"default"`, `"remote"` — and the backend resolves it against its own
+settings. **It never accepts a base URL from the caller**, and that is the whole
+security argument: `POST /api/cms/push` is unauthenticated and forwards the
+operator's CMS email + password, so a caller-supplied host would turn it into a
+credential-forwarding proxy to anywhere. An allowlist of two config-derived
+origins cannot be. It also keeps `url_guard.py`'s stated invariant true —
+"fixed, known hosts (Pexels, the configured CMS) don't route through this guard"
+— because the set of CMS hosts stays config-derived.
+
+Credentials are still **typed per push and never stored**: the CMS has no
+machine token, so a push logs in for a short-lived JWT. No `CMS_PASSWORD`-style
+setting exists, deliberately — a live production password sitting in a plaintext
+`.env` would be readable by every endpoint on an unauthenticated backend.
+
 ## Remaining recommendations (not done — future, if the deployment model changes)
 
 - **Authentication** on all endpoints (or enforced localhost binding) before any
   non-local exposure — the CMS `test-connection` / `push` routes accept
-  email+password in the request body and proxy them to the CMS.
+  email+password in the request body and proxy them to the CMS. Since those
+  credentials may now be **production** ones (see below), this matters more than
+  it did.
 - **History scrub** of the leaked key if the repo is ever published
   (`git filter-repo` / BFG) — deferred per the current single-user scope.
 - Rate limiting / request quotas on the LLM- and Playwright-backed endpoints.

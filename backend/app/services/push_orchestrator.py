@@ -39,7 +39,6 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-from app.config import settings
 from app.models.builder_schema import (
     BuilderElement,
     BuilderElementContent,
@@ -48,6 +47,7 @@ from app.models.builder_schema import (
 )
 from app.models.content_blocks import ContentCollections
 from app.services.cms_client import CmsApiError, CmsClient
+from app.services.cms_targets import CmsTarget, default_target
 from app.services.menu_builder import build_layout_payload
 from app.services.timing import stage
 from app.services.url_guard import UnsafeUrlError, assert_public_url
@@ -65,6 +65,10 @@ class PushStep:
     detail: str = ""
     data: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    # A step that SUCCEEDED but not the way it was asked to. Distinct from
+    # `error` on purpose: the push carries on and the report still says ok, but
+    # the operator has something to go and fix in the CMS afterwards.
+    warning: str | None = None
 
 
 @dataclass
@@ -110,6 +114,11 @@ class PushRequest:
     # Blog posts / events extracted from the source site (content_collections);
     # pushed as real CMS article/event entries after the pages land.
     collections: ContentCollections | None = None
+    # Which CMS this lands in. Defaulted, not required: a caller that names none
+    # gets the default target, which is exactly the behaviour before targets
+    # existed. Resolved at the HTTP boundary (routers/cms.py) so an unknown name
+    # is a 400 rather than something buried in a PushReport.
+    target: CmsTarget = field(default_factory=default_target)
 
 
 # --- slug normalization ---------------------------------------------------------
@@ -240,10 +249,54 @@ def _rewrite_hrefs(node: BuilderElement, href_map: dict[str, str]) -> None:
 _PUSH_CONCURRENCY = 5
 
 
+async def _create_entity_tolerating_url_clash(
+    client: CmsClient,
+    *,
+    name: str,
+    entity_url: str | None,
+    builder_styles: dict[str, Any] | None,
+) -> tuple[dict[str, Any], str | None]:
+    """Create the entity, retrying once without `entity_url` if that URL is taken.
+
+    The CMS rules entity_url `nullable` but `unique` across the WHOLE install, so
+    on a shared production CMS the site's own address may already belong to
+    another tenant — a clash that simply cannot happen on a fresh local one. The
+    URL is the one optional part of the request, so dropping it lands the site
+    instead of failing an entire push over a field the operator can set later.
+
+    Detected on the `errors` KEY, never on the message text: Laravel's copy is
+    translatable and the key is the contract. Returns (entity, warning).
+    """
+    try:
+        entity = await client.create_entity(
+            entity_name=name, entity_url=entity_url, builder_styles=builder_styles
+        )
+        return entity, None
+    except CmsApiError as exc:
+        body = exc.response_body if isinstance(exc.response_body, dict) else {}
+        errors = body.get("errors")
+        clash = (
+            exc.status == 422
+            and isinstance(errors, dict)
+            and "entity_url" in errors
+            and bool(entity_url)
+        )
+        if not clash:
+            raise
+    entity = await client.create_entity(
+        entity_name=name, entity_url=None, builder_styles=builder_styles
+    )
+    return entity, (
+        f"The website URL {entity_url} is already registered to another site on this "
+        "CMS, so this site was created without one. Set it in the admin once the "
+        "clash is resolved."
+    )
+
+
 async def push_site(req: PushRequest) -> PushReport:
     """Run the full push and return a PushReport. Never raises."""
     report = PushReport()
-    client = CmsClient.for_default()
+    client = CmsClient.for_target(req.target)
     try:
         return await _run_push(client, req, report)
     except Exception as exc:
@@ -276,8 +329,9 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     if req.create_entity:
         try:
             name = (req.new_entity_name or req.site.site_name or "New Site").strip()
-            entity = await client.create_entity(
-                entity_name=name,
+            entity, url_warning = await _create_entity_tolerating_url_clash(
+                client,
+                name=name,
                 entity_url=(req.new_entity_url or None),
                 builder_styles=req.site.builder_styles or None,
             )
@@ -291,6 +345,7 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                         "entity_token": req.entity_token,
                         "entity_id": entity.get("entity_id"),
                     },
+                    warning=url_warning,
                 )
             )
         except CmsApiError as exc:
@@ -661,8 +716,10 @@ async def _upload_media(
         if isinstance(logo_url, str):
             sources.setdefault(logo_url, _placeholder_logo_element(logo_url))
 
-    uploadable = [src for src in sources if _needs_upload(src)]
-    uploadable_docs = [href for href in documents if _needs_upload_document(href)]
+    uploadable = [src for src in sources if _needs_upload(src, req.target)]
+    uploadable_docs = [
+        href for href in documents if _needs_upload_document(href, req.target)
+    ]
     if not uploadable and not uploadable_docs:
         return rewrites, set()
 
@@ -886,7 +943,29 @@ def _placeholder_logo_element(src: str) -> BuilderElement:
     )
 
 
-def _needs_upload(src: str) -> bool:
+def _is_cms_hosted(url: str, target: CmsTarget) -> bool:
+    """True when this URL already lives on the CMS we are pushing INTO, so
+    re-hosting it would only duplicate the asset.
+
+    The host comes off the target, never off settings: with a destination chosen
+    per push, a settings-derived host is wrong for every push that doesn't go to
+    the default CMS — silently re-uploading assets that are already there.
+
+    The path arm is host-agnostic on purpose and does the heavy lifting: the CMS
+    serves its media store from its own routes and, in production, from a
+    separate asset host entirely. Nothing here ever constructs a media URL —
+    `upload_media` returns the CDN URL the CMS itself minted.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if target.api_host and parsed.hostname == target.api_host:
+        return True
+    return "/storage/" in parsed.path or "/api/image/" in parsed.path
+
+
+def _needs_upload(src: str, target: CmsTarget) -> bool:
     """True for any src we should re-host so the published site is self-contained:
     data URLs, stock photos, and external http(s) images NOT already on the CMS."""
     if src.startswith("data:image/"):
@@ -901,20 +980,11 @@ def _needs_upload(src: str) -> bool:
         return False
     if parsed.scheme not in ("http", "https"):
         return False
-    # Already hosted by the CMS / its media store → leave it alone.
-    try:
-        cms_host = urlparse(settings.cms_api_base_url).hostname or ""
-    except ValueError:
-        cms_host = ""
-    if cms_host and parsed.hostname == cms_host:
-        return False
-    if "/storage/" in parsed.path or "/api/image/" in parsed.path:
-        return False
     # External/scraped photo → re-host it on the CMS.
-    return True
+    return not _is_cms_hosted(src, target)
 
 
-def _needs_upload_document(href: str) -> bool:
+def _needs_upload_document(href: str, target: CmsTarget) -> bool:
     """True for an absolute http(s) document URL not already on the CMS."""
     try:
         parsed = urlparse(href)
@@ -922,13 +992,7 @@ def _needs_upload_document(href: str) -> bool:
         return False
     if parsed.scheme not in ("http", "https"):
         return False
-    try:
-        cms_host = urlparse(settings.cms_api_base_url).hostname or ""
-    except ValueError:
-        cms_host = ""
-    if cms_host and parsed.hostname == cms_host:
-        return False
-    if "/storage/" in parsed.path or "/api/image/" in parsed.path:
+    if _is_cms_hosted(href, target):
         return False
     return _document_ext(href) in _DOCUMENT_MIME_MAP
 

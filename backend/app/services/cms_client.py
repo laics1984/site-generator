@@ -30,6 +30,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from app.config import settings
+from app.services.cms_targets import CmsTarget, default_target
 
 logger = logging.getLogger(__name__)
 
@@ -65,36 +66,49 @@ class CmsClient:
     # --- factory ---------------------------------------------------------------
 
     @classmethod
+    def for_target(cls, target: CmsTarget) -> "CmsClient":
+        """The one place a chosen push destination becomes an origin.
+
+        The client stays a plain `base_url` holder rather than carrying the
+        CmsTarget: its business is one origin, and everything that needs the
+        target's other facts (admin link, already-hosted check) lives outside.
+        """
+        return cls(base_url=target.api_base_url.rstrip("/"))
+
+    @classmethod
     def for_default(cls) -> "CmsClient":
-        return cls(base_url=settings.cms_api_base_url.rstrip("/"))
+        """The target a caller that names none gets — today's behaviour."""
+        return cls.for_target(default_target())
 
     # --- auth ------------------------------------------------------------------
 
     async def login(self, email: str, password: str) -> str:
-        """POST /api/auth/login. Stores the JWT on the client + returns it."""
-        url = f"{self.base_url}/api/auth/login"
-        try:
-            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-                resp = await client.post(url, json={"email": email, "password": password})
-        except httpx.ConnectError as exc:
-            raise CmsApiError(
-                503,
-                f"Could not reach CMS at {self.base_url} — is it running? ({exc})",
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise CmsApiError(502, f"CMS request failed: {exc}") from exc
-        body = _safe_json(resp)
-        if resp.status_code != 200:
-            raise CmsApiError(
-                resp.status_code,
-                f"Login failed: {body.get('message') or resp.text[:200]}",
-                response_body=body,
+        """POST /api/auth/login. Stores the JWT on the client + returns it.
+
+        Runs on the pooled client like every other JWT call: over TLS to a
+        remote target, a private one-shot client would pay a second handshake
+        on the critical path of every test-connection and every push.
+        """
+        async with self._wrap_request("login"):
+            url = f"{self.base_url}/api/auth/login"
+            resp = await self._http_client().post(
+                url, json={"email": email, "password": password}
             )
-        token = body.get("access_token") or body.get("token")
-        if not token:
-            raise CmsApiError(500, f"Login response missing token: {body}", response_body=body)
-        self.jwt = token
-        return token
+            _assert_not_redirect(resp, self.base_url)
+            body = _safe_json(resp)
+            if resp.status_code != 200:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Login failed: {body.get('message') or resp.text[:200]}",
+                    response_body=body,
+                )
+            token = body.get("access_token") or body.get("token")
+            if not token:
+                raise CmsApiError(
+                    500, f"Login response missing token: {body}", response_body=body
+                )
+            self.jwt = token
+            return token
 
     # --- entities --------------------------------------------------------------
 
@@ -587,6 +601,28 @@ class CmsClient:
 def _laravel_slug(value: str) -> str:
     """Mirror Laravel's Str::slug for the ASCII titles we send."""
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def _assert_not_redirect(resp: httpx.Response, base_url: str) -> None:
+    """Refuse a redirected CMS response instead of following it.
+
+    Redirects are deliberately not followed on CMS calls: httpx turns a 301/302
+    on a POST into a GET, which would silently half-apply a push. One check on
+    login is enough to catch the misconfiguration — a server that redirects
+    /api/auth/login redirects everything, and login is the first call in both
+    test-connection and push. Without it the raw 3xx became the status of the
+    generator's OWN response (routers/cms.py re-raises exc.status), so the
+    browser got a bare 301.
+    """
+    if not resp.is_redirect:
+        return
+    location = resp.headers.get("location") or "elsewhere"
+    raise CmsApiError(
+        502,
+        f"CMS at {base_url} redirected the login to {location}. Check the target's "
+        "scheme and host — an http:// base URL for an https-only CMS is the usual "
+        "cause.",
+    )
 
 
 def _safe_json(resp: httpx.Response) -> dict[str, Any]:
