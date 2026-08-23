@@ -2,15 +2,16 @@ import { clsx } from 'clsx'
 
 import type { GeneratorMode } from '@/lib/types'
 
-interface ModeTabsProps {
-  mode: GeneratorMode
-  onChange: (mode: GeneratorMode) => void
-}
-
-// Two tabs, because these are two genuinely different input affordances: you
-// type a link, or you drop a file. There is deliberately no "Facebook" tab —
-// a Facebook Page is a link, and which reader handles it is our problem, not
-// something the user should have to classify. See lib/sourceDetect.ts.
+// Three tabs, because these are three genuinely different input affordances:
+// you type a link, you drop a file, or you paste the content itself. There is
+// deliberately no "Facebook" tab — a Facebook Page is a link, and which reader
+// handles it is our problem, not something the user should have to classify
+// (see lib/sourceDetect.ts) — and no "HTML" tab either, for the same reason:
+// the paste box works out whether it was given markup or prose.
+//
+// A paste is also available *alongside* the other two, since extra copy is
+// something you add to a site read, not an alternative to it. That box lives in
+// SourcePanel; this tab is for when the paste is the whole source.
 const TABS: { id: GeneratorMode; label: string; description: string }[] = [
   {
     id: 'url',
@@ -22,11 +23,16 @@ const TABS: { id: GeneratorMode; label: string; description: string }[] = [
     label: 'Upload a document',
     description: 'Generate the site from a PDF or Word doc — its titles become the pages.',
   },
+  {
+    id: 'paste',
+    label: 'Paste content',
+    description: 'Your own copy or a page’s HTML — headings become the pages.',
+  },
 ]
 
-export function ModeTabs({ mode, onChange }: ModeTabsProps) {
+export function ModeTabs({ mode, onChange }: { mode: GeneratorMode; onChange: (mode: GeneratorMode) => void }) {
   return (
-    <div role="radiogroup" aria-label="Content source" className="grid gap-3 sm:grid-cols-2">
+    <div role="radiogroup" aria-label="Content source" className="grid gap-3 sm:grid-cols-3">
       {TABS.map((tab) => {
         const active = tab.id === mode
         return (

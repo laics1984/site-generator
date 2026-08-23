@@ -49,7 +49,8 @@ Playwright for render checks: `backend/.venv/bin/playwright install chromium`.
 ## Pipeline (detail in [ARCHITECTURE.md](ARCHITECTURE.md))
 
 ```
-URL / document / FB Page → scraper.py | doc_parser.py | facebook_source.py → SourceContent
+URL / document / FB Page / paste → scraper.py | doc_parser.py |
+                                    facebook_source.py | paste_source.py → SourceContent
   → planner.py + LLM        → SitePlan (semantic ContentBlocks: hero/features/cta/…)
   → schema_builder.py       → BuilderElement tree   (deterministic; owns ALL styling)
   → push_orchestrator.py    → CMS (pages, media, menus, header/footer, styles, publish)
@@ -417,6 +418,68 @@ way — each of those replaced a duplicate or a reach into a private name, and
 Tests: `test_source_detect.py`, `test_facebook_{urls,graph,render,source,logo,authority,orchestrator,single_page}.py`.
 `conftest._offline_facebook` nulls the token and disables the render fallback, so
 the default chain is empty and no test can reach Facebook.
+
+## Pasted content
+
+A fourth source, and the only one a user can add *on top of* another: the paste
+box rides along with a link or a file (`App.landPreview` merges it into whatever
+the reader returned) and is also a mode of its own, where it is the whole
+source. `POST /api/paste/preview` serves both — the presence of `base` is the
+only difference — so nothing on either side branches on "which kind of paste".
+
+**It splits into pages through the document splitter, not a second one.** Both
+flavours become a `ParsedDocument` and go to `doc_structure.split_into_pages`,
+so a pasted `## Contact` opens a Contact page exactly like a Word heading does.
+Nothing hand-builds a `SourceContent` — the old hidden "paste content directly"
+box did, mislabelled it `source_kind="pdf"`, and skipped the preview and page
+picker entirely; it is gone.
+
+`services/source_outline.py` holds what that requires and the crawler already
+had: the parsed-source shape (`ParsedDocument`, `OutlineBlock`, `DocImage`,
+moved out of `doc_parser` so a paste doesn't depend on PyMuPDF for three
+dataclasses) plus `read_html`, the **one** DOM walk that decides which tags
+carry content. `scraper._extract_body_text` takes its recall spine from
+`text_blocks` there, so "which tags are content, which are chrome" has one
+answer for every reader; `read_html` additionally keeps heading levels and
+anchors images between blocks, which is what the paste path needs and the flat
+text spine threw away.
+
+Rules worth keeping:
+
+- **Explicit markers suppress the guess.** A paste carrying any `#` heading or
+  setext underline is read *only* by its markers. The bare-line heuristic (short,
+  unpunctuated, blank line above, something below) runs only for a paste with no
+  markers at all — otherwise an author's short prose line silently fractures off
+  its own page.
+- **A tag name sits flush against the `<`.** `looks_like_html` allowing
+  whitespace made "Pricing: a < b and c > d" match as a `<b>` tag, and the whole
+  paste was then parsed as markup, losing its line structure. Mirrored
+  cosmetically (badge only) in `frontend/src/lib/sourcePaste.ts`, same
+  arrangement as `sourceDetect.ts`.
+- **A relative `src` is counted, never invented.** Pasted markup has no origin,
+  so `<img src="/team.jpg">` cannot be resolved; it increments
+  `unresolved_images` and the preview says so. A `<base href>` in the paste
+  wins if present. An icon/tracking pixel is *filtered*, not unresolved — it
+  must not inflate that count.
+- **Merging joins by topic, and only a top-level page may answer.** Pasted
+  Contact copy lands on `/contact`, not on `/services/emergency-contact` — which
+  classifies as "contact" too. Unmatched pages are appended, which is how "paste
+  the copy for a page the old site never had" works. The base source keeps its
+  identity and everything only a reader could measure (nav links, section
+  candidates, profile cards, embeds) rides through `model_copy` untouched, so a
+  new `SourceContent` field needs no edit in the merge.
+- **`image_candidates` in the response are the paste's own.** The reader that
+  produced `base` built its candidates from a live layout, carrying evidence the
+  source's metadata cannot reproduce; the frontend appends
+  (`sourcePaste.withPastedContent`) rather than round-tripping them through a
+  call that never saw them.
+
+`source_kind` gains `"paste"` — mirrored in `models/content_blocks.py` and
+`frontend/src/lib/types.ts` as ever. `isSinglePageSource` keys on
+`discovered_pages` being empty for every non-URL kind now, so a paste that adds
+pages to a Facebook Page gets them.
+
+Tests: `test_paste_source.py`.
 
 ## Scroll-adaptive header ink (floating pill)
 

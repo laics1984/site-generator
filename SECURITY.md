@@ -33,8 +33,14 @@ cloud metadata (`169.254.169.254`), and RFC1918 hosts.
   addresses and the Docker host aliases. It is enforced at every fetch boundary:
   the `/api/scrape/*` routers (clean `400`), the `scrape_url` / `extend_crawl`
   engines, both fetch choke points (`fast_fetch.try_fast_fetch` and
-  `scraper._goto_and_render`), the sitemap probe, the logo fetch, and scraped
-  image downloads (`image_vision`).
+  `scraper._goto_and_render`), the sitemap probe, the logo fetch, scraped
+  image downloads (`image_vision`), and the push-time media/document fetches
+  (`push_orchestrator._assert_fetchable`, where a refusal is a `_ResolveSkip`
+  so one bad src is dropped instead of failing the push). That last one was the
+  gap the paste box would otherwise have widened: an image src used to reach an
+  unguarded `httpx.get` at push time, which previously needed a site the
+  attacker controlled *and* a user willing to scrape it, and with pasted markup
+  would have been directly attacker-chosen.
 - **Escape hatch:** `SCRAPE_ALLOW_PRIVATE_HOSTS=true` re-enables localhost/LAN
   targets for local development only.
 - **Residual:** a blind SSRF via a single mid-redirect hop that never returns

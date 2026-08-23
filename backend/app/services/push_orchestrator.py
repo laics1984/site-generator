@@ -50,6 +50,7 @@ from app.models.content_blocks import ContentCollections
 from app.services.cms_client import CmsApiError, CmsClient
 from app.services.menu_builder import build_layout_payload
 from app.services.timing import stage
+from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -936,12 +937,29 @@ class _ResolveSkip(Exception):
     pass
 
 
+async def _assert_fetchable(url: str) -> None:
+    """Refuse a src pointing at a private/internal host (SECURITY.md §2).
+
+    Push time is a fetch boundary like any other: every URL here came from
+    outside — a scraped page's markup, or now markup the user pasted straight
+    in, which makes it directly attacker-chosen rather than requiring a site
+    they control to be scraped first. A refusal is a `_ResolveSkip`, so one bad
+    src is dropped from the tree by `_strip_invalid_images` exactly like an
+    unreachable one; it never fails the push.
+    """
+    try:
+        await assert_public_url(url)
+    except UnsafeUrlError as exc:
+        raise _ResolveSkip(str(exc)) from exc
+
+
 async def _resolve_to_bytes(
     src: str, client: httpx.AsyncClient | None = None
 ) -> tuple[bytes, str, str]:
     """Turn a src into (bytes, content_type, filename) ready for /api/file/add."""
     if src.startswith("data:"):
         return _decode_data_url(src)
+    await _assert_fetchable(src)
     # https URL: fetch (with the caller's pooled client when provided)
     try:
         if client is not None:
@@ -973,6 +991,7 @@ async def _resolve_document_to_bytes(
     the link stays hotlinked rather than uploaded as something the CMS
     validator would reject.
     """
+    await _assert_fetchable(href)
     try:
         resp = await client.get(href)
         if resp.status_code >= 400:

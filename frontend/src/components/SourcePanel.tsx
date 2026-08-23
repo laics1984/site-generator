@@ -1,40 +1,96 @@
 import { useRef, useState } from 'react'
 
+import { PasteBox } from '@/components/PasteBox'
 import { facebookLinkWarning, isFacebookUrl } from '@/lib/sourceDetect'
-import type { GeneratorMode, SourceContent } from '@/lib/types'
-import { Button, Checkbox, Field, Input, Textarea } from '@/ui'
+import type { GeneratorMode } from '@/lib/types'
+import { Button, Checkbox, Field, Input } from '@/ui'
 
 interface SourcePanelProps {
   mode: GeneratorMode
-  busy: boolean
   /** Called when the user wants to read a link. The backend picks the reader
    * from the URL itself, so this one handler covers websites and Facebook
    * Pages alike — `accessToken` is only ever populated for the latter. */
   onScrape: (url: string, opts: { crawl: boolean; accessToken?: string }) => void
   /** Called when a PDF/DOCX has been chosen and should be uploaded for preview. */
   onUpload: (file: File) => void
-  /** Called when the user wants to generate from pasted content (Doc mode fallback). */
-  onGenerate: (source: SourceContent) => void
-  /** Whether a scrape preview is currently being shown. */
+  /** Called when the paste is the whole source and should be read on its own. */
+  onReadPaste: () => void
+  /** The paste box's contents, lifted to the workspace: in link and document
+   * mode it rides along with the read and is merged into whatever comes back,
+   * so it has to outlive this panel. */
+  pastedText: string
+  onPastedTextChange: (text: string) => void
+  pasteTitle: string
+  onPasteTitleChange: (title: string) => void
+  /** Whether a scrape preview is currently being fetched. */
   scrapeBusy?: boolean
   /** Whether a document is currently being parsed. */
   uploadBusy?: boolean
+  /** Whether a standalone paste is being read. */
+  pasteBusy?: boolean
 }
 
 export function SourcePanel({
   mode,
-  busy,
   onScrape,
   onUpload,
-  onGenerate,
+  onReadPaste,
+  pastedText,
+  onPastedTextChange,
+  pasteTitle,
+  onPasteTitleChange,
   scrapeBusy,
   uploadBusy,
+  pasteBusy,
 }: SourcePanelProps) {
   const [url, setUrl] = useState('')
   const [crawl, setCrawl] = useState(true)
   const [fbToken, setFbToken] = useState('')
-  const [pastedText, setPastedText] = useState('')
-  const [pastedTitle, setPastedTitle] = useState('')
+
+  if (mode === 'paste') {
+    return (
+      <div className="space-y-4">
+        <Field label="Title" optional>
+          <Input
+            type="text"
+            value={pasteTitle}
+            onChange={(e) => onPasteTitleChange(e.target.value)}
+            placeholder="e.g. Acme Coffee Roasters"
+            disabled={pasteBusy}
+          />
+        </Field>
+        <PasteBox
+          value={pastedText}
+          onChange={onPastedTextChange}
+          onSubmit={onReadPaste}
+          disabled={pasteBusy}
+          rows={12}
+          label="Content"
+          placeholder={
+            'Paste your copy, or a page’s HTML.\n\n' +
+            'Headings become pages: a line like “Contact” or an <h2>Our Services</h2> ' +
+            'opens that page, and everything under it is that page’s content.'
+          }
+          hint="Copy, markdown or HTML — we work out which."
+        />
+        <Button
+          variant="primary"
+          size="lg"
+          fullWidth
+          disabled={!pastedText.trim()}
+          busy={!!pasteBusy}
+          onClick={onReadPaste}
+        >
+          {pasteBusy ? 'Reading…' : 'Read content'}
+        </Button>
+        <p className="text-xs text-ink-muted">
+          We keep any images the markup points at by full web address, detect the
+          page structure, and show you a preview before choosing pages. No AI work
+          runs until then.
+        </p>
+      </div>
+    )
+  }
 
   if (mode === 'url') {
     // Detected on every keystroke so the form reacts to what the user already
@@ -150,6 +206,13 @@ export function SourcePanel({
             />
           )}
         </div>
+
+        <ExtraContent
+          text={pastedText}
+          onChange={onPastedTextChange}
+          disabled={scrapeBusy}
+          submitLabel={isFb ? 'read the Page' : 'fetch the site'}
+        />
       </div>
     )
   }
@@ -158,48 +221,71 @@ export function SourcePanel({
   return (
     <div className="space-y-4">
       <DocumentDropZone busy={!!uploadBusy} onFile={onUpload} />
-      <details className="rounded-xl border border-line bg-surface p-3">
-        <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
-          Or paste content directly
-        </summary>
-        <p className="mt-2 text-xs text-ink-muted">
-          Use this if your PDF is image-only (no text layer), or if you just want
-          to try out the generator with arbitrary copy.
-        </p>
-        <Field label="Title" optional className="mt-3">
-          <Input
-            type="text"
-            value={pastedTitle}
-            onChange={(e) => setPastedTitle(e.target.value)}
-            placeholder="e.g. Acme Coffee Roasters — homepage"
+      <ExtraContent
+        text={pastedText}
+        onChange={onPastedTextChange}
+        disabled={uploadBusy}
+        submitLabel="choose a file"
+      />
+    </div>
+  )
+}
+
+// --- extra content ride-along ---------------------------------------------------
+
+/**
+ * The paste box offered next to a link or a document.
+ *
+ * Collapsed by default so the primary action stays the obvious one, and open
+ * whenever it already holds something — coming back from the preview should
+ * show what you typed, not hide it. What's inside is merged into whatever the
+ * reader finds, so it is submitted by the reader's own button rather than
+ * carrying a second one that would make the user choose between them.
+ */
+function ExtraContent({
+  text,
+  onChange,
+  disabled,
+  submitLabel,
+}: {
+  text: string
+  onChange: (text: string) => void
+  disabled?: boolean
+  submitLabel: string
+}) {
+  const [open, setOpen] = useState(text.length > 0)
+
+  return (
+    <div className="rounded-xl border border-line bg-surface p-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <span className="text-xs font-semibold text-ink-soft">
+          {open ? '−' : '+'} Add extra content{' '}
+          <span className="font-normal text-ink-faint">optional</span>
+        </span>
+        {!open && text.trim() && (
+          <span className="shrink-0 rounded-md bg-brand-50 px-1.5 py-0.5 text-[11px] font-semibold text-brand-700">
+            {text.length.toLocaleString()} characters ready
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-3">
+          <PasteBox
+            value={text}
+            onChange={onChange}
+            disabled={disabled}
+            rows={6}
+            label="Copy or HTML to include"
+            placeholder="Paste anything the source doesn’t say — new copy, a price list, a page you want added…"
+            hint={`Merged into what we read when you ${submitLabel}. Headings that name a page (“Contact”, “Our Team”) join that page, or add it.`}
           />
-        </Field>
-        <Field label="Raw content" className="mt-3">
-          <Textarea
-            rows={8}
-            value={pastedText}
-            onChange={(e) => setPastedText(e.target.value)}
-            placeholder="Paste the document body here…"
-          />
-        </Field>
-        <Button
-          variant="primary"
-          size="lg"
-          className="mt-3"
-          disabled={!pastedText.trim()}
-          busy={busy}
-          onClick={() =>
-            onGenerate({
-              source_kind: 'pdf',
-              source_ref: pastedTitle || 'pasted-document',
-              title: pastedTitle || undefined,
-              raw_text: pastedText,
-            })
-          }
-        >
-          {busy ? 'Generating…' : 'Generate from paste'}
-        </Button>
-      </details>
+        </div>
+      )}
     </div>
   )
 }

@@ -16,16 +16,16 @@ import {
   cancelCrawlJob,
   exportSiteDocument,
   extendCrawl,
-  generateFromSource,
   generateWithPages,
   getCrawlJob,
   probeSitemap,
+  readPastedContent,
   startCrawl,
   uploadDocumentPreview,
-  type GeneratePayload,
   type GenerateWithPagesPayload,
 } from '@/lib/api'
 import { isFacebookUrl } from '@/lib/sourceDetect'
+import { withPastedContent } from '@/lib/sourcePaste'
 import type {
   BrandIdentity,
   BrandMood,
@@ -47,10 +47,14 @@ import { Banner, Button, SectionLabel, Stepper, type Step } from '@/ui'
 const GOOGLE_FONTS_BASE = 'https://fonts.googleapis.com/css2?'
 
 /** The exact call that produced the current site, kept so "Regenerate" is one
- * click rather than a walk back through the wizard. */
-type LastGenerate =
-  | { kind: 'with-pages'; payload: GenerateWithPagesPayload }
-  | { kind: 'from-source'; payload: GeneratePayload }
+ * click rather than a walk back through the wizard.
+ *
+ * There used to be a second, page-picker-less variant here for the hidden
+ * "paste content directly" box. A paste is now a first-class source and takes
+ * the same preview → pages → generate path as a crawl or an upload, so
+ * /api/generate/from-source has no caller in the app — it stays as the
+ * programmatic entry point, not as a second thing this wizard can do. */
+type LastGenerate = { kind: 'with-pages'; payload: GenerateWithPagesPayload }
 
 export default function App() {
   const [mode, setMode] = useState<GeneratorMode>('url')
@@ -77,7 +81,12 @@ export default function App() {
   // same `scrapeResult` slot so ScrapePreview renders either source kind.
   const [scrapeBusy, setScrapeBusy] = useState(false)
   const [uploadBusy, setUploadBusy] = useState(false)
+  const [pasteBusy, setPasteBusy] = useState(false)
   const [scrapeResult, setScrapeResult] = useState<ScrapePreviewType | null>(null)
+  // The paste box. Lifted because it outlives SourcePanel: in link and document
+  // mode the paste rides along with the read and is merged into the result.
+  const [pastedText, setPastedText] = useState('')
+  const [pasteTitle, setPasteTitle] = useState('')
   // Scope-choice modal state. Set after a successful sitemap probe that
   // reveals more pages than our quick-scan default (20).
   const [pendingScope, setPendingScope] = useState<{
@@ -231,12 +240,7 @@ export default function App() {
         const job = await getCrawlJob(started.job_id)
         setActiveJob(job)
         if (job.status === 'done') {
-          if (job.result) {
-            setScrapeResult(job.result)
-            if (!brandName && job.result.brand_candidate?.name) {
-              setBrandName(job.result.brand_candidate.name)
-            }
-          }
+          if (job.result) await landPreview(job.result)
           break
         }
         if (job.status === 'failed') {
@@ -261,6 +265,62 @@ export default function App() {
       setScrapeBusy(false)
       setActiveJob(null)
       setActiveJobCap(null)
+    }
+  }
+
+  /**
+   * Where every source read lands, whichever reader produced it.
+   *
+   * If the paste box holds anything, it is merged into what the reader found
+   * before the preview is shown — so "the pasted content rides along with the
+   * link or the file" is one rule in one place, not one per reader. The merge
+   * itself is the backend's (services/paste_source.merge_sources).
+   */
+  async function landPreview(preview: ScrapePreviewType) {
+    let landed = preview
+    const text = pastedText.trim()
+    if (text) {
+      try {
+        const pasted = await readPastedContent({
+          text,
+          base: preview.source_content,
+        })
+        landed = withPastedContent(preview, pasted)
+      } catch (err) {
+        // The read itself worked. Keep it and say what the paste didn't do,
+        // rather than throwing away a crawl the user waited a minute for.
+        setError(
+          `Your pasted content couldn't be added: ${
+            err instanceof Error ? err.message : 'unknown error'
+          }`,
+        )
+      }
+    }
+    setScrapeResult(landed)
+    if (!brandName && landed.brand_candidate?.name) {
+      setBrandName(landed.brand_candidate.name)
+    }
+  }
+
+  /** Paste-mode submit: the pasted content is the whole source. */
+  async function handleReadPaste() {
+    const text = pastedText.trim()
+    if (!text || pasteBusy) return
+    setPasteBusy(true)
+    setError(null)
+    setScrapeResult(null)
+    try {
+      const preview = await readPastedContent({ text, title: pasteTitle })
+      setScrapeResult(preview)
+      // A paste carries no logo to detect a brand from, so its title is the
+      // only name we have — seed the Brand panel with it rather than leaving
+      // the user to retype what they just typed.
+      const name = preview.source_content.title
+      if (!brandName && name) setBrandName(name)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not read that content')
+    } finally {
+      setPasteBusy(false)
     }
   }
 
@@ -341,11 +401,7 @@ export default function App() {
     setError(null)
     setScrapeResult(null)
     try {
-      const result = await uploadDocumentPreview(file)
-      setScrapeResult(result)
-      if (!brandName && result.brand_candidate?.name) {
-        setBrandName(result.brand_candidate.name)
-      }
+      await landPreview(await uploadDocumentPreview(file))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Document parse failed')
     } finally {
@@ -378,28 +434,6 @@ export default function App() {
       prev && result.pages.some((p) => p.slug === prev) ? prev : result.pages[0]?.slug ?? null,
     )
     setFormOpen(false)
-  }
-
-  /** Legacy free-form generate (doc paste path — no page picker). */
-  async function handleGenerateFreeform(source: SourceContent) {
-    const payload: GeneratePayload = {
-      source,
-      brand: effectiveBrand(),
-      mood_override: mood,
-      color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
-      hero_height: heroHeight === 'auto' ? null : heroHeight,
-      stock_images_only: stockImagesOnly,
-    }
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await generateFromSource(payload)
-      acceptSite(result, { kind: 'from-source', payload })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Generation failed')
-    } finally {
-      setBusy(false)
-    }
   }
 
   /** User confirmed the scrape preview → move to the page picker. */
@@ -450,10 +484,7 @@ export default function App() {
     setBusy(true)
     setError(null)
     try {
-      const result =
-        lastGenerate.kind === 'with-pages'
-          ? await generateWithPages(lastGenerate.payload)
-          : await generateFromSource(lastGenerate.payload)
+      const result = await generateWithPages(lastGenerate.payload)
       // Keep the previous site on screen until the new one is in hand.
       acceptSite(result, lastGenerate)
     } catch (err) {
@@ -473,6 +504,8 @@ export default function App() {
     setSelectedPages([])
     setDetectedBrand(null)
     setScrapeResult(null)
+    setPastedText('')
+    setPasteTitle('')
     setError(null)
     setFormOpen(true)
   }
@@ -564,7 +597,9 @@ export default function App() {
         ? sourceLabel(confirmedSource) ?? 'Confirmed'
         : mode === 'url'
           ? 'Paste a website or Facebook link'
-          : 'Upload a document',
+          : mode === 'document'
+            ? 'Upload a document'
+            : 'Paste your content',
       status: confirmedSource ? 'done' : 'current',
       onClick: confirmedSource ? backToSource : undefined,
     },
@@ -694,12 +729,16 @@ export default function App() {
                 ) : (
                   <SourcePanel
                     mode={mode}
-                    busy={busy}
                     onScrape={handleScrape}
                     onUpload={handleUpload}
-                    onGenerate={handleGenerateFreeform}
+                    onReadPaste={handleReadPaste}
+                    pastedText={pastedText}
+                    onPastedTextChange={setPastedText}
+                    pasteTitle={pasteTitle}
+                    onPasteTitleChange={setPasteTitle}
                     scrapeBusy={scrapeBusy}
                     uploadBusy={uploadBusy}
+                    pasteBusy={pasteBusy}
                   />
                 )}
                 {error && (
@@ -730,11 +769,11 @@ export default function App() {
  * optional pool still lets the user add pages back either way.
  */
 function isSinglePageSource(source: SourceContent): boolean {
-  if (source.source_kind === 'facebook') return true
-  if (source.source_kind === 'pdf' || source.source_kind === 'docx') {
-    return (source.discovered_pages?.length ?? 0) === 0
-  }
-  return false
+  if (source.source_kind === 'url') return false
+  // True for a Page, a document or a paste that yielded no pages of its own.
+  // A Facebook Page is one page's worth of facts — unless pasted content added
+  // pages to it, which is exactly what the paste box is for.
+  return (source.discovered_pages?.length ?? 0) === 0
 }
 
 /** A short human label for where the content came from — host for scrapes,

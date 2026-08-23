@@ -51,6 +51,31 @@ class ImageCandidate:
     caption: str = ""
 
 
+def candidates_from_source(source: SourceContent) -> list[ImageCandidate]:
+    """Flatten a source's per-page image metadata into preview candidates.
+
+    For readers whose only record of an image is the metadata they wrote onto
+    the source itself — the document parser and the paste reader. The crawler
+    measures a live layout and builds richer candidates as it goes, so it never
+    needs this.
+    """
+    return [
+        ImageCandidate(
+            url=meta.url,
+            alt=meta.alt,
+            width=meta.width,
+            height=meta.height,
+            intent=meta.intent,
+            role=meta.role,
+            source_usage=meta.source_usage,
+            context_heading=meta.context_heading,
+            caption=meta.caption,
+        )
+        for page in [source, *source.discovered_pages]
+        for meta in page.image_metadata
+    ]
+
+
 def source_preview_payload(
     *,
     url: str,

@@ -205,6 +205,29 @@ export async function extendCrawl(payload: {
   })
 }
 
+/**
+ * Read pasted copy or markup into a preview, the same shape a crawl or an
+ * upload returns.
+ *
+ * Pass `base` — the source a reader just produced — to merge the paste into it
+ * ("add on"); omit it and the paste is the whole source. One endpoint either
+ * way, so the caller never branches on which kind of paste this is.
+ */
+export async function readPastedContent(payload: {
+  text: string
+  title?: string
+  base?: SourceContent | null
+}): Promise<ScrapePreview> {
+  return jsonRequest('/api/paste/preview', {
+    method: 'POST',
+    body: JSON.stringify({
+      text: payload.text,
+      title: payload.title?.trim() || null,
+      base: payload.base ?? null,
+    }),
+  })
+}
+
 export async function uploadDocumentPreview(file: File): Promise<ScrapePreview> {
   const form = new FormData()
   form.append('file', file)

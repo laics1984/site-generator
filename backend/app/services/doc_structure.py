@@ -20,30 +20,34 @@ from dataclasses import dataclass
 
 from app.models.content_blocks import ImageMetadata, SourceContent
 from app.services.doc_contract import classify_page_title, is_home_title, slug_for_title
-from app.services.doc_parser import ParsedDocument
+from app.services.source_outline import ParsedDocument
 
 # A page-topic heading must be reasonably prominent. Examining only H1/H2 keeps a
 # deep "Heading 3" detail inside a section from fracturing the page into many.
 _MAX_PAGE_HEADING_LEVEL = 2
 # Defensive cap so a pathological document can't explode into hundreds of pages.
-_MAX_DISCOVERED_PAGES = 30
+# Public because paste_source.merge_sources holds the merged page set to it too.
+MAX_DISCOVERED_PAGES = 30
 # Keep a page's image set bounded so a gallery-heavy doc can't flood one page.
 _MAX_IMAGES_PER_PAGE = 8
 
 
 @dataclass
 class DocImageRef:
-    """A document image resolved to a data URL, ready for per-page placement.
+    """A source image resolved to a URL, ready for per-page placement.
 
     ``anchor`` is the ``DocImage.anchor`` from the parser (its position in the
     outline); ``split_into_pages`` uses it to attach the image to the page and
-    nearest heading it appears under.
+    nearest heading it appears under. ``alt`` is the markup's own alt text when
+    the source carried any — a PDF/DOCX image has none, so it falls back to the
+    heading the image sat under.
     """
 
     url: str
     width: int | None = None
     height: int | None = None
     anchor: int = 0
+    alt: str = ""
 
 
 @dataclass
@@ -124,7 +128,7 @@ def split_into_pages(
             and not is_home_title(text)
             and page_type != current.page_type  # same topic ⇒ stays in this page
             and page_type not in seen_types      # one page per topic
-            and len(pages) - 1 < _MAX_DISCOVERED_PAGES
+            and len(pages) - 1 < MAX_DISCOVERED_PAGES
         )
 
         if opens_page:
@@ -202,7 +206,7 @@ def _place_images(
             bucket, heading = bucket_at[pos], heading_at[pos]
         if len(bucket.images) >= _MAX_IMAGES_PER_PAGE:
             continue
-        alt = (heading or bucket.title or "").strip()
+        alt = (ref.alt or heading or bucket.title or "").strip()
         bucket.images.append(
             _PlacedImage(url=ref.url, alt=alt, width=ref.width, height=ref.height)
         )

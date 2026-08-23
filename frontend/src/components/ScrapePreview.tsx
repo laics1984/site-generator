@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 import { FacebookFactsPanel } from '@/components/FacebookFactsPanel'
 import { exportSiteDocument } from '@/lib/api'
-import type { ScrapePreview as ScrapePreviewType } from '@/lib/types'
+import type { PasteReport, ScrapePreview as ScrapePreviewType } from '@/lib/types'
 import { Button } from '@/ui'
 
 interface ScrapePreviewProps {
@@ -60,13 +60,16 @@ export function ScrapePreview({
 
   const isDocument = sc.source_kind === 'pdf' || sc.source_kind === 'docx'
   const isFacebook = sc.source_kind === 'facebook'
+  const isPaste = sc.source_kind === 'paste'
   const facts = preview.facebook_facts
   const bannerLabel = isDocument
     ? `${sc.source_kind.toUpperCase()} parsed`
     : isFacebook
       ? 'Facebook Page read'
-      : 'Scrape OK'
-  const sourceLabel = isDocument ? 'File' : isFacebook ? 'Page' : 'Source'
+      : isPaste
+        ? 'Content read'
+        : 'Scrape OK'
+  const sourceLabel = isDocument ? 'File' : isFacebook ? 'Page' : isPaste ? 'Title' : 'Source'
 
   const unvisitedCount = preview.unvisited_count ?? preview.unvisited_urls?.length ?? 0
   const canCrawlMore = !isDocument && !isFacebook && unvisitedCount > 0 && !!onCrawlMore
@@ -90,6 +93,7 @@ export function ScrapePreview({
             real content.
           </div>
         )}
+        {preview.paste && <PasteSummary report={preview.paste} />}
       </div>
 
       {facts && <FacebookFactsPanel facts={facts} />}
@@ -281,7 +285,7 @@ export function ScrapePreview({
         </Button>
       </div>
 
-      {!isDocument && (
+      {!isDocument && !isPaste && (
         <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-xs text-slate-600">
@@ -303,6 +307,39 @@ export function ScrapePreview({
             <div className="mt-2 text-xs text-red-600">{exportError}</div>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * What the paste contributed. Worth a line of its own because two of these
+ * facts are otherwise invisible: pages the paste ADDED look identical to pages
+ * the site already had, and images it referenced by site-relative path were
+ * dropped — silently, unless we say so.
+ */
+function PasteSummary({ report }: { report: PasteReport }) {
+  const parts = [
+    report.merged ? 'Pasted content merged in' : 'Read from pasted content',
+    report.is_html ? 'as HTML' : 'as text',
+  ]
+  // Only when merged: for a standalone paste every page came from the paste,
+  // and the banner's "N additional pages discovered" has already said so.
+  if (report.merged && report.added_pages > 0) {
+    parts.push(`${report.added_pages} page${report.added_pages === 1 ? '' : 's'} added`)
+  }
+  return (
+    <div className="mt-1">
+      {parts.join(' · ')}.
+      {report.unresolved_images > 0 && (
+        <>
+          {' '}
+          {report.unresolved_images} image
+          {report.unresolved_images === 1 ? ' was' : 's were'} skipped — the markup
+          points at {report.unresolved_images === 1 ? 'it' : 'them'} by site path
+          (<code>/photo.jpg</code>), with no website address to resolve
+          {report.unresolved_images === 1 ? ' it' : ' them'} against.
+        </>
       )}
     </div>
   )

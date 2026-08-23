@@ -50,6 +50,7 @@ from app.models.content_blocks import (
 )
 from app.services.brand_candidate import build_brand_candidate
 from app.services.browser import RenderError, browser_context, rendered_page
+from app.services.source_outline import text_blocks
 from app.services.source_preview import ImageCandidate
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 from app.services.timing import stage
@@ -346,7 +347,8 @@ _PROSE_LEAD_TOKENS = frozenset(
 )
 # Chrome tags a profile card never lives inside. The container walk stops here
 # rather than paying for a second parse of the document just to decompose them
-# (_structural_text already re-parses once; twice per page is not worth it).
+# (source_outline.text_blocks already re-parses once; twice per page is not
+# worth it).
 _PROFILE_CHROME_TAGS = {"nav", "footer", "header", "aside", "form"}
 # A page builder emits its footer as a plain <div> (Divi: `et-l--footer`,
 # `et_pb_column_1_tb_footer`), which the tag set above cannot catch. Only
@@ -2086,46 +2088,9 @@ def _extract_logo_candidate(
 # Block-level tags whose text we keep in the structural fallback pass. These
 # carry real copy on marketing pages that trafilatura often discards as
 # "boilerplate" because it isn't wrapped in a clean <article>/<main>.
-_BLOCK_TEXT_TAGS = (
-    "p", "li", "blockquote", "figcaption",
-    "h1", "h2", "h3", "h4", "h5", "h6",
-    "dt", "dd", "td", "th", "summary",
-)
-
-# Containers we strip before the structural pass — chrome, not content.
-_NON_CONTENT_TAGS = ("script", "style", "noscript", "template", "svg", "nav", "footer")
-
-
-def _structural_text(soup: BeautifulSoup) -> str:
-    """Block-by-block text harvest as a recall-oriented complement to trafilatura.
-
-    trafilatura optimises for *precision* on article pages: it returns the one
-    main column and drops everything else. On marketing/landing pages that means
-    hero copy, feature grids, testimonials, and CTA blocks — all of which live in
-    <section>/<div> soup rather than an <article> — get thrown away.
-
-    This walks every block-level text tag, dedupes, and joins. It will include
-    some nav/footer noise, so callers should keep it only when it's *materially*
-    richer than trafilatura's output rather than always preferring it.
-    """
-    work = BeautifulSoup(str(soup), "lxml")
-    for tag in work.find_all(_NON_CONTENT_TAGS):
-        tag.decompose()
-
-    chunks: list[str] = []
-    seen: set[str] = set()
-    for el in work.find_all(_BLOCK_TEXT_TAGS):
-        if not isinstance(el, Tag):
-            continue
-        text = el.get_text(" ", strip=True)
-        if not text or len(text) < 2:
-            continue
-        key = text.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        chunks.append(text)
-    return "\n".join(chunks)
+# The block-tag walk that produced this module's recall spine now lives in
+# services/source_outline.py, where the paste reader shares it — one answer to
+# "which tags carry content", and it keeps heading levels the paste path needs.
 
 
 def _norm_block(text: str) -> str:
@@ -2138,8 +2103,8 @@ def _extract_body_text(html: str, soup: BeautifulSoup) -> str:
 
     trafilatura optimises for precision and reliably drops two things on
     marketing pages: (a) whole <section>/<div> blocks it deems boilerplate, and
-    (b) heading text. The structural pass catches both but carries some nav/menu
-    noise. So we *merge* rather than pick a winner: take the structural blocks as
+    (b) heading text. The shared block walk (services/source_outline.text_blocks)
+    catches both but carries some nav/menu noise. So we *merge* rather than pick a winner: take the structural blocks as
     the recall spine (document order, headings included) and append any
     trafilatura block not already present. Neither side's content is lost.
 
@@ -2153,11 +2118,10 @@ def _extract_body_text(html: str, soup: BeautifulSoup) -> str:
         include_links=False,
         favor_recall=True,
     ) or ""
-    structural = _structural_text(soup)
 
     blocks: list[str] = []
     seen: set[str] = set()
-    for block in structural.split("\n"):
+    for block in text_blocks(html):
         key = _norm_block(block)
         if not key or key in seen:
             continue

@@ -1,5 +1,5 @@
 /** Mirrors the backend Literal on SourceContent.source_kind — change both together. */
-export type SourceKind = 'url' | 'pdf' | 'docx' | 'facebook'
+export type SourceKind = 'url' | 'pdf' | 'docx' | 'facebook' | 'paste'
 
 export interface ImageMetadata {
   url: string
@@ -268,7 +268,7 @@ export interface PreviewLayout {
   footer: PreviewFooter
 }
 
-export type GeneratorMode = 'url' | 'document'
+export type GeneratorMode = 'url' | 'document' | 'paste'
 
 export type IndustryCategory =
   | 'restaurant'
@@ -396,6 +396,18 @@ export interface FacebookFacts {
   missing_fields?: string[]
 }
 
+/** What a paste contributed, for the confirmation step to report back. */
+export interface PasteReport {
+  /** Read as markup rather than prose. */
+  is_html: boolean
+  characters: number
+  added_pages: number
+  /** Images the markup pointed at with a site-relative path — no origin to resolve. */
+  unresolved_images: number
+  /** False when the paste is the whole source. */
+  merged: boolean
+}
+
 export interface ScrapePreview {
   url: string
   final_url: string
@@ -408,6 +420,8 @@ export interface ScrapePreview {
   /** URLs the BFS frontier had queued but didn't process. Powers "Crawl N more". */
   unvisited_urls?: string[]
   unvisited_count?: number
+  /** Present only when pasted content went into this source — standalone or merged. */
+  paste?: PasteReport
   /** Present only on a Facebook read. Additive — the rest of the shape is identical. */
   facebook_facts?: FacebookFacts
   facebook_contact?: Record<string, string>
