@@ -13,6 +13,9 @@ site-generator/
 ├── backend/            FastAPI app (Python 3.11, async)
 │   ├── app/
 │   │   ├── config.py           single pydantic-settings source of truth
+│   │   ├── deployment/         the local↔production boundary (profile, startup
+│   │   │                       guards, process-local state inventory). Imported
+│   │   │                       only by main.py; imports only config.
 │   │   ├── main.py             app wiring + lifespan (startup/shutdown)
 │   │   ├── models/             Pydantic: builder_schema, content_blocks, brand, industry
 │   │   ├── routers/            health, brand, scrape, document, pages, generate, cms, preview

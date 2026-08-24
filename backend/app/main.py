@@ -13,6 +13,7 @@ logging.basicConfig(
 )
 
 from app.config import settings
+from app.deployment import enforce as enforce_deployment_safety
 from app.routers import brand, cms, document, generate, health, pages, paste, preview, scrape
 from app.services.db import init_db
 
@@ -20,6 +21,10 @@ from app.services.db import init_db
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- startup ---
+    # First, before anything binds or opens a file: this app has no auth by
+    # design (SECURITY.md), so a hosted deploy has to prove it is configured for
+    # one. A no-op under the default DEPLOYMENT=local — see app/deployment/.
+    enforce_deployment_safety()
     await init_db()
     # Log where the LLM lives. Deliberately does NOT probe the server or resolve
     # a model: the ai-server is an independent stack that may start after the

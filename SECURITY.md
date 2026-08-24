@@ -5,6 +5,13 @@ found during the hardening pass, the fixes applied, and the residual items.
 
 ## Trust model
 
+> **Enforced since the deployment-boundary pass:** everything in this section is
+> now checked at startup. `app/deployment/guards.py` refuses to boot under
+> `DEPLOYMENT=hosted` if there is no authentication, if the SSRF guard is off,
+> or if `CORS_ORIGINS` still names localhost. The default `DEPLOYMENT=local`
+> leaves every check inert, so nothing about running it locally changed. The
+> prose below is the reasoning; the guard is what stops a deploy.
+
 The generator is a **single-user, local-first developer tool**. It runs on one
 machine (typically alongside a local Ollama/MLX model) and, in Docker, reaches
 the host over `host.docker.internal`. It has **no authentication by design** —
@@ -101,7 +108,10 @@ setting exists, deliberately — a live production password sitting in a plainte
   non-local exposure — the CMS `test-connection` / `push` routes accept
   email+password in the request body and proxy them to the CMS. Since those
   credentials may now be **production** ones (see below), this matters more than
-  it did.
+  it did. **This is now a startup blocker rather than a note**: `DEPLOYMENT=hosted`
+  with `DEPLOYMENT_AUTH=none` refuses to start. `proxy` is an explicit
+  attestation that a reverse proxy authenticates, which is the arrangement
+  recommended above; there is deliberately no third option and no override flag.
 - **History scrub** of the leaked key if the repo is ever published
   (`git filter-repo` / BFG) — deferred per the current single-user scope.
 - Rate limiting / request quotas on the LLM- and Playwright-backed endpoints.

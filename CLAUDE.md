@@ -712,6 +712,56 @@ origin must *not* get the `host.docker.internal` rewrite.
 
 Tests: `test_cms_targets.py`, `test_push_orchestrator.py`.
 
+## The local↔production boundary
+
+`app/deployment/` holds **everything that exists solely to answer "is this safe
+to run somewhere other than a laptop"** — and nothing else. The rule that keeps
+it a boundary you can read: *if a thing has a job besides that, it stays in the
+module that does that job.* So the twelve per-process caches did **not** move —
+a response cache is part of how `llm.py` works, not part of how this app is
+deployed. Only the *list* of them lives here.
+
+Three files, mutually isolated from the pipeline (a test enforces both
+directions — `app/deployment/` imports only `app.config`, and only `main.py`
+imports `app.deployment`):
+
+- **`profile.py`** — WHERE this process runs. Not where a push lands: that is a
+  `CmsTarget` (`services/cms_targets.py`), and merging them would mean either a
+  local tool refusing to publish or a hosted one trusting its own machine.
+- **`guards.py`** — startup checks, run first in the lifespan. **Errors refuse to
+  start** and cover only what exposes you: no auth, SSRF guard off, a CORS list
+  still naming localhost or set to `*`. **Warnings log and continue** for what is
+  merely unwise: single-process caches, SQLite, an LLM URL pointing at this box.
+  The split matters — blocking on the operational ones only teaches people to
+  route around the guard. There is **no override flag**: an escape hatch for
+  "serve this unauthenticated on the internet" is the footgun the file prevents.
+  `DEPLOYMENT_AUTH=proxy` is the sanctioned answer, and it is an attestation,
+  not a mechanism.
+- **`process_local.py`** — the inventory. Two severities, and only `correctness`
+  blocks: `facebook_orchestrator._TOKENS` (a job's token is unreachable from
+  another worker, and it is deliberately never persisted) and `polite._registry`
+  (per-host rate limiting enforced per process ⇒ N workers crawl N× faster than
+  robots.txt allows). The other ten are cache misses — slower, not wrong.
+
+**The inventory cannot go stale**, which is the usual fate of such a list.
+`test_deployment_boundary.py` walks the AST of every module under `app/` and
+fails on anything classified in neither table. The discriminator is
+industry-neutral and exact: **a cache starts empty, a lookup table starts full** —
+an empty dict/list/set literal at module scope is runtime state, a populated one
+is data, and `@lru_cache` is always process-local. Same drift-test idiom as the
+section catalog and `RENDERER_PINNED_GAP_NAMES`. `NOT_PROCESS_LOCAL` records the
+four false positives that rule produces (one deliberately-empty lookup table,
+three pure memos), each with a reason, so the escape list can't wave things
+through.
+
+`DEPLOYMENT=local` is the default and every check is inert under it, so this is a
+true no-op for the tool as it runs today — the same property
+`DESIGN_SCHEMES_ENABLED=false` has. Adding auth is deliberately **not** done
+here: the auth model is guesswork until the deployment is real, and the guard
+makes forgetting it impossible rather than papering over it.
+
+Tests: `test_deployment_boundary.py`.
+
 ## Gotchas
 
 - **Docker dependency skew.** Compose mounts only `./backend/app`, so code edits

@@ -131,7 +131,9 @@ when a token is available, a public-page render otherwise.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SCRAPE_ALLOW_PRIVATE_HOSTS` | `false` | **Security.** `true` disables the SSRF guard for localhost/LAN scraping (dev only). See [SECURITY.md](SECURITY.md). |
+| `DEPLOYMENT` | `local` | **Where this generator runs** (not where a push lands — that's `CMS_REMOTE_*`). `hosted` makes `app/deployment/guards.py` refuse to start on settings that are only safe on a laptop. Inert under `local`, so the default is a true no-op. |
+| `DEPLOYMENT_AUTH` | `none` | This app has no authentication. Under `DEPLOYMENT=hosted`, `none` is **refused at startup** — set `proxy` to attest that an authenticating reverse proxy fronts it. |
+| `SCRAPE_ALLOW_PRIVATE_HOSTS` | `false` | **Security.** `true` disables the SSRF guard for localhost/LAN scraping (dev only). Refused under `DEPLOYMENT=hosted`. See [SECURITY.md](SECURITY.md). |
 | `HTTP_USER_AGENT` | *(Chrome UA)* | Shared UA for httpx + Playwright fetches. |
 | `FAST_FETCH_TIMEOUT_SECONDS` | `8.0` | httpx fast-path timeout. |
 | `ROBOTS_FETCH_TIMEOUT_SECONDS` | `10.0` | robots/sitemap/logo fetch timeout. |

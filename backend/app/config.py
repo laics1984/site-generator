@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -449,6 +451,23 @@ class Settings(BaseSettings):
     # SEO meta description length bounds (chars).
     seo_description_min_length: int = 100
     seo_description_max_length: int = 170
+
+    # --- Deployment posture -------------------------------------------------
+    # WHERE this generator runs — not where a push lands (that is a CmsTarget,
+    # services/cms_targets.py; the two are deliberately separate concerns).
+    #
+    # "local" is the tool as designed and documented in SECURITY.md: one user,
+    # one machine, no auth, bound to localhost. "hosted" asserts the opposite,
+    # and app/deployment/guards.py refuses to start on the settings that are
+    # only safe under "local". Every check is inert while this is "local", so
+    # the default is a true no-op.
+    deployment: Literal["local", "hosted"] = "local"
+    # How requests are authenticated under "hosted". There is no auth in this
+    # app by design, so "none" is refused at startup under "hosted" — the point
+    # is that an unauthenticated public deploy cannot happen by omission.
+    # "proxy" is an explicit attestation that an authenticating reverse proxy
+    # sits in front, which is the arrangement SECURITY.md already recommends.
+    deployment_auth: Literal["none", "proxy"] = "none"
 
     # --- Security -----------------------------------------------------------
     # SSRF guard: the scrape/fetch layer accepts arbitrary user- and page-
