@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { BrandPanel } from '@/components/BrandPanel'
 import { CrawlProgress } from '@/components/CrawlProgress'
-import { ModeTabs } from '@/components/ModeTabs'
 import { PageList } from '@/components/PageList'
 import { PagePicker } from '@/components/PagePicker'
 import { PagePreview } from '@/components/PagePreview'
@@ -18,6 +17,7 @@ import {
   extendCrawl,
   generateWithPages,
   getCrawlJob,
+  mergeSourceContents,
   probeSitemap,
   readPastedContent,
   startCrawl,
@@ -25,6 +25,7 @@ import {
   type GenerateWithPagesPayload,
 } from '@/lib/api'
 import { isFacebookUrl } from '@/lib/sourceDetect'
+import { combineSourcePreviews } from '@/lib/sourceCombine'
 import { withPastedContent } from '@/lib/sourcePaste'
 import type {
   BrandIdentity,
@@ -34,7 +35,6 @@ import type {
   CrawlJob,
   DetectedBrand,
   GeneratedSite,
-  GeneratorMode,
   HeroHeightChoice,
   IndustryCategory,
   PageScaffold,
@@ -57,7 +57,6 @@ const GOOGLE_FONTS_BASE = 'https://fonts.googleapis.com/css2?'
 type LastGenerate = { kind: 'with-pages'; payload: GenerateWithPagesPayload }
 
 export default function App() {
-  const [mode, setMode] = useState<GeneratorMode>('url')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -77,16 +76,25 @@ export default function App() {
   const [themePreview, setThemePreview] = useState<BuilderStylesShape | null>(null)
   const [googleFonts, setGoogleFonts] = useState<string[]>([])
 
-  // Scrape state (URL mode) + upload state (Doc mode). Both flow into the
-  // same `scrapeResult` slot so ScrapePreview renders either source kind.
+  // The three source fields, all optional and independent. Lifted out of
+  // SourcePanel (rather than living as its local state) so a failed submit
+  // returns the user to a fully-repopulated form instead of an empty one —
+  // SourcePanel unmounts while CrawlProgress/ScopeChoice is on screen, so
+  // local state there would be lost the moment a crawl needs to pause or
+  // fails.
+  const [sourceUrl, setSourceUrl] = useState('')
+  const [sourceCrawl, setSourceCrawl] = useState(true)
+  const [sourceFbToken, setSourceFbToken] = useState('')
+  const [sourceFile, setSourceFile] = useState<File | null>(null)
+  const [pastedText, setPastedText] = useState('')
+  const [pasteTitle, setPasteTitle] = useState('')
+
+  // Busy per leg — a submit may run the crawl and the document parse
+  // concurrently, then the paste merge after both land.
   const [scrapeBusy, setScrapeBusy] = useState(false)
   const [uploadBusy, setUploadBusy] = useState(false)
   const [pasteBusy, setPasteBusy] = useState(false)
   const [scrapeResult, setScrapeResult] = useState<ScrapePreviewType | null>(null)
-  // The paste box. Lifted because it outlives SourcePanel: in link and document
-  // mode the paste rides along with the read and is merged into the result.
-  const [pastedText, setPastedText] = useState('')
-  const [pasteTitle, setPasteTitle] = useState('')
   // Scope-choice modal state. Set after a successful sitemap probe that
   // reveals more pages than our quick-scan default (20).
   const [pendingScope, setPendingScope] = useState<{
@@ -169,66 +177,21 @@ export default function App() {
   const QUICK_SCAN_CAP = 20  // matches backend default
   const FULL_CAP_MAX = 40    // backend ceiling
 
-  /**
-   * URL-mode flow:
-   *   1. probe sitemap (1-3s, no Playwright)
-   *   2. if sitemap shows > QUICK_SCAN_CAP pages → open ScopeChoice modal
-   *   3. otherwise → kick off the scrape silently with the default cap
-   */
-  async function handleScrape(
-    url: string,
-    opts: { crawl: boolean; accessToken?: string } = { crawl: true },
-  ) {
-    setError(null)
-    setScrapeResult(null)
-    setPendingScope(null)
-    // A Facebook Page has no sitemap and nothing to crawl — probing it would
-    // just cost a round trip before the read the user actually asked for.
-    if (isFacebookUrl(url)) {
-      await runScrape(url, {
-        crawl: false,
-        maxPages: 0,
-        accessToken: opts.accessToken,
-      })
-      return
-    }
-    if (!opts.crawl) {
-      // Crawl disabled → no need to probe; go direct, single page only.
-      await runScrape(url, { crawl: false, maxPages: 0 })
-      return
-    }
-    // Probe phase
-    setScrapeBusy(true)
-    try {
-      const probe = await probeSitemap(url)
-      if (probe.has_sitemap && probe.total_urls > QUICK_SCAN_CAP) {
-        // Defer scrape until the user picks scope
-        setPendingScope({ url, probe })
-        setScrapeBusy(false)
-        return
-      }
-    } catch (err) {
-      // Probe failure is non-fatal — log and proceed with default cap.
-      console.warn('Sitemap probe failed; falling back to default cap', err)
-    }
-    // No big sitemap (or probe failed) — proceed with default
-    await runScrape(url, { crawl: true, maxPages: QUICK_SCAN_CAP })
-  }
+  type UrlPlan = { crawl: boolean; maxPages: number; accessToken?: string }
 
-  /** Actually fire the scrape; uses the async job model + polling so long
-   *  crawls don't hang the HTTP request and the user can see progress. */
+  /** Fire the crawl job and poll it to completion; returns the landed result,
+   *  or null on failure/cancel (having already set `error` on failure). Uses
+   *  the async job model so long crawls don't hang the HTTP request and the
+   *  user can see progress. */
   async function runScrape(
     url: string,
-    opts: { crawl: boolean; maxPages: number; accessToken?: string },
-  ) {
+    opts: UrlPlan,
+  ): Promise<ScrapePreviewType | null> {
     setScrapeBusy(true)
-    setError(null)
-    setScrapeResult(null)
     setActiveJob(null)
     setActiveJobCap(opts.maxPages || null)
-    let started: { job_id: string } | null = null
     try {
-      started = await startCrawl(url, {
+      const started = await startCrawl(url, {
         crawl: opts.crawl,
         crawlMaxPages: opts.maxPages || undefined,
         accessToken: opts.accessToken,
@@ -239,20 +202,15 @@ export default function App() {
       while (Date.now() - startedAt < 10 * 60 * 1000) {
         const job = await getCrawlJob(started.job_id)
         setActiveJob(job)
-        if (job.status === 'done') {
-          if (job.result) await landPreview(job.result)
-          break
-        }
+        if (job.status === 'done') return job.result
         if (job.status === 'failed') {
           setError(job.error || 'Crawl failed')
-          break
+          return null
         }
-        if (job.status === 'cancelled') {
-          // user cancelled — just clear; no error
-          break
-        }
+        if (job.status === 'cancelled') return null // user cancelled — no error
         await new Promise((r) => setTimeout(r, 1000))
       }
+      return null
       // Deliberately NOT deleted here. The backend hands an identical crawl
       // (same URL + options, within the retention window) straight back
       // instead of re-rendering every page, and deleting the row the instant
@@ -261,6 +219,7 @@ export default function App() {
       // backend on the next kickoff.
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Scrape failed')
+      return null
     } finally {
       setScrapeBusy(false)
       setActiveJob(null)
@@ -269,59 +228,137 @@ export default function App() {
   }
 
   /**
-   * Where every source read lands, whichever reader produced it.
+   * Combine whichever of {URL, document} landed into one SourceContent, then
+   * layer the paste on top — one rule for "everything the user provided feeds
+   * one context", however many of the three were filled in.
    *
-   * If the paste box holds anything, it is merged into what the reader found
-   * before the preview is shown — so "the pasted content rides along with the
-   * link or the file" is one rule in one place, not one per reader. The merge
-   * itself is the backend's (services/paste_source.merge_sources).
+   * URL outranks Document when both landed (lib/sourceCombine.ts). The paste
+   * always merges last, on top of whichever of those is richest, through the
+   * same `base` mechanism a paste has always used
+   * (services/source_merge.merge_sources on the backend).
    */
-  async function landPreview(preview: ScrapePreviewType) {
-    let landed = preview
-    const text = pastedText.trim()
-    if (text) {
+  async function composeSources(
+    urlPreview: ScrapePreviewType | null,
+    docPreview: ScrapePreviewType | null,
+  ): Promise<ScrapePreviewType | null> {
+    let rich = urlPreview ?? docPreview
+    if (urlPreview && docPreview) {
       try {
-        const pasted = await readPastedContent({
-          text,
-          base: preview.source_content,
-        })
-        landed = withPastedContent(preview, pasted)
+        const merged = await mergeSourceContents(
+          urlPreview.source_content,
+          docPreview.source_content,
+        )
+        rich = combineSourcePreviews(urlPreview, docPreview, merged)
       } catch (err) {
-        // The read itself worked. Keep it and say what the paste didn't do,
-        // rather than throwing away a crawl the user waited a minute for.
+        // The website read worked — keep it rather than losing everything
+        // because the document couldn't be folded in.
         setError(
-          `Your pasted content couldn't be added: ${
+          `Your document couldn't be combined with the website: ${
             err instanceof Error ? err.message : 'unknown error'
           }`,
         )
+        rich = urlPreview
       }
     }
+
+    const text = pastedText.trim()
+    if (!text) return rich
+
+    setPasteBusy(true)
+    try {
+      const pasted = await readPastedContent({
+        text,
+        title: pasteTitle,
+        base: rich?.source_content ?? null,
+      })
+      return rich ? withPastedContent(rich, pasted) : pasted
+    } catch (err) {
+      if (!rich) {
+        setError(err instanceof Error ? err.message : 'Could not read that content')
+        return null
+      }
+      // The other reads worked. Keep them and say what the paste didn't do,
+      // rather than throwing away a crawl the user waited a minute for.
+      setError(
+        `Your pasted content couldn't be added: ${
+          err instanceof Error ? err.message : 'unknown error'
+        }`,
+      )
+      return rich
+    } finally {
+      setPasteBusy(false)
+    }
+  }
+
+  /** Runs the URL crawl (if planned) and the document parse (if a file is
+   *  staged) concurrently, combines whatever lands, then hands the result to
+   *  `scrapeResult`. What every Continue click — and a resumed ScopeChoice —
+   *  ultimately calls. */
+  async function runComposed(urlPlan: UrlPlan | null) {
+    setError(null)
+    setScrapeResult(null)
+
+    const file = sourceFile
+    if (file) setUploadBusy(true)
+
+    const [urlPreview, docPreview] = await Promise.all([
+      urlPlan ? runScrape(sourceUrl.trim(), urlPlan) : Promise.resolve(null),
+      file
+        ? uploadDocumentPreview(file).catch((err) => {
+            setError(err instanceof Error ? err.message : 'Document parse failed')
+            return null
+          })
+        : Promise.resolve(null),
+    ])
+    if (file) setUploadBusy(false)
+
+    const landed = await composeSources(urlPreview, docPreview)
+    if (!landed) return
     setScrapeResult(landed)
     if (!brandName && landed.brand_candidate?.name) {
       setBrandName(landed.brand_candidate.name)
     }
   }
 
-  /** Paste-mode submit: the pasted content is the whole source. */
-  async function handleReadPaste() {
-    const text = pastedText.trim()
-    if (!text || pasteBusy) return
-    setPasteBusy(true)
-    setError(null)
-    setScrapeResult(null)
-    try {
-      const preview = await readPastedContent({ text, title: pasteTitle })
-      setScrapeResult(preview)
-      // A paste carries no logo to detect a brand from, so its title is the
-      // only name we have — seed the Brand panel with it rather than leaving
-      // the user to retype what they just typed.
-      const name = preview.source_content.title
-      if (!brandName && name) setBrandName(name)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not read that content')
-    } finally {
-      setPasteBusy(false)
+  /**
+   * The Continue button. Probes the sitemap when a URL was given — pausing on
+   * ScopeChoice for a large site, exactly as before — then runs the composed
+   * read. A blank URL skips probing entirely, so Document-only, Paste-only
+   * and every other combination fall out of this for free.
+   */
+  async function handleComposeSubmit() {
+    setPendingScope(null)
+    const url = sourceUrl.trim()
+    if (!url) {
+      await runComposed(null)
+      return
     }
+    // A Facebook Page has no sitemap and nothing to crawl — probing it would
+    // just cost a round trip before the read the user actually asked for.
+    if (isFacebookUrl(url)) {
+      await runComposed({ crawl: false, maxPages: 0, accessToken: sourceFbToken })
+      return
+    }
+    if (!sourceCrawl) {
+      // Crawl disabled → no need to probe; go direct, single page only.
+      await runComposed({ crawl: false, maxPages: 0 })
+      return
+    }
+    setScrapeBusy(true)
+    try {
+      const probe = await probeSitemap(url)
+      if (probe.has_sitemap && probe.total_urls > QUICK_SCAN_CAP) {
+        // Defer the read until the user picks scope.
+        setPendingScope({ url, probe })
+        setScrapeBusy(false)
+        return
+      }
+    } catch (err) {
+      // Probe failure is non-fatal — log and proceed with default cap.
+      console.warn('Sitemap probe failed; falling back to default cap', err)
+    }
+    // No big sitemap (or probe failed) — proceed with default
+    await runComposed({ crawl: true, maxPages: QUICK_SCAN_CAP })
   }
 
   async function handleJobCancel() {
@@ -335,19 +372,15 @@ export default function App() {
 
   function handleScopeQuick() {
     if (!pendingScope) return
-    const url = pendingScope.url
     setPendingScope(null)
-    runScrape(url, { crawl: true, maxPages: QUICK_SCAN_CAP })
+    runComposed({ crawl: true, maxPages: QUICK_SCAN_CAP })
   }
 
   function handleScopeFull() {
     if (!pendingScope) return
-    const url = pendingScope.url
+    const maxPages = Math.min(pendingScope.probe.total_urls, FULL_CAP_MAX)
     setPendingScope(null)
-    runScrape(url, {
-      crawl: true,
-      maxPages: Math.min(pendingScope.probe.total_urls, FULL_CAP_MAX),
-    })
+    runComposed({ crawl: true, maxPages })
   }
 
   function handleScopeCancel() {
@@ -392,20 +425,6 @@ export default function App() {
       setError(err instanceof Error ? err.message : 'Extend crawl failed')
     } finally {
       setExtendBusy(false)
-    }
-  }
-
-  /** Doc-mode upload: parse PDF/DOCX → same preview shape as scrape → ScrapePreview. */
-  async function handleUpload(file: File) {
-    setUploadBusy(true)
-    setError(null)
-    setScrapeResult(null)
-    try {
-      await landPreview(await uploadDocumentPreview(file))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Document parse failed')
-    } finally {
-      setUploadBusy(false)
     }
   }
 
@@ -504,6 +523,10 @@ export default function App() {
     setSelectedPages([])
     setDetectedBrand(null)
     setScrapeResult(null)
+    setSourceUrl('')
+    setSourceCrawl(true)
+    setSourceFbToken('')
+    setSourceFile(null)
     setPastedText('')
     setPasteTitle('')
     setError(null)
@@ -595,11 +618,7 @@ export default function App() {
       label: 'Source',
       detail: confirmedSource
         ? sourceLabel(confirmedSource) ?? 'Confirmed'
-        : mode === 'url'
-          ? 'Paste a website or Facebook link'
-          : mode === 'document'
-            ? 'Upload a document'
-            : 'Paste your content',
+        : 'Add a website, a document, or paste your content',
       status: confirmedSource ? 'done' : 'current',
       onClick: confirmedSource ? backToSource : undefined,
     },
@@ -612,8 +631,6 @@ export default function App() {
       status: confirmedSource ? 'current' : 'upcoming',
     },
   ]
-
-  const idle = !confirmedSource && !scrapeResult && !activeJob && !pendingScope
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -639,9 +656,9 @@ export default function App() {
             {site ? 'Adjust and regenerate' : 'Generate a website'}
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
-            Point us at a site or a document. We extract the content and brand, you choose
-            the pages, and the theme is built from your logo's palette and mood — applied
-            across every page, header and footer.
+            Point us at a site, a document, your own text — any combination. We extract the
+            content and brand, you choose the pages, and the theme is built from your logo's
+            palette and mood — applied across every page, header and footer.
           </p>
         </div>
 
@@ -675,16 +692,6 @@ export default function App() {
           <section>
             <SectionLabel>{confirmedSource ? '3 · Pages' : '2 · Source'}</SectionLabel>
             <div className="mt-2 space-y-3">
-              {idle && (
-                <ModeTabs
-                  mode={mode}
-                  onChange={(m) => {
-                    setMode(m)
-                    setScrapeResult(null)
-                    setError(null)
-                  }}
-                />
-              )}
               <div className="rounded-2xl border border-line bg-surface p-5 shadow-card">
                 {confirmedSource ? (
                   <PagePicker
@@ -728,17 +735,20 @@ export default function App() {
                   />
                 ) : (
                   <SourcePanel
-                    mode={mode}
-                    onScrape={handleScrape}
-                    onUpload={handleUpload}
-                    onReadPaste={handleReadPaste}
+                    url={sourceUrl}
+                    onUrlChange={setSourceUrl}
+                    crawl={sourceCrawl}
+                    onCrawlChange={setSourceCrawl}
+                    fbToken={sourceFbToken}
+                    onFbTokenChange={setSourceFbToken}
+                    file={sourceFile}
+                    onFileChange={setSourceFile}
                     pastedText={pastedText}
                     onPastedTextChange={setPastedText}
                     pasteTitle={pasteTitle}
                     onPasteTitleChange={setPasteTitle}
-                    scrapeBusy={scrapeBusy}
-                    uploadBusy={uploadBusy}
-                    pasteBusy={pasteBusy}
+                    onSubmit={handleComposeSubmit}
+                    busy={scrapeBusy || uploadBusy || pasteBusy}
                   />
                 )}
                 {error && (

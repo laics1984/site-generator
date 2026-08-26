@@ -21,9 +21,10 @@ Two readers, one output:
   the bare-line heuristic run, because a short unpunctuated line surrounded by
   blanks is the only thing left to read a heading from.
 
-``merge_sources`` is the "add on" half: a paste submitted alongside a URL or a
-document is merged into what that reader found. It joins by page *topic*, the
-same notion ``split_into_pages`` uses, so pasted Contact copy lands on the
+Merging a paste into whatever a URL or a document read is
+``services/source_merge.merge_sources`` — generic across any two sources, not
+just a paste, so it lives there rather than here. It joins by page *topic*,
+the same notion ``split_into_pages`` uses, so pasted Contact copy lands on the
 site's own Contact page instead of creating a second one.
 """
 
@@ -32,9 +33,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from app.models.content_blocks import ImageMetadata, SourceContent
-from app.services.doc_contract import classify_page_title, slug_for_title
-from app.services.doc_structure import MAX_DISCOVERED_PAGES, DocImageRef
+from app.services.doc_structure import DocImageRef
 from app.services.image_urls import upgrade_source_image_url
 from app.services.source_outline import OutlineBlock, ParsedDocument, read_html
 
@@ -200,6 +199,24 @@ def _document(title: str | None, blocks: list[OutlineBlock]) -> ParsedDocument:
     )
 
 
+def _dedupe(values) -> list[str]:
+    """Case-insensitive dedupe for prose (headings), first spelling wins.
+
+    Small and dependency-free enough to keep alongside its one caller here
+    rather than reach into `services/source_merge`, which has its own copy for
+    the same reason (union-merging headings from two sources).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        key = value.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
 def _has_explicit_markers(lines: list[str]) -> bool:
     """True when the paste marks its own headings (``#`` or a setext rule)."""
     for index, raw in enumerate(lines):
@@ -334,150 +351,3 @@ def _first_heading(blocks: list[OutlineBlock]) -> str | None:
             if block.level == level:
                 return block.text
     return None
-
-
-# --- merging a paste into another source ----------------------------------------
-
-
-def merge_sources(base: SourceContent, addition: SourceContent) -> SourceContent:
-    """Fold ``addition``'s content into ``base``, keeping base's identity.
-
-    ``base`` stays the source: its kind, ref, title and everything a reader
-    measured that a paste cannot have (nav links, section candidates, profile
-    cards, embeds) are carried through untouched via ``model_copy``, so a field
-    added to ``SourceContent`` later needs no edit here.
-
-    Pages join by topic. An added page merges into an existing one when they
-    share a slug, or when both name the same page topic and the existing page
-    is top-level — pasted Contact copy belongs on ``/contact``, not on
-    ``/services/emergency-contact``. Anything unmatched is appended as a new
-    page, which is how "paste the copy for a page the old site never had" works.
-    """
-    pages = [page.model_copy(deep=True) for page in base.discovered_pages]
-    index_by_key: dict[str, int] = {}
-    for position, page in enumerate(pages):
-        for key in _page_keys(page):
-            index_by_key.setdefault(key, position)
-
-    used_paths = {page.url_path for page in pages if page.url_path}
-    for extra in addition.discovered_pages:
-        match = next(
-            (index_by_key[key] for key in _page_keys(extra) if key in index_by_key), None
-        )
-        if match is not None:
-            pages[match] = _merge_content(pages[match], extra)
-            continue
-        if len(pages) >= MAX_DISCOVERED_PAGES:
-            continue
-        new_page = extra.model_copy(
-            update={"url_path": _unique_path(extra.url_path, used_paths)}
-        )
-        used_paths.add(new_page.url_path)
-        for key in _page_keys(new_page):
-            index_by_key.setdefault(key, len(pages))
-        pages.append(new_page)
-
-    # Merge the paste's OWN homepage content only — see _unclaimed_headings.
-    merged = _merge_content(
-        base, addition.model_copy(update={"headings": _unclaimed_headings(addition)})
-    )
-    return merged.model_copy(
-        update={
-            "title": base.title or addition.title,
-            "description": base.description or addition.description,
-            "discovered_pages": pages,
-        }
-    )
-
-
-def _unclaimed_headings(addition: SourceContent) -> list[str]:
-    """The paste's headings, minus the ones its own pages took with them.
-
-    ``split_into_pages`` falls back to the whole source's headings when the
-    leading (home) bucket has none of its own — right for a standalone paste,
-    where something has to describe the source, and wrong when merging. A paste
-    that is nothing but "## Contact" and "## Meet the Team" would otherwise hand
-    the site's HOMEPAGE both headings while the copy under them lives on the
-    pages those headings opened: a heading with no copy behind it, which is the
-    shape that produces a hollow section.
-    """
-    claimed = {
-        heading.strip().lower()
-        for page in addition.discovered_pages
-        for heading in page.headings
-    }
-    return [h for h in addition.headings if h.strip().lower() not in claimed]
-
-
-def _merge_content(base: SourceContent, addition: SourceContent) -> SourceContent:
-    """One page's worth of merge: copy, headings and imagery, base first."""
-    images = _dedupe_urls([*base.images, *addition.images])
-    metadata = _merge_metadata(base.image_metadata, addition.image_metadata)
-    return base.model_copy(
-        update={
-            "raw_text": "\n\n".join(
-                part for part in (base.raw_text.strip(), addition.raw_text.strip()) if part
-            ),
-            "headings": _dedupe([*base.headings, *addition.headings]),
-            "images": images,
-            "image_metadata": metadata,
-        }
-    )
-
-
-def _merge_metadata(
-    base: list[ImageMetadata], addition: list[ImageMetadata]
-) -> list[ImageMetadata]:
-    seen = {meta.url for meta in base}
-    return [*base, *(meta for meta in addition if meta.url not in seen)]
-
-
-def _page_keys(page: SourceContent) -> list[str]:
-    """Identities a page can be matched on, most specific first."""
-    keys: list[str] = []
-    path = (page.url_path or "").strip("/")
-    title = (page.title or "").strip()
-    slug = path.rsplit("/", 1)[-1] if path else (slug_for_title(title) if title else "")
-    if slug:
-        keys.append(f"slug:{slug}")
-    # Topic is a broad match, so only a top-level page may answer to it.
-    if "/" not in path:
-        topic = classify_page_title(title) or classify_page_title(slug.replace("-", " "))
-        if topic:
-            keys.append(f"topic:{topic}")
-    return keys
-
-
-def _unique_path(path: str | None, used: set[str | None]) -> str:
-    candidate = path or f"/{slug_for_title('page')}"
-    if candidate not in used:
-        return candidate
-    suffix = 2
-    while f"{candidate}-{suffix}" in used:
-        suffix += 1
-    return f"{candidate}-{suffix}"
-
-
-def _dedupe(values) -> list[str]:
-    """Case-insensitive dedupe for prose (headings), first spelling wins."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for value in values:
-        key = value.strip().lower()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        out.append(value)
-    return out
-
-
-def _dedupe_urls(values) -> list[str]:
-    """Exact dedupe — a URL path is case-sensitive, unlike a heading."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for value in values:
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-    return out

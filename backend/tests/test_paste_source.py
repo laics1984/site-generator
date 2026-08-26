@@ -1,11 +1,13 @@
 """
 The paste reader: markup and copy → the same parsed shape a document upload
-produces, and the merge that folds a paste into a source already read.
+produces.
 
-The load-bearing claims here are (a) a paste splits into pages through the ONE
+The load-bearing claim here is that a paste splits into pages through the ONE
 splitter documents use, so "## Contact" behaves identically whichever way it
-arrived, and (b) merging joins by page topic, so pasted Contact copy lands on
-the site's own Contact page instead of creating a second one.
+arrived. `PasteEndpointTest` also covers the endpoint's "add this paste to a
+source already read" mode end to end; the merge itself
+(`services/source_merge.merge_sources`) is generic across any two sources, not
+paste-specific, and is tested in `test_source_merge.py`.
 """
 
 import unittest
@@ -14,12 +16,8 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models.content_blocks import ImageMetadata, NavLink, SourceContent
-from app.services.doc_structure import MAX_DISCOVERED_PAGES, split_into_pages
-from app.services.paste_source import (
-    looks_like_html,
-    merge_sources,
-    read_paste,
-)
+from app.services.doc_structure import split_into_pages
+from app.services.paste_source import looks_like_html, read_paste
 
 
 def _pages(text: str, *, title: str | None = None) -> SourceContent:
@@ -306,94 +304,6 @@ def _crawled(**overrides) -> SourceContent:
     }
     base.update(overrides)
     return SourceContent(**base)
-
-
-class MergeTest(unittest.TestCase):
-    def test_pasted_topic_joins_the_existing_page(self):
-        merged = merge_sources(_crawled(), _pages("# Notes\n\n## Contact\n\nNew number: 012-345 6789"))
-        self.assertEqual(len(merged.discovered_pages), 1)
-        contact = merged.discovered_pages[0]
-        self.assertEqual(contact.url_path, "/contact")
-        self.assertIn("Old number", contact.raw_text)
-        self.assertIn("New number", contact.raw_text)
-
-    def test_unmatched_pages_are_appended(self):
-        merged = merge_sources(_crawled(), _pages("# Notes\n\n## Our Team\n\nMei, Amir, Sara."))
-        self.assertEqual(
-            [p.url_path for p in merged.discovered_pages], ["/contact", "/our-team"]
-        )
-
-    def test_a_sub_page_does_not_swallow_a_topic(self):
-        # /services/emergency-contact classifies as "contact" too, but a paste
-        # about contacting the business belongs on a top-level page.
-        base = _crawled(
-            discovered_pages=[
-                SourceContent(
-                    source_kind="url",
-                    source_ref="https://acme.example/services/emergency-contact",
-                    title="Emergency Contact",
-                    raw_text="24h line",
-                    url_path="/services/emergency-contact",
-                )
-            ]
-        )
-        merged = merge_sources(base, _pages("# Notes\n\n## Contact\n\nCall 012-345 6789"))
-        self.assertEqual(
-            [p.url_path for p in merged.discovered_pages],
-            ["/services/emergency-contact", "/contact"],
-        )
-
-    def test_primary_content_is_joined_and_identity_is_the_base_source(self):
-        merged = merge_sources(_crawled(), _pages("Extra homepage copy about our roastery."))
-        self.assertEqual(merged.source_kind, "url")
-        self.assertEqual(merged.source_ref, "https://acme.example/")
-        self.assertEqual(merged.title, "Acme Coffee")
-        self.assertIn("We roast small batches.", merged.raw_text)
-        self.assertIn("Extra homepage copy", merged.raw_text)
-        # Everything only a real reader can measure rides through untouched.
-        self.assertEqual([n.label for n in merged.nav_links], ["Contact"])
-
-    def test_headings_that_left_for_another_page_do_not_stay_on_the_homepage(self):
-        # The paste is nothing but page sections. Its copy goes to those pages,
-        # so the site's homepage must not claim their headings — a heading with
-        # no copy behind it is what produces a hollow section.
-        merged = merge_sources(
-            _crawled(), _pages("## Contact\n\nCall 012.\n\n## Our Team\n\nMei and Amir.")
-        )
-        self.assertEqual(merged.headings, ["Acme Coffee"])
-        self.assertIn("Contact", merged.discovered_pages[0].headings)
-
-    def test_the_pastes_own_homepage_headings_are_kept(self):
-        merged = merge_sources(_crawled(), _pages("## Why Choose Us\n\nWe care."))
-        self.assertIn("Why Choose Us", merged.headings)
-
-    def test_imagery_is_appended_without_duplicates(self):
-        addition = _pages(
-            '<p>x</p><img src="https://acme.example/hero.jpg" alt="Hero">'
-            '<img src="https://cdn.acme.example/new.jpg" alt="New">'
-        )
-        merged = merge_sources(_crawled(), addition)
-        self.assertEqual(
-            merged.images,
-            ["https://acme.example/hero.jpg", "https://cdn.acme.example/new.jpg"],
-        )
-        self.assertEqual(len(merged.image_metadata), 2)
-
-    def test_page_cap_is_held(self):
-        base = _crawled(
-            discovered_pages=[
-                SourceContent(
-                    source_kind="url",
-                    source_ref=f"https://acme.example/p{i}",
-                    title=f"Page {i}",
-                    raw_text="x",
-                    url_path=f"/p{i}",
-                )
-                for i in range(MAX_DISCOVERED_PAGES)
-            ]
-        )
-        merged = merge_sources(base, _pages("# Notes\n\n## Our Team\n\nMei and Amir."))
-        self.assertEqual(len(merged.discovered_pages), MAX_DISCOVERED_PAGES)
 
 
 class PasteEndpointTest(unittest.TestCase):

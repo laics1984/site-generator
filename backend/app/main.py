@@ -14,7 +14,18 @@ logging.basicConfig(
 
 from app.config import settings
 from app.deployment import enforce as enforce_deployment_safety
-from app.routers import brand, cms, document, generate, health, pages, paste, preview, scrape
+from app.routers import (
+    brand,
+    cms,
+    document,
+    generate,
+    health,
+    pages,
+    paste,
+    preview,
+    scrape,
+    source,
+)
 from app.services.db import init_db
 
 
@@ -75,6 +86,7 @@ app.include_router(brand.router)
 app.include_router(scrape.router)
 app.include_router(document.router)
 app.include_router(paste.router)
+app.include_router(source.router)
 app.include_router(pages.router)
 app.include_router(generate.router)
 app.include_router(cms.router)

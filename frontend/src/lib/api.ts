@@ -229,6 +229,25 @@ export async function readPastedContent(payload: {
   })
 }
 
+/**
+ * Join two already-read sources (a URL crawl and a document upload) into one,
+ * by page topic/slug — the same rule a paste's `base` uses, generalized to
+ * any two readers (backend: services/source_merge.merge_sources).
+ *
+ * Returns only the merged `source_content`; the caller picks brand/crawl-
+ * frontier/etc. precedence itself (see lib/sourceCombine.ts) since only the
+ * two readers it already holds could have measured those.
+ */
+export async function mergeSourceContents(
+  base: SourceContent,
+  addition: SourceContent,
+): Promise<ScrapePreview> {
+  return jsonRequest('/api/source/merge', {
+    method: 'POST',
+    body: JSON.stringify({ base, addition }),
+  })
+}
+
 export async function uploadDocumentPreview(file: File): Promise<ScrapePreview> {
   const form = new FormData()
   form.append('file', file)

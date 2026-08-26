@@ -18,10 +18,11 @@ interface PasteBoxProps {
 /**
  * The paste control: one textarea that takes copy or markup.
  *
- * Used in all three source modes — on its own it IS the source, and alongside a
- * link or a document it is merged into what that reader found. Both cases go
- * through the same backend endpoint, so this component only has to be a good
- * textarea: it reports what it thinks you pasted, and how much of it there is.
+ * One of three independent optional source fields (SourcePanel) — on its own
+ * it IS the source, and alongside a URL and/or a document it is merged into
+ * whatever those found. Both cases go through the same backend endpoint, so
+ * this component only has to be a good textarea: it reports what it thinks
+ * you pasted, and how much of it there is.
  */
 export function PasteBox({
   value,

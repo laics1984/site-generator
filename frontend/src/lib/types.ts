@@ -272,8 +272,6 @@ export interface PreviewLayout {
   footer: PreviewFooter
 }
 
-export type GeneratorMode = 'url' | 'document' | 'paste'
-
 export type IndustryCategory =
   | 'restaurant'
   | 'agency'
