@@ -69,7 +69,7 @@ from app.services.image_urls import (
     looks_like_logo_url as _looks_like_logo_url,
     tag_classes as _tag_classes,
 )
-from app.services.logo_extraction import LogoCandidate, extract_logo
+from app.services.logo_extraction import LogoCandidate, extract_logo, find_favicon
 from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
 from app.services.map_embed import ParsedMap, parse_map_src
 from app.services.video_embed import ParsedVideo, parse_video_src
@@ -2225,6 +2225,9 @@ class _ParsedPage:
     source_content: SourceContent
     image_candidates: list[ImageCandidate]
     logo: LogoCandidate | None
+    # The page's declared <link rel="icon">, if any. A URL only — nothing is
+    # fetched here; the push decides whether the bytes are ever needed.
+    favicon: str | None = None
 
 
 def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True) -> _ParsedPage:
@@ -2290,6 +2293,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
                 candidate.role = "portrait"
     links = _extract_links(soup, final_url)
     logo = _extract_logo_candidate(soup, final_url, site_name=site_name)
+    favicon = find_favicon(soup, final_url)
     nav_links = extract_nav_links(soup, final_url)
     body_link_clusters = extract_body_link_clusters(soup, final_url)
     social_links = extract_social_links(soup, final_url)
@@ -2334,6 +2338,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         source_content=source_content,
         image_candidates=image_candidates,
         logo=logo,
+        favicon=favicon,
     )
 
 
@@ -2901,7 +2906,11 @@ async def scrape_url(
                 len(unvisited_urls),
             )
 
-    brand_candidate = await build_brand_candidate(entry.site_name, entry.logo)
+    # The entry page's icon, not a sub-page's: a site declares one favicon and
+    # the homepage is where Google reads it from.
+    brand_candidate = await build_brand_candidate(
+        entry.site_name, entry.logo, favicon_url=entry.favicon
+    )
 
     return ScrapeResult(
         url=url,

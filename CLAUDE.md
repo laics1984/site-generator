@@ -434,6 +434,46 @@ Nothing hand-builds a `SourceContent` — the old hidden "paste content directly
 box did, mislabelled it `source_kind="pdf"`, and skipped the preview and page
 picker entirely; it is gone.
 
+**The LLM works out the structure, because a paste has none to read.** Every
+other reader has ground truth — a crawl has URLs, a PDF has font sizes, a DOCX
+has heading styles, a Page has fields. A paste has line shape, and on a real
+content brief line shape is *inverted*: the author's own page list (`1. HOME` …
+`7. CONTACT`) is shaped exactly like a numbered bullet list, while the layout
+labels between it (`Hero`, `Subhead`, `Services grid (four cards)`) are shaped
+exactly like headings. That brief produced three junk pages named after
+scaffolding and a site titled "Headline options". No refinement of line shape
+fixes it; only meaning separates the two.
+
+`services/paste_structure.py` asks. Three properties make it safe:
+
+- **It answers in LINE NUMBERS, never text** — which lines open a page, which
+  belong to it, which are notes to a copywriter (`skip_lines`). This module
+  then slices the pasted lines. A structure call cannot invent a sentence, the
+  reply is small however large the paste, and the copy reaching the planner is
+  verbatim what the user typed. Same division of labour as everywhere else: the
+  model supplies small semantic judgements, deterministic code does the mapping.
+- **Its output is an ordinary `ParsedDocument`** plus `page_topics`, so
+  `split_into_pages` still owns bucketing, image placement, slugs and the cap.
+  `page_topics` answers the one question the splitter cannot: `classify_page_title`
+  returns `None` for "AI AGENTS" and "DIGITAL TRUST & BLOCKCHAIN", so without it
+  four of that brief's seven pages collapse into the homepage. Supplied topics
+  also dedupe on **slug** instead of page type — several named pages
+  legitimately share a type, and "one page per topic" would silently drop all
+  but the first. Absent the parameter, every other caller is byte-identical.
+- **Every failure is a fallback, never an error**: flag off, paste past
+  `paste_structure_max_chars`, `LlmError`, any exception, or an outline whose
+  ranges don't line up with the text (overlapping or past the end — *discarded,
+  never patched*, since a wrong range moves someone's copy onto the wrong page
+  invisibly). The heuristic reader then runs, and the preview says
+  `structured_by: "heuristic"` so the degrade is visible.
+
+This is the one preview that spends an LLM call. That is deliberate: for a
+paste, structuring *is* the read. It is cached (`chat_json_cached`), and the
+expensive per-page generation still sits behind the picker. `conftest` pins
+`PASTE_LLM_STRUCTURE_ENABLED` **off** for the suite, so the paste tests keep
+asserting the deterministic reader; `test_paste_structure.py` turns it on and
+injects a fake client.
+
 `services/source_outline.py` holds what that requires and the crawler already
 had: the parsed-source shape (`ParsedDocument`, `OutlineBlock`, `DocImage`,
 moved out of `doc_parser` so a paste doesn't depend on PyMuPDF for three
@@ -451,6 +491,19 @@ Rules worth keeping:
   unpunctuated, blank line above, something below) runs only for a paste with no
   markers at all — otherwise an author's short prose line silently fractures off
   its own page.
+- **A number prefix is not a bullet.** `_SYMBOL_BULLET_RE` (a dash is only
+  ever a list marker) disqualifies a heading outright; `_NUMBER_PREFIX_RE` is
+  stripped and the heading test applied to what remains, because a number is
+  also how people number *sections*. One union regex for both is what ate
+  `1. HOME`. A numbered line that runs into prose ("1. You talk to the person
+  building it.") still ends in a full stop and stays a list item.
+- **Bare headings come in two tiers, ranked like a PDF's font sizes.** When a
+  paste has both emphatic headings (numbered or CAPITALISED) and plain ones,
+  the emphatic rank as level 1 and the plain as level 2, so only the emphatic
+  open pages (`doc_parser._pdf_size_to_level` ranks a PDF's distinct heading
+  sizes for the same reason). **Both ranks must be present** — a paste whose
+  headings are all one style has stated no hierarchy and keeps the single level
+  it always had.
 - **A tag name sits flush against the `<`.** `looks_like_html` allowing
   whitespace made "Pricing: a < b and c > d" match as a `<b>` tag, and the whole
   paste was then parsed as markup, losing its line structure. Mirrored
@@ -479,7 +532,7 @@ Rules worth keeping:
 `discovered_pages` being empty for every non-URL kind now, so a paste that adds
 pages to a Facebook Page gets them.
 
-Tests: `test_paste_source.py`.
+Tests: `test_paste_source.py`, `test_paste_structure.py`.
 
 ## Scroll-adaptive header ink (floating pill)
 
@@ -659,6 +712,71 @@ markup here.
 - `push_orchestrator.py` honours `page.seo.noindex` at push time.
 
 Tests: `test_seo.py`, `test_ux_audit.py`.
+
+## The site favicon
+
+The icon a browser tab, a bookmark and a **Google search result** show beside the
+site's name. One column owns it end to end — `entities.entity_favicon` in
+cms-api — and `Entity::faviconUrl()` is its one resolver.
+
+**It was three readers disagreeing about one column.** The admin app rebuilt a
+legacy `assets/favicons/{first2}/{name}` path (in **five** copy-pasted places),
+`MediaUrlResolver::normalize()` returned **null** for that exact shape so the
+live site rendered no icon at all, and a second column `seo_favicon_url` was the
+only writable one and was never read by `buildSiteDefaults()`. A site could show
+its icon in the dashboard and none in a browser tab, and saving one through the
+SEO-defaults API was a silent no-op. `seo_favicon_url` is backfilled and dropped;
+`faviconUrl` in the SEO-defaults response is now read-only and derived.
+
+`MediaUrlResolver::entityFavicon()` handles the four shapes the column holds —
+legacy bare filename, storage key, rooted path, absolute URL — and is built
+against `config('app.url')`, **never `url()`**: the admin host writes this value
+and the public host serves it, so a request-relative URL is right in exactly one
+of the two places it is read. A test pins that.
+
+Generator side, three rules:
+
+- **Extraction is a URL, not bytes.** `logo_extraction.find_favicon` wraps the
+  existing `_find_icon` walk (largest declared `sizes`, `mask-icon` skipped).
+  `extract_logo` only reaches its icon tier when there is *no* real mark, so on
+  any site with a header logo the icon links were parsed and thrown away —
+  a favicon is a different question with a different answer. Nothing is fetched
+  at scrape time; the frontend renders the URL directly, which doubles as a
+  liveness check, and the push fetches once when it actually needs the bytes.
+- **The fallback is a model rule, stated once.** `BrandIdentity`'s
+  `_default_favicon_to_the_mark` validator fills an unset `favicon_url` from the
+  mark, so every constructor gets it — the crawler, the Facebook reader, the
+  manual logo upload — and a source with no markup to declare an icon (a PDF, a
+  DOCX, a Page) still ships one. Gated on `logo_render_ok`, **reusing** that
+  verdict rather than inventing a second: a mark that fails it is an og:image,
+  and a 1200x630 social card in a 16px tab is an illegible smear.
+- **The push does not use `/api/file/add`.** `POST /api/entities/{token}/favicon`
+  instead — a favicon is site chrome, not a media-library asset, and the CMS
+  re-encodes it to a **192×192 PNG** (192 because Google only shows a favicon
+  that is square and a multiple of 48px; `contain`, not `cover`, because
+  centre-cropping a wordmark eats its own letters). `_coerce_to_cms_image`
+  already transcodes the `.ico` a `rel="icon"` usually points at. The step is
+  **non-fatal** and gated on `push_favicon`, the same restraint
+  `push_builder_styles` has: re-pushing must not replace an icon the owner chose.
+
+**`GeneratedSite.brand` is typed `Any`**, so it is a `BrandIdentity` in-process
+and a plain **dict** once the frontend posts the site back to `/api/cms/push` —
+which is every real push. `_brand_field` reads either. A bare `getattr` returns
+None for the dict form; `_upload_media`'s brand-logo block still has that bug at
+lines ~711-717, harmless only because the logo is also reached through the header
+schema.
+
+`webtree-public` needed **no change** and must not be built:
+`usePublicSeo.ts` already emits `<link rel="icon">` from `entity.favicon`, and
+Google reads a site's favicon from its home page — a `PublicSitePage`, the one
+surface that calls it.
+
+Admin side, `SeoPreview.vue` is the **only** Google/SERP mock in the suite; the
+tags and categories forms each had a hand-rolled copy, now replaced. Its
+`modes` prop lets the site-icon editor reuse it rather than grow a second one.
+
+Tests: `test_favicon.py` here; `EntityFaviconEndpointTest`,
+`EntityFaviconUrlTest` in cms-api.
 
 ## Pushing to a live CMS
 

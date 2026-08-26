@@ -155,6 +155,31 @@ class PlainTextOutlineTest(unittest.TestCase):
         self.assertEqual(levels["Wholesale"], 0)
         self.assertEqual(levels["We deliver."], 0)
 
+    def test_slot_labels_are_stripped(self):
+        # A brief labels each line with the slot it fills. The label is a marker
+        # on the line, like a bullet, and prints on the live page if it survives.
+        parsed = read_paste(
+            "Heading: Most projects fail at month nine\n\n"
+            "Primary CTA: Book a 30-minute scoping call\n\n"
+            "Headline: No surprises"
+        )
+        text = parsed.document.raw_text
+        self.assertIn("Most projects fail at month nine", text)
+        self.assertIn("Book a 30-minute scoping call", text)
+        self.assertNotIn("Heading:", text)
+        self.assertNotIn("CTA:", text)
+
+    def test_labels_that_are_real_copy_survive(self):
+        # A closed set of layout slots, never a vocabulary denylist: a staff
+        # card reads "Title: Operations Manager" and means it.
+        parsed = read_paste(
+            "Our team\n\nTitle: Operations Manager\n\nContact: 012-345 6789\n\nNote: closed Sundays"
+        )
+        text = parsed.document.raw_text
+        self.assertIn("Title: Operations Manager", text)
+        self.assertIn("Contact: 012-345 6789", text)
+        self.assertIn("Note: closed Sundays", text)
+
     def test_inline_markdown_is_stripped(self):
         parsed = read_paste("Call **012-345 6789** or visit [our shop](https://a.example/s).")
         self.assertEqual(
@@ -166,6 +191,67 @@ class PlainTextOutlineTest(unittest.TestCase):
         self.assertEqual(parsed.images[0].url, "https://cdn.acme.example/r.jpg")
         self.assertEqual(parsed.images[0].alt, "Our roastery")
         self.assertNotIn("http", parsed.document.raw_text)
+
+
+class NumberedAndTieredHeadingsTest(unittest.TestCase):
+    """The heuristic is the fallback now, and it must not invert a document.
+
+    A content brief numbers its pages ("1. HOME") and labels their parts
+    ("Hero", "Subhead"). Read flat, the numbering looked like a bullet list and
+    the labels were the only headings found — so the layout scaffolding opened
+    pages and the author's own page list became body text.
+    """
+
+    BRIEF = (
+        "1. HOME\n\nHero\n\nSoftware that survives your next 10,000 users.\n\n"
+        "Subhead\n\nWe build the systems your business runs on.\n\n"
+        "2. CONTACT\n\nClosing CTA\n\nTell us what is broken. Thirty minutes, no deck."
+    )
+
+    def levels(self, text):
+        return {b.text: b.level for b in read_paste(text).document.outline}
+
+    def test_numbered_section_titles_are_headings(self):
+        levels = self.levels(self.BRIEF)
+        self.assertEqual(levels["HOME"], 1)
+        self.assertEqual(levels["CONTACT"], 1)
+
+    def test_layout_labels_rank_below_them(self):
+        levels = self.levels(self.BRIEF)
+        self.assertEqual(levels["Hero"], 2)
+        self.assertEqual(levels["Subhead"], 2)
+        self.assertEqual(levels["Closing CTA"], 2)
+
+    def test_only_the_top_tier_opens_pages(self):
+        # Before the tiers existed this produced /hero, /subhead and friends.
+        source = _pages(self.BRIEF)
+        self.assertEqual([p.url_path for p in source.discovered_pages], ["/contact"])
+
+    def test_a_numbered_line_that_runs_into_prose_stays_a_list_item(self):
+        levels = self.levels(
+            "Three reasons\n\n"
+            "1. You talk to the person building it. No account manager relay.\n\n"
+            "2. We hand over the keys. Your repository, your cloud account.\n\nend"
+        )
+        self.assertEqual(levels["You talk to the person building it. No account manager relay."], 0)
+        self.assertEqual(levels["We hand over the keys. Your repository, your cloud account."], 0)
+
+    def test_one_style_of_heading_keeps_one_level(self):
+        # No tier was stated, so nothing is promoted — today's behaviour.
+        levels = self.levels(
+            "Acme Coffee\n\nWe roast small batches.\n\nContact\n\nCall 012-345 6789."
+        )
+        self.assertEqual(levels["Acme Coffee"], 2)
+        self.assertEqual(levels["Contact"], 2)
+
+    def test_capitalised_titles_also_form_a_tier(self):
+        levels = self.levels(
+            "OUR SERVICES\n\nCleanings and whitening.\n\n"
+            "What you get\n\nA quote up front.\n\nCONTACT\n\nCall us today"
+        )
+        self.assertEqual(levels["OUR SERVICES"], 1)
+        self.assertEqual(levels["CONTACT"], 1)
+        self.assertEqual(levels["What you get"], 2)
 
 
 class PasteSplitsIntoPagesTest(unittest.TestCase):
@@ -354,6 +440,16 @@ class PasteEndpointTest(unittest.TestCase):
     def test_oversized_paste_is_rejected(self):
         response = self.client.post("/api/paste/preview", json={"text": "x" * 400_001})
         self.assertEqual(response.status_code, 413)
+
+    def test_unfilled_placeholders_are_counted(self):
+        # Nothing upstream can fill "[X] years"; the count is what tells the
+        # user to edit before generating, like the unresolved-image count.
+        response = self.client.post(
+            "/api/paste/preview",
+            json={"text": "Acme\n\nWe have [X] years of experience and [Y] offices."},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["paste"]["placeholders"], 2)
 
     def test_markup_with_no_readable_text_is_rejected(self):
         response = self.client.post(

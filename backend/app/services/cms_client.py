@@ -326,6 +326,41 @@ class CmsClient:
                 raise CmsApiError(500, f"Media upload response missing URL: {body}", response_body=body)
             return cdn_url
 
+    async def set_entity_favicon(
+        self,
+        entity_token: str,
+        *,
+        file_bytes: bytes,
+        filename: str,
+        content_type: str,
+    ) -> str | None:
+        """POST /api/entities/{token}/favicon → the resolved icon URL.
+
+        Deliberately not `/api/file/add`: a favicon is site chrome, not a
+        media-library asset, and uploading it there would park an icon in the
+        tenant's library for nothing to reference. The CMS re-encodes whatever
+        it is given to a 192px PNG and stores it against the entity, so this
+        returns the URL a browser tab and a search result will actually use.
+        """
+        async with self._wrap_request("set_entity_favicon"):
+            url = f"{self.base_url}/api/entities/{entity_token}/favicon"
+            files = {"favicon": (filename, file_bytes, content_type)}
+            resp = await self._http_client().post(
+                url,
+                files=files,
+                headers=self._jwt_headers(),
+                timeout=_MEDIA_UPLOAD_TIMEOUT,
+            )
+            body = _safe_json(resp)
+            if resp.status_code >= 400:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Set favicon failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:300]}",
+                    response_body=body,
+                )
+            return (body.get("data") or {}).get("favicon_url")
+
     # --- articles / events (content-migration push) ------------------------------
     #
     # Legacy admin endpoints (routes/api_admin.php): multipart form posts under

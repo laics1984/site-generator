@@ -151,6 +151,10 @@ export interface BrandIdentity {
   logo_data_url?: string | null
   extracted_palette: string[]
   logo_is_light?: boolean | null
+  /** The site icon: what a browser tab and a Google result show beside the
+   * site's name. A separate question from the brand mark, and falls back to it
+   * when the source declared no icon. */
+  favicon_url?: string | null
   logo_source?: LogoSource | null
   /** False when the mark may seed the palette but must not be drawn as the
    * brand logo (a social card, or a favicon too small for the header lockup). */
@@ -406,6 +410,11 @@ export interface PasteReport {
   unresolved_images: number
   /** False when the paste is the whole source. */
   merged: boolean
+  /** Which reader worked out the page structure. 'heuristic' means the local
+   * model was unavailable (or the paste was too big) and line shape decided. */
+  structured_by?: 'llm' | 'heuristic'
+  /** Unfilled `[...]` placeholders left in the copy — nothing upstream can fill them. */
+  placeholders?: number
 }
 
 export interface ScrapePreview {

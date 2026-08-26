@@ -81,12 +81,13 @@ export function SourcePanel({
           busy={!!pasteBusy}
           onClick={onReadPaste}
         >
-          {pasteBusy ? 'Reading…' : 'Read content'}
+          {pasteBusy ? 'Working out your pages…' : 'Read content'}
         </Button>
         <p className="text-xs text-ink-muted">
-          We keep any images the markup points at by full web address, detect the
-          page structure, and show you a preview before choosing pages. No AI work
-          runs until then.
+          The local model reads your content to work out which lines are page
+          titles, which are copy, and which are notes to yourself — then you see
+          a preview before choosing pages. Images the markup points at by full
+          web address are kept.
         </p>
       </div>
     )

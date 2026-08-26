@@ -161,13 +161,25 @@ export function ScrapePreview({
                 {brand.name}
               </div>
             </div>
-            {brand.logo_data_url && (
-              <img
-                src={brand.logo_data_url}
-                alt={brand.name}
-                className="h-10 max-w-[120px] rounded object-contain"
-              />
-            )}
+            <div className="flex items-center gap-2">
+              {/* The site icon we'll push. Loaded straight from its source URL,
+                  so a broken one shows up here rather than at push time. */}
+              {brand.favicon_url && (
+                <img
+                  src={brand.favicon_url}
+                  alt=""
+                  title={`Site icon: ${brand.favicon_url}`}
+                  className="h-6 w-6 rounded border border-slate-200 bg-white object-contain p-0.5"
+                />
+              )}
+              {brand.logo_data_url && (
+                <img
+                  src={brand.logo_data_url}
+                  alt={brand.name}
+                  className="h-10 max-w-[120px] rounded object-contain"
+                />
+              )}
+            </div>
           </div>
           {brand.extracted_palette && brand.extracted_palette.length > 0 && (
             <div className="mt-2 flex gap-1.5">
@@ -323,6 +335,12 @@ function PasteSummary({ report }: { report: PasteReport }) {
     report.merged ? 'Pasted content merged in' : 'Read from pasted content',
     report.is_html ? 'as HTML' : 'as text',
   ]
+  if (report.structured_by === 'heuristic') {
+    // Worth saying: the local model normally decides which lines are page
+    // titles and which are notes to a writer. Without it, line shape does —
+    // and a working brief can come out with its labels as headings.
+    parts.push('structured from layout only — the local model was unavailable')
+  }
   // Only when merged: for a standalone paste every page came from the paste,
   // and the banner's "N additional pages discovered" has already said so.
   if (report.merged && report.added_pages > 0) {
@@ -331,6 +349,14 @@ function PasteSummary({ report }: { report: PasteReport }) {
   return (
     <div className="mt-1">
       {parts.join(' · ')}.
+      {!!report.placeholders && report.placeholders > 0 && (
+        <>
+          {' '}
+          {report.placeholders} unfilled placeholder
+          {report.placeholders === 1 ? '' : 's'} (like <code>[X]</code>) are still in
+          the copy — fill or delete them below before generating.
+        </>
+      )}
       {report.unresolved_images > 0 && (
         <>
           {' '}

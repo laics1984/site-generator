@@ -145,6 +145,10 @@ class PushRequestBody(BaseModel):
         default=True,
         description="Apply the generated theme via the launch-code → /builder/styles bridge.",
     )
+    push_favicon: bool = Field(
+        default=True,
+        description="Set the entity's site icon from the source site's favicon.",
+    )
     create_entity: bool = Field(
         default=False,
         description="Create a new entity (owned by the logged-in user) and push into it; entity_token is ignored.",
@@ -178,6 +182,7 @@ async def push(payload: PushRequestBody) -> dict[str, Any]:
         publish=payload.publish,
         force_overwrite=payload.force_overwrite,
         push_builder_styles=payload.push_builder_styles,
+        push_favicon=payload.push_favicon,
         create_entity=payload.create_entity,
         new_entity_name=payload.new_entity_name,
         new_entity_url=payload.new_entity_url,

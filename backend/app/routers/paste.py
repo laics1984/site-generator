@@ -15,6 +15,12 @@ on the URL alone, and the paste rides on a separate call the frontend makes
 once the read lands. See ``services/paste_source.merge_sources`` for the
 page-joining rule.
 
+This is the one preview that spends an LLM call: ``paste_structure`` works out
+which lines open a page. That is not "AI work on the content" — it is the read
+itself, and a paste is the only source with no structure of its own to read.
+The expensive per-page generation still sits behind the picker, and the call is
+cached, so re-reading the same paste costs nothing.
+
 ``image_candidates`` in the response are the PASTE's own. The reader that
 produced ``base`` built its candidates from a live layout and carries richer
 evidence than the source's metadata can reproduce, so the caller keeps those
@@ -25,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -32,6 +39,7 @@ from pydantic import BaseModel, Field
 from app.models.content_blocks import SourceContent
 from app.services.doc_structure import split_into_pages
 from app.services.paste_source import PASTE_LABEL, read_paste, merge_sources
+from app.services.paste_structure import StructuredPaste, structure_paste
 from app.services.source_preview import candidates_from_source, source_preview_payload
 
 logger = logging.getLogger(__name__)
@@ -41,6 +49,13 @@ router = APIRouter(prefix="/api/paste", tags=["paste"])
 # Roughly 60k words — far past any hand-written brief, and the point where the
 # planner is truncating the text anyway (settings.llm_context_tokens).
 _TEXT_LIMIT_CHARS = 400_000
+
+# An unfilled placeholder a brief leaves for its author: "[X] years", "[RM Y]",
+# "[2-3x]". Nothing upstream can fill one — the model marks a placeholder-ONLY
+# line as scaffolding, but one sitting inside a real sentence is part of that
+# sentence — so they are counted and reported, the same way an unresolvable
+# image is, and the preview's editable copy box is where they get fixed.
+_PLACEHOLDER_RE = re.compile(r"\[[^\[\]]{1,24}\]")
 
 
 class PastePreviewRequest(BaseModel):
@@ -72,18 +87,43 @@ async def paste_preview(payload: PastePreviewRequest) -> dict:
             ),
         )
 
+    # A paste has no reliable structural markers, so the LLM is asked which
+    # lines open a page and which are notes to a copywriter rather than copy
+    # (services/paste_structure.py). It answers in LINE NUMBERS and never
+    # writes text. Unavailable, disabled, or an answer that doesn't line up
+    # with the paste ⇒ `None`, and the line-shape reader below takes over.
+    structured = await structure_paste(text, title=payload.title)
+
     # Parsing markup and splitting it into pages is pure blocking CPU, and a
     # 400k-character paste is a real page's worth of DOM. Off the loop for the
     # same reason the document parse is.
     return await asyncio.to_thread(
-        _build_preview, text, payload.title, payload.base
+        _build_preview, text, payload.title, payload.base, structured
     )
 
 
-def _build_preview(text: str, title: str | None, base: SourceContent | None) -> dict:
+def _count_placeholders(source: SourceContent) -> int:
+    """Unfilled `[...]` placeholders left in the copy this paste contributed."""
+    pages = [source, *source.discovered_pages]
+    return sum(len(_PLACEHOLDER_RE.findall(page.raw_text)) for page in pages)
+
+
+def _build_preview(
+    text: str,
+    title: str | None,
+    base: SourceContent | None,
+    structured: StructuredPaste | None = None,
+) -> dict:
     parsed = read_paste(text, title=title)
+    # The structured read replaces the outline, never the reader: images,
+    # markup detection and the unresolved-image count still come from
+    # `read_paste`, because those are measurements, not judgements.
+    document = structured.document if structured else parsed.document
     pasted = split_into_pages(
-        parsed.document, images=parsed.images, description=parsed.description
+        document,
+        images=parsed.images,
+        description=parsed.description,
+        page_topics=structured.page_topics if structured else None,
     )
     if not pasted.raw_text.strip() and not pasted.discovered_pages:
         raise HTTPException(
@@ -113,6 +153,11 @@ def _build_preview(text: str, title: str | None, base: SourceContent | None) -> 
                 "added_pages": max(added_pages, 0),
                 "unresolved_images": parsed.unresolved_images,
                 "merged": base is not None,
+                # Which reader worked out the structure. Surfaced so a silent
+                # fallback (LLM down, paste too big) is visible in the preview
+                # rather than showing up as a mysteriously flat site.
+                "structured_by": "llm" if structured else "heuristic",
+                "placeholders": _count_placeholders(pasted),
             }
         },
     )

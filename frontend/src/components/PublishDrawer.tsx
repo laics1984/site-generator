@@ -60,6 +60,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
   })
   const [publish, setPublish] = useState(false)
   const [pushBuilderStyles, setPushBuilderStyles] = useState(true)
+  const [pushFavicon, setPushFavicon] = useState(true)
   const [forceOverwrite, setForceOverwrite] = useState(false)
 
   const [busy, setBusy] = useState(false)
@@ -148,6 +149,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
         publish,
         forceOverwrite,
         pushBuilderStyles,
+        pushFavicon,
         createEntity: entityMode === 'new',
         newEntityName:
           entityMode === 'new' ? newEntity.name.trim() : undefined,
@@ -335,6 +337,12 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
               onChange={(e) => setPushBuilderStyles(e.target.checked)}
               label="Apply theme"
               description="Colours, fonts and button radius, written to the entity's builder styles."
+            />
+            <Checkbox
+              checked={pushFavicon}
+              onChange={(e) => setPushFavicon(e.target.checked)}
+              label="Set site icon"
+              description="The source site's favicon, shown in browser tabs and beside the site name in search results."
             />
             <Checkbox
               checked={publish}

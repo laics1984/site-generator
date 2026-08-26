@@ -97,6 +97,24 @@ def _offline_facebook():
 
 
 @pytest.fixture(autouse=True)
+def _offline_paste_structure():
+    """Pin the LLM paste-structuring pass off for every test.
+
+    The suite runs offline, and `structure_paste` would otherwise try to reach
+    a server on every paste read — falling back after a timeout, so the tests
+    would still pass while quietly waiting out the socket. Off, the
+    deterministic line-shape reader runs, which is what the paste tests assert.
+    tests/test_paste_structure.py turns it on itself and injects a fake client.
+    """
+    original = settings.paste_llm_structure_enabled
+    settings.paste_llm_structure_enabled = False
+    try:
+        yield
+    finally:
+        settings.paste_llm_structure_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _no_design_schemes():
     """Pin design schemes off for every test.
 

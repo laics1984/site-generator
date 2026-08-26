@@ -329,6 +329,7 @@ export interface PushPayload {
   publish?: boolean
   forceOverwrite?: boolean
   pushBuilderStyles?: boolean
+  pushFavicon?: boolean
   /** When true, create a fresh entity and push into it (entityToken ignored). */
   createEntity?: boolean
   newEntityName?: string
@@ -349,6 +350,7 @@ export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
       publish: payload.publish ?? false,
       force_overwrite: payload.forceOverwrite ?? false,
       push_builder_styles: payload.pushBuilderStyles ?? true,
+      push_favicon: payload.pushFavicon ?? true,
       create_entity: payload.createEntity ?? false,
       new_entity_name: payload.newEntityName ?? null,
       new_entity_url: payload.newEntityUrl ?? null,

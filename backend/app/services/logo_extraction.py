@@ -104,6 +104,24 @@ def extract_logo(
     return None
 
 
+def find_favicon(soup: BeautifulSoup, base_url: str) -> str | None:
+    """The page's declared browser-tab icon, or None.
+
+    The same `<link rel="…icon">` walk `extract_logo` uses for its tier-2
+    fallback — largest declared `sizes` wins, mask-icon skipped — but reached
+    unconditionally. Tier 2 is only consulted when the page has no real logo,
+    so on any site that *does* have one the icon links were parsed and thrown
+    away; a favicon is a different question with a different answer, and asking
+    it costs one more pass over the same tags.
+
+    Returns a URL and fetches nothing: the caller decides whether the bytes are
+    ever needed.
+    """
+    icon = _find_icon(soup, base_url)
+
+    return icon.url if icon is not None else None
+
+
 # --- tier 1: a real mark --------------------------------------------------------
 
 

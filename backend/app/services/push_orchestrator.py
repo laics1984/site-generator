@@ -105,6 +105,10 @@ class PushRequest:
     publish: bool = False
     force_overwrite: bool = False
     push_builder_styles: bool = True
+    # The site icon captured from the source. Optional for the same reason
+    # push_builder_styles is: re-pushing to an entity whose owner has since
+    # chosen their own icon must not silently replace it.
+    push_favicon: bool = True
     # When True, create a brand-new entity (owned by the logged-in user) before
     # pushing, and ignore `entity_token`. The created entity is empty so the
     # greenfield guard always passes.
@@ -621,6 +625,10 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
             PushStep(name="builder_styles", ok=True, detail="Skipped (per request)")
         )
 
+    # 8b. Site icon (optional). Non-fatal: the pages are already in, and an icon
+    #     is something the owner can set in the admin afterwards.
+    await _push_favicon(client, req, report)
+
     # 9. Publish (optional) — concurrent; every publish uses its own page's saved
     #    draft version plus the shared (post-builder-styles) layout_version_id.
     if req.publish:
@@ -1015,6 +1023,88 @@ async def _assert_fetchable(url: str) -> None:
         await assert_public_url(url)
     except UnsafeUrlError as exc:
         raise _ResolveSkip(str(exc)) from exc
+
+
+def _brand_field(brand: Any, name: str) -> Any:
+    """Read one field off `GeneratedSite.brand`, whichever shape it is in.
+
+    The field is typed `Any`, so it is a `BrandIdentity` when the plan is built
+    in-process and a plain dict when the frontend posts the same site back to
+    /api/cms/push. A bare getattr silently returns None for the dict form —
+    which is every real push.
+    """
+    if brand is None:
+        return None
+    if isinstance(brand, dict):
+        return brand.get(name)
+    return getattr(brand, name, None)
+
+
+async def _push_favicon(
+    client: CmsClient, req: PushRequest, report: PushReport
+) -> None:
+    """Send the source site's icon to the CMS, as the entity's favicon.
+
+    Everything here is already built: `_resolve_to_bytes` fetches a URL or
+    decodes a data: URI, and `_coerce_to_cms_image` turns whatever came back
+    into something storable — including the `.ico` a `<link rel="icon">` most
+    often points at, which it transcodes to PNG.
+
+    Never fatal. The pages are pushed by this point, and an icon is a thing the
+    owner can set in Site settings; failing the whole push over one would be a
+    poor trade.
+    """
+    if not req.push_favicon:
+        report.record(PushStep(name="favicon", ok=True, detail="Skipped (per request)"))
+        return
+
+    src = _brand_field(req.site.brand, "favicon_url")
+
+    if not isinstance(src, str) or not src.strip():
+        report.record(
+            PushStep(name="favicon", ok=True, detail="Skipped — source declared none")
+        )
+        return
+
+    try:
+        file_bytes, content_type, filename = await _resolve_to_bytes(src)
+        coerced = await asyncio.to_thread(
+            _coerce_to_cms_image, file_bytes, content_type, filename
+        )
+        if coerced is None:
+            report.record(
+                PushStep(
+                    name="favicon",
+                    ok=True,
+                    detail=f"Skipped — unreadable image ({content_type})",
+                )
+            )
+            return
+
+        file_bytes, content_type, filename = coerced
+        favicon_url = await client.set_entity_favicon(
+            req.entity_token,
+            file_bytes=file_bytes,
+            filename=filename,
+            content_type=content_type,
+        )
+        report.record(
+            PushStep(
+                name="favicon",
+                ok=True,
+                detail="Site icon set",
+                data={"favicon_url": favicon_url} if favicon_url else {},
+            )
+        )
+    except (CmsApiError, _ResolveSkip, httpx.HTTPError) as exc:
+        report.record(
+            PushStep(
+                name="favicon",
+                ok=False,
+                error=str(exc),
+                detail="Site icon not set. Upload one in Site settings.",
+            )
+        )
 
 
 async def _resolve_to_bytes(

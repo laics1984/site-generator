@@ -35,6 +35,8 @@ _ASSET_USER_AGENT = "WebtreeSiteGenerator/0.2 (+contact: hello@example.com)"
 async def build_brand_candidate(
     site_name: str | None,
     logo: LogoCandidate | None,
+    *,
+    favicon_url: str | None = None,
 ) -> BrandIdentity | None:
     """Fetch the detected mark, read its palette, and decide whether it may be
     rendered as the brand logo.
@@ -42,8 +44,17 @@ async def build_brand_candidate(
     Every failure past this point degrades to a name-only brand rather than
     None: the site name is worth keeping even when the logo 404s, and losing it
     used to force the generator back onto the LLM's guess.
+
+    `favicon_url` is the site icon the reader found declared on the page. It is
+    carried through every degraded path: a logo that fails to fetch says nothing
+    about whether the page declared an icon. Falling back to the mark when it is
+    absent is `BrandIdentity`'s own rule, not restated here.
     """
-    name_only = BrandIdentity(name=site_name, mood=None) if site_name else None
+    name_only = (
+        BrandIdentity(name=site_name, favicon_url=favicon_url, mood=None)
+        if site_name
+        else None
+    )
     if logo is None:
         return name_only
 
@@ -92,6 +103,7 @@ async def build_brand_candidate(
         logo_data_url=extraction.logo_data_url,
         extracted_palette=extraction.palette,
         logo_is_light=extraction.logo_is_light,
+        favicon_url=favicon_url,
         logo_source=logo.source,
         logo_render_ok=render_ok,
         mood=None,

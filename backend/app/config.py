@@ -221,6 +221,18 @@ class Settings(BaseSettings):
     # bounds the legacy single-call prompt.
     legacy_prompt_max_chars: int = 24000
 
+    # Ask the LLM to work out a PASTE's page structure (services/paste_structure.py)
+    # instead of reading it from line shape. A pasted brief has no reliable
+    # structural markers — unlike a crawl (URLs) or a Word doc (heading styles) —
+    # so the line-shape heuristic mistakes layout labels for page titles. Off ⇒
+    # that heuristic is the whole reader, which is also the fallback whenever the
+    # LLM is unreachable or the paste is bigger than the cap below.
+    paste_llm_structure_enabled: bool = True
+    # Char cap on the line-numbered paste sent to that call. Past it we fall back
+    # to the heuristic rather than truncating: half a structure is worse than a
+    # consistent one, because the dropped tail silently loses its pages.
+    paste_structure_max_chars: int = 24000
+
     # Temperature for the design-brain pass (services/design_brain.py), which
     # picks per-section template variety/drama. Deliberately higher than the
     # 0.3 content/fidelity calls — bolder, less repetitive choices are exactly

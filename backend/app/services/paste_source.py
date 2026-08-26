@@ -68,7 +68,30 @@ def looks_like_html(text: str) -> bool:
 _ATX_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*#*$")
 _SETEXT_H1_RE = re.compile(r"^=+$")
 _SETEXT_H2_RE = re.compile(r"^-{2,}$")
+# A dash is only ever a list marker; a NUMBER is also how people number their
+# sections. Treating the two alike meant "1. HOME" — an author's own page list —
+# was read as a list item and demoted to body text, while the layout labels
+# around it became the document's only headings. So they are separated: a
+# symbol bullet disqualifies a heading outright, a number prefix is stripped and
+# the heading test applied to what is left ("1. You talk to the person building
+# it." still ends in a full stop and stays a list item).
+_SYMBOL_BULLET_RE = re.compile(r"^\s*[-*+•·]\s+")
+_NUMBER_PREFIX_RE = re.compile(r"^\s*\d{1,3}[.)]\s+")
+# The union, for stripping the marker off the text either way.
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•·]|\d+[.)])\s+")
+
+# A brief labels each line with the slot it fills ("Heading: Most projects don't
+# fail at launch"). The label is a marker on the line, exactly like a bullet or
+# a `#`, and it prints on the live page if it survives — so it is stripped the
+# same way. Deliberately a SHORT closed set of layout slots, never a vocabulary
+# denylist: "Title:" is absent because a staff card legitimately reads
+# "Title: Operations Manager", and "Contact:"/"Note:" are real copy.
+_SLOT_LABEL_RE = re.compile(
+    r"^(?:primary\s+|secondary\s+)?"
+    r"(?:heading|headline|sub-?head(?:ing)?|cta|call\s+to\s+action)"
+    r"\s*:\s*(?=\S)",
+    re.IGNORECASE,
+)
 
 # Shallow markdown de-syntaxing — NOT a parser. Pasting from a chat assistant is
 # the common case, and `**Our Team**` reaching the planner as literal asterisks
@@ -133,6 +156,7 @@ def _read_markup(html: str, given_title: str | None) -> ParsedPaste:
 def _read_text(text: str, given_title: str | None) -> ParsedPaste:
     lines = text.splitlines()
     marked = _has_explicit_markers(lines)
+    tiered = not marked and _has_heading_tiers(lines)
 
     blocks: list[OutlineBlock] = []
     images: list[DocImageRef] = []
@@ -146,7 +170,7 @@ def _read_text(text: str, given_title: str | None) -> ParsedPaste:
         if not line:
             continue
 
-        level, content = _text_heading(lines, index, marked=marked)
+        level, content = _text_heading(lines, index, marked=marked, tiered=tiered)
         if level and _is_setext_underline(lines, index + 1):
             skip_next = True
 
@@ -196,7 +220,9 @@ def _is_setext_underline(lines: list[str], index: int) -> bool:
     return bool(lines[index - 1].strip())
 
 
-def _text_heading(lines: list[str], index: int, *, marked: bool) -> tuple[int, str]:
+def _text_heading(
+    lines: list[str], index: int, *, marked: bool, tiered: bool
+) -> tuple[int, str]:
     """The line's heading level (0 = body) and its text with markers removed."""
     line = lines[index].strip()
 
@@ -212,14 +238,15 @@ def _text_heading(lines: list[str], index: int, *, marked: bool) -> tuple[int, s
     # to; guessing at the rest would fracture pages the author didn't ask for.
     if marked or not _looks_like_bare_heading(lines, index):
         return 0, line
-    return 2, line.rstrip(":")
+    level = 1 if tiered and _is_emphatic(line) else 2
+    return level, line.rstrip(":")
 
 
 def _looks_like_bare_heading(lines: list[str], index: int) -> bool:
-    line = lines[index].strip()
+    line = _NUMBER_PREFIX_RE.sub("", lines[index].strip())
     if not (2 <= len(line) <= _HEADING_MAX_CHARS):
         return False
-    if line[-1] in _SENTENCE_TAIL or _BULLET_RE.match(line):
+    if line[-1] in _SENTENCE_TAIL or _SYMBOL_BULLET_RE.match(line):
         return False
     if len(line.split()) > _HEADING_MAX_WORDS:
         return False
@@ -227,6 +254,57 @@ def _looks_like_bare_heading(lines: list[str], index: int) -> bool:
     if index > 0 and lines[index - 1].strip():
         return False
     return any(later.strip() for later in lines[index + 1 :])
+
+
+def _is_emphatic(line: str) -> bool:
+    """True when the line SHOUTS its heading — numbered, or in capitals.
+
+    The author's own way of marking a title as more important than the ones
+    around it, and the only tier signal available in unmarked prose.
+    """
+    if _NUMBER_PREFIX_RE.match(line):
+        return True
+    letters = [char for char in line if char.isalpha()]
+    return len(letters) >= 2 and all(char.isupper() for char in letters)
+
+
+def _has_heading_tiers(lines: list[str]) -> bool:
+    """True when the paste's bare headings come in two ranks.
+
+    A document that titles its sections "1. HOME" / "2. CONTACT" and *also*
+    labels their parts ("Hero", "Subhead") has stated a hierarchy, and the
+    ranks must not compete: at one flat level the labels open pages alongside
+    the titles. Mirrors ``doc_parser._pdf_size_to_level``, which ranks a PDF's
+    distinct heading font sizes for the same reason.
+
+    Both ranks must be present. A paste whose headings are all emphatic (or all
+    plain) has said nothing about hierarchy, so it keeps the single level it
+    has always had.
+    """
+    emphatic = plain = False
+    for index in range(len(lines)):
+        if not lines[index].strip() or not _looks_like_bare_heading(lines, index):
+            continue
+        if _is_emphatic(lines[index].strip()):
+            emphatic = True
+        else:
+            plain = True
+        if emphatic and plain:
+            return True
+    return False
+
+
+def strip_markers(line: str) -> str:
+    """One line's text with list markers and inline markdown removed.
+
+    Public because the LLM structuring pass slices the SAME pasted lines and
+    must clean them identically — otherwise a page title arrives as
+    "3. CONTACT", slugs as `/3-contact`, and `**Our Team**` reaches the planner
+    with its asterisks. Images are dropped here rather than returned: on that
+    path they have already been harvested by `read_paste`.
+    """
+    text, _ = _demarkdown(line)
+    return text
 
 
 def _demarkdown(line: str) -> tuple[str, list[tuple[str, str]]]:
@@ -243,6 +321,7 @@ def _demarkdown(line: str) -> tuple[str, list[tuple[str, str]]]:
     text = _MD_LINK_RE.sub(r"\1", text)
     text = _MD_QUOTE_RE.sub("", text)
     text = _BULLET_RE.sub("", text)
+    text = _SLOT_LABEL_RE.sub("", text)
     # Runs first-to-last so ***bold italic*** unwraps in one pass.
     text = _MD_EMPHASIS_RE.sub(r"\2", text)
     return text.strip(), images

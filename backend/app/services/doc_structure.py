@@ -17,6 +17,7 @@ belongs to each*.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 from app.models.content_blocks import ImageMetadata, SourceContent
 from app.services.doc_contract import classify_page_title, is_home_title, slug_for_title
@@ -85,6 +86,7 @@ def split_into_pages(
     *,
     images: list[DocImageRef] | None = None,
     description: str | None = None,
+    page_topics: Mapping[str, str] | None = None,
 ) -> SourceContent:
     """Build the primary ``SourceContent`` (homepage) with ``discovered_pages``.
 
@@ -92,12 +94,25 @@ def split_into_pages(
     page-topic headings — the planner then composes a full homepage from the
     industry template. Images are placed on the page (and given alt text from the
     heading) they appear under, so the resolver can match them to the right slot.
+
+    ``page_topics`` maps a heading's exact text to its page type when something
+    upstream already knows which headings name pages — today only the LLM paste
+    reader (``services/paste_structure.py``), which is asked precisely that.
+    Absent (every other caller: PDF, DOCX, a heuristically-read paste) the
+    behaviour is unchanged: ``classify_page_title`` decides, and a heading whose
+    words it doesn't recognise stays in-page content.
+
+    The dedupe rule follows the same split. Classified pages keep "one page per
+    topic", which is what stops a document repeating the word "about" from
+    fracturing. Supplied topics dedupe on the SLUG instead, because several
+    named pages legitimately share a type — "AI Agents" and "Custom Software"
+    are both ``services``, and collapsing them would silently drop one.
     """
     # Only headings at the document's *shallowest* topic level open pages. A doc
     # that uses H1 for page titles keeps its H2s as in-page sections; a doc that
     # only uses H2s lets those open pages. This stops a sub-heading like "Our
     # Story" inside About from fracturing off into its own page.
-    page_level = _page_heading_level(parsed)
+    page_level = _page_heading_level(parsed, page_topics)
 
     home = _Bucket(title=parsed.title or "Home", slug="", page_type="home")
     pages: list[_Bucket] = [home]
@@ -118,17 +133,24 @@ def split_into_pages(
             heading_at.append(last_heading)
             continue
 
-        page_type = (
-            classify_page_title(text)
-            if page_level is not None and block.level == page_level
-            else None
-        )
+        at_page_level = page_level is not None and block.level == page_level
+        named = page_topics.get(text) if page_topics is not None else None
+        page_type = named or (classify_page_title(text) if at_page_level else None)
         opens_page = (
             page_type is not None
+            and (named is not None or at_page_level)
             and not is_home_title(text)
-            and page_type != current.page_type  # same topic ⇒ stays in this page
-            and page_type not in seen_types      # one page per topic
             and len(pages) - 1 < MAX_DISCOVERED_PAGES
+            and (
+                # A named page answers for itself; slug uniqueness (below) is
+                # the only dedupe it needs.
+                named is not None
+                or (
+                    page_type != current.page_type  # same topic ⇒ stays in this page
+                    and page_type not in seen_types  # one page per topic
+                )
+            )
+            and (named is None or slug_for_title(text) not in used_slugs)
         )
 
         if opens_page:
@@ -234,9 +256,25 @@ def _image_payload(bucket: _Bucket) -> tuple[list[str], list[ImageMetadata]]:
     return urls, meta
 
 
-def _page_heading_level(parsed: ParsedDocument) -> int | None:
+def _page_heading_level(
+    parsed: ParsedDocument, page_topics: Mapping[str, str] | None = None
+) -> int | None:
     """The shallowest heading level (1-``_MAX_PAGE_HEADING_LEVEL``) at which a
-    page-topic title appears, or ``None`` if the doc has none (→ single page)."""
+    page-topic title appears, or ``None`` if the doc has none (→ single page).
+
+    A supplied topic counts as a page-topic title here too, so a named heading
+    sets the level even when ``classify_page_title`` doesn't recognise its
+    words — otherwise the level would come out ``None`` and every named page
+    would collapse back into the homepage.
+    """
+    if page_topics:
+        named_levels = [
+            block.level
+            for block in parsed.outline
+            if 0 < block.level and block.text.strip() in page_topics
+        ]
+        if named_levels:
+            return min(named_levels)
     levels = [
         block.level
         for block in parsed.outline
