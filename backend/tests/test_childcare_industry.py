@@ -416,11 +416,23 @@ class ChildcareLogoTest(unittest.TestCase):
             logo_is_light=True,
         )
 
-    def test_no_contrast_chip_border_around_logo(self):
+    def test_no_box_around_logo(self):
+        # The "border" the user saw was the old Logo lockup chip. The site
+        # generator no longer boxes or filters the logo for ANY industry (see
+        # header_footer._header_chrome): a same-brightness logo instead makes
+        # the WHOLE header switch to a contrasting, still on-theme background.
         theme = build_theme("#F97316", industry="childcare")
         header = build_header(self._brand(), theme, nav_items=[], industry="childcare")
-        # The "border" the user saw was the Logo lockup chip — gone for childcare.
         self.assertIsNone(_find_by_name(header, "Logo lockup"))
+
+    def test_light_logo_switches_header_to_secondary_not_slate(self):
+        # The childcare mood already keeps `secondary` a soft, brand-hued dark
+        # tone rather than near-black slate (test_secondary_is_not_the_near_
+        # black_slate above), so switching the whole header to it for
+        # contrast stays warm and on-brief instead of harsh.
+        theme = build_theme("#F97316", industry="childcare")
+        header = build_header(self._brand(), theme, nav_items=[], industry="childcare")
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.secondary)
 
     def test_logo_is_enlarged(self):
         theme = build_theme("#F97316", industry="childcare")
@@ -429,10 +441,10 @@ class ChildcareLogoTest(unittest.TestCase):
         self.assertIsNotNone(logo)
         self.assertEqual(logo.styles.get("height"), "68px")
 
-    def test_other_industries_keep_chip_and_default_size(self):
+    def test_other_industries_have_no_box_either_and_default_size(self):
         theme = build_theme("#2563eb")  # light theme, light logo
         header = build_header(self._brand(), theme, nav_items=[], industry="restaurant")
-        self.assertIsNotNone(_find_by_name(header, "Logo lockup"))
+        self.assertIsNone(_find_by_name(header, "Logo lockup"))
         logo = _find_by_name(header, "Brand Logo")
         self.assertEqual(logo.styles.get("height"), "52px")
 
