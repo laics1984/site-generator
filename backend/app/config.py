@@ -385,6 +385,16 @@ class Settings(BaseSettings):
     # every image is a promo graphic) instead of screening the whole pool.
     ocr_verify_budget: int = 4
 
+    # Graphic screening (services/image_graphics.py): read the alpha channel and
+    # the colour variety to tell an authored mark from a photograph, for the
+    # sites whose markup declares nothing — no <header>, no alt, no "logo" in the
+    # filename. Rides the same off-critical-path window as the OCR screen, but
+    # does its own downloads: the vision prefetch re-encodes to JPEG, which
+    # destroys the alpha channel this measures.
+    graphic_detection_enabled: bool = True
+    graphic_max_images: int = 12  # screening cap per generation
+    graphic_fetch_concurrency: int = 3
+
     photo_sampling_enabled: bool = True
     # Deliberately tighter than the vision fetch: a hero's dressing is an
     # enhancement, never worth stalling a build for. On timeout the photo just
@@ -419,6 +429,13 @@ class Settings(BaseSettings):
     # SQLite file for durable crawl-job state (services/db.py). Inside the
     # container this lives on the mounted data volume.
     sitegen_db_path: str = "/app/data/sitegen.db"
+
+    # Saved browser sessions (services/browser_session.py) — a Playwright
+    # storage_state per named site, so a render can read what only a signed-in
+    # visitor sees. Same data volume as the SQLite file above: it survives a
+    # `compose down`, and it is NOT in the repo tree, so a session full of
+    # cookies can't be committed by accident.
+    browser_session_dir: str = "/app/data/browser-sessions"
 
     # Luminance-band section rhythm (SECTION_VISUAL_POLICY_SPEC.md). When enabled,
     # the planner assigns a visual_policy per the §5 matrix and the schema_builder
@@ -528,6 +545,13 @@ class Settings(BaseSettings):
     # Public-page render when no token is available. Fragile by nature (Facebook
     # changes its markup without notice); set false to require a token.
     facebook_render_fallback_enabled: bool = True
+    # Let that render reuse a signed-in session captured by
+    # `scripts/facebook_login.py`. Logged out, Facebook serves og: tags and
+    # little else; signed in, the About panel (address, hours, phone, category)
+    # renders too. Set false to keep every read anonymous — the render still
+    # works, it just sees less. Refused outright under DEPLOYMENT=hosted, where
+    # one person's cookies would be shared by every user (deployment/guards.py).
+    facebook_session_enabled: bool = True
     # Ask the vision judge whether the profile picture is a real mark or a
     # photograph, and demote it to palette-only when it's a photo. No-op unless
     # llm_vision_model is configured.

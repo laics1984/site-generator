@@ -79,6 +79,17 @@ def check(profile: DeploymentProfile | None = None) -> tuple[list[str], list[str
             "LAN target from your own machine only."
         )
 
+    if settings.facebook_session_enabled:
+        errors.append(
+            "DEPLOYMENT=hosted with FACEBOOK_SESSION_ENABLED=true: this process "
+            "stores ONE person's Facebook login cookies and replays them for "
+            "every read, so every user of a hosted instance would browse "
+            "Facebook as whoever signed in last — and POST "
+            "/api/facebook/session accepts those cookies unauthenticated. That "
+            "feature is for a laptop. Set it false; Page access tokens are the "
+            "multi-user answer."
+        )
+
     local_origins = [o for o in settings.cors_origins if _host_of(o) in _LOOPBACK_HOSTS]
     if not settings.cors_origins:
         errors.append(

@@ -75,6 +75,26 @@ def _offline_ocr():
 
 
 @pytest.fixture(autouse=True)
+def _offline_graphic_screen():
+    """Disable the pixel graphic screen for every test.
+
+    ``image_graphics.screen_source_images_for_graphics`` downloads every pool
+    image to read its alpha channel — it cannot reuse the vision prefetch, which
+    re-encodes to JPEG. Left on, the suite would hit the network for every fake
+    ``https://cdn.example.com/...`` URL and wait out the timeout, exactly as
+    ``_offline_photo_sampling`` describes. Off, ``role`` keeps whatever the
+    scraper measured, which is the pre-screen behaviour every existing assertion
+    was written against. The graphic-screening tests flip it back on themselves.
+    """
+    original = settings.graphic_detection_enabled
+    settings.graphic_detection_enabled = False
+    try:
+        yield
+    finally:
+        settings.graphic_detection_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _offline_facebook():
     """Keep the Facebook reader off the network for every test.
 

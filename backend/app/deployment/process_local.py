@@ -116,6 +116,13 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
         severity=EFFICIENCY,
     ),
     ProcessLocal(
+        module="app.services.image_graphics",
+        attribute="_GRAPHIC_CACHE",
+        holds="url → is_graphic pixel verdicts (bounded FIFO)",
+        at_scale="Cache miss on another worker — the image is re-downloaded.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
         module="app.services.text_detection",
         attribute="_TEXT_CACHE",
         holds="url → has_text OCR results (bounded FIFO)",

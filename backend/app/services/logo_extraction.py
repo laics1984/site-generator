@@ -23,6 +23,10 @@ Provenance travels with the URL because the two consumers want different things:
 the header needs a legible mark, the palette extractor just needs brand-coloured
 pixels. Callers gate rendering on the source (and, for icons, on the decoded
 size); they seed colour from whatever came back.
+
+A third consumer asks the inverse question — `brand_mark_urls` returns the whole
+candidate set rather than the winner, so the scraper can keep the brand mark out
+of the photo pool. See its docstring for why that has to share these predicates.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from bs4 import BeautifulSoup, Tag
@@ -122,22 +127,82 @@ def find_favicon(soup: BeautifulSoup, base_url: str) -> str | None:
     return icon.url if icon is not None else None
 
 
+def brand_mark_urls(
+    soup: BeautifulSoup, base_url: str, *, site_name: str | None = None
+) -> set[str]:
+    """Every URL on this page that renders the site's OWN brand mark.
+
+    `extract_logo` picks one of these to *be* the logo; this returns the whole
+    candidate set, because the image pool asks a different question: not "which
+    mark is the brand's" but "is this picture the brand's mark at all". A site
+    with a header lockup and a differently-named white footer variant has two
+    files and one brand, and only the winner would be excluded otherwise.
+
+    The caller is `scraper._parse_rendered_html`, which stamps `role="logo"` on
+    every matching image candidate. Sharing `_iter_real_marks` with
+    `extract_logo` is the point: the photo pool and the header cannot disagree
+    about what the logo is, because they ask the same predicate.
+
+    Two deliberate omissions:
+
+    * **`og:image` is not here.** It is `extract_logo`'s last-resort tier and a
+      palette source only (see the module docstring). On most sites it is a real
+      photograph, and excluding it would cost the site its best hero.
+    * **Inline `<svg>` marks contribute nothing**, by construction: they carry
+      `data_url`, not `url`, and never appear among the scraper's image
+      candidates, which come from `<img src>`. The `mark.url` filter below is
+      what drops them — not an oversight.
+    """
+    urls = {
+        mark.url
+        for mark in _iter_real_marks(soup, base_url, site_name=site_name)
+        if mark.url
+    }
+    icon = _find_icon(soup, base_url)
+    if icon is not None and icon.url:
+        urls.add(icon.url)
+    return urls
+
+
 # --- tier 1: a real mark --------------------------------------------------------
 
 
 def _find_real_mark(
     soup: BeautifulSoup, base_url: str, *, site_name: str | None
 ) -> LogoCandidate | None:
+    """The best real mark on the page — the first tier that hits.
+
+    `_iter_real_marks` is lazy, so this costs exactly what the old straight-line
+    version did: a header `<img>` match returns before `find_all("svg")` runs.
+    """
+    return next(_iter_real_marks(soup, base_url, site_name=site_name), None)
+
+
+def _iter_real_marks(
+    soup: BeautifulSoup, base_url: str, *, site_name: str | None
+) -> Iterator[LogoCandidate]:
+    """Every image on the page that reads as the site's own mark, best first.
+
+    Tier order is the module docstring's: header `<img>` → inline header
+    `<svg>` → logo-named `<img>` anywhere. `extract_logo` takes the first;
+    `brand_mark_urls` takes them all.
+    """
     header_imgs = [img for img in soup.find_all("img") if _in_header(img)]
 
     # 1a. A header <img> that names itself, matches the site name, or is the
     # only image in the header (a header with exactly one image is a lockup).
+    # A wall tile is excluded here for the same reason as in tier 1c: a strip of
+    # partner marks inside a <nav> is still somebody else's brand, and
+    # "partner-logo.png" trips every logo hint there is. (No-op for
+    # `sole_header_img` — one image is not a rack of three.)
     sole_header_img = header_imgs[0] if len(header_imgs) == 1 else None
     for img in header_imgs:
+        if _in_logo_wall(img):
+            continue
         if img is sole_header_img or _is_brand_img(img, site_name=site_name):
             url = _img_url(img, base_url)
             if url:
-                return LogoCandidate(source="logo", url=url)
+                yield LogoCandidate(source="logo", url=url)
 
     # 1b. An inline <svg> brand mark in the header.
     for svg in soup.find_all("svg"):
@@ -147,7 +212,7 @@ def _find_real_mark(
             continue
         data_url = _svg_data_url(svg)
         if data_url:
-            return LogoCandidate(source="logo", data_url=data_url)
+            yield LogoCandidate(source="logo", data_url=data_url)
 
     # 1c. A logo-named <img> anywhere — footer lockups, pages whose header is
     # built out of markup we can't identify as one.
@@ -162,9 +227,7 @@ def _find_real_mark(
     for img in _drop_repeated_marks(loose):
         url = _img_url(img, base_url)
         if url:
-            return LogoCandidate(source="logo", url=url)
-
-    return None
+            yield LogoCandidate(source="logo", url=url)
 
 
 def _drop_repeated_marks(images: list[Tag]) -> list[Tag]:

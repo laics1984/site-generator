@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import app.services.profile_text as profile_text
 import app.services.scraper as scraper
 from app.services.scraper import _extract_images
+from app.services.source_router import promptable_images
 
 
 def _stamp(**overrides) -> str:
@@ -14,6 +15,102 @@ def _stamp(**overrides) -> str:
     base = {"nw": 0, "nh": 0, "x": 0, "y": 0, "w": 0, "h": 0, "vw": 1280, "vh": 800}
     base.update(overrides)
     return json.dumps(base)
+
+
+class LogoIsNotContentTest(unittest.TestCase):
+    """The site's own logo used to reach the About section's featured slot.
+
+    `image_evidence.classify_role` measures GEOMETRY, and its vocabulary has no
+    "logo" — a wordmark rendered at 180x180 measures exactly like a square
+    photograph, so on the render path the header mark landed in the pool as
+    role="content". Four gates downstream already veto role="logo"; none of them
+    ever saw one. `logo_extraction.brand_mark_urls` is the evidence they were
+    missing, and it is the SAME predicate that decides what the header renders.
+    """
+
+    _COPY = "Real page copy about the clinic. " * 20
+
+    def _parse(self, body: str):
+        return scraper._parse_rendered_html(
+            f"<html><head><title>Acme Clinic</title></head><body>{body}"
+            f"<p>{self._COPY}</p></body></html>",
+            "https://acme.test",
+        )
+
+    def test_header_logo_is_stamped_logo_and_leaves_the_photo_pool(self):
+        parsed = self._parse(
+            '<header><a href="/"><img class="site-logo" src="/assets/mark-rgb.png" '
+            f"alt=\"Acme Clinic\" data-webtree-evidence='{_stamp(nw=800, nh=800, y=30, w=180, h=180)}'>"
+            "</a></header>"
+            '<section><h2>About us</h2>'
+            '<img src="/photos/clinic-interior.jpg" alt="Our clinic" '
+            f"data-webtree-evidence='{_stamp(nw=1600, nh=1000, y=1200, w=800, h=500)}'>"
+            "</section>"
+        )
+
+        by_url = {m.url: m for m in parsed.source_content.image_metadata}
+        # Without the brand-mark stamp this reads "content" — big enough to
+        # clear _CONTENT_MIN_AREA, and nothing else can say otherwise.
+        self.assertEqual(by_url["https://acme.test/assets/mark-rgb.png"].role, "logo")
+        self.assertEqual(by_url["https://acme.test/photos/clinic-interior.jpg"].role, "content")
+
+        pool = {m.url for m in promptable_images(parsed.source_content)}
+        self.assertNotIn("https://acme.test/assets/mark-rgb.png", pool)
+        self.assertIn("https://acme.test/photos/clinic-interior.jpg", pool)
+
+    def test_the_logo_the_header_renders_is_the_one_excluded(self):
+        """The pool and the header can't disagree — they ask one predicate."""
+        parsed = self._parse(
+            '<header><a href="/"><img class="site-logo" src="/assets/mark-rgb.png" '
+            f"data-webtree-evidence='{_stamp(nw=800, nh=800, y=30, w=180, h=180)}'>"
+            "</a></header>"
+        )
+
+        by_url = {m.url: m for m in parsed.source_content.image_metadata}
+        self.assertEqual(by_url[parsed.logo.url].role, "logo")
+
+    def test_a_hashed_cdn_logo_url_is_caught_too(self):
+        """The filename test (`looks_like_logo_url`) misses these entirely — it
+        needs the literal word "logo" in the basename. The structural predicate
+        does not."""
+        parsed = self._parse(
+            '<header><img class="custom-logo" src="/wp-content/uploads/a1b2c3d4e5f6.png" '
+            f"data-webtree-evidence='{_stamp(nw=600, nh=600, y=20, w=200, h=200)}'>"
+            "</header>"
+        )
+
+        by_url = {m.url: m for m in parsed.source_content.image_metadata}
+        self.assertEqual(
+            by_url["https://acme.test/wp-content/uploads/a1b2c3d4e5f6.png"].role, "logo"
+        )
+
+    def test_a_partner_logo_wall_keeps_its_measured_role(self):
+        """Those tiles ARE the section's content. Excluding them would delete
+        the awards/partners section the same way the size filter once did."""
+        cell = _stamp(nw=400, nh=200, y=1600, w=200, h=100, grid=6)
+        tiles = "".join(
+            f'<img class="partner-logo" src="/uploads/partner{i}-logo.png" '
+            f"data-webtree-evidence='{cell}'>"
+            for i in range(6)
+        )
+        parsed = self._parse(f"<section><h2>Our partners</h2>{tiles}</section>")
+
+        roles = {m.role for m in parsed.source_content.image_metadata}
+        self.assertEqual(roles, {"gallery"})
+
+    def test_og_image_is_not_treated_as_the_brand_mark(self):
+        """og:image is a palette source for the logo picker, but in the photo
+        pool it is usually the site's best photograph."""
+        parsed = scraper._parse_rendered_html(
+            '<html><head><title>Acme</title>'
+            '<meta property="og:image" content="/photos/social-card.jpg">'
+            f"</head><body><p>{self._COPY}</p></body></html>",
+            "https://acme.test",
+        )
+
+        by_url = {m.url: m for m in parsed.source_content.image_metadata}
+        self.assertEqual(by_url["https://acme.test/photos/social-card.jpg"].role, "unknown")
+
 
 
 class ScraperImageExtractionTest(unittest.TestCase):

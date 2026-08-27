@@ -18,6 +18,7 @@ from app.routers import (
     brand,
     cms,
     document,
+    facebook_session,
     generate,
     health,
     pages,
@@ -84,6 +85,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(brand.router)
 app.include_router(scrape.router)
+app.include_router(facebook_session.router)
 app.include_router(document.router)
 app.include_router(paste.router)
 app.include_router(source.router)

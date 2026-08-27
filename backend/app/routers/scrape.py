@@ -35,6 +35,7 @@ from app.services.facebook_orchestrator import (
     run_facebook_job,
     stash_token,
 )
+from app.services.facebook_source import saved_session
 from app.services.facebook_urls import FacebookUrlError, parse_ref
 from app.services.scraper import ScrapeError, extend_crawl
 from app.services.sitemap import probe_sitemap
@@ -147,10 +148,16 @@ async def start_crawl(payload: StartCrawlRequest) -> dict[str, Any]:
 
     mgr = get_manager()
     options: dict[str, Any] = (
-        # The token itself is deliberately absent — only the fact that one was
-        # supplied, so `find_reusable` doesn't hand a tokenless (thinner) result
-        # back to a caller who supplied one.
-        {"source": "facebook", "has_token": bool((payload.access_token or "").strip())}
+        # Neither the token nor the session is recorded — only WHETHER each was
+        # available, because both change how much the read returns and
+        # `find_reusable` keys on this dict. Without `has_session`, the first
+        # read after connecting a session would be served the anonymous result
+        # cached before it, and signing in would look like it did nothing.
+        {
+            "source": "facebook",
+            "has_token": bool((payload.access_token or "").strip()),
+            "has_session": saved_session() is not None,
+        }
         if handler == "facebook"
         else {
             "respect_robots": payload.respect_robots,

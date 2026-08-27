@@ -279,6 +279,71 @@ re-asking there is double jeopardy, and both had to be reverted once already.
 Tests: `test_scraper_images.CardRackIsNotARosterTest`,
 `test_directory_roster.PageScopedRosterTest`.
 
+## The brand mark is not content
+
+A site's own logo must never fill a photo slot. `image_evidence.classify_role`
+measures the layout **box**, and its vocabulary has a `"logo"` value it can
+never return: a wordmark rendered at 180x180 measures exactly like a square
+photograph. So on the render path the logo entered the pool as `role="content"`
+and won slots on merit — the About intent-pin (`image_match.PRIMARY_INTENTS`
+skips the lexical gate), `media`'s **page-local size fallback** (the logo is
+often the biggest file on the page, and on a splash page the *only* one), or an
+LLM `image_ref`.
+
+**Four gates already veto `role="logo"`** — `source_router._UNPROMPTABLE_ROLES`,
+`image_match._EXCLUDED_ROLES`, the size fallback's own filter in `media.py`, and
+`image_refs._unfit_for_kind`. Every one was correct; none ever saw one. The bug
+was never a missing gate, it was a missing **producer**. Two now exist, and both
+write the same field, so nothing downstream changed:
+
+1. **Structural** (`logo_extraction.brand_mark_urls`, stamped in
+   `scraper._parse_rendered_html`). `_find_real_mark` is a lazy generator
+   (`_iter_real_marks`) and `extract_logo` takes `next(...)`, so the pool asks
+   the **same predicate that decides what the header renders** — they cannot
+   disagree. It returns the whole candidate set, not the winner: a header
+   lockup and a differently-named white footer variant are two files and one
+   brand. **`og:image` is excluded on purpose** — it is the last-resort tier and
+   a palette source only, and on most sites it is a real photograph.
+2. **Pixels** (`image_graphics`), for the sites that declare nothing.
+   webtree.my's splash page is one `<img class="w-96" src="/webtree_greenwhite.png">`
+   with no `<header>`, no `alt`, no home link and no "logo" in the src — every
+   structural signal absent. Runs at **generation** time (so it fixes a cached
+   scrape too), alongside the OCR screen.
+
+**The pixel test is two measurements and needs BOTH.** Transparency says
+"authored, not photographed"; flatness (distinct colours as a share of visible
+pixels) is what separates a wordmark from a photograph someone cut out of its
+background — and a product cutout is legitimate content:
+
+| | clear | distinct |
+|---|---|---|
+| webtree wordmark | 62.5% | **2.4%** |
+| photograph | 0% | 67.6% |
+| photograph, cut out | 64.0% | 79.6% |
+
+Both margins are ~10x, so the thresholds read a real gap rather than a sample.
+**Transparency alone would withdraw the cutout** — that is the whole reason
+flatness is there. It cannot reuse `image_vision`'s prefetched payloads:
+`_downscale_to_b64` does `convert("RGB")` and re-encodes as JPEG, destroying
+half the evidence.
+
+**A grid cell is never screened, by either producer.** A partner/award wall IS
+the section's content and its tiles are flat transparent graphics by
+definition — the same exception `classify_role` and `_in_logo_wall` already
+make. `_in_logo_wall` now guards `_iter_real_marks`'s header tier too, since
+"partner-logo.png" trips every logo hint there is wherever it sits.
+
+Where the slot ends up with nothing, `about` resolves stock: heroes were
+already backfilled for a blank `image_query`
+(`scaffold_enforcement._backfill_image_query`, generalized from the hero-only
+version) and `about` now is too, sharing `_default_about_image_query` with
+`_default_block` so an injected and a backfilled about can't drift apart.
+
+Tests: `test_image_graphics.py`, `test_logo_extraction.BrandMarkUrlsTest`,
+`test_scraper_images.LogoIsNotContentTest`. `conftest._offline_graphic_screen`
+pins the pixel pass off for the suite (it downloads bytes), mirroring
+`_offline_ocr`.
+
 ## Stock images only
 
 A request-scoped `stock_images_only` on both generate endpoints dresses the

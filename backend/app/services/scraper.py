@@ -69,7 +69,12 @@ from app.services.image_urls import (
     looks_like_logo_url as _looks_like_logo_url,
     tag_classes as _tag_classes,
 )
-from app.services.logo_extraction import LogoCandidate, extract_logo, find_favicon
+from app.services.logo_extraction import (
+    LogoCandidate,
+    brand_mark_urls,
+    extract_logo,
+    find_favicon,
+)
 from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
 from app.services.map_embed import ParsedMap, parse_map_src
 from app.services.video_embed import ParsedVideo, parse_video_src
@@ -672,7 +677,10 @@ def _extract_images(
     """
     Collect all <img> + og:image + apple-touch-icon, filter and rank.
     Returns candidates ordered: hero → about → generic. Logos are surfaced
-    separately by _extract_logo_candidate.
+    separately by _extract_logo_candidate — and removed from this pool by the
+    `brand_mark_urls` stamp in _parse_rendered_html, which is what actually
+    enforces that sentence (roles are assigned here; "logo" is not one geometry
+    can measure).
 
     When the page carries render-evidence stamps (Playwright path), roles come
     from measured geometry, decorations are dropped, and the hero is the
@@ -2275,11 +2283,32 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         # Claim the cards' text before the LLM ever sees it — otherwise it
         # narrates the same titles into an invented, disconnected section.
         extracted_text = _strip_document_card_lines(extracted_text, document_cards)
+    # The brand mark is not content. `classify_role` measures GEOMETRY, and its
+    # vocabulary has no "logo" — a wordmark rendered at 180x180 measures exactly
+    # like a square photograph — so on the render path the site's own logo
+    # entered the pool as role="content" and then won slots on merit: the About
+    # intent-pin (image_match.PRIMARY_INTENTS skips the lexical gate), the
+    # page-local size fallback (the logo is often the biggest file on the page),
+    # or an LLM image_ref. Four gates downstream already veto role="logo"
+    # (source_router._UNPROMPTABLE_ROLES, image_match._EXCLUDED_ROLES, media's
+    # page-local size fallback, image_refs._unfit_for_kind) and not one of them
+    # ever saw one. Stamped from the logo detector's OWN candidate set, so the
+    # photo pool and the header cannot disagree about what the logo is.
+    # (routers/document._select_logo and facebook_source.to_image_metadata
+    # already enforce this rule for their readers; the crawler was the gap.)
+    # Runs before the heuristics below — positive identification outranks a
+    # filename guess, and they skip a candidate this already decided.
+    brand_urls = brand_mark_urls(soup, final_url, site_name=site_name)
+    for candidate in image_candidates:
+        if candidate.url in brand_urls:
+            candidate.role = "logo"
     # Fast-path role stamping: without render evidence every candidate is
     # role="unknown", which lets a nav logo or a grid headshot win the hero
     # background. The filename and the profile-card structure are evidence we
     # DO have — use them. (No-ops on the render path, where roles are already
-    # measured.)
+    # measured.) The filename test still earns its keep here: it reaches
+    # og:image and CSS-background candidates, which have no <img> tag for the
+    # structural predicates above to read.
     for candidate in image_candidates:
         if candidate.role == "unknown" and _looks_like_logo_url(candidate.url):
             candidate.role = "logo"

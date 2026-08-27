@@ -1,16 +1,30 @@
-"""Read a public Facebook Page by rendering it, when there's no access token.
+"""Read a Facebook Page by rendering it, when there's no access token.
 
-Best-effort by construction. Facebook changes this markup without notice and
-login-walls datacentre IPs freely, so everything here is defensive and the
-result is always flagged `partial` — a token reads far more, and the UI uses
-that flag to say so.
+Best-effort by construction. Facebook changes this markup without notice, so
+everything here is defensive and the result is always flagged `partial` — a
+Graph token reads structured posts and recommendations that no render can, and
+the UI uses that flag to say so.
 
-Two rules keep this honest:
+Optionally signed in. `fetch_page` takes a `storage_state` captured by
+`scripts/facebook_login.py` (see `services/browser_session.py`); with one, the
+About panel — address, hours, phone, category — renders and lands in the read.
+Without one the Page still reads, just thinner: og: tags and whatever the public
+shell shows. Neither path is an error.
 
-1. **A login wall is an error, not a thin result.** Returning a Page carrying
-   only a name would send a near-empty, half-invented site downstream. We raise
-   and tell the user a token fixes it.
-2. **Parsing is a pure function of the HTML.** `parse_public_html` takes markup
+Three rules keep this honest:
+
+1. **A wall is what Facebook TELLS us it is, not what its markup mentions.**
+   The wall test was a denylist of markup needles (`login_form`, `/login/?next=`)
+   matched against the whole HTML — and Facebook bundles its login *dialog* into
+   every page it serves, so those needles are present on the pages that render
+   perfectly. Every public read failed, for as long as the check existed. The
+   signal that actually distinguishes them is the URL we ended up on: a wall is
+   a redirect to `/login`, which is Facebook stating it. A denylist of Facebook's
+   own vocabulary ages badly in exactly this way — see the equivalent lesson in
+   CLAUDE.md about section-catalog gates.
+2. **A login wall is an error, not a thin result.** Returning a Page carrying
+   only a name would send a near-empty, half-invented site downstream.
+3. **Parsing is a pure function of the HTML.** `parse_public_html` takes markup
    and returns a `FacebookPage`, so the tests drive it with inline strings and
    the suite stays offline.
 """
@@ -20,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
@@ -40,19 +55,33 @@ class FacebookRenderError(Exception):
 
 
 LOGIN_WALL_MESSAGE = (
-    "Facebook asked us to log in before showing this Page. Connect a Page "
-    "access token to read it, or try again with a Page that's fully public."
+    "Facebook redirected us to its login screen instead of showing this Page. "
+    "Sign in once (./dev.sh fb-login) or connect a Page access token, then try "
+    "again."
 )
 
+# Paths Facebook sends you to INSTEAD of the thing you asked for. Landing on one
+# is the wall — it is Facebook's own statement, not our guess about its markup,
+# and it is what catches the retired mbasic hosts now that they 302 to /login.
+_WALL_PATH_RE = re.compile(r"^/(login|checkpoint|recover|privacy/consent)\b")
+
+# Phrases that only appear when Facebook is refusing, matched against VISIBLE
+# TEXT — never raw HTML, where Facebook's own string tables and login dialog
+# would match on every page including the good ones. Deliberately whole phrases:
+# a bare "log in" is on every Facebook page ever served, signed in or not.
+#
+# The wall's other tell is structural and already checked below: a login screen
+# carries no `og:title`, so a Page with no identity fails regardless of wording.
 _LOGIN_WALL_MARKERS = (
     "you must log in to continue",
-    "log in to continue",
-    "login_form",
-    "/login/?next=",
-    "loginform",
-    "content_not_available",
     "this content isn't available right now",
+    "this page isn't available",
 )
+
+# Markup that carries no words a reader sees. Stripped before any text scan:
+# a rendered Facebook Page is ~900KB of mostly inline script, and `get_text()`
+# over the lot buried the label scan in minified JavaScript.
+_NON_TEXT_TAGS = ("script", "style", "noscript", "template")
 
 # "1,234 likes · 56 talking about this · 78 were here"
 _LIKES_RE = re.compile(r"([\d,.\s]+)\s*(?:likes|people like this|followers)", re.I)
@@ -93,12 +122,39 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{6,}\d")
 
 
-def is_login_wall(html: str) -> bool:
-    """True when Facebook served a login/consent interstitial instead of the Page."""
-    lowered = (html or "").lower()
-    if not lowered:
+def _visible_text(soup: BeautifulSoup) -> str:
+    """The page's words, with script/style/noscript removed. Mutates `soup`.
+
+    Idempotent, so callers that want both this and `_text_lines` pay for the
+    strip once.
+    """
+    for tag in soup(_NON_TEXT_TAGS):
+        tag.decompose()
+    return soup.get_text(separator="\n")
+
+
+def _is_login_wall(soup: BeautifulSoup, *, final_url: str) -> bool:
+    """The wall test, on an already-parsed page. Mutates `soup` (see above)."""
+    try:
+        path = urlparse(final_url).path or ""
+    except ValueError:
+        path = ""
+    if _WALL_PATH_RE.match(path):
         return True
+    lowered = _visible_text(soup).lower()
     return any(marker in lowered for marker in _LOGIN_WALL_MARKERS)
+
+
+def is_login_wall(html: str, *, final_url: str = "") -> bool:
+    """True when Facebook refused the Page instead of serving it.
+
+    `final_url` is where the render actually landed — the authoritative signal,
+    and the only one that distinguishes a wall from a Page whose bundled login
+    dialog merely mentions logging in.
+    """
+    if not (html or "").strip():
+        return True
+    return _is_login_wall(BeautifulSoup(html, "lxml"), final_url=final_url)
 
 
 def _meta(soup: BeautifulSoup, prop: str) -> str | None:
@@ -154,7 +210,7 @@ def _json_ld_blocks(soup: BeautifulSoup) -> list[dict]:
 
 
 def _text_lines(soup: BeautifulSoup) -> list[str]:
-    text = soup.get_text(separator="\n")
+    text = _visible_text(soup)
     return [line.strip() for line in text.split("\n") if line.strip()]
 
 
@@ -201,17 +257,27 @@ def _scan_hours(lines: list[str]) -> list[FacebookHours]:
     return hours
 
 
-def parse_public_html(html: str, ref: FacebookRef) -> FacebookPage:
-    """Build a `FacebookPage` from rendered public markup. Pure — no I/O.
+def parse_public_html(
+    html: str,
+    ref: FacebookRef,
+    *,
+    final_url: str = "",
+    signed_in: bool = False,
+) -> FacebookPage:
+    """Build a `FacebookPage` from rendered markup. Pure — no I/O.
 
-    Raises `FacebookRenderError` when the markup is a login wall or carries no
+    Raises `FacebookRenderError` when the render hit a login wall or carries no
     usable identity: a Page with nothing but a URL is worse than an error,
     because everything downstream would have to invent the rest.
     """
-    if is_login_wall(html):
+    if not (html or "").strip():
         raise FacebookRenderError(LOGIN_WALL_MESSAGE, status=422)
 
-    soup = BeautifulSoup(html or "", "lxml")
+    # One parse for the whole function — the wall test needs the visible text
+    # and so does the label scan, and this markup is ~900KB.
+    soup = BeautifulSoup(html, "lxml")
+    if _is_login_wall(soup, final_url=final_url):
+        raise FacebookRenderError(LOGIN_WALL_MESSAGE, status=422)
 
     og_title = _meta(soup, "og:title")
     name = (og_title or ref.handle or "").strip()
@@ -268,9 +334,9 @@ def parse_public_html(html: str, ref: FacebookRef) -> FacebookPage:
         hours=_scan_hours(lines),
         fan_count=fan_count,
         profile_picture_url=_meta(soup, "og:image"),
-        fetched_via="render",
-        # Always partial: a public render never sees emails, structured hours,
-        # posts or reviews, so the UI should always offer the token.
+        fetched_via="render_session" if signed_in else "render",
+        # Always partial: no render, signed in or not, sees structured hours,
+        # posts or recommendations, so the UI should always offer the token.
         partial=True,
         missing_fields=_missing_for(labelled, blurb),
     )
@@ -288,24 +354,36 @@ def _missing_for(labelled: dict[str, str], blurb: str | None) -> list[str]:
 
 
 def _candidate_urls(ref: FacebookRef) -> list[str]:
-    """Cheapest-and-richest first. mbasic serves plain server-rendered HTML."""
-    node = ref.handle or (f"profile.php?id={ref.page_id}" if ref.page_id else "")
-    if not node:
-        return []
+    """Richest first: the About tab, then the Page itself.
+
+    **No mbasic.** The mobile-basic hosts served plain server-rendered HTML and
+    were the right first rung for years, but Facebook retired them — they now
+    302 straight to `/login`, so every read spent a full render discovering a
+    wall before it got to the URLs that work.
+    """
     if ref.handle:
         return [
-            f"https://mbasic.facebook.com/{node}/about",
-            f"https://www.facebook.com/{node}/about",
-            f"https://www.facebook.com/{node}",
+            f"https://www.facebook.com/{ref.handle}/about",
+            f"https://www.facebook.com/{ref.handle}",
         ]
-    return [
-        f"https://mbasic.facebook.com/{node}",
-        f"https://www.facebook.com/{node}",
-    ]
+    if ref.page_id:
+        # A numeric id addresses its tabs with ?sk=, not a path segment.
+        return [
+            f"https://www.facebook.com/profile.php?id={ref.page_id}&sk=about",
+            f"https://www.facebook.com/profile.php?id={ref.page_id}",
+        ]
+    return []
 
 
-async def fetch_page(ref: FacebookRef) -> FacebookPage:
-    """Render the public Page and parse it. Raises `FacebookRenderError`."""
+async def fetch_page(
+    ref: FacebookRef, *, storage_state: dict | None = None
+) -> FacebookPage:
+    """Render the Page and parse it. Raises `FacebookRenderError`.
+
+    `storage_state` signs the browser in for the read, which is what makes the
+    About panel render. Its absence is not a failure — the Page still reads from
+    its og: tags and public shell.
+    """
     if not settings.facebook_render_fallback_enabled:
         raise FacebookRenderError(
             "Reading public Facebook Pages is turned off. Connect a Page access "
@@ -315,14 +393,18 @@ async def fetch_page(ref: FacebookRef) -> FacebookPage:
 
     timeout_ms = int(settings.facebook_timeout_seconds * 1000)
     last_error: FacebookRenderError | None = None
+    signed_in = storage_state is not None
 
     # One browser for the whole candidate ladder — each URL is a fallback for
-    # the last, so paying the launch cost per attempt would triple it.
-    async with browser_context() as context:
+    # the last, so paying the launch cost per attempt would double it.
+    async with browser_context(storage_state=storage_state) as context:
         for url in _candidate_urls(ref):
             try:
                 async with rendered_page(context, url, timeout_ms=timeout_ms) as page:
                     html = await page.content()
+                    # Where we LANDED, not where we asked to go: a redirect to
+                    # /login is the wall, and the requested URL can't show it.
+                    final_url = page.url
             except Exception as exc:  # RenderError, Playwright timeouts, transport
                 logger.info("Facebook render: %s failed (%s)", url, exc)
                 last_error = FacebookRenderError(
@@ -330,12 +412,19 @@ async def fetch_page(ref: FacebookRef) -> FacebookPage:
                 )
                 continue
             try:
-                fb_page = parse_public_html(html, ref)
+                fb_page = parse_public_html(
+                    html, ref, final_url=final_url, signed_in=signed_in
+                )
             except FacebookRenderError as exc:
                 logger.info("Facebook render: %s unusable (%s)", url, exc)
                 last_error = exc
                 continue
-            logger.info("Facebook render: read '%s' from %s", fb_page.name, url)
+            logger.info(
+                "Facebook render: read '%s' from %s (%s)",
+                fb_page.name,
+                url,
+                "signed in" if signed_in else "anonymous",
+            )
             return fb_page
 
     raise last_error or FacebookRenderError(
