@@ -392,10 +392,31 @@ export interface FacebookFacts {
   profile_picture_url?: string | null
   cover_photo_url?: string | null
   posts?: FacebookPost[]
-  fetched_via: 'graph' | 'render'
+  /** Which reader ran. Mirrors `FetchPath` in backend/app/models/facebook.py.
+   * `render_session` is a render signed in with a saved browser session: it
+   * sees the About panel a logged-out render doesn't, but still no structured
+   * posts or recommendations — only Graph has those. */
+  fetched_via: 'graph' | 'render' | 'render_session'
   /** Some fields couldn't be read — the UI offers a token to fill the gaps. */
   partial?: boolean
   missing_fields?: string[]
+}
+
+/** The signed-in Facebook session shared by every Page read.
+ *
+ * Captured on the operator's own machine by `./dev.sh fb-login` — the backend
+ * runs in a container with no display and cannot open the window a login needs.
+ * Carries no cookies: only what the UI shows. */
+export interface FacebookSession {
+  name: string
+  connected: boolean
+  saved_at: number | null
+  expires_at: number | null
+  expires_in_days: number | null
+  label: string | null
+  /** False when FACEBOOK_SESSION_ENABLED is off — hide the affordance entirely
+   * rather than offering a button that can't work. */
+  enabled: boolean
 }
 
 /** What a paste contributed, for the confirmation step to report back. */

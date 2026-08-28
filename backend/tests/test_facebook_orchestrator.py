@@ -5,6 +5,7 @@ request that supplied it and must not outlive it, must never be written to the
 jobs table, and must never appear in an error the user sees.
 """
 
+import time
 import unittest
 
 from app.services import facebook_orchestrator as orch
@@ -55,24 +56,58 @@ class TokenLifecycleTest(unittest.TestCase):
 
 
 class JobOptionsTest(unittest.TestCase):
+    """The reuse key. Drives `scrape.job_options` itself — an inline copy of the
+    dict here would pass while the router did something else."""
+
+    def _options(self, **kwargs):
+        from app.routers.scrape import StartCrawlRequest, job_options
+
+        return job_options(
+            "facebook",
+            StartCrawlRequest(url="https://www.facebook.com/acmecoffee", **kwargs),
+        )
+
     def test_the_options_row_records_only_that_a_token_existed(self):
         """crawl_jobs.options_json is persisted to SQLite — the token itself
         must never reach it, but reuse still has to distinguish a tokenless
         (thinner) result from a tokened one."""
-        from app.routers.scrape import StartCrawlRequest
-
-        payload = StartCrawlRequest(
-            url="https://www.facebook.com/acmecoffee", access_token="SECRET123"
-        )
-        options = {"source": "facebook", "has_token": bool((payload.access_token or "").strip())}
-        self.assertEqual(options, {"source": "facebook", "has_token": True})
+        options = self._options(access_token="SECRET123")
+        self.assertTrue(options["has_token"])
         self.assertNotIn("SECRET123", str(options))
 
     def test_no_token_is_recorded_as_such(self):
-        from app.routers.scrape import StartCrawlRequest
+        self.assertFalse(self._options()["has_token"])
 
-        payload = StartCrawlRequest(url="https://www.facebook.com/acmecoffee")
-        self.assertFalse(bool((payload.access_token or "").strip()))
+    def test_a_connected_session_changes_the_reuse_key(self):
+        """Otherwise the first read after signing in is served the anonymous
+        result cached before it, and signing in looks like a no-op."""
+        from app.services import browser_session
+
+        self.assertFalse(self._options()["has_session"])
+
+        browser_session.save(
+            "facebook",
+            {
+                "cookies": [
+                    {"name": "c_user", "value": "1", "domain": ".facebook.com",
+                     "path": "/", "expires": time.time() + 86400},
+                    {"name": "xs", "value": "2", "domain": ".facebook.com",
+                     "path": "/", "expires": time.time() + 86400},
+                ],
+                "origins": [],
+            },
+        )
+        try:
+            self.assertTrue(self._options()["has_session"])
+            self.assertNotEqual(self._options(), {"source": "facebook", "has_token": False})
+        finally:
+            browser_session.clear("facebook")
+
+    def test_the_session_itself_never_reaches_the_options_row(self):
+        """Same rule as the token: options_json goes to SQLite."""
+        options = self._options()
+        self.assertNotIn("cookies", str(options))
+        self.assertIsInstance(options["has_session"], bool)
 
 
 if __name__ == "__main__":

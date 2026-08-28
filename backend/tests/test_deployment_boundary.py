@@ -130,6 +130,7 @@ class GuardTest(unittest.TestCase):
             settings.deployment_auth,
             settings.scrape_allow_private_hosts,
             list(settings.cors_origins),
+            settings.facebook_session_enabled,
         )
 
     def tearDown(self) -> None:
@@ -138,6 +139,7 @@ class GuardTest(unittest.TestCase):
             settings.deployment_auth,
             settings.scrape_allow_private_hosts,
             settings.cors_origins,
+            settings.facebook_session_enabled,
         ) = self._saved
 
     def _hosted(self) -> None:
@@ -145,6 +147,7 @@ class GuardTest(unittest.TestCase):
         settings.deployment_auth = "proxy"
         settings.scrape_allow_private_hosts = False
         settings.cors_origins = ["https://gen.example.com"]
+        settings.facebook_session_enabled = False
 
     def test_local_is_a_true_no_op(self) -> None:
         settings.deployment = "local"
@@ -152,6 +155,7 @@ class GuardTest(unittest.TestCase):
         settings.deployment_auth = "none"
         settings.scrape_allow_private_hosts = True
         settings.cors_origins = ["http://localhost:5173"]
+        settings.facebook_session_enabled = True
         self.assertEqual(check(), ([], []))
         enforce()  # must not raise
 
@@ -188,6 +192,17 @@ class GuardTest(unittest.TestCase):
         enforce()  # must not raise
         # …but it still says what is imperfect rather than going quiet.
         self.assertTrue(warnings)
+
+    def test_hosted_with_a_shared_facebook_login_is_refused(self) -> None:
+        """One person's cookies replayed for every user is not a deploy
+        posture, it is an account handover — and the endpoint that accepts
+        them authenticates nobody."""
+        self._hosted()
+        settings.facebook_session_enabled = True
+        errors, _ = check()
+        self.assertTrue(any("FACEBOOK_SESSION_ENABLED" in e for e in errors))
+        with self.assertRaises(DeploymentUnsafe):
+            enforce()
 
     def test_scale_warning_names_the_correctness_cases_only(self) -> None:
         self._hosted()

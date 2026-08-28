@@ -481,8 +481,87 @@ way — each of those replaced a duplicate or a reach into a private name, and
 `(final_url, html)` tuple it replaced was being unpacked backwards.
 
 Tests: `test_source_detect.py`, `test_facebook_{urls,graph,render,source,logo,authority,orchestrator,single_page}.py`.
-`conftest._offline_facebook` nulls the token and disables the render fallback, so
-the default chain is empty and no test can reach Facebook.
+`conftest._offline_facebook` nulls the token, disables the render fallback and
+points `browser_session_dir` at a scratch path, so the default chain is empty,
+no test can reach Facebook, and none can read the developer's real session.
+
+### Reading a Page without a token
+
+**The tokenless path was dead for as long as it existed, and not for the reason
+it looked like.** `is_login_wall` matched `login_form` / `loginform` /
+`/login/?next=` as substrings of the whole HTML — and Facebook bundles its login
+*dialog* into every page it serves, so those needles were present on the two
+candidates that render perfectly. 100% of public reads raised
+`LOGIN_WALL_MESSAGE`. The lesson is the one the section-catalog gates and
+`locale._bounded` already teach: **a denylist written in the target's own
+vocabulary is a silent off switch.**
+
+The wall test is now what Facebook *tells* us: the **final URL** (`_WALL_PATH_RE`
+— `/login`, `/checkpoint`, `/recover`), which is why `fetch_page` reads
+`page.url` and not the URL it asked for. Two whole phrases still match, against
+**visible text only**; the structural backstop is the `og:title` check that was
+always there, since a real login screen carries none. `mbasic.*` is gone from
+`_candidate_urls` for the same reason — Facebook retired it, so it 302s to
+`/login` and cost a full render per read to discover that.
+
+Three more rules the live DOM taught, all pinned in `test_facebook_render.py`:
+
+- **`_visible_text` filters, it does not delete.** The obvious version
+  (decompose the `<script>`s, then `get_text()`) also destroys the
+  `application/ld+json` block — a `<script>`, and the most trustworthy source of
+  address and phone on the page. Skipping the same nodes on the way out costs one
+  ancestor walk and leaves the document intact. Stripping matters either way: a
+  rendered Page is ~900KB of mostly inline script, which buried the label scan.
+- **"About" is a navigation TAB, not a field label.** It appears three times in
+  the chrome and never once as a label, so scanning forward from it landed on
+  the next tab and `about` became **"Photos"** — a false fact crossing the
+  anti-hallucination boundary into site copy. It is out of `_TEXT_LABELS`
+  entirely; `og:description` is the real source and `parse_public_html` already
+  falls back to it. `_CHROME_VALUES` guards the remaining labels.
+- **The About panel labels a row on EITHER side of its value.** "Phone" above
+  the number in one place; the email address above "Email address" in another.
+  `_scan_labelled` runs forward then backward, the forward pass winning, so the
+  second can only fill a gap. `_FIELD_SHAPE` gates email/phone **in the scan**
+  rather than only downstream — otherwise a label above a section heading fills
+  the slot and blocks the real value further down the page. NASA's
+  `public-inquiries@hq.nasa.gov` was being reported as missing while sitting in
+  plain sight.
+
+### Signing in once
+
+Logged out, Facebook serves og: tags and the tab strip. Signed in, the About
+panel renders. `./dev.sh fb-login` opens a real Chromium **on the operator's
+machine** — the backend runs in a container with no display and cannot — waits
+for the `c_user`+`xs` cookies, and POSTs the Playwright storage state to
+`POST /api/facebook/session`. `services/browser_session.py` holds it; a
+**single optional kwarg** on `browser_context(storage_state=)`, the one place
+Chromium is configured, carries it to the render.
+
+- **Expiry is read from the cookies, never invented**, so `load()` refuses a
+  dead session and the read degrades to an anonymous render — which works, it
+  just sees less.
+- **A session is the cookies that carry it.** `save` requires `c_user`+`xs`, so
+  a window closed before the login finished fails at capture rather than looking
+  like success and dying in a render weeks later.
+- **`has_session` is part of the reuse key** (`scrape.job_options`, which the
+  tests now drive directly instead of re-spelling). Without it the first read
+  after signing in is served the anonymous result cached before it, and signing
+  in looks like a no-op. Neither the token nor the session itself ever reaches
+  `options_json`.
+- **`DEPLOYMENT=hosted` refuses to start** with `FACEBOOK_SESSION_ENABLED=true`:
+  one person's cookies replayed for every user is an account handover, and the
+  endpoint that accepts them authenticates nobody. Tokens are the multi-user
+  answer.
+- `fetched_via` gains `render_session` — mirrored in `models/facebook.py`,
+  `frontend/src/lib/types.ts` and `FacebookFactsPanel`, which uses it to offer
+  the remedy that hasn't run yet.
+
+The UI is `FacebookConnect.tsx` inside the token expander `SourcePanel` already
+had. It owns all its own state and polls only until connected, so `App.tsx`
+gains no props and no state. Automating a personal Facebook account is against
+Facebook's terms — use a secondary one.
+
+Tests: `test_browser_session.py`, `test_facebook_render.py`.
 
 ## Pasted content
 

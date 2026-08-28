@@ -10,6 +10,7 @@ import type {
   DetectedBrand,
   ExtendCrawlResult,
   FacebookFacts,
+  FacebookSession,
   GeneratedSite,
   HeroHeight,
   IndustryCategory,
@@ -171,6 +172,22 @@ export async function startCrawl(
       access_token: opts.accessToken?.trim() || null,
     }),
   })
+}
+
+/* --- the signed-in Facebook session ------------------------------------------
+ *
+ * There is no "save" here on purpose. A session is captured by a real browser
+ * window on the operator's machine (`./dev.sh fb-login`), which POSTs it to the
+ * backend itself — this app only ever asks about one or drops it. */
+
+/** Whether a signed-in Facebook session is connected, and for how much longer. */
+export async function getFacebookSession(): Promise<FacebookSession> {
+  return jsonRequest('/api/facebook/session')
+}
+
+/** Forget the saved session. Idempotent. */
+export async function disconnectFacebookSession(): Promise<FacebookSession> {
+  return jsonRequest('/api/facebook/session', { method: 'DELETE' })
 }
 
 /** Read the current state of a crawl job. */

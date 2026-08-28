@@ -13,8 +13,6 @@ import type { FacebookFacts } from '@/lib/types'
 
 interface Props {
   facts: FacebookFacts
-  /** Rendered inside the token expander, when the read came up short. */
-  onRetryWithToken?: (token: string) => void
 }
 
 interface Fact {
@@ -114,7 +112,9 @@ export function FacebookFactsPanel({ facts }: Props) {
           <div className="font-semibold">
             {facts.fetched_via === 'render'
               ? 'Read from the public Page'
-              : 'Some details were out of reach'}
+              : facts.fetched_via === 'render_session'
+                ? 'Read while signed in'
+                : 'Some details were out of reach'}
           </div>
           <p className="mt-0.5">
             {gaps.length > 0 ? (
@@ -122,8 +122,22 @@ export function FacebookFactsPanel({ facts }: Props) {
             ) : (
               <>Some of this Page's details weren't readable. </>
             )}
-            A Page access token — from a Page you administer — fills those in. You can
-            also carry on with what's here; the site just won't mention what's missing.
+            {/* Which remedy is worth offering depends on which already ran:
+              * suggesting a sign-in to someone who is signed in is noise. */}
+            {facts.fetched_via === 'render' ? (
+              <>
+                Signing in (<code>./dev.sh fb-login</code>) reads the About tab;
+                a Page access token, from a Page you administer, also fills in
+                posts and recommendations.{' '}
+              </>
+            ) : (
+              <>
+                A Page access token — from a Page you administer — fills those
+                in.{' '}
+              </>
+            )}
+            You can also carry on with what's here; the site just won't mention
+            what's missing.
           </p>
         </div>
       )}

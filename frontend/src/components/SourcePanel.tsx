@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 
+import { FacebookConnect } from '@/components/FacebookConnect'
 import { PasteBox } from '@/components/PasteBox'
 import { facebookLinkWarning, isFacebookUrl } from '@/lib/sourceDetect'
 import { Button, Checkbox, Field, Input } from '@/ui'
@@ -112,24 +113,48 @@ export function SourcePanel({
                   Reading more from this Page (optional)
                 </summary>
                 <p className="mt-2 text-xs text-ink-muted">
-                  Without a token we read what the Page shows publicly. A Page access
-                  token — from a Page you administer — also gives us emails, structured
-                  opening hours, posts and recommendations. Try it without one first;
-                  we'll tell you exactly what was missing.
+                  We can read any public Page as-is. These two go further, and
+                  are worth it for a Page whose details live in its About tab.
                 </p>
-                <Input
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="Page access token"
-                  value={fbToken}
-                  onChange={(e) => onFbTokenChange(e.target.value)}
-                  disabled={busy}
-                  className="mt-2 w-full font-mono text-xs"
-                />
-                <p className="mt-1.5 text-[11px] text-ink-faint">
-                  Used for this read only — never saved, never logged.
-                </p>
+
+                {/* Ranked, not listed. Signing in needs no Page admin rights and
+                 * covers the common gap (the About panel), so it leads. */}
+                <div className="mt-3 border-t border-line pt-3">
+                  <div className="text-xs font-semibold text-ink-soft">
+                    Sign in to Facebook{' '}
+                    <span className="font-normal text-ink-faint">
+                      · reads the About tab
+                    </span>
+                  </div>
+                  <FacebookConnect disabled={busy} />
+                </div>
+
+                <div className="mt-3 border-t border-line pt-3">
+                  <div className="text-xs font-semibold text-ink-soft">
+                    Page access token{' '}
+                    <span className="font-normal text-ink-faint">
+                      · adds posts &amp; recommendations
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-ink-muted">
+                    From a Page you administer. The only way to get emails,
+                    structured opening hours, posts and recommendations — no
+                    render sees those, signed in or not.
+                  </p>
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="Page access token"
+                    value={fbToken}
+                    onChange={(e) => onFbTokenChange(e.target.value)}
+                    disabled={busy}
+                    className="mt-2 w-full font-mono text-xs"
+                  />
+                  <p className="mt-1.5 text-[11px] text-ink-faint">
+                    Used for this read only — never saved, never logged.
+                  </p>
+                </div>
               </details>
             ) : (
               <Checkbox

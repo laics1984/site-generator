@@ -36,7 +36,7 @@ import logging
 import re
 from urllib.parse import urlparse
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 
 from app.config import settings
 from app.models.facebook import FacebookPage, FacebookHours
@@ -78,9 +78,9 @@ _LOGIN_WALL_MARKERS = (
     "this page isn't available",
 )
 
-# Markup that carries no words a reader sees. Stripped before any text scan:
-# a rendered Facebook Page is ~900KB of mostly inline script, and `get_text()`
-# over the lot buried the label scan in minified JavaScript.
+# Markup that carries no words a reader sees. Skipped by every text scan: a
+# rendered Facebook Page is ~900KB of mostly inline script, and a plain
+# `get_text()` over the lot buried the label scan in minified JavaScript.
 _NON_TEXT_TAGS = ("script", "style", "noscript", "template")
 
 # "1,234 likes · 56 talking about this · 78 were here"
@@ -98,8 +98,10 @@ _COUNT_CHUNK_RE = re.compile(
 _TEXT_LABELS: dict[str, str] = {
     "address": "single_line_address",
     "phone": "phone",
+    "phone number": "phone",
     "mobile": "phone",
     "email": "email",
+    "email address": "email",
     "website": "website",
     "price range": "price_range",
     "categories": "category",
@@ -107,9 +109,28 @@ _TEXT_LABELS: dict[str, str] = {
     "founded": "founded",
     "products": "products",
     "mission": "mission",
-    "about": "about",
     "impressum": "",
+    # NO "about". On a Page, "About" is a navigation TAB — it appears three
+    # times in the chrome and never once as a field label, so scanning from it
+    # only ever lands on the next tab ("Photos"), which then became the
+    # business's own description. The About prose has a better source that is
+    # already read: `og:description`, which `parse_public_html` falls back to.
 }
+
+# Facebook's own UI chrome, which is never a field's VALUE. A closed set of
+# Facebook's vocabulary rather than a business one — the same bet `_TEXT_LABELS`
+# already makes, and a far safer one than guessing at industry nouns.
+_CHROME_VALUES = frozenset(
+    {
+        "posts", "about", "photos", "videos", "reels", "more", "home", "live",
+        "mentions", "events", "reviews", "groups", "shop", "jobs", "offers",
+        "community", "following", "followers", "likes", "albums", "intro",
+        "featured", "see all", "see more on facebook", "verified account",
+        "log in", "forgotten account?", "page transparency",
+        "contact and basic info", "privacy and legal info",
+        "websites and social links", "contact info",
+    }
+)
 
 _HOURS_LINE_RE = re.compile(
     r"^(?P<day>Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s*[:\-–]?\s*"
@@ -123,18 +144,28 @@ _PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{6,}\d")
 
 
 def _visible_text(soup: BeautifulSoup) -> str:
-    """The page's words, with script/style/noscript removed. Mutates `soup`.
+    """The page's words: every string a reader sees, one per line.
 
-    Idempotent, so callers that want both this and `_text_lines` pay for the
-    strip once.
+    Filters rather than deleting. The obvious implementation — decompose the
+    script tags, then `get_text()` — also destroys the `application/ld+json`
+    block, which is a `<script>` and is the most trustworthy source of address
+    and phone on the page. Skipping the same nodes on the way out costs one
+    ancestor walk and leaves the document intact for every other reader.
     """
-    for tag in soup(_NON_TEXT_TAGS):
-        tag.decompose()
-    return soup.get_text(separator="\n")
+    chunks: list[str] = []
+    for node in soup.find_all(string=True):
+        if isinstance(node, Comment):
+            continue
+        if any(parent.name in _NON_TEXT_TAGS for parent in node.parents):
+            continue
+        text = node.strip()
+        if text:
+            chunks.append(text)
+    return "\n".join(chunks)
 
 
 def _is_login_wall(soup: BeautifulSoup, *, final_url: str) -> bool:
-    """The wall test, on an already-parsed page. Mutates `soup` (see above)."""
+    """The wall test, on an already-parsed page. Leaves `soup` untouched."""
     try:
         path = urlparse(final_url).path or ""
     except ValueError:
@@ -214,25 +245,52 @@ def _text_lines(soup: BeautifulSoup) -> list[str]:
     return [line.strip() for line in text.split("\n") if line.strip()]
 
 
+# A field whose value has a checkable shape. Applied HERE rather than only
+# downstream, because a label followed by something unusable ("Email address"
+# above a section heading) otherwise fills the slot and blocks the real value
+# from being found further along the page.
+_FIELD_SHAPE: dict[str, re.Pattern[str]] = {"email": _EMAIL_RE, "phone": _PHONE_RE}
+
+
 def _scan_labelled(lines: list[str]) -> dict[str, str]:
-    """Pull "Label" → next-line values out of the rendered text.
+    """Pull labelled values out of the rendered text.
 
     Line-based because Facebook's generated class names churn constantly while
     the visible labels don't.
+
+    Two passes, because the About panel labels a row on EITHER side of its
+    value: "Phone" then the number in one place, the email address then
+    "Email address" in another. The forward pass runs first and wins, so the
+    backward pass can only fill a gap, never move an answer.
     """
     found: dict[str, str] = {}
-    for index, line in enumerate(lines):
-        key = line.rstrip(":").strip().lower()
-        field = _TEXT_LABELS.get(key)
-        if not field or field in found:
-            continue
-        for candidate in lines[index + 1 : index + 3]:
-            lowered = candidate.rstrip(":").strip().lower()
-            if lowered in _TEXT_LABELS:  # the next label — this one had no value
-                break
-            if len(candidate) > 1:
-                found[field] = candidate
-                break
+
+    def offer(field: str, candidate: str) -> bool:
+        text = candidate.strip()
+        if len(text) <= 1:
+            return False
+        lowered = text.rstrip(":").strip().lower()
+        if lowered in _TEXT_LABELS or lowered in _CHROME_VALUES:
+            return False
+        shape = _FIELD_SHAPE.get(field)
+        if shape and not shape.fullmatch(text):
+            return False
+        found[field] = text
+        return True
+
+    def scan(window) -> None:
+        for index, line in enumerate(lines):
+            field = _TEXT_LABELS.get(line.rstrip(":").strip().lower())
+            if not field or field in found:
+                continue
+            for candidate in window(index):
+                if candidate.rstrip(":").strip().lower() in _TEXT_LABELS:
+                    break  # the next label — this one had no value
+                if offer(field, candidate):
+                    break
+
+    scan(lambda i: lines[i + 1 : i + 3])
+    scan(lambda i: list(reversed(lines[max(0, i - 2) : i])))
     return found
 
 

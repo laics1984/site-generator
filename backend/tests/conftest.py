@@ -15,6 +15,8 @@ behaviour inject a ``FakePexels`` directly (dependency injection), which bypasse
 ``get_pexels_client`` entirely and is unaffected.
 """
 
+import tempfile
+
 import pytest
 
 from app.config import settings
@@ -104,16 +106,24 @@ def _offline_facebook():
     the token AND disabling the render fallback leaves an empty chain, which
     fails loudly instead of quietly doing I/O — tests that want a read inject
     their own fetcher, which bypasses both.
+
+    ``browser_session_dir`` is pointed at a scratch path for the same reason:
+    the developer running the suite may well have a real signed-in Facebook
+    session on this machine, and no test may read it — nor write over it.
     """
     original_token = settings.facebook_access_token
     original_fallback = settings.facebook_render_fallback_enabled
+    original_session_dir = settings.browser_session_dir
     settings.facebook_access_token = None
     settings.facebook_render_fallback_enabled = False
-    try:
-        yield
-    finally:
-        settings.facebook_access_token = original_token
-        settings.facebook_render_fallback_enabled = original_fallback
+    with tempfile.TemporaryDirectory(prefix="sitegen-test-sessions-") as scratch:
+        settings.browser_session_dir = scratch
+        try:
+            yield
+        finally:
+            settings.facebook_access_token = original_token
+            settings.facebook_render_fallback_enabled = original_fallback
+            settings.browser_session_dir = original_session_dir
 
 
 @pytest.fixture(autouse=True)

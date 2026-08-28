@@ -145,6 +145,12 @@ def _read(name: str) -> dict | None:
 
 def save(name: str, storage_state: dict, *, label: str | None = None) -> SessionStatus:
     """Persist a captured session. Raises `SessionRejected` if it isn't one."""
+    # The name first: it decides which cookies "signed in" even means, so an
+    # unknown one has to fail as a rejection rather than a KeyError two checks
+    # further down.
+    if name not in _SESSION_COOKIES:
+        raise SessionRejected(f"Unknown browser session '{name}'.")
+
     if not isinstance(storage_state, dict) or not isinstance(
         storage_state.get("cookies"), list
     ):
