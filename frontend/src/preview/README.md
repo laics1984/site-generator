@@ -16,7 +16,6 @@ the Vue renderer can't be imported.
 | `lib/*.ts` | **Vendored** from `webtree-public/lib/` — near-verbatim copies. Each file's banner names its origin and any local delta. |
 | `lib/public.ts` | The structural types the vendored libs are written against (subset of `webtree-public/types/public.ts`). |
 | `lib/adapt.ts` | The one place this app's strict `BuilderElement` is narrowed to the renderer's loose `PublicBlockNode`. |
-| `lib/menuColors.ts` | Colour helpers lifted out of `MenuBlock.vue`'s script block. |
 | `*.tsx`, `blocks/*.tsx` | **Ports** of the Vue components — same logic, React templates. |
 | `context.tsx` | React contexts replacing Vue's `provide`/`inject`. |
 | `preview.css` | **Generated.** See below. |

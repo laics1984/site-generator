@@ -24,7 +24,6 @@ import {
 } from '../lib/blockRuntime'
 import { getNodeDomId } from '../lib/responsiveRuntime'
 import { getNodeChildren, normalizeBlockType, normalizeSchemaNodes } from '../lib/schema'
-import { getContrastRatio, pickAccessibleTextColor } from '../lib/menuColors'
 import { resolveSocialGlyph, socialItemLabel } from '../lib/socialIcons'
 import { useRuntimeHeaderOverlay, useRuntimeHeaderSchema, useRuntimeMenus } from '../context'
 
@@ -251,15 +250,6 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
     return styles as CSSProperties
   })()
 
-  const toggleTextColor = (() => {
-    if (isOverlayHeader) return '#ffffff'
-    const preferredColor =
-      typeof nodeStyles.color === 'string' ? nodeStyles.color : 'var(--wt-color-text, #0f172a)'
-    const contrastRatio = getContrastRatio(preferredColor, '#ffffff')
-    if (contrastRatio !== null && contrastRatio >= 4.5) return preferredColor
-    return pickAccessibleTextColor('#ffffff')
-  })()
-
   if (isHeaderPrimaryMenu) {
     return (
       <div
@@ -362,11 +352,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
         <div className="wt-header-menu-toggle">
           <button
             type="button"
-            className="wt-header-menu-toggle__button wt-ui-button wt-ui-menu-button"
-            style={{
-              color: toggleTextColor,
-              borderColor: isOverlayHeader ? 'rgba(255,255,255,0.24)' : 'rgba(148,163,184,0.35)',
-            }}
+            className="wt-header-menu-toggle__button wt-ui-button wt-ui-menu-button wt-self-ink"
             aria-expanded={isMobileMenuOpen}
             aria-label={`Open ${menuLabel}`}
             onClick={() => setMobileMenuOpen(true)}

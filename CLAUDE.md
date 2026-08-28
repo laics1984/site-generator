@@ -13,7 +13,7 @@ Four sibling repos under `~/Documents/Projects/webtree/`:
 |---|---|---|
 | **site-generator** (here) | FastAPI + React | AI generation/scraping only. Its SQLite is ephemeral crawl state, **not** the app datastore. |
 | `webtree-cms-api` | Laravel + MySQL | The real backend. Multi-tenant by `entity_id`; public routes are host-based/tokenless, admin routes are JWT + `entity_api_token`. |
-| `webtree-public` | Nuxt | Renders the published sites. **Never run `nuxt build` there** — `.nuxt`/`.output` are tracked and served; `npm test` (vitest) only. |
+| `webtree-public` | Nuxt | Renders the published sites. Ships through CI: `.github/workflows/deploy_cloudflare.yml` runs `npm run build` and deploys to Cloudflare Workers on push to `master`, so a renderer edit reaches every published site with no regeneration. `npm test` (vitest) is the local gate; `.nuxt`/`.output` are gitignored (they used to be tracked and served — that is no longer true). |
 | `webtreesuite-admin-app` | Vue 3 + Vuex | Dashboard. `vue-tsc` is not clean on baseline — don't treat it as a gate. |
 | `builder` | React/TS | The visual editor. **Source of truth for the schema and the section catalog.** |
 
@@ -729,6 +729,57 @@ two halves of one decision. Pickers re-wrap on write
 (`preserveCssVarWrapper`), or an edit to the header's text colour would
 silently disable adaptation for that site forever.
 
+## A control that paints its own surface states its own ink
+
+`wt-header-ink` marks an element the **header** colours; `wt-self-ink` marks one
+that colours **itself**, and is the single subtree the overlay's
+`color: #ffffff !important` skips. Today that is one element: the mobile menu
+pill.
+
+The rule it enforces: **a rule that paints a surface states the ink in the same
+place.** `.wt-ui-menu-button` declared `background: var(--builder-color-background,
+…)` and no `color`, so three call sites each guessed one from their
+surroundings — the header's overlay phase, the sheet's overlay variant, and a
+hard-coded `'#ffffff'` reference surface that was true of nothing. On a dark
+palette (`background` is HSL lightness 0.11) the pill went **near-black ink on a
+near-black pill** the moment the header solidified on scroll; on a light palette
+it was **white on white** at scroll position 0, the same bug with the phases
+swapped. `.wt-ui-sheet`, two rules below it, had always stated both.
+
+It now paints `--builder-color-text` on `--builder-color-background`. That pair
+needs no measuring: every palette constructor in `theme.py` builds `text` with
+`_ensure_contrast_against(background, ink, min_ratio=7.0)`, so it is **7:1 by
+construction** — which is why ~310 lines of renderer-side colour maths could go,
+including a `pickAccessibleTextColor` whose candidate pool
+(`#0f172a`/`#1e293b`/`#334155`) was **all dark** and could not have returned a
+light ink even given the right surface.
+
+Three consequences worth keeping:
+
+- **The pill is opaque, so it is not glass and must not read `--wt-pill-ink`.**
+  The floating pill's *bar* adapts per band; a control with its own surface that
+  inverted with the band would be wrong exactly when the band disagreed with the
+  palette. Dropping that branch fixed a light-palette pill over a dark section.
+- **The sheet close has no surface of its own** — `background: transparent;
+  color: inherit` takes the sheet's pair, which is correct in both the palette
+  and dark-gradient variants with one rule. It is `Teleport`ed outside the
+  header, so it needs no marker.
+- **`text-shadow: none` is load-bearing.** `.wt-page-header--overlay
+  .wt-header-ink`'s shadow *inherits* into the pill.
+
+The `:not(.wt-self-ink):not(.wt-self-ink *)` narrowing is hand-duplicated in the
+same three places the adaptive-ink block is — `PublicSiteShell.vue`,
+`builder/src/index.css`, generated `preview.css` — and the builder's canvas pill
+mirrors the pair inline (it has no `wt-ui-*` layer). The builder was the one
+place the bug was invisible: it painted the pill with a literal `bg-white`, so
+its `'#ffffff'` assumption was locally true.
+
+No backend, schema or catalog change — already-published sites are fixed by the
+next `webtree-public` deploy, with no regeneration or re-push.
+
+Tests: `test_self_ink.py` (drift over all three renderers, skipped when a sibling
+repo is absent — same idiom as the `RENDERER_PINNED_*` mirror).
+
 Tests: `test_floating_pill_heroes.BandMarkerTest`/`BandClassificationTest`,
 `test_header_footer.FloatingPillAdaptiveInkTest`, `test_preview_layout.py`;
 `webtree-public/lib/adaptiveInk.test.ts` (vitest);
@@ -826,8 +877,8 @@ and a strict mirror of `webtree-public/lib/videoEmbed.ts`.
 **Rendering needs no renderer change**, and must not get one: `parseVideoEmbed`'s
 `provider: 'other'` branch frames any absolute URL. Tighten it to a player
 whitelist and every map on every published site vanishes — `lib/videoEmbed.test.ts`
-pins that. Remember `webtree-public` serves committed `.nuxt`/`.output`, so a
-renderer edit there is inert without a build you must not run locally.
+pins that. A renderer edit there ships through the repo's Cloudflare Workers
+workflow on push to `master`; the local gate is `npm test`.
 
 Tests: `test_video_embeds.py`, `test_map_embeds.py` (deliberately parallel — they
 share a DOM walk and an injection spine); `builder/src/lib/{embed-kind,section-catalog}.test.mjs`
@@ -910,7 +961,7 @@ None for the dict form; `_upload_media`'s brand-logo block still has that bug at
 lines ~711-717, harmless only because the logo is also reached through the header
 schema.
 
-`webtree-public` needed **no change** and must not be built:
+`webtree-public` needed **no change**:
 `usePublicSeo.ts` already emits `<link rel="icon">` from `entity.favicon`, and
 Google reads a site's favicon from its home page — a `PublicSitePage`, the one
 surface that calls it.

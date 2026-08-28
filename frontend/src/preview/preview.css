@@ -563,10 +563,27 @@ a {
     cursor: not-allowed;
   }
 
+  /* A self-surfaced control: it paints its own pill, so it states its own ink
+     in the same rule rather than leaving a caller to guess one — the same pair
+     `.wt-ui-sheet` below states. --builder-color-text is 7:1 against
+     --builder-color-background by construction (the generator builds every
+     palette's text with _ensure_contrast_against(min_ratio=7), see
+     site-generator theme.py), so this reads on light and dark sites alike, over
+     any hero, at every scroll position.
+
+     It used to declare a background and no colour, and MenuBlock.vue then
+     measured contrast against a hard-coded '#ffffff' — true of nothing here.
+     On a dark palette that produced near-black ink on a near-black pill the
+     moment the header solidified. Anything that repaints one of these two must
+     repaint the other in the same place, or the ink is guessing again. */
   .wt-ui-menu-button {
     border: 1px solid rgba(148, 163, 184, 0.35);
     border-radius: 999px;
     background: var(--builder-color-background, rgba(255, 255, 255, 0.96));
+    color: var(--builder-color-text, #0f172a);
+    /* The transparent header's `.wt-header-ink` text-shadow INHERITS into the
+       pill (PublicSiteShell.vue); a self-surfaced control needs none. */
+    text-shadow: none;
     box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
   }
 
@@ -683,9 +700,17 @@ body {
    never the CTA button, which keeps its own solid chrome) switch to white ink.
    !important is required to beat the generator's inline `color`; the rule
    vanishes with the class on solidify, so the inline colors return with the
-   200ms header transition. */
+   200ms header transition.
+
+   `wt-self-ink` is the counterpart marker, and the one subtree this skips: the
+   header colours a `wt-header-ink` element, a `wt-self-ink` element colours
+   itself. It marks a descendant that paints its OWN surface — the mobile menu
+   pill, which is opaque in every header phase — so it is already legible
+   against its own background and the overlay's white would only fight the pair
+   that surface states. Keep this selector identical to the builder's copy in
+   src/index.css (.wt-header-overlay-transparent). */
 .wt-page-header--overlay .wt-header-ink,
-.wt-page-header--overlay .wt-header-ink * {
+.wt-page-header--overlay .wt-header-ink *:not(.wt-self-ink):not(.wt-self-ink *) {
   color: #ffffff !important;
 }
 
@@ -1073,9 +1098,14 @@ body {
   padding: 1rem 1rem 0;
 }
 
-.wt-mobile-menu-sheet--overlay .wt-mobile-menu-sheet__close {
-  border-color: rgba(255, 255, 255, 0.18);
-  color: #ffffff;
+/* The close sits ON the sheet, so it takes the sheet's pair rather than painting
+   its own — one rule that is right in both variants (the palette surface, and
+   the dark overlay gradient). It replaces an `--overlay`-only `color: #ffffff`
+   that left `.wt-ui-menu-button`'s opaque light background underneath, i.e.
+   white on white on every light-palette site. */
+.wt-mobile-menu-sheet__close {
+  background: transparent;
+  color: inherit;
   box-shadow: none;
 }
 
