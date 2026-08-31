@@ -741,3 +741,166 @@ def test_upload_media_rehosts_document_links_alongside_images():
 
     assert rewrites == {pdf_href: "https://cms.example/storage/brochure-en.pdf"}
     assert failed == set()
+
+
+# --- brand logo: the dict-shaped brand on the real push path --------------------
+#
+# GeneratedSite.brand is typed `Any`: a BrandIdentity when the plan is built
+# in-process, a plain dict once the frontend posts the site back to
+# /api/cms/push — which is every real push. `getattr` on a dict returns the
+# default, so the logo block read logo_render_ok as True and both URLs as None,
+# and added nothing at all. The header schema walk reaches the same URL, so the
+# upload survived; the casualty was the gate the block claims to apply.
+
+from app.services.push_orchestrator import _brand_field  # noqa: E402
+
+_LOGO_URL = "https://acme.test/logo.png"
+_LOGO_CDN = "https://cms.example/storage/logo.png"
+
+
+class _FakeImageResponse:
+    """_resolve_to_bytes reads .headers; _resolve_document_to_bytes doesn't."""
+
+    def __init__(self, content: bytes):
+        self.status_code = 200
+        self.content = content
+        self.headers = {"content-type": "image/png"}
+
+
+def _site_with_brand(brand: object, *, header_logo: str | None = None) -> GeneratedSite:
+    home = GeneratedPage(
+        slug="", title="Home", is_homepage=True,
+        body_schema=BodySchema(elements=[]), seo=PageSeo(),
+    )
+    site = GeneratedSite(
+        site_name="S", pages=[home], page_tree=[], builder_styles={},
+        header_schema=BuilderElement(
+            name="Header", type="__header",
+            content=[_img(header_logo)] if header_logo else [],
+        ),
+        footer_schema=BuilderElement(name="Footer", type="__footer", content=[]),
+    )
+    site.brand = brand
+    return site
+
+
+def _upload_with_brand(site: GeneratedSite):
+    """Run _upload_media against a site, returning (rewrites, failed, upload mock)."""
+    req = PushRequest(
+        site=site, cms_email="u@e.com", cms_password="pw", entity_token="tok",
+    )
+    png = _encode("RGB", "PNG")
+
+    async def _fake_get(_self, _url, **_kwargs):
+        return _FakeImageResponse(png)
+
+    upload = AsyncMock(return_value=_LOGO_CDN)
+    with (
+        patch.object(httpx.AsyncClient, "get", new=_fake_get),
+        patch.object(CmsClient, "upload_media", new=upload),
+    ):
+        client = CmsClient(base_url="http://localhost:8000")
+        rewrites, failed = asyncio.run(_upload_media(client, req))
+    return rewrites, failed, upload
+
+
+def test_brand_field_reads_object_and_dict_shapes():
+    from app.models.brand import BrandIdentity
+
+    obj = BrandIdentity(name="Acme", logo_url=_LOGO_URL)
+    for brand in (obj, obj.model_dump()):
+        assert _brand_field(brand, "logo_url") == _LOGO_URL
+        assert _brand_field(brand, "logo_render_ok") is True
+    # A missing field, and a missing brand, read as None rather than raising.
+    assert _brand_field({"name": "Acme"}, "logo_url") is None
+    assert _brand_field(None, "logo_render_ok") is None
+
+
+def test_dict_brand_logo_is_uploaded_when_renderable():
+    """The real push path. The mark passed the render gate and the header
+    doesn't happen to carry it, so this block is the only thing that re-hosts
+    it — which is what it was written to do, and never did for a dict."""
+    site = _site_with_brand(
+        {"name": "Acme", "logo_url": _LOGO_URL, "logo_render_ok": True}
+    )
+
+    rewrites, failed, _ = _upload_with_brand(site)
+
+    assert rewrites == {_LOGO_URL: _LOGO_CDN}
+    assert failed == set()
+
+
+def test_dict_brand_logo_is_skipped_when_render_gate_failed():
+    """logo_render_ok=False is an og:image or an icon too small for the header
+    lockup: a palette source no renderer draws. Uploading it would park a
+    favicon in the tenant's media library."""
+    site = _site_with_brand(
+        {"name": "Acme", "logo_url": _LOGO_URL, "logo_render_ok": False}
+    )
+
+    rewrites, failed, upload = _upload_with_brand(site)
+
+    assert rewrites == {}
+    assert failed == set()
+    assert upload.await_count == 0
+
+
+def test_dict_brand_without_render_flag_is_treated_as_renderable():
+    """Absent is "not stated", not "not renderable": BrandIdentity defaults the
+    field True and the frontend's TS mirror declares it optional. This is what
+    `getattr(brand, "logo_render_ok", True)` meant, preserved."""
+    site = _site_with_brand({"name": "Acme", "logo_url": _LOGO_URL})
+
+    rewrites, _, _ = _upload_with_brand(site)
+
+    assert rewrites == {_LOGO_URL: _LOGO_CDN}
+
+
+def test_dict_brand_falls_back_to_logo_data_url():
+    png_data_url = "data:image/png;base64," + base64.b64encode(
+        _encode("RGB", "PNG")
+    ).decode()
+    site = _site_with_brand({"name": "Acme", "logo_data_url": png_data_url})
+
+    rewrites, _, _ = _upload_with_brand(site)
+
+    assert rewrites == {png_data_url: _LOGO_CDN}
+
+
+def test_brand_logo_already_in_the_header_is_uploaded_once():
+    """setdefault, not assignment: when the header schema already collected the
+    same URL the brand block is a no-op, so the fixed gate adds no second
+    upload to the sites where the logo does render."""
+    site = _site_with_brand(
+        {"name": "Acme", "logo_url": _LOGO_URL, "logo_render_ok": True},
+        header_logo=_LOGO_URL,
+    )
+
+    rewrites, _, upload = _upload_with_brand(site)
+
+    assert rewrites == {_LOGO_URL: _LOGO_CDN}
+    assert upload.await_count == 1
+
+
+def test_object_brand_logo_upload_is_unchanged():
+    """The in-process shape, where getattr already worked."""
+    from app.models.brand import BrandIdentity
+
+    site = _site_with_brand(BrandIdentity(name="Acme", logo_url=_LOGO_URL))
+
+    rewrites, _, _ = _upload_with_brand(site)
+
+    assert rewrites == {_LOGO_URL: _LOGO_CDN}
+
+
+def test_object_brand_logo_skipped_when_render_gate_failed():
+    from app.models.brand import BrandIdentity
+
+    site = _site_with_brand(
+        BrandIdentity(name="Acme", logo_url=_LOGO_URL, logo_render_ok=False)
+    )
+
+    rewrites, _, upload = _upload_with_brand(site)
+
+    assert rewrites == {}
+    assert upload.await_count == 0

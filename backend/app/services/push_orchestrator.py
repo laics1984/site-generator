@@ -623,6 +623,21 @@ _IMAGE_MIME_MAP = {
 }
 
 
+def _brand_field(brand: Any, name: str) -> Any:
+    """Read one field off `GeneratedSite.brand`, whichever shape it is in.
+
+    The field is typed `Any`, so it is a `BrandIdentity` when the plan is built
+    in-process and a plain dict when the frontend posts the same site back to
+    /api/cms/push. A bare getattr silently returns None for the dict form —
+    which is every real push.
+    """
+    if brand is None:
+        return None
+    if isinstance(brand, dict):
+        return brand.get(name)
+    return getattr(brand, name, None)
+
+
 async def _upload_media(
     client: CmsClient, req: PushRequest
 ) -> tuple[dict[str, str], set[str]]:
@@ -652,10 +667,17 @@ async def _upload_media(
         _collect_document_hrefs(req.site.footer_schema, documents)
     # And the brand logo (it's pulled into the header but defensive doesn't hurt).
     # Skipped when the mark failed the render gate — nothing references it, so
-    # uploading would just park a favicon in the tenant's media library.
-    if req.site.brand and getattr(req.site.brand, "logo_render_ok", True):
-        logo_url = getattr(req.site.brand, "logo_url", None) or getattr(
-            req.site.brand, "logo_data_url", None
+    # uploading would just park a favicon in the tenant's media library. Read
+    # through _brand_field: `brand` is a dict on the /api/cms/push path, where a
+    # bare getattr made the whole block inert — gate included.
+    brand = req.site.brand
+    # Absent means "not stated", not "not renderable": BrandIdentity defaults it
+    # True and the frontend's mirror declares it optional. Only an explicit
+    # False is the gate closing.
+    render_ok = _brand_field(brand, "logo_render_ok")
+    if render_ok is None or render_ok:
+        logo_url = _brand_field(brand, "logo_url") or _brand_field(
+            brand, "logo_data_url"
         )
         if isinstance(logo_url, str):
             sources.setdefault(logo_url, _placeholder_logo_element(logo_url))
