@@ -39,6 +39,7 @@ from app.models.design_manifest import (
     FooterArchetype,
     HeaderArchetype,
 )
+from app.services.design_schemes import NEUTRAL_SCHEME, DesignScheme
 from app.services.diversity import pick_diverse, recent_choices, seeded_index
 
 logger = logging.getLogger(__name__)
@@ -83,17 +84,48 @@ _FOOTER_FIT_BY_INDUSTRY: dict[str, list[FooterArchetype]] = {
 _DEFAULT_MOOD: BrandMood = "modern"
 
 
+def _apply_affinity(candidates: list, affinity: tuple) -> list:
+    """Narrow `candidates` to the scheme's preferred archetypes.
+
+    A NARROWING, not a reorder. Reordering would have been a no-op: the picker
+    below takes a seeded index across the whole list, so moving an entry to the
+    front only changes which brand lands on it, never how often it is chosen. A
+    scheme that says "this language wears a hairline bar" has to actually shrink
+    the pool or it has said nothing.
+
+    Never an addition, though — the intersection with the fit list is what is
+    kept, so an archetype the mood or industry rejected stays rejected. Same
+    containment the variety seed has over template selection: steer taste inside
+    the approved set, never past it.
+
+    At least two candidates always survive, so the diversity engine keeps
+    somewhere to go when a brand regenerates: a scheme naming only one reachable
+    archetype gets it plus the fit list's own first choice.
+    """
+    if not affinity:
+        return candidates
+    preferred = [c for c in affinity if c in candidates]
+    if not preferred:
+        return candidates
+    if len(preferred) >= 2:
+        return preferred
+    rest = [c for c in candidates if c not in preferred]
+    return preferred + rest[:1]
+
+
 def _fit_candidates(
     mood: BrandMood | None,
     industry: str | None,
     mood_table: dict[BrandMood, list],
     industry_table: dict[str, list],
+    affinity: tuple = (),
 ) -> tuple[list, bool]:
     """(ordered candidates, industry_pinned) for one chrome area."""
     norm_industry = (industry or "").strip().lower()
     if norm_industry in industry_table:
-        return list(industry_table[norm_industry]), True
-    return list(mood_table.get(mood or _DEFAULT_MOOD, mood_table[_DEFAULT_MOOD])), False
+        return _apply_affinity(list(industry_table[norm_industry]), affinity), True
+    base = list(mood_table.get(mood or _DEFAULT_MOOD, mood_table[_DEFAULT_MOOD]))
+    return _apply_affinity(base, affinity), False
 
 
 async def compose_design_manifest(
@@ -104,6 +136,7 @@ async def compose_design_manifest(
     color_scheme: str = "light",
     header_override: HeaderArchetype | None = None,
     footer_override: FooterArchetype | None = None,
+    scheme: DesignScheme | None = None,
 ) -> DesignManifest:
     """Compose the site's DesignManifest. Pure decision-making — no rendering.
 
@@ -119,11 +152,12 @@ async def compose_design_manifest(
     seed = brand_name.strip() or "site"
     decisions: list[DesignDecision] = []
 
+    scheme = scheme or NEUTRAL_SCHEME
     header_candidates, header_pinned = _fit_candidates(
-        mood, industry, _HEADER_FIT, _HEADER_FIT_BY_INDUSTRY
+        mood, industry, _HEADER_FIT, _HEADER_FIT_BY_INDUSTRY, scheme.header_affinity
     )
     footer_candidates, footer_pinned = _fit_candidates(
-        mood, industry, _FOOTER_FIT, _FOOTER_FIT_BY_INDUSTRY
+        mood, industry, _FOOTER_FIT, _FOOTER_FIT_BY_INDUSTRY, scheme.footer_affinity
     )
 
     header_avoid = await recent_choices("header", site_key=seed)
@@ -202,18 +236,36 @@ async def compose_design_manifest(
             )
         )
 
+    if not scheme.is_neutral:
+        # Recorded first so the panel leads with the site's visual language:
+        # header and footer are chosen INSIDE it, not alongside it.
+        decisions.insert(
+            0,
+            DesignDecision(
+                area="scheme",
+                choice=scheme.slug,
+                rationale=(
+                    f"{scheme.label} — {scheme.rationale}; fit list for mood "
+                    f"'{mood or _DEFAULT_MOOD}' / industry '{industry or 'any'}', "
+                    f"seeded rotation for brand '{seed}'"
+                ),
+                confidence=0.7,
+            ),
+        )
+
     manifest = DesignManifest(
         seed=seed,
         mood=mood,
         industry=industry,
         color_scheme="dark" if color_scheme == "dark" else "light",
+        design_scheme="" if scheme.is_neutral else scheme.slug,
         header_archetype=header,
         footer_archetype=footer,
         decisions=decisions,
     )
     logger.info(
-        "Design manifest: header=%s footer=%s (brand=%s mood=%s industry=%s)",
-        header, footer, seed, mood, industry,
+        "Design manifest: scheme=%s header=%s footer=%s (brand=%s mood=%s industry=%s)",
+        scheme.slug, header, footer, seed, mood, industry,
     )
     return manifest
 
@@ -235,11 +287,17 @@ def demote_self_chrome_header(manifest: DesignManifest, *, reason: str) -> bool:
     """
     if manifest.header_archetype not in SELF_CHROME_HEADERS:
         return False
+    from app.services.design_schemes import by_slug
+
     candidates, _pinned = _fit_candidates(
         manifest.mood,  # type: ignore[arg-type]
         manifest.industry,
         _HEADER_FIT,
         _HEADER_FIT_BY_INDUSTRY,
+        # Same affinity ordering the pill was chosen under, so the fallback is
+        # the scheme's own next choice rather than the mood's — the site keeps
+        # one coherent visual language even when its first pick is unreachable.
+        by_slug(manifest.design_scheme).header_affinity,
     )
     # Best fit first, self-chrome removed. "classic" backstops a fit list that
     # somehow held nothing else — it is never wrong, merely never interesting.
@@ -271,10 +329,13 @@ def demote_self_chrome_header(manifest: DesignManifest, *, reason: str) -> bool:
 
 # Decision areas that feed the diversity history. Chrome comes from the
 # manifest's own fields; the rest are decision-log entries appended by
-# plan_to_site (palette hex, homepage hero template). Interior heroes and
-# per-section picks stay audit-only — their variety is already handled by
-# rotation/LLM, and flooding the history would dilute the chrome signal.
-_RECORDED_DECISION_AREAS = frozenset({"palette", "hero-homepage"})
+# compose_design_manifest (scheme) and plan_to_site (palette hex, homepage hero
+# template). Interior heroes and per-section picks stay audit-only — their
+# variety is already handled by rotation/LLM, and flooding the history would
+# dilute the chrome signal. The scheme earns a slot because it is the widest
+# single choice on the site: two consecutive sites sharing one is exactly the
+# convergence this history exists to break.
+_RECORDED_DECISION_AREAS = frozenset({"palette", "hero-homepage", "scheme"})
 
 
 async def record_manifest_choices(manifest: DesignManifest) -> None:

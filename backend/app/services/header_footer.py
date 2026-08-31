@@ -160,10 +160,6 @@ _LOGO_HEIGHT_BY_INDUSTRY: dict[str, str] = {"childcare": "68px"}
 # on every other archetype (where the bar spans the full width and can carry it).
 _SELF_CHROME_LOGO_HEIGHT = "45px"
 
-# Industries whose logo must never get the contrast "chip" (a boxed background
-# behind the mark) — it reads as an unwanted border against their light chrome.
-_NO_LOGO_LOCKUP_INDUSTRIES = frozenset({"childcare"})
-
 
 def _uid() -> str:
     return str(uuid4())
@@ -261,24 +257,23 @@ def _image(
 def _logo_mark(
     brand: BrandIdentity,
     theme: ThemeTokens,
-    lockup: str | None = None,
     ink: str | None = None,
     logo_height: str = "52px",
     adaptive_ink: bool = False,
 ) -> BuilderElement:
     """
     Returns a logo BuilderElement — either the uploaded image or a typographic
-    monogram. Both are themed against the palette. When `lockup` is set, the
-    image sits in a contrast chip so it stays legible on header chrome that is
-    too close to the logo's own brightness. `ink` colours the typographic
-    wordmark so it matches the header's menu ink (falls back to secondary).
+    monogram. Both are themed against the palette. Always a bare image, never
+    boxed or filtered — contrast against a same-brightness logo is the
+    header's own background colour's job (see `_header_chrome`), not a
+    decoration on the mark itself. `ink` colours the typographic wordmark so
+    it matches the header's menu ink (falls back to secondary).
 
     `adaptive_ink` (self-chrome archetypes) writes that wordmark colour as
     `var(--wt-pill-ink, <ink>)` so a renderer can flip it with the pill's menu
     as the page scrolls — the built value stays the fallback, so nothing changes
     where no renderer sets the var. Only the wordmark: a bitmap logo cannot be
-    recoloured (it gets the `lockup` chip instead) and the monogram circle is
-    its own painted surface.
+    recoloured, and the monogram circle is its own painted surface.
     """
     # `logo_render_ok`, not the URL: the scraper keeps an og:image or an
     # undersized favicon as a palette source, and either one rendered at 52px is
@@ -286,7 +281,7 @@ def _logo_mark(
     if brand.logo_render_ok and (brand.logo_url or brand.logo_data_url):
         # The logo IS the home link — standard convention, and it lets the
         # primary menu drop the redundant "Home" item entirely.
-        img = _image(
+        return _image(
             brand.logo_url or brand.logo_data_url or "",
             alt=brand.name,
             # Big by default — the header starts prominent and shrinks to ~80%
@@ -297,23 +292,6 @@ def _logo_mark(
             href="/",
             aria_label=f"{brand.name} — home",
         )
-        if lockup:
-            return _container(
-                [img],
-                name="Logo lockup",
-                styles={
-                    "backgroundColor": lockup,
-                    "paddingTop": "6px",
-                    "paddingBottom": "6px",
-                    "paddingLeft": "12px",
-                    "paddingRight": "12px",
-                    "borderRadius": "10px",
-                    "display": "inline-flex",
-                    "alignItems": "center",
-                    "width": "auto",
-                },
-            )
-        return img
 
     # Typographic mark: first letter in a circle in primary color.
     initial = brand.name.strip()[:1].upper() or "•"
@@ -379,19 +357,23 @@ def _logo_mark(
 def _header_chrome(
     brand: BrandIdentity,
     theme: ThemeTokens,
-    industry: str | None = None,
-) -> tuple[str, str, str | None]:
+) -> tuple[str, str]:
     """
     Choose a header background / foreground that keeps the logo and nav
-    readable. The header follows the theme's own scheme — a light theme gets a
+    readable. Defaults to the theme's own background — a light theme gets a
     light header with near-black ink, a dark theme a dark header with white ink
     — so the menu ink is consistent site-wide instead of flipping with the
     homepage hero. Separation from a same-band hero comes from the subtle
     divider shadow on the header root, not from a band flip.
 
-    The 3rd value, `logo_lockup`, is a contrast chip for uploaded logos only
-    when the logo would blend into the actual header background: dark header +
-    dark logo => white chip; light header + light logo => dark chip.
+    When the logo's own brightness would clash with that default (a light logo
+    on the light/white default, or a dark logo on the dark default), the
+    header itself switches to the theme's own OPPOSITE-brightness token —
+    `secondary` (the palette's dark, brand-hued neutral) for a light logo,
+    `text` (the palette's light, contrast-guaranteed-by-construction token) for
+    a dark logo — rather than decorating the logo. Still an on-brand colour
+    from the same six-token palette every other surface draws from, never an
+    arbitrary shade, and it fixes the whole bar instead of patching the mark.
     """
     background = theme.palette.background
     foreground = _text_for_background(background)
@@ -399,18 +381,17 @@ def _header_chrome(
         foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
 
     header_is_dark = foreground == "#ffffff"
-    lockup = None
-    # Childcare brief: a clean logo, no chip. The pastel light header + a bright
-    # (logo_is_light) mark would otherwise get a dark contrast box that reads as
-    # an unwanted border — suppress it and let the logo sit free on the header.
-    if (industry or "").strip().lower() in _NO_LOGO_LOCKUP_INDUSTRIES:
-        return background, foreground, None
     if brand.logo_is_light is False and header_is_dark:
-        lockup = "#ffffff"
+        background = theme.palette.text
     elif brand.logo_is_light is True and not header_is_dark:
-        lockup = theme.palette.secondary
+        background = theme.palette.secondary
+    else:
+        return background, foreground
 
-    return background, foreground, lockup
+    foreground = _text_for_background(background)
+    if _contrast(background, foreground) < 4.5:
+        foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
+    return background, foreground
 
 
 # --- header ---------------------------------------------------------------------
@@ -448,29 +429,26 @@ def build_header(
     make the solidified header transparent too.
     """
     norm_industry = (industry or "").strip().lower()
-    header_bg, header_fg, logo_lockup = _header_chrome(brand, theme, industry)
-    if (
-        overlay
-        and brand.logo_is_light is False
-        and norm_industry not in _NO_LOGO_LOCKUP_INDUSTRIES
-    ):
-        # A dark image logo floating over a dark full-bleed hero needs its
-        # contrast chip even if the solid header wouldn't (the renderer can
-        # recolor text ink, not bitmaps).
-        logo_lockup = logo_lockup or "#ffffff"
+    header_bg, header_fg = _header_chrome(brand, theme)
     # The logo is the one computed subtree the shared catalog can't express
-    # (image vs monogram vs contrast-chip lockup) — built here, injected via
-    # the template's `$subtree: "logo"` node. It carries the ink marker: while
-    # an overlay header is transparent the renderer forces `wt-header-ink`
-    # elements to white (.wt-page-header--overlay .wt-header-ink). Self-chrome
-    # archetypes (floating pill) skip the marker — their bar chromes itself
-    # during overlay, so a white flip would break on the light pill. They take
-    # the `--wt-pill-ink` var instead, which flips with the section under them
+    # (image vs monogram) — built here, injected via the template's
+    # `$subtree: "logo"` node. It carries the ink marker: while an overlay
+    # header is transparent the renderer forces `wt-header-ink` elements to
+    # white (.wt-page-header--overlay .wt-header-ink). Self-chrome archetypes
+    # (floating pill) skip the marker — their bar chromes itself during
+    # overlay, so a white flip would break on the light pill. They take the
+    # `--wt-pill-ink` var instead, which flips with the section under them
     # rather than with the header's own transparency.
+    #
+    # Contrast against the logo is `_header_chrome`'s job on the bar's real
+    # solid chrome; it has no reach into an overlay header's transparent
+    # pre-scroll phase, where the logo sits directly on the hero photo rather
+    # than on `header_bg`. Heroes that need one already carry their own scrim
+    # for the nav text's sake (see `headerOverlaySafe`) — a dark logo rides
+    # that same scrim rather than getting its own fix.
     logo = _logo_mark(
         brand,
         theme,
-        lockup=logo_lockup,
         ink=header_fg,
         logo_height=(
             _SELF_CHROME_LOGO_HEIGHT

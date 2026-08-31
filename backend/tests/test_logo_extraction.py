@@ -8,7 +8,12 @@ from bs4 import BeautifulSoup
 from PIL import Image
 
 from app.services import brand_candidate, scraper
-from app.services.logo_extraction import LogoCandidate, extract_logo, is_renderable
+from app.services.logo_extraction import (
+    LogoCandidate,
+    brand_mark_urls,
+    extract_logo,
+    is_renderable,
+)
 
 BASE = "https://example.com/"
 
@@ -208,6 +213,105 @@ class InlineSvgTest(unittest.TestCase):
         )
 
         self.assertEqual(extract_logo(soup, BASE).source, "logo")
+
+
+class BrandMarkUrlsTest(unittest.TestCase):
+    """`brand_mark_urls` answers the inverse of `extract_logo`: not "which mark
+    is the brand's" but "is this picture the brand's mark at all". The scraper
+    stamps role="logo" on the answers, which is what keeps the logo out of the
+    About/hero photo pool — geometry can't tell a wordmark from a photograph."""
+
+    def test_header_and_footer_variants_are_both_returned(self):
+        """One brand, two files: extract_logo can only name the winner, so the
+        white footer variant would stay in the photo pool."""
+        soup = _soup(
+            '<header><img class="site-logo" src="/assets/logo.svg" alt="Acme"></header>'
+            '<main><img src="/photos/clinic.jpg" alt="Our clinic"></main>'
+            '<footer><img src="/assets/logo-white.png" alt="Acme"></footer>'
+        )
+
+        urls = brand_mark_urls(soup, BASE, site_name="Acme")
+
+        self.assertEqual(
+            urls,
+            {
+                "https://example.com/assets/logo.svg",
+                "https://example.com/assets/logo-white.png",
+            },
+        )
+
+    def test_og_image_is_never_a_brand_mark_url(self):
+        """og:image is extract_logo's last-resort tier and a palette source
+        only. On most sites it is a real photograph — excluding it from the pool
+        would cost the site its best hero."""
+        soup = _soup(
+            '<main><img src="/photos/team.jpg" alt="Our team"></main>',
+            '<meta property="og:image" content="/social-card.jpg">',
+        )
+
+        self.assertEqual(brand_mark_urls(soup, BASE), set())
+
+    def test_declared_icon_is_included(self):
+        soup = _soup("", '<link rel="icon" sizes="192x192" href="/icon-192.png">')
+
+        self.assertEqual(
+            brand_mark_urls(soup, BASE), {"https://example.com/icon-192.png"}
+        )
+
+    def test_partner_logo_wall_is_content_not_the_brand(self):
+        """Those tiles ARE the section's content — image_evidence.classify_role
+        makes the same exception for grid cells."""
+        tiles = "".join(
+            f'<img src="/uploads/partner{i}-logo.png" '
+            f"data-webtree-evidence='{_evidence(y=1400, grid=6)}'>"
+            for i in range(6)
+        )
+        soup = _soup(f"<section>{tiles}</section>")
+
+        self.assertEqual(brand_mark_urls(soup, BASE), set())
+
+    def test_a_logo_wall_inside_the_header_is_still_a_wall(self):
+        """The header tier applies `_in_logo_wall` too: a strip of partner marks
+        in a <nav> is somebody else's brand, and "partner-logo.png" trips every
+        logo hint there is."""
+        tiles = "".join(
+            f'<img class="partner-logo" src="/uploads/p{i}-logo.png" '
+            f"data-webtree-evidence='{_evidence(grid=5)}'>"
+            for i in range(5)
+        )
+        soup = _soup(f"<nav>{tiles}</nav>")
+
+        self.assertEqual(brand_mark_urls(soup, BASE), set())
+        self.assertIsNone(extract_logo(soup, BASE))
+
+    def test_inline_svg_mark_contributes_no_url(self):
+        """An inline <svg> carries a data_url, not a url, and never appears
+        among the scraper's <img>-derived candidates. No crash, no entry."""
+        soup = _soup(
+            f'<header><a href="/"><svg class="logo" viewBox="0 0 200 60">'
+            f'<path d="{_LOGO_SVG_PATH}"/></svg></a></header>'
+        )
+
+        self.assertEqual(brand_mark_urls(soup, BASE), set())
+        self.assertEqual(extract_logo(soup, BASE).source, "logo")
+
+    def test_the_winner_is_always_among_the_candidates(self):
+        """The invariant tying the two functions together: whatever the header
+        renders is excluded from the photo pool. Only a data-URL mark (no `url`)
+        is exempt, by construction."""
+        cases = [
+            '<header><img class="logo" src="/assets/logo.png"></header>',
+            '<header><a href="/"><img src="/brandmark.svg" alt="Acme"></a></header>',
+            '<div><img src="/a1b2.png" alt="Acme logo"></div>',
+            '<div><img class="Image" src="/site-logo.png">'
+            '<img class="Image" src="/logo-alt.png"></div>',
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                soup = _soup(body)
+                logo = extract_logo(soup, BASE)
+                self.assertIsNotNone(logo)
+                self.assertIn(logo.url, brand_mark_urls(soup, BASE, site_name="Acme"))
 
 
 class IconFallbackTest(unittest.TestCase):

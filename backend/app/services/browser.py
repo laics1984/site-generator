@@ -102,11 +102,17 @@ async def block_heavy_resources(route, request) -> None:
 
 
 @asynccontextmanager
-async def browser_context() -> AsyncIterator:
+async def browser_context(*, storage_state: dict | None = None) -> AsyncIterator:
     """A configured Chromium context, torn down on exit.
 
     Every caller wants the same launch args, stealth patch, headers and resource
     blocking — differences between them were drift, not intent.
+
+    `storage_state` is a Playwright session (cookies + local storage) captured
+    elsewhere, letting a render see what a signed-in visitor sees. It is the one
+    thing callers legitimately differ on, and this is the only place Chromium is
+    configured, so one optional argument here reaches every reader. `None` — the
+    default every existing caller takes — is an ordinary anonymous context.
     """
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=_LAUNCH_ARGS)
@@ -116,6 +122,7 @@ async def browser_context() -> AsyncIterator:
             ignore_https_errors=True,
             locale="en-US",
             extra_http_headers=BROWSER_HEADERS,
+            storage_state=storage_state,
         )
         await context.add_init_script(STEALTH_INIT_SCRIPT)
         await context.route("**/*", block_heavy_resources)

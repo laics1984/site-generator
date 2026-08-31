@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.models.brand import ThemeTokens
+from app.services.design_schemes import DesignScheme, for_theme
 from app.services.theme import (
     _adjust_lightness,
     _ensure_contrast_against,
@@ -27,6 +28,236 @@ from app.services.theme import (
     _rgb_to_hex,
     _rgb_to_hls,
 )
+
+
+@dataclass(frozen=True)
+class TypeRamp:
+    """Heading/copy size ceilings in px, before the fluid ``clamp()``.
+
+    These were seven literals inline in ``make_style_tokens`` and therefore
+    identical on every site this generator has ever produced. As data they can
+    be scaled per design scheme; the defaults ARE the historical values, so a
+    neutral scheme reproduces the old output exactly.
+    """
+
+    xl: float = 56.0
+    lg: float = 44.0
+    md: float = 32.0
+    mobile: float = 28.0
+    subhead: float = 19.0
+    body: float = 16.0
+    eyebrow: float = 13.0
+
+
+@dataclass(frozen=True)
+class SpacingScale:
+    """Card/button/measure metrics in px. Same story as ``TypeRamp``.
+
+    Deliberately absent: ``gap`` on section shells and grids, and ``minHeight``
+    on feature/service/testimonial cards. The renderers pin both by node NAME
+    with ``!important`` (see design_schemes.RENDERER_PINNED_* and
+    webtree-public/lib/responsiveRuntime.ts), so a value here would lose on the
+    published site while winning in neither editor — a divergence, not a knob.
+    """
+
+    card_padding: float = 28.0
+    card_gap: float = 12.0
+    button_padding_y: float = 13.0
+    button_padding_x: float = 26.0
+    ghost_padding_y: float = 12.0
+    ghost_padding_x: float = 22.0
+    subhead_measure: float = 640.0
+
+
+def type_ramp_for(scheme: DesignScheme) -> TypeRamp:
+    """The scheme's type ramp. Only the display tiers move — body copy and the
+    eyebrow stay at their readable sizes whatever the scheme's ambition, because
+    a 1.55 ratio applied to 16px body text is a legibility regression, not a
+    design. The ratio reaches display type through ``boost`` instead."""
+    return TypeRamp()
+
+
+def spacing_scale_for(scheme: DesignScheme) -> SpacingScale:
+    """The scheme's spacing metrics. ``card_padding_scale`` moves the card's own
+    breathing room; the measure moves with it so a roomier card doesn't end up
+    with a line length the eye can't track back from."""
+    base = SpacingScale()
+    cps = scheme.card_padding_scale
+    if cps == 1.0:
+        return base
+    return SpacingScale(
+        card_padding=round(base.card_padding * cps),
+        card_gap=round(base.card_gap * min(cps, 1.35)),
+        button_padding_y=base.button_padding_y,
+        button_padding_x=base.button_padding_x,
+        ghost_padding_y=base.ghost_padding_y,
+        ghost_padding_x=base.ghost_padding_x,
+        subhead_measure=base.subhead_measure,
+    )
+
+
+def tracking_ramp(base: str) -> tuple[str, str, str]:
+    """(xl, lg, md) letter-spacing from one value, keeping today's graded ramp.
+
+    The historical trio was -0.02em / -0.015em / -0.01em — exactly 1.0 / 0.75 /
+    0.5 of the first — so passing the default reproduces it to the character.
+    A value this can't parse is passed through unchanged on all three tiers,
+    which is wrong-looking rather than crashing.
+    """
+    try:
+        value = float(base.strip().removesuffix("em"))
+    except (AttributeError, ValueError):
+        return (base, base, base)
+    return tuple(f"{round(value * r, 4):g}em" for r in (1.0, 0.75, 0.5))  # type: ignore[return-value]
+
+
+def card_surface(
+    theme: ThemeTokens, scheme: DesignScheme, spacing: SpacingScale
+) -> dict[str, Any]:
+    """The card surface for the scheme's treatment.
+
+    Each treatment is *safe by construction* on any band, because the fill and
+    the frame are decided together rather than independently:
+
+    * ``bordered`` — hairline, no lift. The frame does the separating.
+    * ``elevated`` — no frame, the shadow does it.
+    * ``flat``     — neither, and no fill either: the card dissolves into the
+      band and the grid gap separates. Safe precisely BECAUSE there is no
+      surface — a filled card with no frame is the one combination that can go
+      invisible against a matching band.
+    * ``glass``    — frosted pane (needs a backdrop worth blurring; the
+      one-accent-per-page texture rule in ``modernize_sections`` keeps glass and
+      texture off the same surface).
+    * ``outline``  — a deliberate 2px rule in the brand ink, no lift.
+
+    Text colour is not set here: ``section_content.enforce_text_contrast`` runs
+    over the finished tree and flips ink per resolved band, so a transparent
+    card on a dark band still reads.
+    """
+    palette = theme.palette
+    radius = f"{max(8, theme.buttons.radius + 4)}px"
+    padding = f"{spacing.card_padding:.0f}px"
+    gap = f"{spacing.card_gap:.0f}px"
+    treatment = scheme.card_treatment
+    if treatment == "inherit":
+        # Key order matters: these styles are serialized into the BuilderElement
+        # JSON, so the legacy branch keeps the historical insertion order and
+        # the neutral scheme's output stays byte-identical, not merely equal.
+        return {
+            "padding": padding,
+            "borderRadius": radius,
+            "backgroundColor": palette.background,
+            "border": f"1px solid {_hairline(palette.secondary)}",
+            "gap": gap,
+            "boxShadow": shadow(getattr(theme, "shadow_scale", "soft")),
+        }
+    base: dict[str, Any] = {"padding": padding, "borderRadius": radius, "gap": gap}
+    if treatment == "bordered":
+        return {
+            **base,
+            "backgroundColor": palette.background,
+            "border": f"1px solid {_hairline(palette.secondary, alpha=0.14)}",
+            "boxShadow": "none",
+        }
+    if treatment == "elevated":
+        return {
+            **base,
+            "backgroundColor": palette.background,
+            "border": "none",
+            "boxShadow": shadow(getattr(theme, "shadow_scale", "elevated")),
+        }
+    if treatment == "flat":
+        return {
+            **base,
+            "backgroundColor": "transparent",
+            "border": "none",
+            "boxShadow": "none",
+        }
+    if treatment == "outline":
+        return {
+            **base,
+            "backgroundColor": "transparent",
+            "border": f"2px solid {_hairline(palette.secondary, alpha=0.22)}",
+            "boxShadow": "none",
+        }
+    # "glass" — the frosted pane owns its own fill/border/shadow.
+    return {**base, **glass_card_styles(theme)}
+
+
+def eyebrow_styles(
+    theme: ThemeTokens, scheme: DesignScheme, ramp: TypeRamp
+) -> dict[str, Any]:
+    """The small label above a section heading, per the scheme's treatment.
+
+    All six are pure presentation — none changes what the label says, so the
+    treatment can vary freely without touching content or grounding. ``hidden``
+    sets ``display: none`` rather than dropping the node, so the builder's user
+    can bring it back and the tree stays comparable across schemes.
+    """
+    typo = theme.typography
+    accent = emphasis_ink(theme)
+    caps: dict[str, Any] = {
+        "fontFamily": typo.body_font,
+        "fontSize": f"{ramp.eyebrow:.0f}px",
+        "fontWeight": 600,
+        "letterSpacing": "0.14em",
+        "textTransform": "uppercase",
+        "color": accent,
+        "margin": "0",
+    }
+    treatment = scheme.eyebrow_treatment
+    if treatment in ("inherit", "caps-tracked"):
+        return caps
+    if treatment == "sentence":
+        return {
+            **caps,
+            "fontSize": f"{ramp.eyebrow + 1:.0f}px",
+            "letterSpacing": "0",
+            "textTransform": "none",
+            "color": meta_ink(theme),
+        }
+    if treatment == "rule":
+        return {
+            **caps,
+            # currentColor, not the accent hex: the rule has to track whatever
+            # ink this label ends up with, and that is not knowable here. The
+            # accent is AA-corrected against the PAGE background, but a section
+            # can resolve to the opposite band, and `enforce_text_contrast`
+            # fixes `color` per band afterwards — it does not know about
+            # borders. Inheriting means the rule is corrected for free; a hex
+            # would have been a pale rule on a pale band on half the sites.
+            "borderLeft": "3px solid currentColor",
+            "paddingLeft": "10px",
+            "display": "inline-flex",
+            "alignItems": "center",
+            "alignSelf": "flex-start",
+        }
+    if treatment == "chip":
+        return {
+            **caps,
+            # A translucent tint rather than a solid fill, for the same reason:
+            # 13% of the accent over a light band is a pale wash and over a dark
+            # one a faint lift, so the chip reads on either without knowing
+            # which it landed on. Its own ink is corrected per band downstream.
+            "backgroundColor": _hairline(theme.palette.accent, alpha=0.13),
+            "paddingTop": "6px",
+            "paddingBottom": "6px",
+            "paddingLeft": "13px",
+            "paddingRight": "13px",
+            "borderRadius": "999px",
+            "display": "inline-flex",
+            "alignItems": "center",
+            "alignSelf": "flex-start",
+        }
+    if treatment == "underline":
+        return {
+            **caps,
+            "borderBottom": "2px solid currentColor",  # see "rule" above
+            "paddingBottom": "6px",
+            "display": "inline-block",
+            "alignSelf": "flex-start",
+        }
+    return {**caps, "display": "none"}
 
 
 @dataclass
@@ -45,6 +276,9 @@ class StyleTokens:
     primary_button_styles: dict[str, Any]
     secondary_button_styles: dict[str, Any]
     glass_card: dict[str, Any] | None = None
+    # The design scheme this vocabulary was built under. Section builders read
+    # it off here rather than re-resolving it, so there is one lookup per site.
+    scheme: DesignScheme | None = None
 
     @property
     def cards(self) -> dict[str, Any]:
@@ -57,6 +291,15 @@ class StyleTokens:
 def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
     palette = theme.palette
     typo = theme.typography
+    # The scheme rides on the theme (ThemeTokens.design_scheme), so this is the
+    # only place the whole style vocabulary needs to look it up. A theme built
+    # with the kill switch off yields the neutral scheme, whose every branch
+    # below is the pre-scheme literal.
+    scheme = for_theme(theme)
+    ramp = type_ramp_for(scheme)
+    spacing = spacing_scale_for(scheme)
+    track_xl, track_lg, track_md = tracking_ramp(scheme.heading_tracking or "-0.02em")
+    heading_weight = scheme.heading_weight or 700
     # Body/heading ink: `secondary` in the light scheme (a dark neutral tuned
     # for white/surface backgrounds), but in the dark scheme `secondary` is
     # itself one of the darkest tokens (the CTA-band colour) — using it as text
@@ -75,71 +318,56 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
 
     heading_xl = {
         "fontFamily": display_font,
-        "fontSize": _fluid_heading(56, boost),
-        "fontWeight": 700,
+        "fontSize": _fluid_heading(ramp.xl, boost),
+        "fontWeight": heading_weight,
         "lineHeight": "1.05",
         "color": ink,
         "margin": "0",
-        "letterSpacing": "-0.02em",
+        "letterSpacing": track_xl,
     }
     heading_lg = {
         "fontFamily": display_font,
-        "fontSize": _fluid_heading(44, boost),
-        "fontWeight": 700,
+        "fontSize": _fluid_heading(ramp.lg, boost),
+        "fontWeight": heading_weight,
         "lineHeight": "1.1",
         "color": ink,
         "margin": "0",
-        "letterSpacing": "-0.015em",
+        "letterSpacing": track_lg,
     }
     heading_md = {
         "fontFamily": typo.heading_font,
-        "fontSize": _fluid_heading(32, boost),
-        "fontWeight": 700,
+        "fontSize": _fluid_heading(ramp.md, boost),
+        "fontWeight": heading_weight,
         "lineHeight": "1.15",
         "color": ink,
         "margin": "0",
-        "letterSpacing": "-0.01em",
+        "letterSpacing": track_md,
     }
-    heading_mobile = {"fontSize": "28px"}
+    heading_mobile = {"fontSize": f"{ramp.mobile:.0f}px"}
     subhead = {
         "fontFamily": typo.body_font,
-        "fontSize": "19px",
+        "fontSize": f"{ramp.subhead:.0f}px",
         "lineHeight": "1.55",
         "color": _muted(ink),
         "margin": "0",
-        "maxWidth": "640px",
+        "maxWidth": f"{spacing.subhead_measure:.0f}px",
     }
-    eyebrow = {
-        "fontFamily": typo.body_font,
-        "fontSize": "13px",
-        "fontWeight": 600,
-        "letterSpacing": "0.14em",
-        "textTransform": "uppercase",
-        "color": emphasis_ink(theme),
-        "margin": "0",
-    }
+    eyebrow = eyebrow_styles(theme, scheme, ramp)
     body = {
         "fontFamily": typo.body_font,
-        "fontSize": "16px",
+        "fontSize": f"{ramp.body:.0f}px",
         "lineHeight": "1.65",
         "color": _muted(ink),
         "margin": "0",
     }
-    card = {
-        "padding": "28px",
-        "borderRadius": f"{max(8, theme.buttons.radius + 4)}px",
-        "backgroundColor": palette.background,
-        "border": f"1px solid {_hairline(palette.secondary)}",
-        "gap": "12px",
-        "boxShadow": shadow(getattr(theme, "shadow_scale", "soft")),
-    }
+    card = card_surface(theme, scheme, spacing)
     primary_button = {
         "color": theme.buttons.text,
         "backgroundColor": theme.buttons.background,
-        "paddingTop": "13px",
-        "paddingBottom": "13px",
-        "paddingLeft": "26px",
-        "paddingRight": "26px",
+        "paddingTop": f"{spacing.button_padding_y:.0f}px",
+        "paddingBottom": f"{spacing.button_padding_y:.0f}px",
+        "paddingLeft": f"{spacing.button_padding_x:.0f}px",
+        "paddingRight": f"{spacing.button_padding_x:.0f}px",
         "borderRadius": f"{theme.buttons.radius}px",
         "textDecoration": "none",
         "display": "inline-flex",
@@ -154,10 +382,10 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
     secondary_button = {
         "color": ink,
         "backgroundColor": "transparent",
-        "paddingTop": "12px",
-        "paddingBottom": "12px",
-        "paddingLeft": "22px",
-        "paddingRight": "22px",
+        "paddingTop": f"{spacing.ghost_padding_y:.0f}px",
+        "paddingBottom": f"{spacing.ghost_padding_y:.0f}px",
+        "paddingLeft": f"{spacing.ghost_padding_x:.0f}px",
+        "paddingRight": f"{spacing.ghost_padding_x:.0f}px",
         "borderRadius": f"{theme.buttons.radius}px",
         "border": f"1px solid {_hairline(palette.secondary, alpha=0.18)}",
         "textDecoration": "none",
@@ -183,6 +411,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
         primary_button_styles=primary_button,
         secondary_button_styles=secondary_button,
         glass_card=glass_card_styles(theme) if getattr(theme, "use_glass", False) else None,
+        scheme=scheme,
     )
 
 

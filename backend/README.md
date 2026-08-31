@@ -62,7 +62,9 @@ Override defaults via env vars or a `.env` file:
 | `DESIGN_LANGUAGE_ENABLED` | `true` | LLM picks curated palette + font pairing pre-theme; `false` ⇒ deterministic theming |
 | `VISION_MAX_IMAGES` | `12` | Vision annotation cap per generation |
 | `PEXELS_API_KEY` | unset | Free key at pexels.com/api — stock photo fallback (Picsum without it) |
-| `CMS_API_BASE_URL` | `http://localhost:8000` | webtree CMS API |
+| `CMS_API_BASE_URL` | `http://localhost:8000` | webtree CMS API — the default push target |
+| `CMS_REMOTE_API_BASE_URL` | unset | A second CMS, selectable per push (admin API origin). Unset ⇒ one target, no picker |
+| `CMS_REMOTE_ADMIN_BASE_URL` | unset | Admin-suite origin for that second CMS, for the post-push deep link |
 
 ## Endpoints (Phase 1)
 

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -94,6 +96,8 @@ class Settings(BaseSettings):
         "reasoning_base_url",
         "reasoning_model",
         "reasoning_api_key",
+        "cms_remote_api_base_url",
+        "cms_remote_admin_base_url",
         mode="before",
     )
     @classmethod
@@ -217,6 +221,18 @@ class Settings(BaseSettings):
     # bounds the legacy single-call prompt.
     legacy_prompt_max_chars: int = 24000
 
+    # Ask the LLM to work out a PASTE's page structure (services/paste_structure.py)
+    # instead of reading it from line shape. A pasted brief has no reliable
+    # structural markers — unlike a crawl (URLs) or a Word doc (heading styles) —
+    # so the line-shape heuristic mistakes layout labels for page titles. Off ⇒
+    # that heuristic is the whole reader, which is also the fallback whenever the
+    # LLM is unreachable or the paste is bigger than the cap below.
+    paste_llm_structure_enabled: bool = True
+    # Char cap on the line-numbered paste sent to that call. Past it we fall back
+    # to the heuristic rather than truncating: half a structure is worse than a
+    # consistent one, because the dropped tail silently loses its pages.
+    paste_structure_max_chars: int = 24000
+
     # Temperature for the design-brain pass (services/design_brain.py), which
     # picks per-section template variety/drama. Deliberately higher than the
     # 0.3 content/fidelity calls — bolder, less repetitive choices are exactly
@@ -244,6 +260,14 @@ class Settings(BaseSettings):
     # the same chrome picks. Disabling is a safe no-op — archetype selection
     # falls back to the purely seeded (per-brand idempotent) rotation.
     diversity_engine_enabled: bool = True
+    # Off switch for design schemes (services/design_schemes.py): the style-pack
+    # layer that gives each (mood, industry) cell several distinct visual
+    # languages instead of one. Disabling is a safe no-op — every scheme field
+    # defers to the per-mood tables that were the sole authority before it
+    # (MOOD_SPECS, _MOOD_LAYOUT_PREFERENCE, _DIVIDER_SHAPE_BY_MOOD, the
+    # hero-director specs), so output is byte-identical to the pre-scheme
+    # generator. Ships off; flipped on once verified against real sources.
+    design_schemes_enabled: bool = False
 
     # Full-bleed photo/abstract background hero on EVERY page (not just the
     # homepage), so the transparent floating header engages site-wide. Imagery
@@ -361,6 +385,16 @@ class Settings(BaseSettings):
     # every image is a promo graphic) instead of screening the whole pool.
     ocr_verify_budget: int = 4
 
+    # Graphic screening (services/image_graphics.py): read the alpha channel and
+    # the colour variety to tell an authored mark from a photograph, for the
+    # sites whose markup declares nothing — no <header>, no alt, no "logo" in the
+    # filename. Rides the same off-critical-path window as the OCR screen, but
+    # does its own downloads: the vision prefetch re-encodes to JPEG, which
+    # destroys the alpha channel this measures.
+    graphic_detection_enabled: bool = True
+    graphic_max_images: int = 12  # screening cap per generation
+    graphic_fetch_concurrency: int = 3
+
     photo_sampling_enabled: bool = True
     # Deliberately tighter than the vision fetch: a hero's dressing is an
     # enhancement, never worth stalling a build for. On timeout the photo just
@@ -375,9 +409,33 @@ class Settings(BaseSettings):
     # frontend simply omits the link rather than guessing a host.
     admin_app_base_url: str | None = None
 
+    # --- A second CMS you can pick per push ---------------------------------
+    # The two settings above define the DEFAULT push target. Set these to point
+    # a locally-run generator at a live CMS: the publish drawer then grows a
+    # target picker and each push chooses where it lands, with no restart and
+    # no .env edit between sites. Left unset there is exactly one target and
+    # the UI is byte-identical to before — the same restraint as
+    # admin_app_base_url. Two flat scalars rather than a nested targets map,
+    # mirroring the reasoning_* precedent for "a second endpoint with its own
+    # settings"; services/cms_targets.py is the only reader, so a third target
+    # is a change there and nowhere else.
+    #
+    # Must be the ADMIN API origin: the CMS's routes/api.php can serve admin
+    # and public routes on separate hosts (ADMIN_API_DOMAIN +
+    # ALLOW_LEGACY_SHARED_API_HOST), and the push only ever calls admin routes.
+    cms_remote_api_base_url: str | None = None
+    cms_remote_admin_base_url: str | None = None
+
     # SQLite file for durable crawl-job state (services/db.py). Inside the
     # container this lives on the mounted data volume.
     sitegen_db_path: str = "/app/data/sitegen.db"
+
+    # Saved browser sessions (services/browser_session.py) — a Playwright
+    # storage_state per named site, so a render can read what only a signed-in
+    # visitor sees. Same data volume as the SQLite file above: it survives a
+    # `compose down`, and it is NOT in the repo tree, so a session full of
+    # cookies can't be committed by accident.
+    browser_session_dir: str = "/app/data/browser-sessions"
 
     # Luminance-band section rhythm (SECTION_VISUAL_POLICY_SPEC.md). When enabled,
     # the planner assigns a visual_policy per the §5 matrix and the schema_builder
@@ -422,6 +480,23 @@ class Settings(BaseSettings):
     # SEO meta description length bounds (chars).
     seo_description_min_length: int = 100
     seo_description_max_length: int = 170
+
+    # --- Deployment posture -------------------------------------------------
+    # WHERE this generator runs — not where a push lands (that is a CmsTarget,
+    # services/cms_targets.py; the two are deliberately separate concerns).
+    #
+    # "local" is the tool as designed and documented in SECURITY.md: one user,
+    # one machine, no auth, bound to localhost. "hosted" asserts the opposite,
+    # and app/deployment/guards.py refuses to start on the settings that are
+    # only safe under "local". Every check is inert while this is "local", so
+    # the default is a true no-op.
+    deployment: Literal["local", "hosted"] = "local"
+    # How requests are authenticated under "hosted". There is no auth in this
+    # app by design, so "none" is refused at startup under "hosted" — the point
+    # is that an unauthenticated public deploy cannot happen by omission.
+    # "proxy" is an explicit attestation that an authenticating reverse proxy
+    # sits in front, which is the arrangement SECURITY.md already recommends.
+    deployment_auth: Literal["none", "proxy"] = "none"
 
     # --- Security -----------------------------------------------------------
     # SSRF guard: the scrape/fetch layer accepts arbitrary user- and page-
@@ -470,6 +545,13 @@ class Settings(BaseSettings):
     # Public-page render when no token is available. Fragile by nature (Facebook
     # changes its markup without notice); set false to require a token.
     facebook_render_fallback_enabled: bool = True
+    # Let that render reuse a signed-in session captured by
+    # `scripts/facebook_login.py`. Logged out, Facebook serves og: tags and
+    # little else; signed in, the About panel (address, hours, phone, category)
+    # renders too. Set false to keep every read anonymous — the render still
+    # works, it just sees less. Refused outright under DEPLOYMENT=hosted, where
+    # one person's cookies would be shared by every user (deployment/guards.py).
+    facebook_session_enabled: bool = True
     # Ask the vision judge whether the profile picture is a real mark or a
     # photograph, and demote it to palette-only when it's a photo. No-op unless
     # llm_vision_model is configured.

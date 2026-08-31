@@ -131,12 +131,16 @@ when a token is available, a public-page render otherwise.
 
 | Variable | Default | Description |
 |---|---|---|
-| `SCRAPE_ALLOW_PRIVATE_HOSTS` | `false` | **Security.** `true` disables the SSRF guard for localhost/LAN scraping (dev only). See [SECURITY.md](SECURITY.md). |
+| `DEPLOYMENT` | `local` | **Where this generator runs** (not where a push lands — that's `CMS_REMOTE_*`). `hosted` makes `app/deployment/guards.py` refuse to start on settings that are only safe on a laptop. Inert under `local`, so the default is a true no-op. |
+| `DEPLOYMENT_AUTH` | `none` | This app has no authentication. Under `DEPLOYMENT=hosted`, `none` is **refused at startup** — set `proxy` to attest that an authenticating reverse proxy fronts it. |
+| `SCRAPE_ALLOW_PRIVATE_HOSTS` | `false` | **Security.** `true` disables the SSRF guard for localhost/LAN scraping (dev only). Refused under `DEPLOYMENT=hosted`. See [SECURITY.md](SECURITY.md). |
 | `HTTP_USER_AGENT` | *(Chrome UA)* | Shared UA for httpx + Playwright fetches. |
 | `FAST_FETCH_TIMEOUT_SECONDS` | `8.0` | httpx fast-path timeout. |
 | `ROBOTS_FETCH_TIMEOUT_SECONDS` | `10.0` | robots/sitemap/logo fetch timeout. |
 | `PLAYWRIGHT_GOTO_TIMEOUT_MS` | `15000` | Playwright navigation timeout. |
-| `CMS_API_BASE_URL` | `http://localhost:8000` | webtree CMS base. Compose rewrites to host. |
+| `CMS_API_BASE_URL` | `http://localhost:8000` | webtree CMS base — the **default** push target. Compose rewrites to host. |
+| `CMS_REMOTE_API_BASE_URL` | `None` | A **second** CMS, chosen per push from a picker in the publish drawer, so a local generator can push into a live CMS without a restart. Must be the *admin API* origin. Unset ⇒ one target and no picker. |
+| `CMS_REMOTE_ADMIN_BASE_URL` | `None` | Admin-suite origin for that second CMS. Drives its "Open in webtree admin" link, so a remote push is never followed by a `localhost` one. |
 | `ADMIN_APP_BASE_URL` | `None` | webtree admin suite base (a different app from the CMS API). Set it and `POST /api/cms/push` returns an `admin_url` the UI renders as an "Open in webtree admin" link after a successful push. Unset ⇒ no link. |
 | `CMS_TIMEOUT_SECONDS` | `30.0` | CMS API timeout. |
 | `CMS_MEDIA_UPLOAD_TIMEOUT_SECONDS` | `120.0` | CMS media-upload timeout. |

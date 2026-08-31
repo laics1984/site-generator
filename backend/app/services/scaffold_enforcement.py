@@ -19,6 +19,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+from typing import TypeVar
 
 from app.models.content_blocks import (
     DETERMINISTIC_SECTION_KINDS,
@@ -511,18 +512,38 @@ def _default_hero_image_query(page_type: str, brand_name: str) -> str:
     return _HERO_IMAGE_QUERY_BY_PAGE_TYPE.get(page_type, f"{brand_name} team at work")
 
 
-def _backfill_hero_image_query(
-    block: HeroBlock, *, page_type: str, brand_name: str
-) -> HeroBlock:
-    """Fill a blank `image_query` on an LLM-produced hero block.
+# The two block kinds that carry a featured-image slot the LLM can leave blank.
+# A value-constrained TypeVar rather than a Protocol: both are concrete pydantic
+# models with the same three fields, and this keeps `model_copy`'s return type
+# exact at each call site.
+_WithImageQuery = TypeVar("_WithImageQuery", HeroBlock, AboutBlock)
+
+
+def _default_about_image_query(brand_name: str) -> str:
+    """Stock search phrase for an about section with no image_query.
+
+    Deliberately NOT keyed on page type the way the hero default is: a hero
+    belongs to one page, but an `about` SECTION turns up on many page types, so
+    a second table would be answering a question the block can't ask. The
+    brand-name phrasing is the one `_default_block` already ships for an
+    injected about — shared from here so an injected and a backfilled about
+    can't drift apart — and `media._stock_query_chain` degrades it through the
+    market/industry/contextual fallbacks when Pexels has nothing for the name.
+    """
+    return f"{brand_name} team or workplace"
+
+
+def _backfill_image_query(block: _WithImageQuery, default: str) -> _WithImageQuery:
+    """Fill a blank `image_query` on an LLM-produced hero or about block.
 
     The LLM sometimes leaves `image_query` blank on content-sparse interior
     pages despite the prompt's blanket "always fill visual query fields"
-    instruction — HeroBlock has no `heal_*` validator for this field (unlike
-    primary_cta_label/href, image_ref, layout on the same model), so nothing
-    repairs it before this point. Left blank, schema_builder's resolver never
-    queries Pexels for the slot and the hero silently degrades to a flat-
-    colour gradient template instead of a photo.
+    instruction — neither model has a `heal_*` validator for this field (unlike
+    primary_cta_label/href, image_ref, layout on HeroBlock), so nothing repairs
+    it before this point. Left blank, schema_builder's resolver never queries
+    Pexels for the slot: a hero silently degrades to a flat-colour gradient
+    template, and an about loses its image slot entirely — `_featured_image`
+    returns None, so `_about_preference` picks the image-less `about-story`.
 
     A no-op when the block already has a query, or already has a bound
     scraped photo (image_ref/image_url) that resolves independently.
@@ -531,9 +552,7 @@ def _backfill_hero_image_query(
         return block
     if block.image_ref is not None or (block.image_url or "").strip():
         return block
-    return block.model_copy(
-        update={"image_query": _default_hero_image_query(page_type, brand_name)}
-    )
+    return block.model_copy(update={"image_query": default})
 
 
 def sanitize_blocks_against_source(
@@ -681,8 +700,12 @@ def align_page_to_scaffold(
             # would stack all four above the narrative they follow in the
             # source. See routers.generate._drop_unbound_gallery_items.
             elif kind == "hero" and isinstance(block, HeroBlock):
-                block = _backfill_hero_image_query(
-                    block, page_type=scaffold.page_type, brand_name=brand_name
+                block = _backfill_image_query(
+                    block, _default_hero_image_query(scaffold.page_type, brand_name)
+                )
+            elif kind == "about" and isinstance(block, AboutBlock):
+                block = _backfill_image_query(
+                    block, _default_about_image_query(brand_name)
                 )
             aligned_blocks.append(block)
         elif kind in _STRUCTURAL_FALLBACK_KINDS and occurrence[kind] == 1:
@@ -764,7 +787,7 @@ def _default_block(
             # Intentionally empty — the builder prompts the user to add their
             # real story. We don't write a fictional one.
             body="",
-            image_query=f"{brand_name} team or workplace",
+            image_query=_default_about_image_query(brand_name),
         )
     if kind == "cta":
         return CtaBlock(

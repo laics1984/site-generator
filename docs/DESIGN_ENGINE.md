@@ -85,27 +85,25 @@ is pure white in a light scheme and a neutral black in a dark one (the
 palette's near-black is navy — that tint is what made the pill read as a
 *panel* rather than as glass).
 
-But a translucent pane is only as colourless as what shows THROUGH it, and
-that is the half that actually shows: over a hero photo or a tinted band, the
-backdrop reads as a colour smear across the bar and the pill stops looking like
-glass and starts looking like a gradient. So `glass.filter` is
-`blur(28px) grayscale(1)` — it **fully desaturates** the backdrop. A `saturate()`
-boost is the opposite move (the glassmorphism idiom, which deliberately makes
-the backdrop's colour pop) and is exactly the look this must not have. The
-desaturation is free: `grayscale()` is a luma projection, so it shifts a
-backdrop's luminance by under 0.2 of a contrast point even at full strength —
-measured across brand, photo and band colours in
-`test_desaturating_the_backdrop_costs_no_nav_contrast` — and cannot eat into
-the readability bound below.
+A translucent pane is only as colourless as what shows THROUGH it, and full
+desaturation of the backdrop (`grayscale(1)`) was tried for exactly that reason
+and **reverted**: the neutralised pane read worse than the colour it removed,
+going muddy and grey over photos. `glass.filter` is therefore
+`blur(20px) grayscale(0)` — the `grayscale(0)` term is a deliberate, pinned
+no-op rather than a dropped one, so a stale comment can't invite someone to
+"restore" desaturation. A `saturate()` boost is the opposite move again (the
+glassmorphism idiom, which deliberately makes the backdrop's colour pop) and is
+still not this. The original argument for desaturation is preserved in f95e2ec.
 
-`GLASS_ALPHA = 0.5` is a **floor, not a taste** — the thinnest veil that keeps
-the nav at AA 4.5:1 in the worst position the pill reaches, and being sticky
-and never-solidifying it reaches every position. The binding cases are a
-light-scheme bar over the hero's dark scrim (5.7:1) and a dark-scheme bar over
-a bright in-page photo (5.0:1). Thinner needs adaptive ink — the transparent
-phase that self-chrome archetypes deliberately opt out of — not a smaller
-number. `test_header_footer.FloatingPillGlassTest` pins the bound, reading the
-theme's own bands rather than assuming them.
+`GLASS_ALPHA = 0.20` is **not** a contrast floor. A veil thick enough to hold
+AA 4.5:1 on both sides of the luminance split takes ~0.45, more than twice
+this, and costs the glass its transparency. The pane instead clears AA against
+one side and fails against the opposite one — which is not a gap to close by
+thickening it, but precisely what `behavior.adaptiveInk` exists to flip. That
+is why adaptive ink is **mandatory** for this archetype rather than an
+enhancement (see "Scroll-adaptive header ink" in CLAUDE.md).
+`test_header_footer.FloatingPillGlassTest` pins the values, reading the theme's
+own bands rather than assuming them.
 
 It is a plain element style, not renderer CSS, so the builder's right panel
 edits it directly — its appearance controls (background hex + opacity, blur,
@@ -367,8 +365,103 @@ never painted. `resolve_color_scheme` is now called *before*
 `generate_design_language` in both generate paths, so the model is offered the
 menu for the scheme the site will actually be built with.
 
+## Design schemes (implemented) — several visual languages per mood × industry
+
+Chrome and font pairing varied per brand; everything that gives a page its
+*geometry* did not. Radius, type scale, glass, shadow depth and texture were one
+value per mood (`theme.MOOD_SPECS`); the literal pixels in
+`style_tokens.make_style_tokens` — section padding, card padding and radius,
+heading sizes, eyebrow treatment, button metrics — were one value **globally**,
+identical on every site this generator has ever produced; `section_rotation`,
+`inverted_cta` and `page.max_width` likewise; and `hero_fullbleed_all_pages`
+collapsed nine hero templates onto `hero-background-bold` for every page of
+every site. Two sites in one cell could only differ by colour.
+
+`services/design_schemes.py` is a **style pack**: a frozen `DesignScheme`
+bundling shape, density, composition and colour-expression variables, chosen by
+the machinery the chrome archetypes already use — fit list → seeded md5
+rotation → diversity history. Sixteen are authored; mood and `industries` are
+hard gates in the catalog's own vocabulary (empty = neutral wildcard) and
+`industry_affinity` is the soft rank on top, so **every one of the 60 (mood,
+industry) cells offers at least three** without a 60-row table.
+
+Two rules keep it maintainable:
+
+* **This module is the only home for a scheme's values.** The per-mood tables it
+  layers over — `MOOD_SPECS`, `_MOOD_LAYOUT_PREFERENCE`,
+  `_DIVIDER_SHAPE_BY_MOOD`, `hero_director._MOOD_SPECS`, `_HEADER_FIT` /
+  `_FOOTER_FIT` — are untouched and remain the fallback. Every field defers with
+  `None` / `"inherit"` / an empty tuple, which is what makes
+  `DESIGN_SCHEMES_ENABLED=false` a true no-op rather than a second code path.
+* **Scales, not absolutes.** `padding_scale`, `card_padding_scale` and
+  `radius_scale` multiply what a template already chose. The catalog's root
+  paddings vary on purpose (72px on 30 entries, 104px on 10, then
+  88/96/112/128/140); replacing them with one number would flatten composition
+  the templates were authored with.
+
+### One threading seam
+
+The scheme must be known before `build_theme`, so it takes the shape the palette
+already uses: `build_theme(scheme_choice=…, avoid_schemes=…)`, mirroring
+`palette_choice`/`avoid_palettes` at the same three generation call sites. The
+slug lands on `ThemeTokens.design_scheme` — **internal, exactly like
+`palette_slug`, and absent from `to_builder_styles()`**, so the CMS wire payload
+is unchanged. Every downstream pass reads it back with
+`design_schemes.for_theme(theme)`, so **no new parameter threads through the
+pipeline** and a new axis is a data edit.
+
+| Field | Consumer |
+|---|---|
+| radius / type ratio / shadow / texture / glass / motion | `build_theme` → `ThemeTokens` |
+| `container_max_width` | `PageTokens.max_width` → `--builder-page-max-width` (117 catalog nodes centre against it) |
+| `padding_scale` | `schema_builder.apply_density_scale` — after `modernize_sections`, before the divider pass |
+| card treatment / heading weight+tracking / eyebrow | `style_tokens` (`TypeRamp`, `SpacingScale`, `card_surface`, `eyebrow_styles`) + `_ModernizePlan` |
+| `divider_shape` / `divider_height` | `schema_builder._divider_shape` (industry pin still wins) |
+| `layout_bias` | `section_content.layout_preference`, prefixed onto the mood order |
+| `hero_policy` | `hero_director.plan_site_heroes` |
+| chrome affinity | `design_director._apply_affinity` |
+
+### Three renderer constraints, not preferences
+
+Everything reaches the page through inline `BuilderElement.styles` (an arbitrary
+CSS map) or a token already emitted, so **no renderer changed**. Three rules are
+imposed by the renderers and are invisible from Python, hence pinned by tests:
+
+1. **`gap` and card `minHeight` belong to the renderer.**
+   `webtree-public/lib/responsiveRuntime.ts` pins them on 21 node **names** with
+   `!important` at desktop and tablet. A value the density pass wrote would lose
+   on the published site while winning in the builder and the preview — a
+   three-way divergence, not a knob. The name sets are mirrored as
+   `design_schemes.RENDERER_PINNED_*` and a test parses the TS to catch drift.
+2. **Lengths are strings.** Vue's `:style` drops `width: 24`; React appends
+   `px`. `design_schemes.scaled_px` exists so no call site has to remember.
+3. **Texture deletes gradients.** `SectionBlock.vue` replaces a gradient with
+   `var(--builder-color-primary)` when `backgroundTexture` is set, so a scheme
+   may declare one or the other on a section, never both.
+
+Two safety interlocks already existed and still hold: the floating pill's
+`force_background=True` outranks any scheme's `hero_policy` (broken chrome beats
+taste), and every contrast pass — `enforce_fill_contrast`,
+`enforce_text_contrast`, `_stamp_band_markers` — runs downstream of the scheme's
+passes and reads final styles, so no scheme can ship an illegible page.
+
+Chrome affinity **narrows** the fit list rather than reordering it: the picker
+takes a seeded index across the whole list, so moving an entry to the front only
+changes which brand lands on it. It is still an intersection, never an addition,
+and always leaves ≥2 candidates so diversity has somewhere to go.
+
+Tests: `backend/tests/test_design_schemes.py`. `tests/conftest.py` pins the
+switch off for the rest of the suite — a scheme changes radius, density,
+measure, card frame, layout order and hero policy per brand, so a structural
+assertion elsewhere would really be an assertion about whichever scheme that
+fixture's brand name hashed to.
+
 ## Extension points (roadmap)
 
+* **More schemes** — add a `DesignScheme` to `DESIGN_SCHEMES` in
+  `services/design_schemes.py`. Gates must use real `BrandMood` /
+  `IndustryCategory` values (the test suite fails on anything else, and on any
+  cell left with fewer than three candidates). Nothing else to touch.
 * **More archetypes** — adding one means: author a `chrome-*` catalog entry
   (tree + slots), extend the Literal in `models/design_manifest.py`, add fit
   entries in `design_director.py`, and a label in `chrome-archetypes.ts`.

@@ -317,3 +317,58 @@ Reply with ONE JSON object matching this schema — no markdown, no commentary:
   "primary_color_hint": string|null   // hex like "#2563eb" if you can infer brand colour, else null
 }
 """
+
+
+# --- paste structuring (small, fast LLM call) -----------------------------------
+
+# The model reads a NUMBERED paste and answers with line numbers only. It never
+# writes copy here: the copy is sliced out of the pasted lines afterwards, so a
+# structure call cannot invent a sentence, and the reply stays small however big
+# the paste is. Same division of labour as the rest of the pipeline — the model
+# supplies small semantic judgements, deterministic code does the mapping.
+PASTE_STRUCTURE_PROMPT = """You are a web content editor planning a website from a document
+someone pasted in. It may be finished copy, or a working brief full of notes to
+a copywriter. Your job is to say WHICH PAGES the document describes and WHICH
+LINES belong to each — nothing else.
+
+You will receive the document as numbered lines. Reply with ONE JSON object
+matching this schema — no markdown, no commentary:
+
+{
+  "site_title": string|null,          // the business/site name if the document states one
+  "pages": [
+    {
+      "title": string,                // the page's name, as the document words it
+      "page_type": "home"|"landing"|"services"|"about"|"contact"|"testimonials"
+                   |"pricing"|"team"|"gallery"|"menu"|"work"|"process"|"faq"
+                   |"blog"|"events"|"privacy"|"terms"|"thank-you",
+      "title_line": number|null,      // the line the title is written on, if it is
+      "first_line": number,           // first line of this page's content
+      "last_line": number             // last line of this page's content
+    }
+  ],
+  "skip_lines": [number]              // lines that are NOT website copy (see below)
+}
+
+Rules:
+- Line numbers only. Never rewrite, summarise or invent content — the copy is
+  taken from the lines themselves.
+- The FIRST page is the homepage. Order pages the way the document does.
+- Page ranges must not overlap, and every range must be first_line <= last_line.
+- A document that describes one page gets one page. Do not invent pages it
+  never mentions.
+- If the document numbers or lists its own sections ("1. HOME", "2. SERVICES"),
+  that IS the page list — use it, including for sections whose subject you would
+  not otherwise recognise as a standard page.
+- Choose the closest page_type. Use "services" for a page about one thing the
+  business offers when nothing fits better, and "landing" only for a sub-page.
+- skip_lines are the lines a visitor must never see: layout labels ("Hero",
+  "Subhead", "Services grid (four cards)", "Card 1 —"), instructions to the
+  writer ("Recommended: #1 for a technical buyer", "Positioning note:",
+  "[Confirm this before publishing]"), and placeholder rows ("[CLIENT LOGO]
+  [CLIENT LOGO]"). Real marketing copy is never skipped, even when it sits
+  under such a label.
+- When the document offers several alternatives for one line ("Headline
+  options" followed by three headlines), keep them all — they are copy, and the
+  writer downstream will choose.
+"""

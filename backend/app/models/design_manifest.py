@@ -107,6 +107,11 @@ class DesignManifest(BaseModel):
     color_scheme: Literal["light", "dark"] = "light"
 
     # --- chrome choices ------------------------------------------------------
+    # The design scheme (services/design_schemes.py) the site was built under.
+    # Empty when schemes are disabled — that is the legacy per-mood behaviour,
+    # which has no name because it was never a choice.
+    design_scheme: str = ""
+
     header_archetype: HeaderArchetype = "classic"
     footer_archetype: FooterArchetype = "mega"
 

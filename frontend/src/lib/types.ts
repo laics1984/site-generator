@@ -1,5 +1,5 @@
 /** Mirrors the backend Literal on SourceContent.source_kind — change both together. */
-export type SourceKind = 'url' | 'pdf' | 'docx' | 'facebook'
+export type SourceKind = 'url' | 'pdf' | 'docx' | 'facebook' | 'paste'
 
 export interface ImageMetadata {
   url: string
@@ -151,6 +151,10 @@ export interface BrandIdentity {
   logo_data_url?: string | null
   extracted_palette: string[]
   logo_is_light?: boolean | null
+  /** The site icon: what a browser tab and a Google result show beside the
+   * site's name. A separate question from the brand mark, and falls back to it
+   * when the source declared no icon. */
+  favicon_url?: string | null
   logo_source?: LogoSource | null
   /** False when the mark may seed the palette but must not be drawn as the
    * brand logo (a social card, or a favicon too small for the header lockup). */
@@ -267,8 +271,6 @@ export interface PreviewLayout {
   header: PreviewHeader
   footer: PreviewFooter
 }
-
-export type GeneratorMode = 'url' | 'document'
 
 export type IndustryCategory =
   | 'restaurant'
@@ -390,10 +392,48 @@ export interface FacebookFacts {
   profile_picture_url?: string | null
   cover_photo_url?: string | null
   posts?: FacebookPost[]
-  fetched_via: 'graph' | 'render'
+  /** Which reader ran. Mirrors `FetchPath` in backend/app/models/facebook.py.
+   * `render_session` is a render signed in with a saved browser session: it
+   * sees the About panel a logged-out render doesn't, but still no structured
+   * posts or recommendations — only Graph has those. */
+  fetched_via: 'graph' | 'render' | 'render_session'
   /** Some fields couldn't be read — the UI offers a token to fill the gaps. */
   partial?: boolean
   missing_fields?: string[]
+}
+
+/** The signed-in Facebook session shared by every Page read.
+ *
+ * Captured on the operator's own machine by `./dev.sh fb-login` — the backend
+ * runs in a container with no display and cannot open the window a login needs.
+ * Carries no cookies: only what the UI shows. */
+export interface FacebookSession {
+  name: string
+  connected: boolean
+  saved_at: number | null
+  expires_at: number | null
+  expires_in_days: number | null
+  label: string | null
+  /** False when FACEBOOK_SESSION_ENABLED is off — hide the affordance entirely
+   * rather than offering a button that can't work. */
+  enabled: boolean
+}
+
+/** What a paste contributed, for the confirmation step to report back. */
+export interface PasteReport {
+  /** Read as markup rather than prose. */
+  is_html: boolean
+  characters: number
+  added_pages: number
+  /** Images the markup pointed at with a site-relative path — no origin to resolve. */
+  unresolved_images: number
+  /** False when the paste is the whole source. */
+  merged: boolean
+  /** Which reader worked out the page structure. 'heuristic' means the local
+   * model was unavailable (or the paste was too big) and line shape decided. */
+  structured_by?: 'llm' | 'heuristic'
+  /** Unfilled `[...]` placeholders left in the copy — nothing upstream can fill them. */
+  placeholders?: number
 }
 
 export interface ScrapePreview {
@@ -408,6 +448,8 @@ export interface ScrapePreview {
   /** URLs the BFS frontier had queued but didn't process. Powers "Crawl N more". */
   unvisited_urls?: string[]
   unvisited_count?: number
+  /** Present only when pasted content went into this source — standalone or merged. */
+  paste?: PasteReport
   /** Present only on a Facebook read. Additive — the rest of the shape is identical. */
   facebook_facts?: FacebookFacts
   facebook_contact?: Record<string, string>
@@ -460,6 +502,18 @@ export interface CrawlJob {
   elapsed_seconds: number | null
 }
 
+/** A CMS this generator can push into. The backend owns the list — the frontend
+ * reads no import.meta.env, so it can't know the hosts, and a push names a
+ * target by `name` rather than by URL (see backend services/cms_targets.py). */
+export interface CmsTarget {
+  name: string
+  /** host:port of the CMS API — derived, so it always says where bytes go. */
+  label: string
+  api_base_url: string
+  /** True when the target is not this machine. Drives the warning treatment. */
+  is_remote: boolean
+}
+
 export interface CmsConnectionTest {
   ok: boolean
   existing_page_count: number
@@ -477,6 +531,10 @@ export interface CmsPushStep {
   detail: string
   data: Record<string, unknown>
   error: string | null
+  /** The step succeeded, but not the way it was asked to — the push carried on
+   * and there is something to fix in the CMS afterwards. Distinct from `error`,
+   * which aborts. */
+  warning?: string | null
 }
 
 export interface CmsPushReport {
@@ -485,8 +543,9 @@ export interface CmsPushReport {
   steps: CmsPushStep[]
   /** pageId → slug (not a URL, despite the name — see push_orchestrator.py). */
   page_urls: Record<string, string>
-  /** Deep link into the webtree admin suite for the pushed entity. Present only
-   * when the backend has ADMIN_APP_BASE_URL configured; the UI hides the CTA
-   * otherwise rather than guessing a URL. */
+  /** Deep link into the webtree admin suite for the pushed entity, for the
+   * target this push actually went to. Present only when that target has an
+   * admin origin configured; the UI hides the CTA otherwise rather than
+   * guessing a URL — or, worse, offering a localhost link after a remote push. */
   admin_url?: string | null
 }

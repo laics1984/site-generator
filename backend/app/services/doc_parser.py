@@ -28,12 +28,13 @@ import hashlib
 import io
 import logging
 from collections import Counter
-from dataclasses import dataclass, field
-from typing import Literal
 
 import docx as python_docx  # python-docx
 import fitz  # PyMuPDF — `import fitz` is correct for the pymupdf package
 from docx.oxml.ns import qn
+
+# The parsed-source shape is shared with the paste reader — see source_outline.
+from app.services.source_outline import DocImage, OutlineBlock, ParsedDocument
 
 logger = logging.getLogger(__name__)
 
@@ -48,52 +49,6 @@ _IMG_EXT_TO_MIME = {
     "tiff": "image/tiff",
     "tif": "image/tiff",
 }
-
-
-SourceKindDoc = Literal["pdf", "docx"]
-
-
-@dataclass
-class OutlineBlock:
-    """One block of the document in reading order.
-
-    ``level`` is the heading level: ``1``/``2``/``3`` for headings (1 = most
-    prominent), ``0`` for body text. Preserving order + level is what lets
-    ``doc_structure`` group body copy under the right title — the flat
-    ``raw_text``/``headings`` fields lose that association.
-    """
-
-    level: int  # 0 = body, 1/2/3 = heading levels
-    text: str
-
-
-@dataclass
-class DocImage:
-    """An image extracted in document order.
-
-    ``anchor`` is ``len(outline)`` at the moment the image was encountered, i.e.
-    it sits *after* ``outline[anchor - 1]``. That lets ``doc_structure`` tie each
-    image to the page (and nearest heading) it appears under, instead of dumping
-    every image on the homepage. ``width``/``height`` (pixels) drive both quality
-    filtering and the matcher's size bonus.
-    """
-
-    data: bytes
-    mime: str
-    width: int | None = None
-    height: int | None = None
-    anchor: int = 0
-
-
-@dataclass
-class ParsedDocument:
-    source_kind: SourceKindDoc
-    source_ref: str           # original filename
-    title: str | None
-    raw_text: str
-    headings: list[str] = field(default_factory=list)
-    images: list[DocImage] = field(default_factory=list)  # in document order, w/ dims + anchor
-    outline: list[OutlineBlock] = field(default_factory=list)  # ordered blocks w/ heading level
 
 
 # --- PDF ------------------------------------------------------------------------

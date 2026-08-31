@@ -622,7 +622,9 @@ function SourceContextBanner({
       ? source.source_ref
       : source.source_kind === 'facebook'
         ? `${source.title || 'Facebook Page'} · Facebook`
-        : source.source_ref || source.title || 'Pasted document'
+        : source.source_kind === 'paste'
+          ? `${source.title || 'Pasted content'} · pasted`
+          : source.source_ref || source.title || 'Uploaded document'
   const charCount = (source.raw_text || '').length
   const headingCount = (source.headings || []).length
 

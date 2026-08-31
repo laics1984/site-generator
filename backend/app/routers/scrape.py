@@ -35,10 +35,11 @@ from app.services.facebook_orchestrator import (
     run_facebook_job,
     stash_token,
 )
+from app.services.facebook_source import saved_session
 from app.services.facebook_urls import FacebookUrlError, parse_ref
 from app.services.scraper import ScrapeError, extend_crawl
 from app.services.sitemap import probe_sitemap
-from app.services.source_detect import detect
+from app.services.source_detect import SourceHandler, detect
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,36 @@ class StartCrawlRequest(BaseModel):
     access_token: str | None = None
 
 
+def job_options(handler: SourceHandler, payload: StartCrawlRequest) -> dict[str, Any]:
+    """Everything that changes what a read RETURNS, and nothing else.
+
+    This is the reuse key: `find_reusable` matches on the URL plus this dict, so
+    a knob that alters the result and is missing here silently serves a stale
+    answer, while one that doesn't alter the result and is present here costs a
+    needless re-crawl.
+
+    Neither the access token nor the session is recorded — only WHETHER each was
+    available. `options_json` is persisted to SQLite and a credential must never
+    reach it, but a tokenless read is thinner than a tokened one and an
+    anonymous read is thinner than a signed-in one, so reuse has to tell them
+    apart. Without `has_session`, the first read after signing in would be
+    served the anonymous result cached before it, and signing in would look like
+    it had done nothing at all.
+    """
+    if handler == "facebook":
+        return {
+            "source": "facebook",
+            "has_token": bool((payload.access_token or "").strip()),
+            "has_session": saved_session() is not None,
+        }
+    return {
+        "respect_robots": payload.respect_robots,
+        "crawl": payload.crawl,
+        "crawl_max_pages": payload.crawl_max_pages,
+        "crawl_max_depth": payload.crawl_max_depth,
+    }
+
+
 @router.post("/start")
 async def start_crawl(payload: StartCrawlRequest) -> dict[str, Any]:
     """
@@ -146,19 +177,7 @@ async def start_crawl(payload: StartCrawlRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     mgr = get_manager()
-    options: dict[str, Any] = (
-        # The token itself is deliberately absent — only the fact that one was
-        # supplied, so `find_reusable` doesn't hand a tokenless (thinner) result
-        # back to a caller who supplied one.
-        {"source": "facebook", "has_token": bool((payload.access_token or "").strip())}
-        if handler == "facebook"
-        else {
-            "respect_robots": payload.respect_robots,
-            "crawl": payload.crawl,
-            "crawl_max_pages": payload.crawl_max_pages,
-            "crawl_max_depth": payload.crawl_max_depth,
-        }
-    )
+    options = job_options(handler, payload)
 
     # Housekeeping on the cheapest possible trigger: fail rows a dead process
     # left mid-flight, then drop results past the retention window.

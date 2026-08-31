@@ -1390,7 +1390,9 @@ class SourceContent(BaseModel):
     """
 
     # Mirrored by `SourceKind` in frontend/src/lib/types.ts — change both together.
-    source_kind: Literal["url", "pdf", "docx", "facebook"]
+    # "paste" is copy or markup the user pasted (services/paste_source.py); it
+    # reads like a document, so it splits into pages the same way one does.
+    source_kind: Literal["url", "pdf", "docx", "facebook", "paste"]
     source_ref: str
     title: str | None = None
     description: str | None = None

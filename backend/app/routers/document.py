@@ -30,7 +30,7 @@ from app.services.doc_parser import (
 from app.services.doc_structure import DocImageRef, split_into_pages
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.page_inference import infer_page_scaffolds
-from app.services.source_preview import ImageCandidate, source_preview_payload
+from app.services.source_preview import candidates_from_source, source_preview_payload
 
 logger = logging.getLogger(__name__)
 
@@ -68,23 +68,6 @@ def _is_feature_sized(img: DocImage) -> bool:
     if img.width is None or img.height is None:
         return True
     return min(img.width, img.height) >= _MIN_FEATURE_SHORT_SIDE
-
-
-def _candidates_from_source(source: SourceContent) -> list[ImageCandidate]:
-    """Flatten placed per-page image metadata into the preview's candidate list."""
-    out: list[ImageCandidate] = []
-    for page in [source, *source.discovered_pages]:
-        for meta in page.image_metadata:
-            out.append(
-                ImageCandidate(
-                    url=meta.url,
-                    alt=meta.alt,
-                    width=meta.width,
-                    height=meta.height,
-                    intent=meta.intent,
-                )
-            )
-    return out
 
 
 @router.post("/preview")
@@ -156,7 +139,7 @@ def _build_preview(contents: bytes, filename: str) -> dict:
     # each image on the page + heading it appears under. The planner (not this
     # module) still owns section composition + distinctiveness.
     source_content = split_into_pages(parsed, images=feature_refs)
-    image_candidates = _candidates_from_source(source_content)
+    image_candidates = candidates_from_source(source_content)
 
     return source_preview_payload(
         url=filename,

@@ -28,9 +28,9 @@ def _image(name, *, src="x.jpg", alt=None, width=None, height=None, **styles):
     )
 
 
-def _link(name, *, inner=None, aria=None):
+def _link(name, *, inner=None, aria=None, **styles):
     return BuilderElement(
-        name=name, type="link",
+        name=name, type="link", styles=styles,
         content=BuilderElementContent(innerText=inner, ariaLabel=aria),
     )
 
@@ -202,6 +202,147 @@ class TextContrastTest(unittest.TestCase):
         )
         _, n = self._run(tree, theme)
         self.assertEqual(n, 0)
+
+    def test_ghost_button_on_a_dark_band_flips_ink_and_outline(self):
+        """A ghost CTA states a colour and paints no surface, so it vanishes on a
+        same-luminance band exactly like a paragraph — and its hairline vanishes
+        with it, which leaves a legible label in an invisible frame."""
+        theme = build_theme("#2563eb", color_scheme="dark")
+        tree = _container(
+            "band",
+            [_link(
+                "Secondary CTA",
+                inner="See pricing",
+                color="var(--builder-color-secondary, #0f172a)",
+                backgroundColor="transparent",
+                border="1px solid rgba(15,23,42,0.14)",
+            )],
+            backgroundColor="var(--builder-color-secondary)",
+        )
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 1)
+        cta = tree.content[0]
+        self.assertEqual(cta.styles["color"], "#ffffff")
+        # Colour restated, the author's weight (1px solid, 0.14) preserved.
+        self.assertEqual(cta.styles["border"], "1px solid rgba(255,255,255,0.14)")
+
+    def test_solid_button_label_is_measured_against_its_own_fill(self):
+        """The primary CTA's token pair is contrast-guaranteed by the theme; it
+        must be read as the button's own surface, not judged against the band —
+        which on a light band would flip its white label to dark."""
+        theme = build_theme("#2563eb", color_scheme="light")
+        tree = _container(
+            "band",
+            [_link(
+                "Primary CTA",
+                inner="Book a demo",
+                color="var(--builder-button-text, #ffffff)",
+                backgroundColor="var(--builder-button-background, #2563eb)",
+            )],
+            backgroundColor="var(--builder-color-surface)",
+        )
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 0)
+        self.assertEqual(
+            tree.content[0].styles["color"], "var(--builder-button-text, #ffffff)"
+        )
+
+    def test_a_translucent_chip_on_a_gradient_keeps_the_bands_ink(self):
+        """The gradient hero's ghost CTA: `rgba(255,255,255,0.12)` over an
+        opaque brand ramp. Only an OPAQUE fill hides what it sits on — treating
+        this one as the surface composites white over a backdrop nobody can
+        read and flips the CTA's white label to near-black."""
+        theme = build_theme("#2563eb", color_scheme="light")
+        tree = _container(
+            "hero",
+            [_link(
+                "Secondary CTA",
+                inner="See pricing",
+                color="#ffffff",
+                backgroundColor="rgba(255,255,255,0.12)",
+                border="1px solid rgba(255,255,255,0.45)",
+            )],
+            background=(
+                "linear-gradient(135deg, var(--builder-color-secondary, #0f172a), "
+                "var(--builder-color-primary, #2563eb))"
+            ),
+        )
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 0)
+        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+
+    def test_a_sheen_layer_does_not_hide_the_opaque_fill_beneath_it(self):
+        """`cta-gradient`'s shape: a translucent radial sheen stacked ON TOP of
+        an opaque brand ramp. Read as one string, the sheen's `rgba(…,0)` stop
+        made the whole fill look decorative, so the panel's white-on-brand copy
+        was measured against the page background and flipped to near-black."""
+        theme = build_theme("#2563eb", color_scheme="light")
+        tree = _container(
+            "cta",
+            [_text("h", "Ready when you are", color="#ffffff", fontSize="40px")],
+            background=(
+                "radial-gradient(90% 140% at 85% 0%, rgba(255,255,255,0.2), "
+                "rgba(255,255,255,0) 55%), linear-gradient(120deg, "
+                "var(--builder-color-primary, #2563eb), var(--builder-color-secondary, #0f172a))"
+            ),
+        )
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 0)
+        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+
+    def test_a_computed_border_colour_is_left_alone(self):
+        """A `color-mix()` / `var()` outline is brand-hued by construction, and
+        the only hex in it is a fallback or a mix stop — rewriting either
+        changes what the expression means."""
+        theme = build_theme("#2563eb", color_scheme="dark")
+        mix = "1px solid color-mix(in srgb, var(--builder-color-primary, #2563eb) 30%, #ffffff)"
+        tree = _container(
+            "band",
+            [_link(
+                "Download button",
+                inner="Download",
+                color="var(--builder-color-secondary, #0f172a)",
+                backgroundColor="transparent",
+                border=mix,
+            )],
+            backgroundColor="var(--builder-color-secondary)",
+        )
+        tree, n = self._run(tree, theme)
+        self.assertEqual(n, 1)
+        self.assertEqual(tree.content[0].styles["color"], "#ffffff")  # ink still fixed
+        self.assertEqual(tree.content[0].styles["border"], mix)  # outline untouched
+
+    def test_measured_surface_overrides_the_photo_bail_out(self):
+        """`surface=` is a caller saying "I painted this and measured it" — the
+        photo rule (which exists because a photo's luminance is unknowable from
+        the styles) then has nothing left to protect, and the node's own
+        declared fill is a colour the wash covered, so neither is read."""
+        theme = build_theme("#2563eb", color_scheme="dark")
+        tree = _container(
+            "hero",
+            [_text("copy", "Hello", color="#0f172a")],
+            backgroundColor="var(--builder-page-background, #ffffff)",
+            backgroundImage="linear-gradient(135deg, rgba(2,6,23,0.8), rgba(37,99,235,0.18)), url(photo.jpg)",
+        )
+        from app.services.section_content import enforce_text_contrast
+
+        self.assertEqual(enforce_text_contrast([tree], theme), 0)  # unmeasured: hands off
+        self.assertEqual(enforce_text_contrast([tree], theme, surface="#0a0f1f"), 1)
+        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+
+    def test_a_photo_nested_under_a_measured_surface_still_owns_its_ink(self):
+        """The override is for the elements passed in, not their subtrees: a
+        photo tile inside the section is a fill nobody measured."""
+        theme = build_theme("#2563eb", color_scheme="dark")
+        tile = _container(
+            "tile",
+            [_text("caption", "On the photo", color="#0f172a")],
+            backgroundImage="url(tile.jpg)",
+        )
+        tree = _container("hero", [tile], backgroundImage="url(photo.jpg)")
+        from app.services.section_content import enforce_text_contrast
+
+        self.assertEqual(enforce_text_contrast([tree], theme, surface="#0a0f1f"), 0)
 
     def test_dark_text_on_light_card_untouched(self):
         # Dark scheme, but a light glass card keeps its dark text (correct side).

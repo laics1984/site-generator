@@ -76,10 +76,27 @@ class _GraphFetcher:
 class _RenderFetcher:
     name = "render"
 
+    def __init__(self, storage_state: dict | None = None) -> None:
+        self._storage_state = storage_state
+
     async def fetch(self, ref: FacebookRef) -> FacebookPage:
         from app.services.facebook_render import fetch_page
 
-        return await fetch_page(ref)
+        return await fetch_page(ref, storage_state=self._storage_state)
+
+
+def saved_session() -> dict | None:
+    """The signed-in browser session a render should reuse, if there is one.
+
+    Read fresh on every chain build rather than cached: connecting a session is
+    something the operator does *between* reads, and a cache here would make the
+    next read ignore it. `browser_session.load` already refuses an expired one.
+    """
+    if not settings.facebook_session_enabled:
+        return None
+    from app.services import browser_session
+
+    return browser_session.load("facebook")
 
 
 def default_fetchers(access_token: str | None) -> list[FacebookFetcher]:
@@ -89,7 +106,7 @@ def default_fetchers(access_token: str | None) -> list[FacebookFetcher]:
     if token:
         chain.append(_GraphFetcher(token))
     if settings.facebook_render_fallback_enabled:
-        chain.append(_RenderFetcher())
+        chain.append(_RenderFetcher(saved_session()))
     return chain
 
 

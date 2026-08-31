@@ -5,10 +5,12 @@ import type {
   ColorScheme,
   CmsConnectionTest,
   CmsPushReport,
+  CmsTarget,
   CrawlJob,
   DetectedBrand,
   ExtendCrawlResult,
   FacebookFacts,
+  FacebookSession,
   GeneratedSite,
   HeroHeight,
   IndustryCategory,
@@ -172,6 +174,22 @@ export async function startCrawl(
   })
 }
 
+/* --- the signed-in Facebook session ------------------------------------------
+ *
+ * There is no "save" here on purpose. A session is captured by a real browser
+ * window on the operator's machine (`./dev.sh fb-login`), which POSTs it to the
+ * backend itself — this app only ever asks about one or drops it. */
+
+/** Whether a signed-in Facebook session is connected, and for how much longer. */
+export async function getFacebookSession(): Promise<FacebookSession> {
+  return jsonRequest('/api/facebook/session')
+}
+
+/** Forget the saved session. Idempotent. */
+export async function disconnectFacebookSession(): Promise<FacebookSession> {
+  return jsonRequest('/api/facebook/session', { method: 'DELETE' })
+}
+
 /** Read the current state of a crawl job. */
 export async function getCrawlJob(jobId: string): Promise<CrawlJob> {
   return jsonRequest(`/api/scrape/jobs/${jobId}`)
@@ -202,6 +220,48 @@ export async function extendCrawl(payload: {
       already_seen: payload.alreadySeen ?? [],
       max_more: payload.maxMore ?? 20,
     }),
+  })
+}
+
+/**
+ * Read pasted copy or markup into a preview, the same shape a crawl or an
+ * upload returns.
+ *
+ * Pass `base` — the source a reader just produced — to merge the paste into it
+ * ("add on"); omit it and the paste is the whole source. One endpoint either
+ * way, so the caller never branches on which kind of paste this is.
+ */
+export async function readPastedContent(payload: {
+  text: string
+  title?: string
+  base?: SourceContent | null
+}): Promise<ScrapePreview> {
+  return jsonRequest('/api/paste/preview', {
+    method: 'POST',
+    body: JSON.stringify({
+      text: payload.text,
+      title: payload.title?.trim() || null,
+      base: payload.base ?? null,
+    }),
+  })
+}
+
+/**
+ * Join two already-read sources (a URL crawl and a document upload) into one,
+ * by page topic/slug — the same rule a paste's `base` uses, generalized to
+ * any two readers (backend: services/source_merge.merge_sources).
+ *
+ * Returns only the merged `source_content`; the caller picks brand/crawl-
+ * frontier/etc. precedence itself (see lib/sourceCombine.ts) since only the
+ * two readers it already holds could have measured those.
+ */
+export async function mergeSourceContents(
+  base: SourceContent,
+  addition: SourceContent,
+): Promise<ScrapePreview> {
+  return jsonRequest('/api/source/merge', {
+    method: 'POST',
+    body: JSON.stringify({ base, addition }),
   })
 }
 
@@ -278,8 +338,15 @@ export interface CmsCredentials {
   entityToken: string
 }
 
+/** Which CMS installs this generator can push into, default target first.
+ * Only the backend knows these — the frontend reads no import.meta.env. */
+export async function listCmsTargets(): Promise<CmsTarget[]> {
+  return jsonRequest('/api/cms/targets')
+}
+
 export async function testCmsConnection(
   creds: CmsCredentials,
+  target?: string,
 ): Promise<CmsConnectionTest> {
   return jsonRequest('/api/cms/test-connection', {
     method: 'POST',
@@ -287,6 +354,7 @@ export async function testCmsConnection(
       email: creds.email,
       password: creds.password,
       entity_token: creds.entityToken,
+      target: target ?? null,
     }),
   })
 }
@@ -297,10 +365,14 @@ export interface PushPayload {
   publish?: boolean
   forceOverwrite?: boolean
   pushBuilderStyles?: boolean
+  pushFavicon?: boolean
   /** When true, create a fresh entity and push into it (entityToken ignored). */
   createEntity?: boolean
   newEntityName?: string
   newEntityUrl?: string
+  /** Which CMS to land in — a `name` from listCmsTargets(), never a URL.
+   * Omitted ⇒ the backend's default target. */
+  target?: string
 }
 
 export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
@@ -314,9 +386,11 @@ export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
       publish: payload.publish ?? false,
       force_overwrite: payload.forceOverwrite ?? false,
       push_builder_styles: payload.pushBuilderStyles ?? true,
+      push_favicon: payload.pushFavicon ?? true,
       create_entity: payload.createEntity ?? false,
       new_entity_name: payload.newEntityName ?? null,
       new_entity_url: payload.newEntityUrl ?? null,
+      target: payload.target ?? null,
     }),
   })
 }

@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import cached_property
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
@@ -132,6 +133,7 @@ from app.services.image_styling import (
     is_edge_fade_layer,
     photo_background,
     washed_photo_background,
+    washed_surface_hex,
 )
 from app.services.theme import (
     _adjust_lightness,
@@ -143,6 +145,13 @@ from app.services.theme import (
     build_theme,
     color_family_name,
     resolve_color_scheme,
+)
+from app.services.design_schemes import (
+    NEUTRAL_SCHEME,
+    DesignScheme,
+    clamp_divider_height,
+    for_theme,
+    scaled_px,
 )
 # Pure style/CSS helpers live in a sibling module; re-imported here so the public
 # path app.services.schema_builder.<name> is unchanged for callers and tests.
@@ -156,6 +165,7 @@ from app.services.style_tokens import (
     apply_section_decoration,
     brand_ink,
     emphasis_ink,
+    eyebrow_styles,
     glass_card_styles,
     grain_data_uri,
     make_style_tokens,
@@ -163,6 +173,7 @@ from app.services.style_tokens import (
     mesh_gradient,
     section_background_image,
     shadow,
+    type_ramp_for,
 )
 
 
@@ -236,13 +247,109 @@ def _parse_px(value: Any) -> float | None:
     return None
 
 
+@dataclass(frozen=True)
+class _ModernizePlan:
+    """The resolved per-site treatment the tree walk applies.
+
+    One object instead of the five loose keyword arguments this walk used to
+    take: every new design axis was another parameter threaded through the
+    recursive call, and the recursion meant every addition touched three places.
+    Resolved once per page in ``modernize_sections``.
+    """
+
+    theme: ThemeTokens
+    scheme: DesignScheme
+    boost: float
+    use_glass: bool
+    shadow_scale: str
+
+    @property
+    def card_radius(self) -> str:
+        return f"{max(8, self.theme.buttons.radius + 4)}px"
+
+    @cached_property
+    def eyebrow(self) -> dict[str, Any]:
+        """The scheme's eyebrow styles, built once per page rather than once per
+        label — the catalogue carries 44 of them."""
+        return eyebrow_styles(self.theme, self.scheme, type_ramp_for(self.scheme))
+
+
+def _plan_without_glass(plan: _ModernizePlan) -> _ModernizePlan:
+    """The same plan with every frosted treatment demoted to an opaque one.
+
+    Used for the one textured section per page: glass over a mesh/grain band
+    reads as two competing surfaces. A scheme whose card_treatment IS "glass"
+    falls back to "elevated" there — the nearest treatment that still lifts the
+    card off the band.
+    """
+    return replace(
+        plan,
+        use_glass=False,
+        scheme=(
+            replace(plan.scheme, card_treatment="elevated")
+            if plan.scheme.card_treatment == "glass"
+            else plan.scheme
+        ),
+    )
+
+
+def _modernize_card(styles: dict[str, Any], plan: _ModernizePlan) -> None:
+    """Apply the scheme's card treatment to a catalogue card's own styles.
+
+    The catalogue authors a card as a filled, hairlined, rounded box. Each
+    treatment below states the WHOLE frame — fill, border and shadow together —
+    because leaving one of the three to the template is what produces a
+    borderless card that happens to be invisible against its band. The neutral
+    branch is the historical behaviour, unchanged: add the shadow, keep whatever
+    else the template said.
+    """
+    treatment = plan.scheme.card_treatment
+    if treatment == "inherit":
+        styles["boxShadow"] = shadow(plan.shadow_scale)
+        styles.setdefault("borderRadius", plan.card_radius)
+        if plan.use_glass:
+            glass = glass_card_styles(plan.theme)
+            # Layer the frosted surface; keep the template's own padding/gap/radius.
+            for key in ("backgroundColor", "backdropFilter", "WebkitBackdropFilter", "border"):
+                styles[key] = glass[key]
+        return
+
+    styles.setdefault("borderRadius", plan.card_radius)
+    if treatment == "glass":
+        glass = glass_card_styles(plan.theme)
+        styles["boxShadow"] = glass["boxShadow"]
+        for key in ("backgroundColor", "backdropFilter", "WebkitBackdropFilter", "border"):
+            styles[key] = glass[key]
+        return
+
+    # The non-glass treatments never want a blur, and a template that carried
+    # one (or a previous pass that added one) must lose it or the frame is a
+    # hybrid of two vocabularies.
+    styles.pop("backdropFilter", None)
+    styles.pop("WebkitBackdropFilter", None)
+    palette = plan.theme.palette
+    if treatment == "bordered":
+        styles["backgroundColor"] = palette.background
+        styles["border"] = f"1px solid {_hairline(palette.secondary, alpha=0.14)}"
+        styles["boxShadow"] = "none"
+    elif treatment == "elevated":
+        styles["backgroundColor"] = palette.background
+        styles["border"] = "none"
+        styles["boxShadow"] = shadow(plan.shadow_scale)
+    elif treatment == "outline":
+        styles["backgroundColor"] = "transparent"
+        styles["border"] = f"2px solid {_hairline(palette.secondary, alpha=0.22)}"
+        styles["boxShadow"] = "none"
+    else:  # "flat" — no surface at all; the grid gap does the separating
+        styles["backgroundColor"] = "transparent"
+        styles["border"] = "none"
+        styles["boxShadow"] = "none"
+
+
 def _walk_modernize(
     node: BuilderElement,
     *,
-    boost: float,
-    use_glass: bool,
-    shadow_scale: str,
-    theme: ThemeTokens,
+    plan: _ModernizePlan,
     headings: list[tuple[BuilderElement, float]],
 ) -> None:
     styles = node.styles
@@ -255,12 +362,26 @@ def _walk_modernize(
             px = _parse_px(fs)
             # Headings (named or visually large) become fluid; eyebrows / body left.
             if px is not None and (name == "Heading" or px >= 24):
-                ceiling = px * boost
+                ceiling = px * plan.boost
                 styles["fontSize"] = _fluid(ceiling * 0.62, ceiling)
                 headings.append((node, px))
                 if px >= 34:  # large display type: tighten if the template didn't
                     styles.setdefault("lineHeight", "1.08")
                     styles.setdefault("letterSpacing", "-0.02em")
+        # Weight is applied to every heading, not only the ones the fluid branch
+        # above rewrote: a template that already sized its heading with clamp()
+        # took the `already_fluid` path and would otherwise keep the catalogue's
+        # weight while its neighbours took the scheme's — one page, two voices.
+        if plan.scheme.heading_weight is not None and (
+            name == "Heading" or (_parse_px(styles.get("fontSize")) or 0) >= 24
+        ):
+            styles["fontWeight"] = plan.scheme.heading_weight
+        # The catalogue names its section labels "Eyebrow" on 44 nodes, so the
+        # scheme's treatment reaches the templated path through the same name
+        # the alignment and childcare passes already key on. "Sticker Eyebrow"
+        # is a deliberate one-off variant and is left alone.
+        if name == "Eyebrow" and plan.scheme.eyebrow_treatment != "inherit":
+            styles.update(plan.eyebrow)
 
     elif (
         node.type in ("container", "2Col", "3Col")
@@ -272,25 +393,12 @@ def _walk_modernize(
         # existing card styling targets the real card and skips wrappers.
         and any(k in styles for k in ("borderRadius", "border", "backgroundColor"))
     ):
-        styles["boxShadow"] = shadow(shadow_scale)
-        styles.setdefault("borderRadius", f"{max(8, theme.buttons.radius + 4)}px")
-        if use_glass:
-            glass = glass_card_styles(theme)
-            # Layer the frosted surface; keep the template's own padding/gap/radius.
-            for key in ("backgroundColor", "backdropFilter", "WebkitBackdropFilter", "border"):
-                styles[key] = glass[key]
+        _modernize_card(styles, plan)
 
     content = node.content
     if isinstance(content, list):
         for child in content:
-            _walk_modernize(
-                child,
-                boost=boost,
-                use_glass=use_glass,
-                shadow_scale=shadow_scale,
-                theme=theme,
-                headings=headings,
-            )
+            _walk_modernize(child, plan=plan, headings=headings)
 
 
 def modernize_sections(
@@ -299,10 +407,15 @@ def modernize_sections(
     """Apply per-mood 2025/26 treatments to an assembled page's section list,
     in place. Idempotent: skips already-fluid type and sections that already
     carry a background image."""
-    boost = getattr(theme, "type_scale_ratio", 1.25) / 1.25
+    scheme = for_theme(theme)
+    plan = _ModernizePlan(
+        theme=theme,
+        scheme=scheme,
+        boost=getattr(theme, "type_scale_ratio", 1.25) / 1.25,
+        use_glass=getattr(theme, "use_glass", False),
+        shadow_scale=getattr(theme, "shadow_scale", "soft"),
+    )
     display_font = getattr(theme, "display_font", None)
-    use_glass = getattr(theme, "use_glass", False)
-    shadow_scale = getattr(theme, "shadow_scale", "soft")
     strategy = getattr(theme, "background_strategy", "flat")
     surface_hex = theme.palette.surface
     page_hex = theme.page.background
@@ -318,7 +431,7 @@ def modernize_sections(
     # flattens them as a safety net) — the accent then lands on a non-neighbour
     # band instead of being textured now and stripped later.
     divider_neighbours = _shaped_divider_neighbours(
-        sections, getattr(theme, "mood", None), industry
+        sections, getattr(theme, "mood", None), industry, scheme
     )
     decorated = False
     for idx, section in enumerate(sections):
@@ -340,12 +453,16 @@ def modernize_sections(
         headings: list[tuple[BuilderElement, float]] = []
         _walk_modernize(
             section,
-            boost=boost,
             # Glass and texture never share a surface — frosted cards over a
             # mesh/grain band read busy. The accent section keeps flat cards.
-            use_glass=use_glass and not will_decorate,
-            shadow_scale=shadow_scale,
-            theme=theme,
+            # The same rule binds a scheme that ASKED for glass: replace(…) on
+            # the plan rather than a second parameter, so the exception travels
+            # with the object every branch already reads.
+            plan=(
+                plan
+                if not will_decorate
+                else _plan_without_glass(plan)
+            ),
             headings=headings,
         )
 
@@ -361,6 +478,65 @@ def modernize_sections(
                 decorated = True
             else:
                 section.backgroundTexture = "flat"
+
+
+# --- density ------------------------------------------------------------------
+
+# Style keys the density pass may rewrite on a top-level section. Vertical only:
+# the catalogue's horizontal padding is a `max(80px, calc(…))` that centers the
+# content column against --builder-page-max-width, so scaling it would fight the
+# measure the scheme sets through PageTokens.max_width instead.
+_DENSITY_PADDING_KEYS = ("paddingTop", "paddingBottom", "paddingBlock")
+
+
+def _scale_padding(styles: dict[str, Any], scale: float) -> None:
+    """Scale a style dict's vertical padding in place. Plain px values only —
+    a `calc()` or a `clamp()` is someone's deliberate expression and is left
+    alone rather than parsed and rebuilt."""
+    for key in _DENSITY_PADDING_KEYS:
+        px = _parse_px(styles.get(key))
+        if px is None or px <= 0:
+            continue
+        styles[key] = scaled_px(px, scale, minimum=8)
+
+
+def apply_density_scale(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """Scale the page's vertical rhythm to the design scheme, in place.
+
+    This is the lever that separates a dense technical page from an airy luxury
+    one, and it is why the scheme carries a *scale* rather than a padding value:
+    the catalogue's own root paddings vary on purpose (72px on 30 entries, 104px
+    on 10, then 88/96/112/128/140), and replacing them all with one number would
+    flatten composition the templates were authored with. Multiplying preserves
+    each template's intent and moves the whole page together.
+
+    Two deliberate non-goals, both forced by the renderers rather than by taste:
+
+    * **`gap` is not touched.** ``webtree-public/lib/responsiveRuntime.ts``
+      pins it on 17 node names with ``!important`` at desktop and tablet, so an
+      inline value would lose on the published site while winning in the builder
+      and the preview — a three-way divergence, not a knob. The pinned names are
+      mirrored in ``design_schemes`` and asserted by the test suite.
+    * **Card ``minHeight`` is not touched**, for the same reason on four more
+      names.
+
+    Mobile rides along through ``responsiveStyles.mobile``: the catalogue and
+    ``_section`` both set a smaller mobile padding there, and leaving it at the
+    desktop scale would make a roomy scheme's phone layout read as a bug.
+    """
+    scheme = for_theme(theme)
+    scale = scheme.padding_scale
+    if scale == 1.0:
+        return
+    for section in sections:
+        _scale_padding(section.styles, scale)
+        responsive = getattr(section, "responsiveStyles", None)
+        for device in ("mobile", "tablet"):
+            device_styles = getattr(responsive, device, None) if responsive else None
+            if isinstance(device_styles, dict):
+                # Phones get a gentler share of the scheme's ambition — a 1.55x
+                # section on a 390px screen is a scroll, not a composition.
+                _scale_padding(device_styles, 1 + (scale - 1) * 0.6)
 
 
 # --- motion -----------------------------------------------------------------
@@ -561,12 +737,25 @@ _CTA_LABEL_BY_INDUSTRY: dict[str, str] = {
 }
 
 
-def _divider_shape(mood: BrandMood | None, industry: str | None) -> str | None:
-    """The shaped-edge to use for this site: the industry's signature shape when
-    it has one, else the mood's (None → no divider)."""
+def _divider_shape(
+    mood: BrandMood | None,
+    industry: str | None,
+    scheme: DesignScheme | None = None,
+) -> str | None:
+    """The shaped-edge to use for this site.
+
+    Precedence: the industry's signature shape (a researched brief — childcare
+    keeps soft seams whatever else is chosen) → the design scheme's declared
+    shape → the mood's default. ``None`` means no divider, and a scheme SAYING
+    ``None`` is a real choice, distinct from the ``"inherit"`` sentinel that
+    means "let the mood decide" — which is why the check is against the
+    sentinel rather than falsiness.
+    """
     norm = (industry or "").strip().lower()
     if norm in _DIVIDER_SHAPE_BY_INDUSTRY:
         return _DIVIDER_SHAPE_BY_INDUSTRY[norm]
+    if scheme is not None and scheme.divider_shape != "inherit":
+        return scheme.divider_shape
     return _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
 
 
@@ -631,7 +820,10 @@ def _boundary_edge(
 
 
 def _shaped_divider_plan(
-    sections: list[BuilderElement], mood: BrandMood | None, industry: str | None = None
+    sections: list[BuilderElement],
+    mood: BrandMood | None,
+    industry: str | None = None,
+    scheme: DesignScheme | None = None,
 ) -> list[tuple[int, str, int]]:
     """The shaped-divider boundaries a page will get: ``(carrier_index, side,
     revealed_index)`` where side is "bottom"/"top". Empty when the resolved
@@ -646,7 +838,7 @@ def _shaped_divider_plan(
     Single source of truth for both apply_section_dividers and the modernize
     pass's "keep divider neighbours flat" rule, so the two never disagree about
     which sections border a shaped seam."""
-    shape = _divider_shape(mood, industry)
+    shape = _divider_shape(mood, industry, scheme)
     if shape is None or len(sections) < 2:
         return []
 
@@ -677,12 +869,15 @@ def _shaped_divider_plan(
 
 
 def _shaped_divider_neighbours(
-    sections: list[BuilderElement], mood: BrandMood | None, industry: str | None = None
+    sections: list[BuilderElement],
+    mood: BrandMood | None,
+    industry: str | None = None,
+    scheme: DesignScheme | None = None,
 ) -> set[int]:
     """Indices of every section that will border a shaped divider (the section
     carrying the edge plus the one it reveals)."""
     out: set[int] = set()
-    for carrier, _side, revealed in _shaped_divider_plan(sections, mood, industry):
+    for carrier, _side, revealed in _shaped_divider_plan(sections, mood, industry, scheme):
         out.add(carrier)
         out.add(revealed)
     return out
@@ -692,6 +887,7 @@ def apply_section_dividers(
     sections: list[BuilderElement],
     mood: BrandMood | None,
     industry: str | None = None,
+    scheme: DesignScheme | None = None,
 ) -> None:
     """Add a shaped edge at the hero→content and content→CTA handoffs — the two
     highest-impact, lowest-noise places for one (see SECTION_DIVIDER system,
@@ -707,15 +903,23 @@ def apply_section_dividers(
     a flat band and put the edge on the picture side; the flatten calls here are
     the enforcing safety net for the decorative layer modernize_sections may
     have added since. Mutates in place."""
-    shape = _divider_shape(mood, industry)
-    for carrier, side, revealed in _shaped_divider_plan(sections, mood, industry):
+    shape = _divider_shape(mood, industry, scheme)
+    # Height is the scheme's only other say here. Omitting it (the neutral case)
+    # leaves the field absent so every renderer keeps its per-shape default,
+    # which is what every site built before schemes existed carries.
+    height = (
+        clamp_divider_height(scheme.divider_height)
+        if scheme is not None and scheme.divider_height is not None
+        else None
+    )
+    for carrier, side, revealed in _shaped_divider_plan(sections, mood, industry, scheme):
         color = _section_edge_color(sections[revealed])
         if color is None:
             continue  # unreachable via the plan; never guess a fill
         # Shaped edges sit only against solid colour on both sides.
         _flatten_section_texture(sections[carrier])
         _flatten_section_texture(sections[revealed])
-        edge = SectionDividerEdge(shape=shape, color=color)
+        edge = SectionDividerEdge(shape=shape, color=color, height=height)
         # Both of a page's boundaries can land on ONE carrier — a picture band
         # between two flat ones owns the edge on each of its sides — so the two
         # edges are merged rather than assigned, or the second would drop the
@@ -3808,13 +4012,28 @@ def _apply_hero_washed_background(
     element: BuilderElement, bg: PhotoResult, ctx: RenderContext
 ) -> None:
     """Paint a split hero's whole section with an abstract photo under a
-    scheme-aware brand wash. Drops the template's static ``background`` shorthand,
-    which would otherwise override ``backgroundImage``. Mutates in place."""
+    scheme-aware brand wash, and state the ink that goes on it. Drops the
+    template's static ``background`` shorthand, which would otherwise override
+    ``backgroundImage``. Mutates in place.
+
+    The ink half is not optional. The split templates hard-code dark copy
+    (`var(--builder-color-secondary)` headings, `rgba(15,23,42,…)` body, a ghost
+    CTA in both), which is right on the light page background they were authored
+    for and wrong the moment this repaints the section — in a DARK scheme the
+    wash is the theme's near-black secondary, so headline, body and secondary
+    button all shipped black on black. `enforce_text_contrast`, the pass that
+    exists to catch exactly that, cannot: a real photo in the fill means it
+    can't know the surface, so it hands the subtree back untouched. Here we DO
+    know it — we just painted it — so the surface is measured
+    (`washed_surface_hex`) and handed to the same pass rather than a second
+    colour rule growing beside it.
+    """
+    scheme = getattr(ctx.theme, "color_scheme", "light")
     styles = dict(element.styles or {})
     styles.pop("background", None)
     styles["backgroundImage"] = washed_photo_background(
         bg.url,
-        scheme=getattr(ctx.theme, "color_scheme", "light"),
+        scheme=scheme,
         surface_hex=ctx.theme.palette.surface,
         secondary_hex=ctx.theme.palette.secondary,
         primary_hex=ctx.theme.palette.primary,
@@ -3823,6 +4042,16 @@ def _apply_hero_washed_background(
     styles["backgroundPosition"] = "center"
     styles["backgroundRepeat"] = "no-repeat"
     element.styles = styles
+    enforce_text_contrast(
+        [element],
+        ctx.theme,
+        surface=washed_surface_hex(
+            scheme=scheme,
+            surface_hex=ctx.theme.palette.surface,
+            secondary_hex=ctx.theme.palette.secondary,
+            avg_hex=bg.avg_color,
+        ),
+    )
 
 
 async def block_to_element(
@@ -3893,6 +4122,9 @@ async def block_to_element(
         hero_scroll_target_kind=hero_scroll_target_kind,
         explicit_id=explicit_template_id,
         variety_seed=ctx.variety_seed or None,
+        # The scheme rides on the theme, so no new RenderContext field: the
+        # style vocabulary already resolved it once for this site.
+        layout_bias=(ctx.styles.scheme or NEUTRAL_SCHEME).layout_bias,
     )
     if mapped is not None:
         template, content = mapped
@@ -4473,6 +4705,9 @@ async def plan_to_site(
             avoid_palettes=await recent_choices(
                 "palette", site_key=effective_brand.name or plan.site_name
             ),
+            avoid_schemes=await recent_choices(
+                "scheme", site_key=effective_brand.name or plan.site_name
+            ),
         )
 
     # Design manifest: the recorded chrome/decision layer composed BEFORE any
@@ -4488,6 +4723,9 @@ async def plan_to_site(
             color_scheme=getattr(theme, "color_scheme", "light"),
             header_override=header_override,
             footer_override=footer_override,
+            # The scheme was resolved during build_theme and rides on the theme;
+            # its chrome affinity reorders the fit list rather than adding to it.
+            scheme=for_theme(theme),
         )
     else:
         manifest = DesignManifest(seed=effective_brand.name or plan.site_name)
@@ -4600,6 +4838,10 @@ async def plan_to_site(
         # has to reach the template picker or it lands on a hero that neither
         # shows a photo nor reads the banded min-height token.
         hero_height=theme.hero_background_height,
+        # The design scheme's hero language. Loses to force_background below —
+        # a pill that has nothing to float over is broken chrome, which outranks
+        # any scheme's preference.
+        hero_policy=for_theme(theme).hero_policy,
         # The floating pill needs something to float over on EVERY page, so it
         # overrides the per-mood interior rotation (which leads with compact
         # splits) even when the site-wide full-bleed policy is off.
@@ -4822,6 +5064,11 @@ async def plan_to_site(
         # Runs BEFORE apply_section_dividers and already steers the texture
         # accent away from sections that will border a shaped divider.
         modernize_sections(elements, theme, plan.industry_category)
+        # Vertical rhythm: scale every section's own padding to the design
+        # scheme's density. After modernize_sections (which reads the paddings
+        # for nothing, but whose texture accent is chosen off the section list)
+        # and before the divider pass, whose seam geometry sits on these edges.
+        apply_density_scale(elements, theme)
         # One gradient/texture per page: keep the first pure gradient/mesh/grain/
         # abstract-texture section, flatten the rest to solid on-brand bands. Runs
         # after modernize_sections (the lone mesh/grain accent is now present) and
@@ -4851,7 +5098,9 @@ async def plan_to_site(
         # Shaped section dividers — the picture section carries the edge and the
         # fill is the flat neighbour's exact colour; a boundary with a picture on
         # both sides gets no divider at all, since no flat fill could match it.
-        apply_section_dividers(elements, effective_brand.mood, plan.industry_category)
+        apply_section_dividers(
+            elements, effective_brand.mood, plan.industry_category, for_theme(theme)
+        )
         # A full-bleed photo's bottom dissolve was written against the THEME page
         # background before the page existed. Now that the neighbour (and any
         # shaped edge) is known, re-point it at the real surface below or drop
