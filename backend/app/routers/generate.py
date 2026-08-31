@@ -78,6 +78,7 @@ from app.services.source_injection import (
     source_pages,
 )
 from app.services.source_path import normalize_source_slug
+from app.services.image_graphics import screen_source_images_for_graphics
 from app.services.image_refs import bind_image_refs
 from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
@@ -395,6 +396,28 @@ async def _screen_source_images_for_text(
         raise
     except Exception:  # noqa: BLE001 — OCR must not 500 a generation
         logger.exception("OCR text screening failed; continuing without it")
+
+
+async def _screen_source_images_for_graphics(metadata: list[ImageMetadata]) -> None:
+    """Withdraw SOURCE images the pixels prove are flat graphics, not photographs
+    (services/image_graphics.py).
+
+    The structural answer (`logo_extraction.brand_mark_urls`, stamped at scrape
+    time) covers any site whose markup declares its mark. This covers the ones
+    that declare nothing — the wordmark on a splash page with no header, no alt
+    and no "logo" in the filename, which is otherwise the largest image on the
+    page and wins every photo slot on the site.
+
+    Like the OCR screen, an enhancement: any failure leaves the roles unset,
+    which is exactly how the pipeline behaved before this pass existed.
+    """
+    try:
+        with stage("graphic_screen"):
+            await screen_source_images_for_graphics(metadata)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 — screening must not 500 a generation
+        logger.exception("Graphic screening failed; continuing without it")
 
 
 async def _annotate_source_images(
@@ -1239,6 +1262,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     )
 
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
+    await _screen_source_images_for_graphics(scraped_metadata)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
     _enrich_plan_profile_photos(plan, payload.source, annotations)
     _ensure_scraped_team_blocks(plan, payload.source, annotations)
@@ -1463,6 +1487,14 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # wall clock. Unlike the vision judging below it does NOT contend for the
     # GPU, which is why it can run here rather than after generation.
     ocr_task = asyncio.create_task(_screen_source_images_for_text(scraped_metadata))
+    # Same window, same reason. This one is mostly network (it must re-download:
+    # the prefetch above re-encodes to JPEG and drops the alpha channel), so it
+    # overlaps both the GPU pass and the OCR CPU pass rather than adding to
+    # either. Awaited beside the OCR task, i.e. before bind_image_refs and the
+    # resolver, which are the passes that read `role`.
+    graphics_task = asyncio.create_task(
+        _screen_source_images_for_graphics(scraped_metadata)
+    )
 
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
     # This is the heaviest LLM pass (it writes all page copy); time it so the
@@ -1477,6 +1509,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     except LlmError as exc:
         prefetch_task.cancel()
         ocr_task.cancel()
+        graphics_task.cancel()
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
 
     # Per-batch failures no longer abort the run (see planner._run_item_safe) —
@@ -1553,6 +1586,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # ran meanwhile. Awaited here only so a slow scrape can't leave the flags
     # half-written while sections resolve their backgrounds.
     await ocr_task
+    await graphics_task
     annotations = await _annotate_source_images(
         payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
     )

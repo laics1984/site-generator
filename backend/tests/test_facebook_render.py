@@ -4,6 +4,7 @@ import unittest
 
 from app.services.facebook_render import (
     FacebookRenderError,
+    _candidate_urls,
     _scan_hours,
     _scan_labelled,
     _split_og_description,
@@ -30,15 +31,71 @@ def _page_html(body: str = "", *, og: str = "") -> str:
 
 
 class LoginWallTest(unittest.TestCase):
-    def test_detects_the_common_wall_markers(self):
-        for html in (
-            "<html><body>You must log in to continue</body></html>",
-            '<html><body><form id="login_form"></form></body></html>',
-            '<html><body><a href="/login/?next=%2Facme">Log in</a></body></html>',
-            "<html><body>This content isn't available right now</body></html>",
+    """Where we LANDED is the wall signal — not what the markup mentions.
+
+    Facebook bundles its login dialog into every page it serves, so a markup
+    denylist (`login_form`, `/login/?next=`) matched every readable Page as
+    well as every wall. That check condemned 100% of public reads for as long
+    as it existed; `test_a_page_that_merely_bundles_the_login_dialog...` is the
+    regression pin.
+    """
+
+    def test_a_redirect_to_the_login_screen_is_a_wall(self):
+        for final_url in (
+            "https://www.facebook.com/login/?next=%2Facmecoffee",
+            "https://www.facebook.com/checkpoint/1234",
+            "https://www.facebook.com/recover/initiate",
         ):
-            with self.subTest(html=html[:40]):
-                self.assertTrue(is_login_wall(html))
+            with self.subTest(final_url=final_url):
+                # Even a body that reads like a real Page loses to the URL.
+                self.assertTrue(
+                    is_login_wall(_page_html("<div>Acme Coffee</div>"), final_url=final_url)
+                )
+
+    def test_the_retired_mbasic_host_lands_on_login(self):
+        """mbasic used to serve plain HTML; it now 302s to the login screen,
+        which is why it is no longer in the candidate ladder."""
+        self.assertTrue(
+            is_login_wall(
+                "<html><body>Log in to Facebook</body></html>",
+                final_url="https://www.facebook.com/login/?next=https%3A%2F%2Fmbasic.facebook.com%2FNASA%2F",
+            )
+        )
+
+    def test_a_page_that_merely_bundles_the_login_dialog_is_not_a_wall(self):
+        """THE regression. Every one of these strings is on a Facebook Page
+        that renders perfectly — they are the login dialog every page ships,
+        not a refusal to serve this one."""
+        html = _page_html(
+            '<div>Acme Coffee Roasters</div><div>28M followers</div>'
+            '<form id="login_form"><input name="pass" /></form>'
+            '<a href="/login/?next=%2Facmecoffee">Log in</a>'
+            '<a href="#">Forgotten account?</a>'
+        )
+        self.assertFalse(is_login_wall(html, final_url="https://www.facebook.com/acmecoffee/about"))
+        # …and it parses, rather than raising.
+        self.assertEqual(
+            parse_public_html(html, REF, final_url="https://www.facebook.com/acmecoffee/about").name,
+            "Acme Coffee Roasters",
+        )
+
+    def test_a_refusal_stated_in_visible_text_is_a_wall(self):
+        for body in (
+            "You must log in to continue",
+            "This content isn\u2019t available right now".replace("\u2019", "\u0027"),
+            "This page isn\u0027t available",
+        ):
+            with self.subTest(body=body):
+                self.assertTrue(is_login_wall(f"<html><body>{body}</body></html>"))
+
+    def test_a_refusal_buried_in_SCRIPT_text_is_not_a_wall(self):
+        """Facebook ships its whole string table inline. A phrase sitting in a
+        <script> is vocabulary, not a message to the reader."""
+        html = _page_html(
+            '<script>var s = {err: "You must log in to continue"};</script>'
+            "<div>Acme Coffee</div>"
+        )
+        self.assertFalse(is_login_wall(html, final_url="https://www.facebook.com/acmecoffee"))
 
     def test_a_real_page_is_not_a_wall(self):
         self.assertFalse(is_login_wall(_page_html("<div>Acme Coffee</div>")))
@@ -52,7 +109,58 @@ class LoginWallTest(unittest.TestCase):
         with self.assertRaises(FacebookRenderError) as ctx:
             parse_public_html("<html><body>You must log in to continue</body></html>", REF)
         self.assertEqual(ctx.exception.status, 422)
-        self.assertIn("token", str(ctx.exception).lower())
+        # The message must name both ways out, since either fixes it.
+        message = str(ctx.exception).lower()
+        self.assertIn("token", message)
+        self.assertIn("sign in", message)
+
+
+class CandidateLadderTest(unittest.TestCase):
+    def test_no_mbasic_rung(self):
+        """It 302s to /login now, so it cost a full render to learn nothing."""
+        for candidate in _candidate_urls(REF):
+            self.assertNotIn("mbasic", candidate)
+
+    def test_the_about_tab_comes_first(self):
+        self.assertEqual(
+            _candidate_urls(REF),
+            [
+                "https://www.facebook.com/acmecoffee/about",
+                "https://www.facebook.com/acmecoffee",
+            ],
+        )
+
+    def test_a_numeric_id_addresses_its_about_tab_with_sk(self):
+        """profile.php has no path segments — `/about` would 404."""
+        ref = FacebookRef(
+            handle=None, page_id="123", canonical_url="https://www.facebook.com/profile.php?id=123"
+        )
+        self.assertEqual(
+            _candidate_urls(ref),
+            [
+                "https://www.facebook.com/profile.php?id=123&sk=about",
+                "https://www.facebook.com/profile.php?id=123",
+            ],
+        )
+
+
+class SignedInTest(unittest.TestCase):
+    def test_a_signed_in_read_says_so(self):
+        """The UI explains what's missing from what ran — so which render ran
+        has to survive into the result."""
+        html = _page_html("<div>Acme</div>")
+        self.assertEqual(parse_public_html(html, REF).fetched_via, "render")
+        self.assertEqual(
+            parse_public_html(html, REF, signed_in=True).fetched_via, "render_session"
+        )
+
+    def test_both_render_paths_stay_partial(self):
+        """Signing in reveals the About panel; it never reveals structured
+        posts or recommendations, so the token offer must remain."""
+        page = parse_public_html(_page_html("<div>Acme</div>"), REF, signed_in=True)
+        self.assertTrue(page.partial)
+        self.assertIn("posts", page.missing_fields)
+        self.assertIn("reviews", page.missing_fields)
 
 
 class OgDescriptionTest(unittest.TestCase):
@@ -93,6 +201,55 @@ class LabelScanTest(unittest.TestCase):
         found = _scan_labelled(_text_lines(__import__("bs4").BeautifulSoup(html, "lxml")))
         self.assertNotIn("phone", found)
         self.assertEqual(found["email"], "hello@acme.example")
+
+    def test_a_navigation_tab_is_not_a_value(self):
+        """The tab strip reads `Posts / About / Photos / More`. Scanning
+        forward from "About" landed on "Photos", which became the business's
+        own description on every Page ever read this way."""
+        found = _scan_labelled(["Posts", "About", "Photos", "More"])
+        self.assertNotIn("about", found)
+        self.assertEqual(found, {})
+
+    def test_the_about_prose_comes_from_the_og_blurb_not_the_tab(self):
+        html = _page_html(
+            "<div>Posts</div><div>About</div><div>Photos</div><div>More</div>",
+            og='<meta property="og:description" content="Acme Coffee. 12 likes. Roasted in-house daily." />',
+        )
+        page = parse_public_html(html, REF)
+        self.assertIn("Roasted in-house", page.about)
+        self.assertNotEqual(page.about, "Photos")
+
+    def test_a_value_labelled_AFTER_itself_is_still_read(self):
+        """Facebook's About panel puts contact rows value-first:
+        `public-inquiries@hq.nasa.gov` then `Email address`. A forward-only
+        scan called those unreadable while they sat in plain sight."""
+        found = _scan_labelled(
+            ["Contact info", "hello@acme.example", "Email address", "Websites and social links"]
+        )
+        self.assertEqual(found["email"], "hello@acme.example")
+
+    def test_the_forward_pass_wins_over_the_backward_one(self):
+        """The backward pass may only fill a gap, never move an answer."""
+        found = _scan_labelled(["wrong@acme.example", "Email", "right@acme.example"])
+        self.assertEqual(found["email"], "right@acme.example")
+
+    def test_an_unusable_value_does_not_block_the_real_one(self):
+        """"Email address" sitting above a section heading used to fill the
+        slot with the heading, so the address further down was never reached."""
+        found = _scan_labelled(
+            [
+                "Email address",
+                "Websites and social links",
+                "Contact info",
+                "hello@acme.example",
+                "Email address",
+            ]
+        )
+        self.assertEqual(found["email"], "hello@acme.example")
+
+    def test_a_shapeless_phone_is_never_offered(self):
+        found = _scan_labelled(["Phone", "ask us in store"])
+        self.assertNotIn("phone", found)
 
 
 class HoursScanTest(unittest.TestCase):

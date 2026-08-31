@@ -13,6 +13,9 @@ site-generator/
 ├── backend/            FastAPI app (Python 3.11, async)
 │   ├── app/
 │   │   ├── config.py           single pydantic-settings source of truth
+│   │   ├── deployment/         the local↔production boundary (profile, startup
+│   │   │                       guards, process-local state inventory). Imported
+│   │   │                       only by main.py; imports only config.
 │   │   ├── main.py             app wiring + lifespan (startup/shutdown)
 │   │   ├── models/             Pydantic: builder_schema, content_blocks, brand, industry
 │   │   ├── routers/            health, brand, scrape, document, pages, generate, cms, preview
@@ -28,9 +31,9 @@ site-generator/
 ## Generation pipeline
 
 ```
-URL, Document or Facebook Page
+URL, Document, Facebook Page or pasted content
    │  scraper.py (httpx fast-path → Playwright fallback) / doc_parser.py
-   │  / facebook_source.py (Graph API → public render)
+   │  / facebook_source.py (Graph API → public render) / paste_source.py
    ▼
 SourceContent            normalized text + headings + image metadata
    │  planner.py + LLM    brand detection → scaffolded content blocks
@@ -64,11 +67,12 @@ more than one reader needs, so no reader imports another:
 |---|---|
 | `browser.py` | Chromium lifecycle + one rendered URL. `browser_context()`, `rendered_page()`, `render_url() -> RenderedPage`. |
 | `brand_candidate.py` | `LogoCandidate → BrandIdentity` — fetch, palette, `logo_render_ok` from decoded pixels. |
-| `source_preview.py` | `ImageCandidate` + `source_preview_payload()` — the pre-LLM shape the preview UI hydrates from. |
+| `source_preview.py` | `ImageCandidate` + `source_preview_payload()` + `candidates_from_source()` — the pre-LLM shape the preview UI hydrates from. |
+| `source_outline.py` | The parsed-source shape (`ParsedDocument`/`OutlineBlock`/`DocImage`) + `read_html()`/`text_blocks()`, the one DOM walk that decides which tags carry content. |
 
 Everything else stays private to its reader: `scraper.py` keeps the autoscroll
-and render-evidence stamping its image pipeline depends on, `doc_parser.py` keeps
-its outline model, the Facebook modules keep theirs. Each of those three modules
+and render-evidence stamping its image pipeline depends on, the PDF/DOCX
+byte-level parsing stays in `doc_parser.py`, the Facebook modules keep theirs. Each of those three modules
 replaced a duplicate or a cross-module reach into a private name — the browser
 setup was copied three times inside `scraper.py`, and both `content_collections`
 and the Facebook reader imported `scraper._fetch_rendered_html`.
@@ -78,6 +82,11 @@ and the Facebook reader imported `scraper._fetch_rendered_html`.
   `polite.py`, `nav_extraction.py`, `crawl_orchestrator.py` + `crawl_jobs.py`
   (durable, cancellable background crawls), `url_guard.py` (SSRF guard),
   `source_detect.py` (which reader handles a link).
+- **Pasted content:** `paste_source.py` (markup vs prose, plain-text structure,
+  and `merge_sources` for a paste added on to another reader's result),
+  `source_outline.py` (shared parsed shape + HTML walk), `routers/paste.py`.
+  Splitting into pages is `doc_structure.split_into_pages` — the document
+  splitter, unchanged.
 - **Facebook:** `facebook_urls.py` (link normalization + shape classification),
   `facebook_graph.py` (Graph API, tolerant field groups), `facebook_render.py`
   (public-page fallback + login-wall detection), `facebook_source.py` (fetch
@@ -96,7 +105,8 @@ and the Facebook reader imported `scraper._fetch_rendered_html`.
   chrome archetypes + decision log), `diversity.py` (SQLite usage history that
   steers consecutive sites apart), `header_footer.py` (5 header + 4 footer
   archetypes). See [docs/DESIGN_ENGINE.md](docs/DESIGN_ENGINE.md).
-- **CMS push:** `push_orchestrator.py`, `cms_client.py`, `content_collections.py`.
+- **CMS push:** `push_orchestrator.py`, `cms_client.py`, `content_collections.py`,
+  `cms_targets.py` (which CMS a push lands in — chosen per request by name).
 
 ## Configuration flow
 

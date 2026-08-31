@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 BrandMood = Literal[
@@ -332,6 +332,16 @@ class BrandIdentity(BaseModel):
             "Used to choose a contrast-safe header background."
         ),
     )
+    favicon_url: str | None = Field(
+        default=None,
+        description=(
+            "The site icon: what a browser tab and a Google search result show "
+            "beside the site's name. A separate question from the brand mark — "
+            "a favicon may be a cropped glyph where the logo is a full lockup — "
+            "so it gets its own field rather than competing for `logo_url`. "
+            "Defaults to the mark; see `_default_favicon_to_the_mark`."
+        ),
+    )
     logo_source: LogoSource | None = Field(
         default=None,
         description=(
@@ -356,3 +366,25 @@ class BrandIdentity(BaseModel):
     # Optional light/dark preference (e.g. set by the frontend or an LLM cue).
     # None → light. Threaded into build_theme on the generation path.
     color_scheme: Literal["light", "dark"] | None = None
+
+    @model_validator(mode="after")
+    def _default_favicon_to_the_mark(self) -> "BrandIdentity":
+        """An unset favicon falls back to the brand mark.
+
+        Stated here rather than in each constructor because there are several —
+        the crawler, the Facebook reader, the manual logo upload — and a source
+        with no markup (a PDF, a DOCX, a Page) can never declare an icon, so
+        without this most sites would ship with none at all. The mark is almost
+        always the right image at tab size.
+
+        Gated on `logo_render_ok`, reusing the existing verdict rather than
+        inventing a second one: a mark that fails it is an og:image — a 1200x630
+        social card with baked-in text — which squeezed into a 16px tab is an
+        illegible smear. The one mark that fails the gate and *would* make a
+        fine favicon is a small declared icon, and that case never reaches here:
+        it was found as a favicon in the first place.
+        """
+        if self.favicon_url is None and self.logo_render_ok:
+            self.favicon_url = self.logo_url or self.logo_data_url
+
+        return self

@@ -35,6 +35,7 @@ from app.services.push_orchestrator import (
     PushRequest,
     _decode_data_url,
     _ResolveSkip,
+    _resolve_to_bytes,
     _upload_media,
 )
 
@@ -140,6 +141,36 @@ def _site_with_image(src: str) -> GeneratedSite:
         seo=PageSeo(),
     )
     return GeneratedSite(site_name="Test Site", pages=[home], page_tree=[])
+
+
+class PushFetchIsGuardedTest(unittest.TestCase):
+    """Push time is a fetch boundary too (SECURITY.md §2).
+
+    Every src reaching `_resolve_to_bytes` came from outside — a scraped page's
+    markup, or markup the user pasted straight in, which makes it directly
+    attacker-chosen rather than requiring a site they control to be scraped
+    first. A refusal must degrade to `_ResolveSkip` so `_strip_invalid_images`
+    drops that one element, exactly as it would for an unreachable host, rather
+    than failing the whole push.
+    """
+
+    def test_private_host_is_skipped_not_fetched(self) -> None:
+        for src in (
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+            "http://127.0.0.1:8001/health",
+            "http://host.docker.internal/api/pages",
+        ):
+            with self.subTest(src=src):
+                with self.assertRaises(_ResolveSkip):
+                    asyncio.run(_resolve_to_bytes(src))
+
+    def test_data_urls_bypass_the_guard(self) -> None:
+        # A data URI is bytes we already hold — there is no host to resolve.
+        data, content_type, _ = asyncio.run(
+            _resolve_to_bytes(monogram_avatar_url("Jane Smith"))
+        )
+        self.assertEqual(content_type, "image/svg+xml")
+        self.assertTrue(data)
 
 
 class MonogramSurvivesUploadTest(unittest.TestCase):

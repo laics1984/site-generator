@@ -30,9 +30,12 @@ Usage
     python -m scripts.migrate_section_to_container \\
         --email you@example.com --password 'secret' \\
         --entity TOKEN1 [--entity TOKEN2 ...] \\
-        [--apply] [--publish]
+        [--target NAME] [--apply] [--publish]
 
-Credentials/base URL fall back to env: CMS_EMAIL, CMS_PASSWORD, CMS_API_BASE_URL.
+Credentials fall back to env: CMS_EMAIL, CMS_PASSWORD. ``--target`` picks which
+configured CMS to run against (see app/services/cms_targets.py); it defaults to
+the same one a push with no target uses, and the CMS line printed at startup
+always names the host actually being written to.
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.services.cms_client import CmsApiError, CmsClient  # noqa: E402
+from app.services.cms_targets import UnknownCmsTarget, resolve_target  # noqa: E402
 
 LEGACY_TYPE = "section"
 TARGET_TYPE = "container"
@@ -184,6 +188,13 @@ async def _main() -> int:
         help="Entity API token to migrate (repeatable).",
     )
     parser.add_argument(
+        "--target",
+        default=None,
+        help="Which configured CMS to run against (default: the default target). "
+        "Names come from app/services/cms_targets.py — the same set GET "
+        "/api/cms/targets returns.",
+    )
+    parser.add_argument(
         "--apply",
         action="store_true",
         help="Actually write changes. Without this flag the script is a dry-run.",
@@ -200,7 +211,13 @@ async def _main() -> int:
     if not args.entity:
         parser.error("At least one --entity TOKEN is required.")
 
-    client = CmsClient.for_default()
+    try:
+        target = resolve_target(args.target)
+    except UnknownCmsTarget as exc:
+        parser.error(str(exc))
+    client = CmsClient.for_target(target)
+    # Printed before anything is read, let alone written: on a script that can
+    # rewrite live pages, "which CMS am I pointed at" must never be a guess.
     print(f"CMS: {client.base_url}")
     try:
         await client.login(args.email, args.password)

@@ -15,6 +15,8 @@ behaviour inject a ``FakePexels`` directly (dependency injection), which bypasse
 ``get_pexels_client`` entirely and is unaffected.
 """
 
+import tempfile
+
 import pytest
 
 from app.config import settings
@@ -75,6 +77,26 @@ def _offline_ocr():
 
 
 @pytest.fixture(autouse=True)
+def _offline_graphic_screen():
+    """Disable the pixel graphic screen for every test.
+
+    ``image_graphics.screen_source_images_for_graphics`` downloads every pool
+    image to read its alpha channel — it cannot reuse the vision prefetch, which
+    re-encodes to JPEG. Left on, the suite would hit the network for every fake
+    ``https://cdn.example.com/...`` URL and wait out the timeout, exactly as
+    ``_offline_photo_sampling`` describes. Off, ``role`` keeps whatever the
+    scraper measured, which is the pre-screen behaviour every existing assertion
+    was written against. The graphic-screening tests flip it back on themselves.
+    """
+    original = settings.graphic_detection_enabled
+    settings.graphic_detection_enabled = False
+    try:
+        yield
+    finally:
+        settings.graphic_detection_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _offline_facebook():
     """Keep the Facebook reader off the network for every test.
 
@@ -84,16 +106,64 @@ def _offline_facebook():
     the token AND disabling the render fallback leaves an empty chain, which
     fails loudly instead of quietly doing I/O — tests that want a read inject
     their own fetcher, which bypasses both.
+
+    ``browser_session_dir`` is pointed at a scratch path for the same reason:
+    the developer running the suite may well have a real signed-in Facebook
+    session on this machine, and no test may read it — nor write over it.
     """
     original_token = settings.facebook_access_token
     original_fallback = settings.facebook_render_fallback_enabled
+    original_session_dir = settings.browser_session_dir
     settings.facebook_access_token = None
     settings.facebook_render_fallback_enabled = False
+    with tempfile.TemporaryDirectory(prefix="sitegen-test-sessions-") as scratch:
+        settings.browser_session_dir = scratch
+        try:
+            yield
+        finally:
+            settings.facebook_access_token = original_token
+            settings.facebook_render_fallback_enabled = original_fallback
+            settings.browser_session_dir = original_session_dir
+
+
+@pytest.fixture(autouse=True)
+def _offline_paste_structure():
+    """Pin the LLM paste-structuring pass off for every test.
+
+    The suite runs offline, and `structure_paste` would otherwise try to reach
+    a server on every paste read — falling back after a timeout, so the tests
+    would still pass while quietly waiting out the socket. Off, the
+    deterministic line-shape reader runs, which is what the paste tests assert.
+    tests/test_paste_structure.py turns it on itself and injects a fake client.
+    """
+    original = settings.paste_llm_structure_enabled
+    settings.paste_llm_structure_enabled = False
     try:
         yield
     finally:
-        settings.facebook_access_token = original_token
-        settings.facebook_render_fallback_enabled = original_fallback
+        settings.paste_llm_structure_enabled = original
+
+
+@pytest.fixture(autouse=True)
+def _no_design_schemes():
+    """Pin design schemes off for every test.
+
+    Same reasoning as the diversity fixture below, one level up: a scheme
+    changes radius, density, measure, card frame, layout order and hero policy
+    per brand, so a structural assertion written against "the" generated tree
+    would really be an assertion about whichever scheme that fixture's brand
+    name happened to hash to. Scheme behaviour is tested explicitly in
+    tests/test_design_schemes.py, which turns the flag on itself.
+
+    Pinned here rather than relying on the config default, so this suite keeps
+    asserting the deferring path after the default is flipped on.
+    """
+    original = settings.design_schemes_enabled
+    settings.design_schemes_enabled = False
+    try:
+        yield
+    finally:
+        settings.design_schemes_enabled = original
 
 
 @pytest.fixture(autouse=True)

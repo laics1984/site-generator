@@ -1,6 +1,7 @@
 import unittest
 
 from app.models.content_blocks import (
+    AboutBlock,
     AwardItem,
     AwardsBlock,
     ClientItem,
@@ -552,6 +553,86 @@ class ScaffoldEnforcementTest(unittest.TestCase):
         hero = next(b for b in aligned.blocks if b.kind == "hero")
         self.assertIsNone(hero.image_query)
         self.assertEqual(hero.image_ref, 0)
+
+    def _about_page(self, block: AboutBlock) -> PagePlan:
+        return PagePlan(
+            page_type="about",
+            slug="about",
+            title="About",
+            blocks=[block],
+            seo_title="About - Example",
+            seo_description="About us.",
+        )
+
+    _ABOUT_SCAFFOLD = PageScaffold(
+        page_type="about", slug="about", title="About", sections=["about"],
+    )
+
+    def test_about_with_blank_image_query_gets_a_stock_fallback(self):
+        """Left blank, `_featured_image` returns None and `_about_preference`
+        picks the image-less `about-story` — the section resolves no photo at
+        all, not even stock. Same hole the hero backfill closes."""
+        aligned = align_page_to_scaffold(
+            self._about_page(AboutBlock(heading="About Example", body="We bake bread.")),
+            self._ABOUT_SCAFFOLD,
+            brand_name="Example",
+        )
+
+        about = next(b for b in aligned.blocks if b.kind == "about")
+        self.assertEqual(about.image_query, "Example team or workplace")
+
+    def test_backfilled_about_matches_the_injected_about_default(self):
+        """One home for the phrase — an about the scaffold INJECTS and one it
+        backfills must not drift apart."""
+        injected = align_page_to_scaffold(
+            PagePlan(
+                page_type="about", slug="about", title="About", blocks=[],
+                seo_title="About - Example", seo_description="About us.",
+            ),
+            self._ABOUT_SCAFFOLD,
+            brand_name="Example",
+        )
+        backfilled = align_page_to_scaffold(
+            self._about_page(AboutBlock(heading="About Example", body="Bread.")),
+            self._ABOUT_SCAFFOLD,
+            brand_name="Example",
+        )
+
+        self.assertEqual(
+            next(b for b in injected.blocks if b.kind == "about").image_query,
+            next(b for b in backfilled.blocks if b.kind == "about").image_query,
+        )
+
+    def test_about_with_existing_image_query_is_left_untouched(self):
+        aligned = align_page_to_scaffold(
+            self._about_page(
+                AboutBlock(heading="Our story", body="B.", image_query="artisan bakers kneading dough")
+            ),
+            self._ABOUT_SCAFFOLD,
+            brand_name="Example",
+        )
+
+        about = next(b for b in aligned.blocks if b.kind == "about")
+        self.assertEqual(about.image_query, "artisan bakers kneading dough")
+
+    def test_about_with_a_bound_source_photo_gets_no_stock_query(self):
+        """A real source photo resolves on its own; a stock query would be a
+        second answer to a question already settled."""
+        by_ref = align_page_to_scaffold(
+            self._about_page(AboutBlock(heading="Our story", body="B.", image_ref=0)),
+            self._ABOUT_SCAFFOLD,
+            brand_name="Example",
+        )
+        by_url = align_page_to_scaffold(
+            self._about_page(
+                AboutBlock(heading="Our story", body="B.", image_url="https://x.test/shop.jpg")
+            ),
+            self._ABOUT_SCAFFOLD,
+            brand_name="Example",
+        )
+
+        self.assertIsNone(next(b for b in by_ref.blocks if b.kind == "about").image_query)
+        self.assertIsNone(next(b for b in by_url.blocks if b.kind == "about").image_query)
 
     def test_hero_unmapped_page_type_falls_back_to_brand_name_phrase(self):
         page = PagePlan(

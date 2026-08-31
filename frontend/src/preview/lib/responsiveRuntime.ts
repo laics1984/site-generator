@@ -9,6 +9,7 @@
  * narrowing) — same runtime behavior, no logic changes.
  */
 import { getNodeContentRecord, getNodeStyles, getStringField } from './blockRuntime'
+import { getShrunkLogoStyles, HEADER_ROW_CONTAINER_TYPES } from './headerShrink'
 import { getNodeChildren, normalizeBlockType, normalizeSchemaNodes } from './schema'
 import type { PublicBlockNode, PublicSchemaTree } from './public'
 
@@ -20,6 +21,14 @@ type ResponsiveNodeContext = {
   scope?: 'header' | 'body' | 'footer'
   parentType?: string
   siblingTypes?: string[]
+  // True once an ancestor in the header already carried a horizontal gutter,
+  // so only the outermost padded layer is treated as the screen inset.
+  headerGutterTaken?: boolean
+  // True inside the brand mark's own subtree. The typographic logo is a
+  // container named "Brand" holding a `link` wordmark, so without this the
+  // header-link rule below would hide the brand name itself on every site
+  // whose logo did not render as an image.
+  inBrandMark?: boolean
 }
 
 const MOBILE_BREAKPOINT_MAX = 767.98
@@ -28,6 +37,68 @@ const TABLET_BREAKPOINT_MAX = 1023.98
 const DEVICE_CANVAS_WIDTH: Record<DeviceType, number> = {
   Mobile: 375,
   Tablet: 768,
+}
+
+// Below the desktop breakpoint the nav collapses into the Menu button, and the
+// header becomes `logo | Menu`. The mark comes down with it — the same
+// "compact header" the scroll shrink already expresses, so it reuses that
+// ratio (DEFAULT_HEADER_SHRINK_AMOUNT_PERCENT in PublicSiteShell) and that
+// helper rather than inventing a second idea of a smaller logo.
+const COMPACT_HEADER_LOGO_RATIO = 0.8
+// …plus a ceiling the ratio alone cannot give: the mark must not out-size the
+// control beside it. The Menu button is `min-height: 44px` (MenuBlock.vue), and
+// header_footer's `_LOGO_HEIGHT_BY_INDUSTRY` runs to 68px, which at 0.8 is
+// still 54px — a banner next to a 44px pill on a 390px phone.
+const COMPACT_HEADER_LOGO_MAX_PX = 44
+
+// The header's inset from the screen edge on a phone. 24px each side spends
+// 12% of a 390px viewport on nothing, and what it costs is the room the logo
+// and the Menu button sit in. Phones only — a tablet has the width.
+const COMPACT_HEADER_GUTTER_PX = 12
+
+function hasHorizontalPadding(node: PublicBlockNode): boolean {
+  const styles = getNodeStyles(node)
+  return (
+    (parsePixelValue(styles.paddingLeft) ?? 0) > 0 ||
+    (parsePixelValue(styles.paddingRight) ?? 0) > 0
+  )
+}
+
+// Height-scaled marks take the cap; width-scaled ones take the ratio alone,
+// since the cap exists because the bar's height is set by what is in it.
+function getCompactLogoStyles(
+  styles: RuntimeStyleMap
+): { width: string } | { height: string } | null {
+  const shrunk = getShrunkLogoStyles(styles, COMPACT_HEADER_LOGO_RATIO)
+  if (!shrunk || !('height' in shrunk)) {
+    return shrunk
+  }
+  const px = Number.parseFloat(shrunk.height)
+  if (!Number.isFinite(px)) {
+    return shrunk
+  }
+  return { height: `${Math.min(px, COMPACT_HEADER_LOGO_MAX_PX)}px` }
+}
+
+// The brand mark's own subtree — the one part of a header whose links are not
+// calls to action. The typographic logo is a container named exactly "Brand"
+// (header_footer._logo_mark; the builder's createBrandElement names its slot
+// the same) wrapping a `link` wordmark.
+//
+// EXACT, not `/brand/i`: `chrome-header-centered-stack` lays its top row out as
+// "Header brand row", which holds the CTA as well as the mark — a loose match
+// there shields the very node this is meant to find. The image logo needs no
+// entry: an image is never a link.
+function isBrandMarkRoot(node: PublicBlockNode): boolean {
+  return /^brand$/i.test(getNodeName(node).trim())
+}
+
+// A link to the site root is a brand mark's home link, never a call to action.
+// Belt and braces with the name above: leaving one extra link in the bar is a
+// far better failure than erasing the site's name from every narrow screen.
+function isSiteRootHref(href: string): boolean {
+  const trimmed = href.trim()
+  return trimmed === '' || trimmed === '/' || trimmed === '#'
 }
 
 const ROOT_TYPES = new Set(['body', 'header', 'footer', '__body', '__header', '__footer'])
@@ -308,9 +379,16 @@ export function getResponsiveNodeStyles(
   const isImageElement = type === 'image'
   const isBrandLogoElement = isImageElement && /brand/i.test(getNodeName(node))
   const parentType = normalizeBlockType(context.parentType || '')
-  const isHeaderImage = isImageElement && parentType === 'header'
   const siblingTypes = context.siblingTypes || []
   const scope = context.scope
+  // `scope`, not `parentType`. Every generated header wraps its children in a
+  // "Header bar" container, so `parentType === 'header'` was only ever true
+  // for a hand-built flat header — the image and link rules below had been
+  // dead on every generated site since they were written. `isHeaderMenu`
+  // survived purely because `slot === 'primary'` gave it a second signal.
+  // A gate written in the wrong vocabulary is a silent off switch.
+  const inHeader = scope === 'header'
+  const isHeaderImage = isImageElement && inHeader
   const variant = getNodeVariant(node)
   const slot = getNodeSlot(node)
   const isHeaderRoot = type === 'header'
@@ -334,7 +412,11 @@ export function getResponsiveNodeStyles(
   // Social menus render as a row of brand glyphs (MenuBlock), so they keep the
   // horizontal run on mobile that the other footer menus give up.
   const isSocialMenu = type === 'menu' && (slot === 'social' || variant === 'social-inline')
-  const isHeaderLink = type === 'link' && parentType === 'header'
+  const isHeaderLink =
+    type === 'link' &&
+    inHeader &&
+    !context.inBrandMark &&
+    !isSiteRootHref(getStringField(node, 'href') || '')
   const hasMenuSibling = siblingTypes.includes('menu')
   const hasImageSibling = siblingTypes.includes('image')
   const imageContent = getNodeContentRecord(node)
@@ -518,6 +600,36 @@ export function getResponsiveNodeStyles(
     if (!hasDeviceOverride('marginLeft')) mergedStyles.marginLeft = '0'
     if (!hasDeviceOverride('marginRight')) mergedStyles.marginRight = '0'
     if (!hasDeviceOverride('alignSelf')) mergedStyles.alignSelf = 'auto'
+
+    // The mark comes down with the bar. Skipped whenever the schema states its
+    // own compact size, like every other rule here. This wins over the scroll
+    // shrink's inline style (these rules are emitted !important), so a scrolled
+    // narrow header is compact once, not twice.
+    if (!hasDeviceOverride('width') && !hasDeviceOverride('height')) {
+      const compact = getCompactLogoStyles(mergedStyles)
+      if (compact) Object.assign(mergedStyles, compact)
+    }
+  }
+
+  // The screen gutter, and only the screen gutter: the OUTERMOST padded layer
+  // in the header. Which node that is differs per archetype — the bar for
+  // `classic`, the root for `floating-pill` (whose bar's own 20px is the
+  // capsule's shape, not an inset), both rows for `centered-stack` — so it is
+  // found by walking rather than named. Layout boxes only, never a button's
+  // own padding, and it only ever reduces.
+  if (
+    device === 'Mobile' &&
+    inHeader &&
+    !context.headerGutterTaken &&
+    (isRootSection || HEADER_ROW_CONTAINER_TYPES.has(type))
+  ) {
+    for (const side of ['paddingLeft', 'paddingRight'] as const) {
+      if (hasDeviceOverride(side)) continue
+      const px = parsePixelValue(mergedStyles[side])
+      if (px !== null && px > COMPACT_HEADER_GUTTER_PX) {
+        mergedStyles[side] = `${COMPACT_HEADER_GUTTER_PX}px`
+      }
+    }
   }
 
   if (device === 'Mobile' && isHeaderLink) {
@@ -566,6 +678,8 @@ function visitSchemaNodes(
     scope,
     parentType: '',
     siblingTypes: [] as string[],
+    headerGutterTaken: false,
+    inBrandMark: false,
   }))
 
   while (queue.length) {
@@ -578,10 +692,15 @@ function visitSchemaNodes(
       scope: current.scope,
       parentType: current.parentType,
       siblingTypes: current.siblingTypes,
+      headerGutterTaken: current.headerGutterTaken,
+      inBrandMark: current.inBrandMark,
     })
 
     const children = getNodeChildren(current.node)
     const siblingTypes = children.map((child) => getNodeType(child)).filter(Boolean)
+    const inBrandMark = current.inBrandMark || isBrandMarkRoot(current.node)
+    const headerGutterTaken =
+      current.headerGutterTaken || hasHorizontalPadding(current.node)
 
     queue.push(
       ...children.map((child) => ({
@@ -589,6 +708,8 @@ function visitSchemaNodes(
         scope: current.scope,
         parentType: getNodeType(current.node),
         siblingTypes,
+        headerGutterTaken,
+        inBrandMark,
       }))
     )
   }

@@ -49,6 +49,7 @@ from app.models.content_blocks import (
     VisualPolicy,
 )
 from app.services.icons import icons_for_items
+from app.services.image_styling import _split_layers
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
 from app.services.style_tokens import brand_ink
 from app.services.template_filler import get_template, templates_for_type
@@ -1259,6 +1260,12 @@ def _token_hex(token: str, theme: ThemeTokens) -> str | None:
         "--builder-color-background": p.background,
         "--builder-color-surface": p.surface,
         "--builder-page-background": theme.page.background,
+        # Buttons carry their own token pair, and it is contrast-guaranteed by
+        # construction (theme.build_theme lifts the fill until the label clears
+        # AA). Resolving it is what lets this pass read a LINK: a solid button
+        # measures its label against its own fill instead of the band's.
+        "--builder-button-background": theme.buttons.background,
+        "--builder-button-text": theme.buttons.text,
     }.get(token)
 
 
@@ -1329,19 +1336,30 @@ def _has_opaque_gradient(styles: dict[str, Any]) -> bool:
 
     Decorative overlays (mesh gradients fading to `transparent`, rgba stops
     with alpha < 1) do NOT count: they let the node's real backgroundColor show
-    through, so contrast must still be judged against that colour."""
+    through, so contrast must still be judged against that colour.
+
+    Judged one LAYER at a time. A value is a comma-separated stack, and the
+    decorative sheen usually rides on top of the fill it decorates —
+    `cta-gradient` paints `radial-gradient(…rgba(255,255,255,0.2), rgba(255,255,255,0)…),
+    linear-gradient(…primary, secondary)`. Read whole, one translucent stop in
+    the top layer hid the opaque brand ramp underneath, so the panel's
+    white-on-brand copy was measured against the PAGE background and flipped to
+    near-black."""
     for key in ("backgroundImage", "background"):
         v = styles.get(key)
-        if not isinstance(v, str) or "gradient(" not in v or "url(" in v:
+        if not isinstance(v, str) or "gradient(" not in v:
             continue
-        if "transparent" in v:
-            continue
-        if any(
-            m.group(4) is not None and float(m.group(4)) < 0.999
-            for m in _RGBA.finditer(v)
-        ):
-            continue
-        return True
+        for layer in _split_layers(v):
+            if "gradient(" not in layer or "url(" in layer:
+                continue
+            if "transparent" in layer:
+                continue
+            if any(
+                m.group(4) is not None and float(m.group(4)) < 0.999
+                for m in _RGBA.finditer(layer)
+            ):
+                continue
+            return True
     return False
 
 
@@ -1649,7 +1667,43 @@ def style_whatsapp_links(elements: list[BuilderElement]) -> int:
     return styled
 
 
-def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) -> int:
+def _flipped_border(border: object, ink_hex: str, theme: ThemeTokens) -> str | None:
+    """`border` restated in `ink_hex`, keeping its width, style and alpha — or
+    None when there is no colour to restate.
+
+    A hairline is written as the ink's own tone at a low alpha
+    (`1px solid rgba(15,23,42,0.14)` for dark-on-light), so an outline drawn for
+    the wrong band is invisible for exactly the reason its label was. Flipping
+    the colour and keeping the alpha preserves what the author chose — the
+    weight of the line — while moving it to the side of the band that shows.
+    """
+    if not isinstance(border, str) or not border.strip():
+        return None
+    if "var(" in border or "color-mix(" in border:
+        # A computed colour: the only hex in it is a var() fallback or one stop
+        # of a mix, and rewriting either changes what the expression MEANS.
+        # These are brand-hued outlines anyway — the tone this pass corrects is
+        # always the neutral one.
+        return None
+    for pattern in (_RGBA, _HEX_LITERAL):
+        m = pattern.search(border)
+        if m is None:
+            continue
+        parsed = _parse_color(m.group(0), theme)
+        if parsed is None:
+            return None
+        alpha = parsed[1]
+        r, g, b = _hex_to_rgb(_expand_hex(ink_hex))
+        replacement = (
+            f"rgb({r},{g},{b})" if alpha >= 0.999 else f"rgba({r},{g},{b},{alpha})"
+        )
+        return border[: m.start()] + replacement + border[m.end() :]
+    return None
+
+
+def enforce_text_contrast(
+    elements: list[BuilderElement], theme: ThemeTokens, *, surface: str | None = None
+) -> int:
     """Scheme-agnostic contrast safety net. Retargets any text whose colour fails
     contrast against its *resolved* band background to that band's correct
     foreground (white on a dark band, dark ink on a light band).
@@ -1663,8 +1717,16 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
     (the flip must strictly improve contrast and differ from the current colour),
     so photo overlays, cards that paint their own surface, and brand-colour text
     that is merely low-contrast-but-correct are left untouched. Mutates in place;
-    returns the count changed."""
-    page_rgb = _hex_to_rgb(_expand_hex(theme.page.background))
+    returns the count changed.
+
+    ``surface``: the flat colour the caller has just PAINTED behind ``elements``,
+    for a fill this pass cannot read off the styles — today, the split hero's
+    washed photo (`image_styling.washed_surface_hex`). It replaces the page
+    background as the starting backdrop and, only for the elements passed in,
+    lifts the photo rule above: the photo is under a near-opaque wash the caller
+    measured, so its ink is knowable after all. Descendants still walk normally,
+    so a photo tile nested inside keeps owning its own ink."""
+    page_rgb = _hex_to_rgb(_expand_hex(surface or theme.page.background))
     # Brand-hued text (primary/accent eyebrows, links) is intentional even when it
     # lands a little under AA on a band — never recolour it. The vanishing-text bug
     # is always `secondary`/slate, never a brand colour.
@@ -1674,7 +1736,13 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
     }
     changed = 0
 
-    def walk(node: BuilderElement, bg_rgb: tuple[int, int, int], photo: bool) -> None:
+    def walk(
+        node: BuilderElement,
+        bg_rgb: tuple[int, int, int],
+        photo: bool,
+        *,
+        surface_measured: bool = False,
+    ) -> None:
         nonlocal changed
         styles = node.styles if isinstance(node.styles, dict) else {}
         # A genuine photo or an opaque gradient fill owns its subtree's text:
@@ -1686,24 +1754,44 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
         # catalog's white hero headings to dark ink under dark gradients and
         # photos). Semi-transparent decorative gradients don't count — see
         # _has_opaque_gradient.
-        covered = _has_real_photo(styles) or _has_opaque_gradient(styles)
+        covered = not surface_measured and (
+            _has_real_photo(styles) or _has_opaque_gradient(styles)
+        )
         if covered:
             photo = True
         # A solid / semi-transparent own background updates the effective surface
         # and (painting over whatever is beneath) clears the photo-owned flag —
         # unless this very node is the one carrying the photo/gradient.
-        own = _parse_color(styles.get("backgroundColor"), theme) or _parse_color(
-            styles.get("background"), theme
+        # `surface_measured` says the caller painted over this node's own
+        # declared fill (the wash covers the template's backgroundColor), so
+        # reading it here would composite a colour nobody can see.
+        own = (
+            None
+            if surface_measured
+            else _parse_color(styles.get("backgroundColor"), theme)
+            or _parse_color(styles.get("background"), theme)
         )
         if own is not None:
             (r, g, b), a = own
-            bg_rgb = (r, g, b) if a >= 0.999 else _composite((r, g, b), a, bg_rgb)
-            if not covered:
+            opaque = a >= 0.999
+            bg_rgb = (r, g, b) if opaque else _composite((r, g, b), a, bg_rgb)
+            # Only an OPAQUE fill hides what it sits on. A translucent chip on a
+            # photo/gradient band (the gradient hero's ghost CTA:
+            # `rgba(255,255,255,0.12)`) composites over a backdrop nobody can
+            # read, so the band still owns its ink — compositing it over the
+            # last known flat colour would "measure" a surface that isn't there
+            # and flip the CTA's white label to dark.
+            if not covered and opaque:
                 photo = False
 
         content = node.content
         if isinstance(content, BuilderElementContent):
-            if node.type == "text" and not photo:
+            # Links count too: a ghost button states a colour and paints no
+            # surface, so it vanishes on a same-luminance band exactly like a
+            # paragraph does. A SOLID button is already safe here — its own fill
+            # became `bg_rgb` two blocks up, so its label is measured against
+            # the button, not the band.
+            if node.type in ("text", "link") and not photo:
                 fg = _parse_color(styles.get("color"), theme)
                 if fg is not None and fg[0] not in brand_rgb:
                     fg_hex, bg_hex = _to_hex(fg[0]), _to_hex(bg_rgb)
@@ -1724,6 +1812,13 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
                         new_styles["color"] = safe
                         if fg[1] < 1.0 and "opacity" not in new_styles:
                             new_styles["opacity"] = f"{round(fg[1] * 100)}%"
+                        # A ghost button's outline is drawn in the same tone as
+                        # the label it frames, so it vanished with it. Only the
+                        # colour is restated — the author's width, style and
+                        # alpha are the design and survive.
+                        outline = _flipped_border(styles.get("border"), safe, theme)
+                        if outline is not None:
+                            new_styles["border"] = outline
                         node.styles = new_styles
                         changed += 1
         elif isinstance(content, list):
@@ -1732,7 +1827,7 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
                     walk(child, bg_rgb, photo)
 
     for el in elements:
-        walk(el, page_rgb, False)
+        walk(el, page_rgb, False, surface_measured=surface is not None)
     return changed
 
 

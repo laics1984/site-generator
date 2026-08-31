@@ -39,7 +39,6 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-from app.config import settings
 from app.models.builder_schema import (
     BuilderElement,
     BuilderElementContent,
@@ -48,8 +47,10 @@ from app.models.builder_schema import (
 )
 from app.models.content_blocks import ContentCollections
 from app.services.cms_client import CmsApiError, CmsClient
+from app.services.cms_targets import CmsTarget, default_target
 from app.services.menu_builder import build_layout_payload
 from app.services.timing import stage
+from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,10 @@ class PushStep:
     detail: str = ""
     data: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    # A step that SUCCEEDED but not the way it was asked to. Distinct from
+    # `error` on purpose: the push carries on and the report still says ok, but
+    # the operator has something to go and fix in the CMS afterwards.
+    warning: str | None = None
 
 
 @dataclass
@@ -100,6 +105,10 @@ class PushRequest:
     publish: bool = False
     force_overwrite: bool = False
     push_builder_styles: bool = True
+    # The site icon captured from the source. Optional for the same reason
+    # push_builder_styles is: re-pushing to an entity whose owner has since
+    # chosen their own icon must not silently replace it.
+    push_favicon: bool = True
     # When True, create a brand-new entity (owned by the logged-in user) before
     # pushing, and ignore `entity_token`. The created entity is empty so the
     # greenfield guard always passes.
@@ -109,6 +118,11 @@ class PushRequest:
     # Blog posts / events extracted from the source site (content_collections);
     # pushed as real CMS article/event entries after the pages land.
     collections: ContentCollections | None = None
+    # Which CMS this lands in. Defaulted, not required: a caller that names none
+    # gets the default target, which is exactly the behaviour before targets
+    # existed. Resolved at the HTTP boundary (routers/cms.py) so an unknown name
+    # is a 400 rather than something buried in a PushReport.
+    target: CmsTarget = field(default_factory=default_target)
 
 
 # --- slug normalization ---------------------------------------------------------
@@ -239,10 +253,54 @@ def _rewrite_hrefs(node: BuilderElement, href_map: dict[str, str]) -> None:
 _PUSH_CONCURRENCY = 5
 
 
+async def _create_entity_tolerating_url_clash(
+    client: CmsClient,
+    *,
+    name: str,
+    entity_url: str | None,
+    builder_styles: dict[str, Any] | None,
+) -> tuple[dict[str, Any], str | None]:
+    """Create the entity, retrying once without `entity_url` if that URL is taken.
+
+    The CMS rules entity_url `nullable` but `unique` across the WHOLE install, so
+    on a shared production CMS the site's own address may already belong to
+    another tenant — a clash that simply cannot happen on a fresh local one. The
+    URL is the one optional part of the request, so dropping it lands the site
+    instead of failing an entire push over a field the operator can set later.
+
+    Detected on the `errors` KEY, never on the message text: Laravel's copy is
+    translatable and the key is the contract. Returns (entity, warning).
+    """
+    try:
+        entity = await client.create_entity(
+            entity_name=name, entity_url=entity_url, builder_styles=builder_styles
+        )
+        return entity, None
+    except CmsApiError as exc:
+        body = exc.response_body if isinstance(exc.response_body, dict) else {}
+        errors = body.get("errors")
+        clash = (
+            exc.status == 422
+            and isinstance(errors, dict)
+            and "entity_url" in errors
+            and bool(entity_url)
+        )
+        if not clash:
+            raise
+    entity = await client.create_entity(
+        entity_name=name, entity_url=None, builder_styles=builder_styles
+    )
+    return entity, (
+        f"The website URL {entity_url} is already registered to another site on this "
+        "CMS, so this site was created without one. Set it in the admin once the "
+        "clash is resolved."
+    )
+
+
 async def push_site(req: PushRequest) -> PushReport:
     """Run the full push and return a PushReport. Never raises."""
     report = PushReport()
-    client = CmsClient.for_default()
+    client = CmsClient.for_target(req.target)
     try:
         return await _run_push(client, req, report)
     except Exception as exc:
@@ -275,8 +333,9 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     if req.create_entity:
         try:
             name = (req.new_entity_name or req.site.site_name or "New Site").strip()
-            entity = await client.create_entity(
-                entity_name=name,
+            entity, url_warning = await _create_entity_tolerating_url_clash(
+                client,
+                name=name,
                 entity_url=(req.new_entity_url or None),
                 builder_styles=req.site.builder_styles or None,
             )
@@ -290,6 +349,7 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                         "entity_token": req.entity_token,
                         "entity_id": entity.get("entity_id"),
                     },
+                    warning=url_warning,
                 )
             )
         except CmsApiError as exc:
@@ -565,6 +625,10 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
             PushStep(name="builder_styles", ok=True, detail="Skipped (per request)")
         )
 
+    # 8b. Site icon (optional). Non-fatal: the pages are already in, and an icon
+    #     is something the owner can set in the admin afterwards.
+    await _push_favicon(client, req, report)
+
     # 9. Publish (optional) — concurrent; every publish uses its own page's saved
     #    draft version plus the shared (post-builder-styles) layout_version_id.
     if req.publish:
@@ -682,8 +746,10 @@ async def _upload_media(
         if isinstance(logo_url, str):
             sources.setdefault(logo_url, _placeholder_logo_element(logo_url))
 
-    uploadable = [src for src in sources if _needs_upload(src)]
-    uploadable_docs = [href for href in documents if _needs_upload_document(href)]
+    uploadable = [src for src in sources if _needs_upload(src, req.target)]
+    uploadable_docs = [
+        href for href in documents if _needs_upload_document(href, req.target)
+    ]
     if not uploadable and not uploadable_docs:
         return rewrites, set()
 
@@ -907,7 +973,29 @@ def _placeholder_logo_element(src: str) -> BuilderElement:
     )
 
 
-def _needs_upload(src: str) -> bool:
+def _is_cms_hosted(url: str, target: CmsTarget) -> bool:
+    """True when this URL already lives on the CMS we are pushing INTO, so
+    re-hosting it would only duplicate the asset.
+
+    The host comes off the target, never off settings: with a destination chosen
+    per push, a settings-derived host is wrong for every push that doesn't go to
+    the default CMS — silently re-uploading assets that are already there.
+
+    The path arm is host-agnostic on purpose and does the heavy lifting: the CMS
+    serves its media store from its own routes and, in production, from a
+    separate asset host entirely. Nothing here ever constructs a media URL —
+    `upload_media` returns the CDN URL the CMS itself minted.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if target.api_host and parsed.hostname == target.api_host:
+        return True
+    return "/storage/" in parsed.path or "/api/image/" in parsed.path
+
+
+def _needs_upload(src: str, target: CmsTarget) -> bool:
     """True for any src we should re-host so the published site is self-contained:
     data URLs, stock photos, and external http(s) images NOT already on the CMS."""
     if src.startswith("data:image/"):
@@ -922,20 +1010,11 @@ def _needs_upload(src: str) -> bool:
         return False
     if parsed.scheme not in ("http", "https"):
         return False
-    # Already hosted by the CMS / its media store → leave it alone.
-    try:
-        cms_host = urlparse(settings.cms_api_base_url).hostname or ""
-    except ValueError:
-        cms_host = ""
-    if cms_host and parsed.hostname == cms_host:
-        return False
-    if "/storage/" in parsed.path or "/api/image/" in parsed.path:
-        return False
     # External/scraped photo → re-host it on the CMS.
-    return True
+    return not _is_cms_hosted(src, target)
 
 
-def _needs_upload_document(href: str) -> bool:
+def _needs_upload_document(href: str, target: CmsTarget) -> bool:
     """True for an absolute http(s) document URL not already on the CMS."""
     try:
         parsed = urlparse(href)
@@ -943,13 +1022,7 @@ def _needs_upload_document(href: str) -> bool:
         return False
     if parsed.scheme not in ("http", "https"):
         return False
-    try:
-        cms_host = urlparse(settings.cms_api_base_url).hostname or ""
-    except ValueError:
-        cms_host = ""
-    if cms_host and parsed.hostname == cms_host:
-        return False
-    if "/storage/" in parsed.path or "/api/image/" in parsed.path:
+    if _is_cms_hosted(href, target):
         return False
     return _document_ext(href) in _DOCUMENT_MIME_MAP
 
@@ -958,12 +1031,111 @@ class _ResolveSkip(Exception):
     pass
 
 
+async def _assert_fetchable(url: str) -> None:
+    """Refuse a src pointing at a private/internal host (SECURITY.md §2).
+
+    Push time is a fetch boundary like any other: every URL here came from
+    outside — a scraped page's markup, or now markup the user pasted straight
+    in, which makes it directly attacker-chosen rather than requiring a site
+    they control to be scraped first. A refusal is a `_ResolveSkip`, so one bad
+    src is dropped from the tree by `_strip_invalid_images` exactly like an
+    unreachable one; it never fails the push.
+    """
+    try:
+        await assert_public_url(url)
+    except UnsafeUrlError as exc:
+        raise _ResolveSkip(str(exc)) from exc
+
+
+def _brand_field(brand: Any, name: str) -> Any:
+    """Read one field off `GeneratedSite.brand`, whichever shape it is in.
+
+    The field is typed `Any`, so it is a `BrandIdentity` when the plan is built
+    in-process and a plain dict when the frontend posts the same site back to
+    /api/cms/push. A bare getattr silently returns None for the dict form —
+    which is every real push.
+    """
+    if brand is None:
+        return None
+    if isinstance(brand, dict):
+        return brand.get(name)
+    return getattr(brand, name, None)
+
+
+async def _push_favicon(
+    client: CmsClient, req: PushRequest, report: PushReport
+) -> None:
+    """Send the source site's icon to the CMS, as the entity's favicon.
+
+    Everything here is already built: `_resolve_to_bytes` fetches a URL or
+    decodes a data: URI, and `_coerce_to_favicon` normalizes whatever came back
+    to a still PNG — including the `.ico` a `<link rel="icon">` most often
+    points at, and the animated WebP that a brand logo occasionally is.
+
+    Never fatal. The pages are pushed by this point, and an icon is a thing the
+    owner can set in Site settings; failing the whole push over one would be a
+    poor trade.
+    """
+    if not req.push_favicon:
+        report.record(PushStep(name="favicon", ok=True, detail="Skipped (per request)"))
+        return
+
+    src = _brand_field(req.site.brand, "favicon_url")
+
+    if not isinstance(src, str) or not src.strip():
+        report.record(
+            PushStep(name="favicon", ok=True, detail="Skipped — source declared none")
+        )
+        return
+
+    try:
+        file_bytes, content_type, filename = await _resolve_to_bytes(src)
+        coerced = await asyncio.to_thread(
+            _coerce_to_favicon, file_bytes, content_type, filename
+        )
+        if coerced is None:
+            report.record(
+                PushStep(
+                    name="favicon",
+                    ok=True,
+                    detail=f"Skipped — unreadable image ({content_type})",
+                )
+            )
+            return
+
+        file_bytes, content_type, filename = coerced
+        favicon_url = await client.set_entity_favicon(
+            req.entity_token,
+            file_bytes=file_bytes,
+            filename=filename,
+            content_type=content_type,
+        )
+        report.record(
+            PushStep(
+                name="favicon",
+                ok=True,
+                detail="Site icon set",
+                data={"favicon_url": favicon_url} if favicon_url else {},
+            )
+        )
+    except (CmsApiError, _ResolveSkip, httpx.HTTPError) as exc:
+        report.record(
+            PushStep(
+                name="favicon",
+                ok=False,
+                error=str(exc),
+                detail="Site icon not set. Upload one in Site settings.",
+            )
+        )
+
+
 async def _resolve_to_bytes(
     src: str, client: httpx.AsyncClient | None = None
 ) -> tuple[bytes, str, str]:
     """Turn a src into (bytes, content_type, filename) ready for /api/file/add."""
     if src.startswith("data:"):
         return _decode_data_url(src)
+    await _assert_fetchable(src)
     # https URL: fetch (with the caller's pooled client when provided)
     try:
         if client is not None:
@@ -995,6 +1167,7 @@ async def _resolve_document_to_bytes(
     the link stays hotlinked rather than uploaded as something the CMS
     validator would reject.
     """
+    await _assert_fetchable(href)
     try:
         resp = await client.get(href)
         if resp.status_code >= 400:
@@ -1098,6 +1271,51 @@ def _coerce_to_cms_image(
             img.convert("RGB").save(out, format="JPEG", quality=85)
             return out.getvalue(), "image/jpeg", f"{base}.jpg"
     except Exception:  # noqa: BLE001 — unsupported/corrupt bytes ⇒ leave hotlinked
+        return None
+
+
+# The CMS re-encodes a favicon to a 192px PNG, so anything larger is bytes we
+# upload and it discards.
+_FAVICON_MAX_DIM = 512
+
+
+def _coerce_to_favicon(
+    file_bytes: bytes, content_type: str, filename: str
+) -> tuple[bytes, str, str] | None:
+    """Return (bytes, mime, filename) the CMS favicon endpoint will accept.
+
+    Not `_coerce_to_cms_image`: that one is built for the media library, where
+    passing a format through untouched is the point — webp and avif keep their
+    size advantage and nothing re-encodes them. The favicon endpoint is the
+    opposite case. It decodes what it is sent with GD, whose codecs depend on
+    how the deployed PHP was built, and a source site's declared icon is exactly
+    where the awkward formats turn up: an animated WebP logo, an AVIF, a CMYK
+    JPEG. Every one of those is a 422 that fails the step for no good reason,
+    when Pillow is right here and can hand over a still PNG the server is
+    certain to read.
+
+    SVG is the exception and passes through: the CMS sanitizes and stores it as
+    a vector, which is sharper than any raster we could rasterize it into — and
+    Pillow could not rasterize it anyway.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    if _native_cms_ext(content_type, filename) == "svg":
+        return file_bytes, "image/svg+xml", "favicon.svg"
+
+    try:
+        with Image.open(BytesIO(file_bytes)) as img:
+            # An .ico opens at its largest entry; an animated GIF/WebP opens at
+            # its first frame, which is the one a favicon should be.
+            frame = img.convert("RGBA")
+            if max(frame.size) > _FAVICON_MAX_DIM:
+                frame.thumbnail((_FAVICON_MAX_DIM, _FAVICON_MAX_DIM))
+            out = BytesIO()
+            frame.save(out, format="PNG")
+            return out.getvalue(), "image/png", "favicon.png"
+    except Exception:  # noqa: BLE001 — not a decodable image; the step reports it
         return None
 
 

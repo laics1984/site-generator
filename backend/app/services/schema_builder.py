@@ -133,6 +133,7 @@ from app.services.image_styling import (
     is_edge_fade_layer,
     photo_background,
     washed_photo_background,
+    washed_surface_hex,
 )
 from app.services.theme import (
     _adjust_lightness,
@@ -4011,13 +4012,28 @@ def _apply_hero_washed_background(
     element: BuilderElement, bg: PhotoResult, ctx: RenderContext
 ) -> None:
     """Paint a split hero's whole section with an abstract photo under a
-    scheme-aware brand wash. Drops the template's static ``background`` shorthand,
-    which would otherwise override ``backgroundImage``. Mutates in place."""
+    scheme-aware brand wash, and state the ink that goes on it. Drops the
+    template's static ``background`` shorthand, which would otherwise override
+    ``backgroundImage``. Mutates in place.
+
+    The ink half is not optional. The split templates hard-code dark copy
+    (`var(--builder-color-secondary)` headings, `rgba(15,23,42,…)` body, a ghost
+    CTA in both), which is right on the light page background they were authored
+    for and wrong the moment this repaints the section — in a DARK scheme the
+    wash is the theme's near-black secondary, so headline, body and secondary
+    button all shipped black on black. `enforce_text_contrast`, the pass that
+    exists to catch exactly that, cannot: a real photo in the fill means it
+    can't know the surface, so it hands the subtree back untouched. Here we DO
+    know it — we just painted it — so the surface is measured
+    (`washed_surface_hex`) and handed to the same pass rather than a second
+    colour rule growing beside it.
+    """
+    scheme = getattr(ctx.theme, "color_scheme", "light")
     styles = dict(element.styles or {})
     styles.pop("background", None)
     styles["backgroundImage"] = washed_photo_background(
         bg.url,
-        scheme=getattr(ctx.theme, "color_scheme", "light"),
+        scheme=scheme,
         surface_hex=ctx.theme.palette.surface,
         secondary_hex=ctx.theme.palette.secondary,
         primary_hex=ctx.theme.palette.primary,
@@ -4026,6 +4042,16 @@ def _apply_hero_washed_background(
     styles["backgroundPosition"] = "center"
     styles["backgroundRepeat"] = "no-repeat"
     element.styles = styles
+    enforce_text_contrast(
+        [element],
+        ctx.theme,
+        surface=washed_surface_hex(
+            scheme=scheme,
+            surface_hex=ctx.theme.palette.surface,
+            secondary_hex=ctx.theme.palette.secondary,
+            avg_hex=bg.avg_color,
+        ),
+    )
 
 
 async def block_to_element(

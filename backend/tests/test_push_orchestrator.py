@@ -26,6 +26,7 @@ from app.models.builder_schema import (
     PageSeo,
 )
 from app.services.cms_client import CmsApiError, CmsClient
+from app.services.cms_targets import CmsTarget
 from app.services.push_orchestrator import _PUSH_CONCURRENCY, PushRequest, push_site
 
 
@@ -609,6 +610,7 @@ def test_segments_are_still_sanitized_inside_a_kept_path():
 
 from app.services.push_orchestrator import (  # noqa: E402
     _collect_document_hrefs,
+    _needs_upload,
     _needs_upload_document,
     _resolve_document_to_bytes,
     _ResolveSkip,
@@ -638,20 +640,62 @@ def test_collect_document_hrefs_only_picks_link_type_document_extensions():
     assert list(out) == ["https://mmta.org.my/files/brochure-en.pdf"]
 
 
+_TARGET = CmsTarget(name="default", api_base_url="http://localhost:8000")
+_REMOTE = CmsTarget(name="remote", api_base_url="https://app-api.example.com")
+
+
 def test_needs_upload_document_true_for_external_pdf():
-    assert _needs_upload_document("https://mmta.org.my/files/brochure-en.pdf")
+    assert _needs_upload_document("https://mmta.org.my/files/brochure-en.pdf", _TARGET)
 
 
 def test_needs_upload_document_false_for_already_hosted():
-    assert not _needs_upload_document("https://cms.example/storage/brochure.pdf")
+    assert not _needs_upload_document("https://cms.example/storage/brochure.pdf", _TARGET)
 
 
 def test_needs_upload_document_false_for_non_document_link():
-    assert not _needs_upload_document("https://mmta.org.my/about")
+    assert not _needs_upload_document("https://mmta.org.my/about", _TARGET)
 
 
 def test_needs_upload_document_false_for_non_http_scheme():
-    assert not _needs_upload_document("mailto:info@mmta.org.my")
+    assert not _needs_upload_document("mailto:info@mmta.org.my", _TARGET)
+
+
+# --- _needs_upload: the image half, previously untested ------------------------
+
+
+def test_needs_upload_true_for_data_uri_and_stock():
+    assert _needs_upload("data:image/svg+xml;utf8,<svg/>", _TARGET)
+    assert _needs_upload("https://images.pexels.com/photos/1/x.jpg", _TARGET)
+
+
+def test_needs_upload_true_for_scraped_photo():
+    assert _needs_upload("https://mmta.org.my/img/hero.jpg", _TARGET)
+
+
+def test_needs_upload_false_for_non_http_scheme():
+    assert not _needs_upload("mailto:info@mmta.org.my", _TARGET)
+
+
+def test_needs_upload_false_when_already_on_the_target_host():
+    assert not _needs_upload("http://localhost:8000/img/hero.jpg", _TARGET)
+    assert not _needs_upload("https://cms.example/storage/hero.jpg", _TARGET)
+
+
+def test_host_check_follows_the_target_not_settings():
+    """The destination is per-push, so a settings-derived host would be wrong for
+    every push that doesn't go to the default CMS."""
+    from app.config import settings
+
+    original = settings.cms_api_base_url
+    settings.cms_api_base_url = "https://app-api.example.com"
+    try:
+        # Settings now name the remote host, but the DEFAULT target still doesn't.
+        assert _needs_upload("https://app-api.example.com/img/a.jpg", _TARGET)
+        assert not _needs_upload("https://app-api.example.com/img/a.jpg", _REMOTE)
+        assert _needs_upload_document("https://app-api.example.com/a.pdf", _TARGET)
+        assert not _needs_upload_document("https://app-api.example.com/a.pdf", _REMOTE)
+    finally:
+        settings.cms_api_base_url = original
 
 
 class _FakeResponse:
@@ -904,3 +948,98 @@ def test_object_brand_logo_skipped_when_render_gate_failed():
 
     assert rewrites == {}
     assert upload.await_count == 0
+# --- create_entity: the clash that only a shared CMS can produce ---------------
+
+
+def _create_entity_req() -> PushRequest:
+    return PushRequest(
+        site=_minimal_site(),
+        cms_email="user@example.com",
+        cms_password="secret",
+        entity_token="",
+        create_entity=True,
+        new_entity_name="Acme",
+        new_entity_url="https://acme.example",
+        push_builder_styles=False,
+    )
+
+
+def _push_with_create_entity(create_entity: AsyncMock) -> object:
+    with (
+        patch.object(CmsClient, "login", new=AsyncMock(return_value="jwt")),
+        patch.object(CmsClient, "create_entity", new=create_entity),
+        patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=[])),
+        patch.object(
+            CmsClient,
+            "create_page",
+            new=AsyncMock(return_value={"id": "page-1", "draftVersion": 1}),
+        ),
+        patch.object(
+            CmsClient,
+            "get_builder_payload",
+            new=AsyncMock(return_value={"layout": {"versionId": "V0"}}),
+        ),
+        patch.object(
+            CmsClient, "save_page_layout", new=AsyncMock(return_value={"versionId": "V1"})
+        ),
+        patch.object(
+            CmsClient, "save_page_draft", new=AsyncMock(return_value={"draftVersion": 2})
+        ),
+    ):
+        return asyncio.run(push_site(_create_entity_req()))
+
+
+def _step(report, name: str):
+    return next(s for s in report.steps if s.name == name)
+
+
+def test_duplicate_entity_url_retries_without_it_and_warns():
+    """entity_url is unique across a whole CMS, so on a shared production one the
+    site's own address may already belong to another tenant. The URL is the one
+    optional part of the request — dropping it lands the site instead of failing
+    the push over a field the operator can set later."""
+    create_entity = AsyncMock(
+        side_effect=[
+            CmsApiError(
+                422,
+                "Create entity failed",
+                response_body={"errors": {"entity_url": ["already exists"]}},
+            ),
+            {"entity_api_token": "tok", "entity_id": 7},
+        ]
+    )
+    report = _push_with_create_entity(create_entity)
+
+    assert report.success, report.error
+    step = _step(report, "create_entity")
+    assert step.ok
+    assert step.warning and "https://acme.example" in step.warning
+    # Retried once, with the URL dropped and nothing else changed.
+    assert create_entity.await_count == 2
+    assert create_entity.await_args_list[0].kwargs["entity_url"] == "https://acme.example"
+    assert create_entity.await_args_list[1].kwargs["entity_url"] is None
+    assert create_entity.await_args_list[1].kwargs["entity_name"] == "Acme"
+
+
+def test_a_clean_create_entity_carries_no_warning():
+    create_entity = AsyncMock(return_value={"entity_api_token": "tok", "entity_id": 7})
+    report = _push_with_create_entity(create_entity)
+
+    assert report.success, report.error
+    assert _step(report, "create_entity").warning is None
+    assert create_entity.await_count == 1
+
+
+def test_other_create_entity_failures_still_abort_the_push():
+    """Only the entity_url clash is recoverable — detected on the errors KEY, never
+    on Laravel's (translatable) message text."""
+    create_entity = AsyncMock(
+        side_effect=CmsApiError(
+            422, "Create entity failed", response_body={"errors": {"entity_name": ["required"]}}
+        )
+    )
+    report = _push_with_create_entity(create_entity)
+
+    assert not report.success
+    assert not _step(report, "create_entity").ok
+    assert create_entity.await_count == 1

@@ -6,7 +6,7 @@ from app.services.theme import _hex_to_rgb, build_theme
 
 
 class HeaderContrastTest(unittest.TestCase):
-    def test_light_logo_on_light_site_keeps_light_header_and_gets_dark_lockup(self):
+    def test_light_logo_on_light_site_switches_whole_header_to_dark_secondary(self):
         brand = BrandIdentity(
             name="Acme",
             logo_data_url="data:image/png;base64,abc",
@@ -17,10 +17,14 @@ class HeaderContrastTest(unittest.TestCase):
 
         header = build_header(brand, theme, nav_items=[])
 
-        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
-        chip = _find(header, "Logo lockup")
-        self.assertIsNotNone(chip)
-        self.assertEqual(chip.styles.get("backgroundColor"), theme.palette.secondary)
+        # A light logo would blend into the default white/light header, so the
+        # WHOLE bar switches to the theme's own dark, brand-hued token instead
+        # of decorating the logo — the logo itself stays a bare image.
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.secondary)
+        self.assertIsNone(_find(header, "Logo lockup"))
+        logo = _find(header, "Brand Logo")
+        self.assertIsNotNone(logo)
+        self.assertIsNone(logo.styles.get("filter"))
 
 
 def _find(node, name):
@@ -35,7 +39,10 @@ def _find(node, name):
     return None
 
 
-class HeaderLogoLockupTest(unittest.TestCase):
+class HeaderBackgroundContrastTest(unittest.TestCase):
+    """The header's own background is what adapts to a same-brightness logo —
+    never a decoration on the mark. See `_header_chrome`."""
+
     def _header(self, *, dark, logo_is_light):
         brand = BrandIdentity(
             name="Acme",
@@ -44,27 +51,27 @@ class HeaderLogoLockupTest(unittest.TestCase):
             logo_is_light=logo_is_light,
         )
         theme = build_theme("#2563eb", color_scheme="dark" if dark else "light")
-        return build_header(brand, theme, nav_items=[])
+        return build_header(brand, theme, nav_items=[]), theme
 
-    def test_dark_logo_on_dark_site_gets_light_lockup(self):
-        header = self._header(dark=True, logo_is_light=False)
-        theme = build_theme("#2563eb", color_scheme="dark")
-        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
-        chip = _find(header, "Logo lockup")
-        self.assertIsNotNone(chip)
-        self.assertEqual(chip.styles.get("backgroundColor"), "#ffffff")
-
-    def test_dark_logo_on_light_site_has_no_lockup(self):
-        header = self._header(dark=False, logo_is_light=False)
-        theme = build_theme("#2563eb", color_scheme="light")
-        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
+    def test_dark_logo_on_dark_site_switches_header_to_light_text_token(self):
+        header, theme = self._header(dark=True, logo_is_light=False)
+        # No light token exists in a dark palette except `text` (guaranteed
+        # high-contrast against the dark background by construction) — the
+        # bar switches to it wholesale rather than patching the logo.
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.text)
         self.assertIsNone(_find(header, "Logo lockup"))
+        logo = _find(header, "Brand Logo")
+        self.assertIsNone(logo.styles.get("filter"))
 
-    def test_light_logo_on_dark_site_has_no_lockup(self):
-        header = self._header(dark=True, logo_is_light=True)
-        theme = build_theme("#2563eb", color_scheme="dark")
+    def test_dark_logo_on_light_site_keeps_default_background(self):
+        header, theme = self._header(dark=False, logo_is_light=False)
+        # A dark logo already reads fine on the default white/light header.
         self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
-        self.assertIsNone(_find(header, "Logo lockup"))
+
+    def test_light_logo_on_dark_site_keeps_default_background(self):
+        header, theme = self._header(dark=True, logo_is_light=True)
+        # A light logo already reads fine on the default dark header.
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
 
 
 class HeaderThemeInkTest(unittest.TestCase):
@@ -156,15 +163,20 @@ class HeaderOverlayTest(unittest.TestCase):
         self.assertIsNotNone(cta)
         self.assertIsNone(cta.classes)
 
-    def test_dark_logo_gets_lockup_chip_in_overlay_mode(self):
-        # On a light solid header a dark logo needs no chip — but floating
-        # over a dark hero it does; overlay mode forces it.
+    def test_overlay_flag_does_not_change_header_background_or_logo(self):
+        # Contrast against the logo is `_header_chrome`'s job on the bar's
+        # real solid chrome, computed from the theme + logo brightness alone
+        # — `overlay` toggles the transparent-over-hero behavior elsewhere
+        # (wrap_header / the renderer), not this.
         _, solid = self._header(overlay=False, logo_is_light=False)
-        self.assertIsNone(_find(solid, "Logo lockup"))
         _, overlaid = self._header(overlay=True, logo_is_light=False)
-        chip = _find(overlaid, "Logo lockup")
-        self.assertIsNotNone(chip)
-        self.assertEqual(chip.styles.get("backgroundColor"), "#ffffff")
+        self.assertEqual(
+            solid.styles.get("backgroundColor"), overlaid.styles.get("backgroundColor")
+        )
+        self.assertIsNone(_find(solid, "Logo lockup"))
+        self.assertIsNone(_find(overlaid, "Logo lockup"))
+        self.assertIsNone(_find(solid, "Brand Logo").styles.get("filter"))
+        self.assertIsNone(_find(overlaid, "Brand Logo").styles.get("filter"))
 
     def test_wrap_header_mirrors_overlay_and_reveal_offset_into_behavior(self):
         from app.services.menu_builder import wrap_header
@@ -268,7 +280,7 @@ class FloatingPillAdaptiveInkTest(unittest.TestCase):
 
         brand = BrandIdentity(name="GloryKids", mood="playful")
         theme = build_theme("#0e7490", mood="playful")
-        header_bg, header_fg, _ = _header_chrome(brand, theme)
+        header_bg, header_fg = _header_chrome(brand, theme)
         bar = self._header("floating-pill").content[0]
         menu = _find_type(bar, "menu")
 
@@ -287,8 +299,9 @@ class FloatingPillAdaptiveInkTest(unittest.TestCase):
         self.assertEqual(wordmark.styles["color"], menu.styles["color"])
 
     def test_an_image_logo_is_never_wrapped(self):
-        # A bitmap cannot be recoloured; a dark logo over a dark section is the
-        # `lockup` contrast chip's problem, not the ink var's.
+        # A bitmap cannot be recoloured; a dark logo over a dark section is
+        # `_header_chrome`'s problem to solve on the bar's background, not the
+        # ink var's.
         brand = BrandIdentity(
             name="GloryKids",
             mood="playful",
@@ -636,3 +649,121 @@ class LogoRenderGateTest(unittest.TestCase):
         footer = build_footer(self._brand(render_ok=True), theme, nav_items=[])
 
         self.assertIsNotNone(_find(footer, "Brand Logo"))
+
+
+def _walk(node):
+    yield node
+    content = node.content
+    if isinstance(content, list):
+        for child in content:
+            yield from _walk(child)
+
+
+class CompactHeaderContractTest(unittest.TestCase):
+    """Below 1024px the nav collapses into MenuBlock's "Menu" button and the bar
+    becomes `logo | Menu`: the CTA moves into the sheet, the mark comes down.
+
+    That policy lives in the renderer (webtree-public lib/responsiveRuntime.ts,
+    mirrored into frontend/src/preview/lib/), because it must also reach sites
+    published before it existed. It reads the header by SHAPE, so what is pinned
+    here is the shape it reads — rename either node and the rule silently stops
+    firing, or worse, fires on the wrong one.
+    """
+
+    ARCHETYPES = (
+        "classic",
+        "glass-blur",
+        "floating-pill",
+        "centered-stack",
+        "minimal-line",
+    )
+
+    def _brand(self, *, render_ok=True):
+        return BrandIdentity(
+            name="Acme Co",
+            logo_url="https://example.com/logo.png",
+            extracted_palette=["#2563eb"],
+            logo_render_ok=render_ok,
+        )
+
+    def test_the_cta_is_the_only_link_outside_the_brand_mark(self):
+        # `isHeaderLink` hides every header `link` that is not the mark's own
+        # home link. A second, unrelated link would vanish on mobile with it.
+        theme = build_theme("#2563eb")
+        for archetype in self.ARCHETYPES:
+            with self.subTest(archetype):
+                header = build_header(
+                    self._brand(), theme, nav_items=[],
+                    primary_cta=("Get in touch", "/contact"), archetype=archetype,
+                )
+                links = [n for n in _walk(header) if n.type == "link"]
+                self.assertEqual([n.name for n in links], ["Header CTA"])
+                self.assertEqual(links[0].content.href, "/contact")
+
+    def test_the_typographic_mark_is_a_container_named_exactly_brand(self):
+        # The renderer's `isBrandMarkRoot` is /^brand$/i on the node name, and
+        # the wordmark inside it IS a link. Rename this container and the site's
+        # own name disappears from every narrow screen.
+        theme = build_theme("#2563eb")
+        header = build_header(
+            self._brand(render_ok=False), theme, nav_items=[],
+            primary_cta=("Get in touch", "/contact"),
+        )
+        marks = [n for n in _walk(header) if (n.name or "").lower() == "brand"]
+        self.assertEqual(len(marks), 1, "no container named exactly 'Brand'")
+        wordmarks = [n for n in _walk(marks[0]) if n.type == "link"]
+        self.assertEqual([n.name for n in wordmarks], ["Wordmark"])
+        self.assertEqual(wordmarks[0].content.href, "/")
+
+    def test_no_layout_row_is_named_exactly_brand(self):
+        # …and conversely: `chrome-header-centered-stack` calls its top row
+        # "Header brand row", which holds the CTA too. Exact-matching is what
+        # keeps that row from shielding the CTA from its own rule.
+        theme = build_theme("#2563eb")
+        for archetype in self.ARCHETYPES:
+            with self.subTest(archetype):
+                header = build_header(
+                    self._brand(), theme, nav_items=[],
+                    primary_cta=("Get in touch", "/contact"), archetype=archetype,
+                )
+                exact = [n for n in _walk(header) if (n.name or "").lower() == "brand"]
+                self.assertEqual(exact, [], "a layout node is named exactly 'Brand'")
+
+    def test_the_image_mark_scales_on_one_axis(self):
+        # `getShrunkLogoStyles` shrinks whichever of width/height holds a real
+        # px value while the other is 'auto'. Both concrete, or neither, and it
+        # returns null — the mark would not come down with the bar.
+        theme = build_theme("#2563eb")
+        for archetype in self.ARCHETYPES:
+            with self.subTest(archetype):
+                header = build_header(
+                    self._brand(), theme, nav_items=[], archetype=archetype,
+                )
+                logo = _find(header, "Brand Logo")
+                self.assertIsNotNone(logo)
+                self.assertEqual(logo.styles.get("width"), "auto")
+                self.assertTrue(str(logo.styles.get("height", "")).endswith("px"))
+
+    def test_the_stacked_archetype_folds_into_one_row(self):
+        # Its Menu sits in a second row, so it is the one composition that
+        # cannot become `logo | Menu` from the renderer's per-node rules alone.
+        # The catalog states its own collapse (chrome-header-centered-stack).
+        theme = build_theme("#2563eb")
+        header = build_header(
+            self._brand(), theme, nav_items=[], archetype="centered-stack",
+        )
+        bar = _find(header, "Header bar")
+        self.assertIsNotNone(bar)
+        for device in ("mobile", "tablet"):
+            with self.subTest(device):
+                compact = getattr(bar.responsiveStyles, device)
+                self.assertEqual(compact.get("flexDirection"), "row")
+                self.assertEqual(compact.get("justifyContent"), "space-between")
+                for row in ("Header brand row", "Header nav row"):
+                    node = _find(header, row)
+                    override = getattr(node.responsiveStyles, device)
+                    self.assertEqual(override.get("width"), "auto")
+                    # `margin-inline: auto` centres each row on desktop; left in
+                    # place it eats the free space `space-between` needs.
+                    self.assertEqual(override.get("marginLeft"), "0")
+                    self.assertEqual(override.get("marginRight"), "0")

@@ -7,17 +7,21 @@ it defines exactly what the model is allowed to claim.
 """
 
 import asyncio
+import time
 import unittest
 
 from app.config import settings
 from app.models.facebook import FacebookHours, FacebookPage, FacebookPost, FacebookReview
+from app.services import browser_session
 from app.services.facebook_source import (
     FacebookSourceError,
     build_raw_text,
+    default_fetchers,
     fetch_facebook_page,
     homepage_sections_for,
     industry_for,
     to_contact_dict,
+    saved_session,
     to_image_metadata,
     to_source_content,
 )
@@ -350,6 +354,68 @@ class FetchChainTest(unittest.TestCase):
         from app.services.facebook_source import default_fetchers
 
         self.assertEqual(default_fetchers(None), [])
+
+
+class SessionChainTest(unittest.TestCase):
+    """The saved session has to reach `facebook_render.fetch_page`, and be read
+    fresh — connecting one happens BETWEEN reads, so a cached chain would
+    ignore it."""
+
+    def setUp(self):
+        self._fallback = settings.facebook_render_fallback_enabled
+        self._enabled = settings.facebook_session_enabled
+        settings.facebook_render_fallback_enabled = True
+        settings.facebook_session_enabled = True
+
+    def tearDown(self):
+        settings.facebook_render_fallback_enabled = self._fallback
+        settings.facebook_session_enabled = self._enabled
+        browser_session.clear("facebook")
+
+    def _connect(self):
+        browser_session.save(
+            "facebook",
+            {
+                "cookies": [
+                    {"name": "c_user", "value": "1", "domain": ".facebook.com",
+                     "path": "/", "expires": time.time() + 86400},
+                    {"name": "xs", "value": "2", "domain": ".facebook.com",
+                     "path": "/", "expires": time.time() + 86400},
+                ],
+                "origins": [],
+            },
+        )
+
+    def test_no_session_means_an_anonymous_render(self):
+        (fetcher,) = default_fetchers(None)
+        self.assertEqual(fetcher.name, "render")
+        self.assertIsNone(fetcher._storage_state)
+
+    def test_a_connected_session_rides_the_render_fetcher(self):
+        self._connect()
+        (fetcher,) = default_fetchers(None)
+        self.assertIsNotNone(fetcher._storage_state)
+        names = {c["name"] for c in fetcher._storage_state["cookies"]}
+        self.assertEqual(names, {"c_user", "xs"})
+
+    def test_the_session_is_read_fresh_on_every_chain_build(self):
+        self.assertIsNone(default_fetchers(None)[0]._storage_state)
+        self._connect()
+        self.assertIsNotNone(default_fetchers(None)[0]._storage_state)
+        browser_session.clear("facebook")
+        self.assertIsNone(default_fetchers(None)[0]._storage_state)
+
+    def test_the_kill_switch_is_a_true_no_op(self):
+        self._connect()
+        settings.facebook_session_enabled = False
+        self.assertIsNone(saved_session())
+        self.assertIsNone(default_fetchers(None)[0]._storage_state)
+
+    def test_a_token_still_outranks_a_session(self):
+        """Graph reads structured posts and recommendations no render can."""
+        self._connect()
+        chain = default_fetchers("TOKEN")
+        self.assertEqual([f.name for f in chain], ["graph", "render"])
 
 
 if __name__ == "__main__":

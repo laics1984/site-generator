@@ -17,7 +17,13 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-FetchPath = Literal["graph", "render"]
+# How the Page was read. Mirrored in frontend/src/lib/types.ts — the UI tells
+# the user which path ran, because it explains what's missing and what would fix
+# it. `render_session` is a render signed in with a saved browser session
+# (services/browser_session.py): it sees the About panel a logged-out render
+# doesn't, but still no structured posts or recommendations — only Graph has
+# those.
+FetchPath = Literal["graph", "render", "render_session"]
 
 
 class FacebookHours(BaseModel):

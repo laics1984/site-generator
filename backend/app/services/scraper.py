@@ -50,6 +50,7 @@ from app.models.content_blocks import (
 )
 from app.services.brand_candidate import build_brand_candidate
 from app.services.browser import RenderError, browser_context, rendered_page
+from app.services.source_outline import text_blocks
 from app.services.source_preview import ImageCandidate
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 from app.services.timing import stage
@@ -68,7 +69,12 @@ from app.services.image_urls import (
     looks_like_logo_url as _looks_like_logo_url,
     tag_classes as _tag_classes,
 )
-from app.services.logo_extraction import LogoCandidate, extract_logo
+from app.services.logo_extraction import (
+    LogoCandidate,
+    brand_mark_urls,
+    extract_logo,
+    find_favicon,
+)
 from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS, locale_segment
 from app.services.map_embed import ParsedMap, parse_map_src
 from app.services.video_embed import ParsedVideo, parse_video_src
@@ -346,7 +352,8 @@ _PROSE_LEAD_TOKENS = frozenset(
 )
 # Chrome tags a profile card never lives inside. The container walk stops here
 # rather than paying for a second parse of the document just to decompose them
-# (_structural_text already re-parses once; twice per page is not worth it).
+# (source_outline.text_blocks already re-parses once; twice per page is not
+# worth it).
 _PROFILE_CHROME_TAGS = {"nav", "footer", "header", "aside", "form"}
 # A page builder emits its footer as a plain <div> (Divi: `et-l--footer`,
 # `et_pb_column_1_tb_footer`), which the tag set above cannot catch. Only
@@ -670,7 +677,10 @@ def _extract_images(
     """
     Collect all <img> + og:image + apple-touch-icon, filter and rank.
     Returns candidates ordered: hero → about → generic. Logos are surfaced
-    separately by _extract_logo_candidate.
+    separately by _extract_logo_candidate — and removed from this pool by the
+    `brand_mark_urls` stamp in _parse_rendered_html, which is what actually
+    enforces that sentence (roles are assigned here; "logo" is not one geometry
+    can measure).
 
     When the page carries render-evidence stamps (Playwright path), roles come
     from measured geometry, decorations are dropped, and the hero is the
@@ -2086,46 +2096,9 @@ def _extract_logo_candidate(
 # Block-level tags whose text we keep in the structural fallback pass. These
 # carry real copy on marketing pages that trafilatura often discards as
 # "boilerplate" because it isn't wrapped in a clean <article>/<main>.
-_BLOCK_TEXT_TAGS = (
-    "p", "li", "blockquote", "figcaption",
-    "h1", "h2", "h3", "h4", "h5", "h6",
-    "dt", "dd", "td", "th", "summary",
-)
-
-# Containers we strip before the structural pass — chrome, not content.
-_NON_CONTENT_TAGS = ("script", "style", "noscript", "template", "svg", "nav", "footer")
-
-
-def _structural_text(soup: BeautifulSoup) -> str:
-    """Block-by-block text harvest as a recall-oriented complement to trafilatura.
-
-    trafilatura optimises for *precision* on article pages: it returns the one
-    main column and drops everything else. On marketing/landing pages that means
-    hero copy, feature grids, testimonials, and CTA blocks — all of which live in
-    <section>/<div> soup rather than an <article> — get thrown away.
-
-    This walks every block-level text tag, dedupes, and joins. It will include
-    some nav/footer noise, so callers should keep it only when it's *materially*
-    richer than trafilatura's output rather than always preferring it.
-    """
-    work = BeautifulSoup(str(soup), "lxml")
-    for tag in work.find_all(_NON_CONTENT_TAGS):
-        tag.decompose()
-
-    chunks: list[str] = []
-    seen: set[str] = set()
-    for el in work.find_all(_BLOCK_TEXT_TAGS):
-        if not isinstance(el, Tag):
-            continue
-        text = el.get_text(" ", strip=True)
-        if not text or len(text) < 2:
-            continue
-        key = text.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        chunks.append(text)
-    return "\n".join(chunks)
+# The block-tag walk that produced this module's recall spine now lives in
+# services/source_outline.py, where the paste reader shares it — one answer to
+# "which tags carry content", and it keeps heading levels the paste path needs.
 
 
 def _norm_block(text: str) -> str:
@@ -2138,8 +2111,8 @@ def _extract_body_text(html: str, soup: BeautifulSoup) -> str:
 
     trafilatura optimises for precision and reliably drops two things on
     marketing pages: (a) whole <section>/<div> blocks it deems boilerplate, and
-    (b) heading text. The structural pass catches both but carries some nav/menu
-    noise. So we *merge* rather than pick a winner: take the structural blocks as
+    (b) heading text. The shared block walk (services/source_outline.text_blocks)
+    catches both but carries some nav/menu noise. So we *merge* rather than pick a winner: take the structural blocks as
     the recall spine (document order, headings included) and append any
     trafilatura block not already present. Neither side's content is lost.
 
@@ -2153,11 +2126,10 @@ def _extract_body_text(html: str, soup: BeautifulSoup) -> str:
         include_links=False,
         favor_recall=True,
     ) or ""
-    structural = _structural_text(soup)
 
     blocks: list[str] = []
     seen: set[str] = set()
-    for block in structural.split("\n"):
+    for block in text_blocks(html):
         key = _norm_block(block)
         if not key or key in seen:
             continue
@@ -2261,6 +2233,9 @@ class _ParsedPage:
     source_content: SourceContent
     image_candidates: list[ImageCandidate]
     logo: LogoCandidate | None
+    # The page's declared <link rel="icon">, if any. A URL only — nothing is
+    # fetched here; the push decides whether the bytes are ever needed.
+    favicon: str | None = None
 
 
 def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True) -> _ParsedPage:
@@ -2308,11 +2283,32 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         # Claim the cards' text before the LLM ever sees it — otherwise it
         # narrates the same titles into an invented, disconnected section.
         extracted_text = _strip_document_card_lines(extracted_text, document_cards)
+    # The brand mark is not content. `classify_role` measures GEOMETRY, and its
+    # vocabulary has no "logo" — a wordmark rendered at 180x180 measures exactly
+    # like a square photograph — so on the render path the site's own logo
+    # entered the pool as role="content" and then won slots on merit: the About
+    # intent-pin (image_match.PRIMARY_INTENTS skips the lexical gate), the
+    # page-local size fallback (the logo is often the biggest file on the page),
+    # or an LLM image_ref. Four gates downstream already veto role="logo"
+    # (source_router._UNPROMPTABLE_ROLES, image_match._EXCLUDED_ROLES, media's
+    # page-local size fallback, image_refs._unfit_for_kind) and not one of them
+    # ever saw one. Stamped from the logo detector's OWN candidate set, so the
+    # photo pool and the header cannot disagree about what the logo is.
+    # (routers/document._select_logo and facebook_source.to_image_metadata
+    # already enforce this rule for their readers; the crawler was the gap.)
+    # Runs before the heuristics below — positive identification outranks a
+    # filename guess, and they skip a candidate this already decided.
+    brand_urls = brand_mark_urls(soup, final_url, site_name=site_name)
+    for candidate in image_candidates:
+        if candidate.url in brand_urls:
+            candidate.role = "logo"
     # Fast-path role stamping: without render evidence every candidate is
     # role="unknown", which lets a nav logo or a grid headshot win the hero
     # background. The filename and the profile-card structure are evidence we
     # DO have — use them. (No-ops on the render path, where roles are already
-    # measured.)
+    # measured.) The filename test still earns its keep here: it reaches
+    # og:image and CSS-background candidates, which have no <img> tag for the
+    # structural predicates above to read.
     for candidate in image_candidates:
         if candidate.role == "unknown" and _looks_like_logo_url(candidate.url):
             candidate.role = "logo"
@@ -2326,6 +2322,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
                 candidate.role = "portrait"
     links = _extract_links(soup, final_url)
     logo = _extract_logo_candidate(soup, final_url, site_name=site_name)
+    favicon = find_favicon(soup, final_url)
     nav_links = extract_nav_links(soup, final_url)
     body_link_clusters = extract_body_link_clusters(soup, final_url)
     social_links = extract_social_links(soup, final_url)
@@ -2370,6 +2367,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         source_content=source_content,
         image_candidates=image_candidates,
         logo=logo,
+        favicon=favicon,
     )
 
 
@@ -2937,7 +2935,11 @@ async def scrape_url(
                 len(unvisited_urls),
             )
 
-    brand_candidate = await build_brand_candidate(entry.site_name, entry.logo)
+    # The entry page's icon, not a sub-page's: a site declares one favicon and
+    # the homepage is where Google reads it from.
+    brand_candidate = await build_brand_candidate(
+        entry.site_name, entry.logo, favicon_url=entry.favicon
+    )
 
     return ScrapeResult(
         url=url,
