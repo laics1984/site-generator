@@ -9,8 +9,10 @@ Three things are pinned here, because each was a real hole:
   real header logo the icon links were parsed and thrown away.
 - Every source ends up with an icon. A PDF, a DOCX and a Facebook Page have no
   markup to declare one, so the brand mark is the fallback.
-- An `.ico` survives the push. It is the format `rel="icon"` most often points
-  at and the one the CMS media store cannot take, so it has to be transcoded.
+- Whatever the source declared survives the push. `rel="icon"` most often
+  points at an `.ico`, and a logo used as the fallback icon can be an animated
+  WebP or an AVIF — the CMS decodes with GD, whose codecs vary by build, so
+  everything raster is normalized to a still PNG before it is sent.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from app.services.cms_client import CmsApiError, CmsClient
 from app.services.logo_extraction import LogoCandidate, find_favicon
 from app.services.push_orchestrator import (
     PushRequest,
-    _coerce_to_cms_image,
+    _coerce_to_favicon,
     _push_favicon,
 )
 from app.services.push_orchestrator import PushReport
@@ -148,22 +150,76 @@ class DeclaredIconSurvivesADegradedReadTest(unittest.TestCase):
         self.assertIsNone(brand.favicon_url)
 
 
-class IcoSurvivesTheCoercionTest(unittest.TestCase):
-    """`.ico` is what `rel="icon"` usually points at, and the one format the CMS
-    media store will not take."""
+class FaviconCoercionTest(unittest.TestCase):
+    """What gets sent to the CMS favicon endpoint.
 
-    def _ico_bytes(self) -> bytes:
+    The endpoint decodes with GD, which is not built with the same codecs
+    everywhere and cannot open an animated WebP at all. Pillow is right here, so
+    every raster source is normalized to a still PNG rather than forwarded and
+    hoped for.
+    """
+
+    def _encoded(self, image: Image.Image, fmt: str, **kwargs) -> bytes:
         buffer = io.BytesIO()
-        Image.new("RGBA", (32, 32), (10, 20, 30, 255)).save(buffer, format="ICO")
+        image.save(buffer, format=fmt, **kwargs)
         return buffer.getvalue()
 
+    def _ico_bytes(self) -> bytes:
+        return self._encoded(Image.new("RGBA", (32, 32), (10, 20, 30, 255)), "ICO")
+
+    def _png_size(self, data: bytes) -> tuple[int, int]:
+        with Image.open(io.BytesIO(data)) as img:
+            self.assertEqual(img.format, "PNG")
+            return img.size
+
     def test_an_ico_is_transcoded_to_png(self):
-        coerced = _coerce_to_cms_image(self._ico_bytes(), "image/x-icon", "favicon.ico")
+        coerced = _coerce_to_favicon(self._ico_bytes(), "image/x-icon", "favicon.ico")
 
         self.assertIsNotNone(coerced)
-        _, mime, filename = coerced
+        data, mime, filename = coerced
         self.assertEqual(mime, "image/png")
         self.assertTrue(filename.endswith(".png"))
+        self.assertEqual(self._png_size(data), (32, 32))
+
+    def test_an_animated_webp_is_flattened_to_its_first_frame(self):
+        """The failure that motivated this: GD has no way to open an animated
+        WebP, so forwarding one was a 422 on a file nothing was wrong with."""
+        frames = [
+            Image.new("RGBA", (48, 48), (255, 0, 0, 255)),
+            Image.new("RGBA", (48, 48), (0, 255, 0, 255)),
+        ]
+        animated = self._encoded(
+            frames[0], "WEBP", save_all=True, append_images=frames[1:], duration=100
+        )
+
+        coerced = _coerce_to_favicon(animated, "image/webp", "logo.webp")
+
+        self.assertIsNotNone(coerced)
+        data, mime, _ = coerced
+        self.assertEqual(mime, "image/png")
+        self.assertEqual(self._png_size(data), (48, 48))
+
+    def test_an_oversized_mark_is_downscaled(self):
+        """The CMS re-encodes to 192px, so anything past _FAVICON_MAX_DIM is
+        upload time spent on pixels it throws away."""
+        big = self._encoded(Image.new("RGBA", (2000, 2000), (0, 0, 0, 255)), "PNG")
+
+        data, _, _ = _coerce_to_favicon(big, "image/png", "logo.png")
+
+        self.assertEqual(self._png_size(data), (512, 512))
+
+    def test_an_svg_passes_through_untouched(self):
+        """The CMS sanitizes and stores it as a vector, which stays sharp at
+        every size a browser asks for. Pillow could not rasterize it anyway."""
+        markup = b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"/>'
+
+        self.assertEqual(
+            _coerce_to_favicon(markup, "image/svg+xml", "icon.svg"),
+            (markup, "image/svg+xml", "favicon.svg"),
+        )
+
+    def test_bytes_that_are_not_an_image_are_reported_rather_than_sent(self):
+        self.assertIsNone(_coerce_to_favicon(b"<html>404</html>", "image/png", "x.png"))
 
 
 def _site(favicon_url: str | None) -> GeneratedSite:

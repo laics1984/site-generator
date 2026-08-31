@@ -786,6 +786,135 @@ Tests: `test_floating_pill_heroes.BandMarkerTest`/`BandClassificationTest`,
 `builder/src/lib/adaptive-ink.test.mjs` + `section-catalog.test.mjs`
 (`node --test`).
 
+## A pass that repaints a section states its ink too
+
+Same rule as the section above, one layer up: `_apply_hero_washed_background`
+repaints a split hero with an abstract photo under a heavy brand wash, and the
+copy on it belongs to the same decision. The split templates hard-code dark ink
+— `var(--builder-color-secondary)` headings, `rgba(15,23,42,…)` body, a ghost
+CTA in both — which is right on the light page background they were authored
+for and wrong the instant the wash lands: in a **dark scheme the wash IS the
+theme's near-black secondary**, so the headline, the description and the
+secondary button all shipped black on black at ~1.1:1. Only when a featured
+photo resolved, which is what makes it look like an image bug — no photo, no
+wash, and `enforce_text_contrast` fixes those exact inks on the flat band.
+
+That pass could not help here, and correctly so: a real photo in the fill means
+the surface is unknowable from the styles, so it hands the subtree back
+untouched. **The caller knows it, though — it just painted it.** So the wash is
+measured (`image_styling.washed_surface_hex`) and handed to the same pass as
+`enforce_text_contrast(..., surface=…)`, rather than a second colour rule
+growing beside it. `surface` lifts the photo bail-out **for the elements passed
+in only** (a photo tile nested inside still owns its own ink) and suppresses the
+node's own declared `backgroundColor`, which is a colour the wash covered.
+`washed_surface_hex` and `washed_photo_background` read one `_wash_base`, so the
+measured surface and the painted one cannot disagree; an unknown/unreadable
+photo colour falls back to the base stop, which at 0.80 alpha cannot cross the
+light/dark line anyway.
+
+Three rules in the contrast pass this needed, each one a live defect:
+
+- **Links count.** The pass was text-only, so a **ghost button** — a colour and
+  no surface of its own — was a blind spot on every band, exactly the vanishing
+  it exists to catch. A solid button was already safe: its own fill becomes the
+  measured background, so its label is judged against the button. That needs
+  `--builder-button-background|text` in `_token_hex`, which mirrors
+  `to_builder_styles` and was missing them. A flipped label also takes its
+  hairline with it (`_flipped_border` restates the colour and keeps the author's
+  width/style/alpha), or the label is legible inside an invisible frame. A
+  **computed** outline (`var()`, `color-mix()`) is never rewritten — the only
+  hex in it is a fallback or a mix stop, and moving it changes what the
+  expression means.
+- **Only an OPAQUE fill hides what it sits on.** A translucent chip on a
+  photo/gradient band (the gradient hero's `rgba(255,255,255,0.12)` ghost CTA)
+  was clearing the "band owns this ink" flag and compositing itself over the
+  last known flat colour — a surface that is not there. Its white label went
+  near-black.
+- **A fill is judged one LAYER at a time.** `cta-gradient` stacks a translucent
+  sheen on an opaque brand ramp; read as one string, the sheen's `rgba(…,0)`
+  stop made the whole fill look decorative, and the panel's white-on-brand
+  headline and body were measured against the page background and flipped to
+  near-black on every light-scheme site that used it.
+
+No catalog, schema or renderer change: the fix is ink in the generated tree, so
+the preview, the builder and the published site agree by construction.
+
+Tests: `test_hero_policy.WashedHeroInkTest`/`WashedSurfaceTest`,
+`test_ux_audit.TextContrastTest`.
+
+## The compact header (below 1024px)
+
+Where `MenuBlock` swaps the nav for the **Menu** button (`max-width: 1023.98px`),
+the bar becomes exactly `logo | Menu`: the CTA is hidden and reappears inside the
+sheet, and the mark comes down with the bar. On a **phone** the screen gutter
+halves as well, 24px → 12px. Mobile + tablet in `responsiveRuntime` are
+`≤767.98` and `768–1023.98`, i.e. that breakpoint exactly — one boundary, not
+two that can drift.
+
+**It lives in the renderer** (`webtree-public/lib/responsiveRuntime.ts`, mirrored
+into `frontend/src/preview/lib/`), which already declares itself the owner:
+*"Published payloads may only contain base styles with no responsive overrides.
+These layout heuristics keep common header/footer compositions usable at real
+narrow widths."* That is also what makes it reach sites published before it
+existed. Explicit `responsiveStyles` still win — every rule is guarded by
+`hasDeviceOverride` — so the schema stays the authority when it speaks.
+
+**The rules were already there and had never once fired.** `isHeaderImage` and
+`isHeaderLink` were `parentType === 'header'`, but every `chrome-header-*` wraps
+the header's children in a **"Header bar"** container, so the parent is a
+`container` on every generated site. `isHeaderMenu` survived only because
+`slot === 'primary'` gave it a second signal — which is why the nav collapsed
+correctly while the CTA and the logo did not. Same lesson as the section-catalog
+gates, `is_login_wall` and `locale._bounded`: **a gate written in the wrong
+vocabulary is a silent off switch.** They read `scope === 'header'` now, the
+vocabulary `visitSchemaNodes` actually threads.
+
+Two guards keep the widened link rule off the brand mark, which is a `link` when
+the logo is typographic:
+
+- **`isBrandMarkRoot` is `/^brand$/i`, exact.** `chrome-header-centered-stack`
+  names its top row "Header brand row" and puts the CTA in it, so a loose
+  `/brand/i` subtree test shields the very node the rule exists to hide. The
+  image mark needs no entry — an image is never a link.
+- **A link to the site root is never a CTA.** Belt and braces: leaving one extra
+  link in the bar beats erasing the site's name from every narrow screen.
+
+The mark's compact size reuses `getShrunkLogoStyles` — the scroll shrink's own
+helper, mirrored with `builder/src/lib/header-shrink.ts` — at the scroll
+shrink's own ratio (0.8), because "narrow" and "scrolled" are the same idea of a
+compact header. Plus a **cap at 44px**, the Menu button's `min-height`: a ratio
+alone leaves childcare's 68px mark at 54px, a banner beside the button. These
+rules are emitted `!important`, so they beat the scroll shrink's inline style
+and a narrow scrolled header is compact once, not twice.
+
+**The gutter is the OUTERMOST padded layer, and only that.** Which node carries
+it differs per archetype — the bar for `classic`, the root for `floating-pill`,
+both rows for `centered-stack` — so it is found by walking (`headerGutterTaken`,
+threaded like `inBrandMark`) rather than named. That is what keeps the pill's own
+20px capsule padding intact while its 24px screen inset halves: an inset is not a
+shape. Layout boxes only (the header root plus `HEADER_ROW_CONTAINER_TYPES`,
+reused from `headerShrink`), never a button's own padding, and it only ever
+reduces. Phones only: 24px each side spends 12% of a 390px viewport, and a tablet
+has the width.
+
+**`centered-stack` is the one archetype the per-node rules cannot fix**: its Menu
+lives in a second row, under the logo rather than beside it. Its collapse is
+authored in the catalog with the composition it belongs to — `responsiveStyles`
+on "Header bar" (column → row, `space-between`) and its two rows (`width: auto`,
+`margin-inline: 0`, `gap: 0`). The margins matter: `margin-inline: auto` centres
+each row on desktop, and left in place it eats the free space `space-between`
+needs, so the logo drifts off the gutter.
+
+**The builder canvas does not run any of this** — it applies explicit
+`responsiveStyles` only, so it gets the `centered-stack` collapse and not the
+rest. Pre-existing and systemic (no `responsiveRuntime` port exists there), not
+something this rule introduced.
+
+Tests: `test_header_footer.CompactHeaderContractTest` pins the header *shape*
+the renderer reads (one CTA link, the mark's exact container name, the mark's
+single scaling axis); `webtree-public/lib/responsiveRuntime.test.ts` pins the
+behaviour.
+
 ## Gallery lightbox
 
 `BuilderElement.lightbox: true` on a **tile grid** makes its descendant images

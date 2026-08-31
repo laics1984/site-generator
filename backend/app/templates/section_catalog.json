@@ -17319,7 +17319,25 @@
                       }
                     ]
                   }
-                ]
+                ],
+                "responsiveStyles": {
+                  "mobile": {
+                    "width": "auto",
+                    "flex": "0 1 auto",
+                    "paddingRight": "0",
+                    "marginLeft": "0",
+                    "marginRight": "0",
+                    "gap": "0"
+                  },
+                  "tablet": {
+                    "width": "auto",
+                    "flex": "0 1 auto",
+                    "paddingRight": "0",
+                    "marginLeft": "0",
+                    "marginRight": "0",
+                    "gap": "0"
+                  }
+                }
               },
               {
                 "name": "Header nav row",
@@ -17357,9 +17375,45 @@
                       "colorMode": "manual"
                     }
                   }
-                ]
+                ],
+                "responsiveStyles": {
+                  "mobile": {
+                    "width": "auto",
+                    "flex": "0 1 auto",
+                    "justifyContent": "flex-end",
+                    "paddingLeft": "0",
+                    "paddingTop": "0",
+                    "paddingBottom": "0",
+                    "marginLeft": "0",
+                    "marginRight": "0"
+                  },
+                  "tablet": {
+                    "width": "auto",
+                    "flex": "0 1 auto",
+                    "justifyContent": "flex-end",
+                    "paddingLeft": "0",
+                    "paddingTop": "0",
+                    "paddingBottom": "0",
+                    "marginLeft": "0",
+                    "marginRight": "0"
+                  }
+                }
               }
-            ]
+            ],
+            "responsiveStyles": {
+              "mobile": {
+                "flexDirection": "row",
+                "alignItems": "center",
+                "justifyContent": "space-between",
+                "flexWrap": "nowrap"
+              },
+              "tablet": {
+                "flexDirection": "row",
+                "alignItems": "center",
+                "justifyContent": "space-between",
+                "flexWrap": "nowrap"
+              }
+            }
           }
         ]
       }

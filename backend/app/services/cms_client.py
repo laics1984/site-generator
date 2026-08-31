@@ -338,9 +338,12 @@ class CmsClient:
 
         Deliberately not `/api/file/add`: a favicon is site chrome, not a
         media-library asset, and uploading it there would park an icon in the
-        tenant's library for nothing to reference. The CMS re-encodes whatever
-        it is given to a 192px PNG and stores it against the entity, so this
+        tenant's library for nothing to reference. The CMS re-encodes a raster
+        icon to a 192px PNG (and stores an SVG as a sanitized vector), so this
         returns the URL a browser tab and a search result will actually use.
+
+        Send what `_coerce_to_favicon` produced, not raw source bytes: the CMS
+        decodes with GD, whose codecs vary by deployment.
         """
         async with self._wrap_request("set_entity_favicon"):
             url = f"{self.base_url}/api/entities/{entity_token}/favicon"

@@ -649,3 +649,121 @@ class LogoRenderGateTest(unittest.TestCase):
         footer = build_footer(self._brand(render_ok=True), theme, nav_items=[])
 
         self.assertIsNotNone(_find(footer, "Brand Logo"))
+
+
+def _walk(node):
+    yield node
+    content = node.content
+    if isinstance(content, list):
+        for child in content:
+            yield from _walk(child)
+
+
+class CompactHeaderContractTest(unittest.TestCase):
+    """Below 1024px the nav collapses into MenuBlock's "Menu" button and the bar
+    becomes `logo | Menu`: the CTA moves into the sheet, the mark comes down.
+
+    That policy lives in the renderer (webtree-public lib/responsiveRuntime.ts,
+    mirrored into frontend/src/preview/lib/), because it must also reach sites
+    published before it existed. It reads the header by SHAPE, so what is pinned
+    here is the shape it reads — rename either node and the rule silently stops
+    firing, or worse, fires on the wrong one.
+    """
+
+    ARCHETYPES = (
+        "classic",
+        "glass-blur",
+        "floating-pill",
+        "centered-stack",
+        "minimal-line",
+    )
+
+    def _brand(self, *, render_ok=True):
+        return BrandIdentity(
+            name="Acme Co",
+            logo_url="https://example.com/logo.png",
+            extracted_palette=["#2563eb"],
+            logo_render_ok=render_ok,
+        )
+
+    def test_the_cta_is_the_only_link_outside_the_brand_mark(self):
+        # `isHeaderLink` hides every header `link` that is not the mark's own
+        # home link. A second, unrelated link would vanish on mobile with it.
+        theme = build_theme("#2563eb")
+        for archetype in self.ARCHETYPES:
+            with self.subTest(archetype):
+                header = build_header(
+                    self._brand(), theme, nav_items=[],
+                    primary_cta=("Get in touch", "/contact"), archetype=archetype,
+                )
+                links = [n for n in _walk(header) if n.type == "link"]
+                self.assertEqual([n.name for n in links], ["Header CTA"])
+                self.assertEqual(links[0].content.href, "/contact")
+
+    def test_the_typographic_mark_is_a_container_named_exactly_brand(self):
+        # The renderer's `isBrandMarkRoot` is /^brand$/i on the node name, and
+        # the wordmark inside it IS a link. Rename this container and the site's
+        # own name disappears from every narrow screen.
+        theme = build_theme("#2563eb")
+        header = build_header(
+            self._brand(render_ok=False), theme, nav_items=[],
+            primary_cta=("Get in touch", "/contact"),
+        )
+        marks = [n for n in _walk(header) if (n.name or "").lower() == "brand"]
+        self.assertEqual(len(marks), 1, "no container named exactly 'Brand'")
+        wordmarks = [n for n in _walk(marks[0]) if n.type == "link"]
+        self.assertEqual([n.name for n in wordmarks], ["Wordmark"])
+        self.assertEqual(wordmarks[0].content.href, "/")
+
+    def test_no_layout_row_is_named_exactly_brand(self):
+        # …and conversely: `chrome-header-centered-stack` calls its top row
+        # "Header brand row", which holds the CTA too. Exact-matching is what
+        # keeps that row from shielding the CTA from its own rule.
+        theme = build_theme("#2563eb")
+        for archetype in self.ARCHETYPES:
+            with self.subTest(archetype):
+                header = build_header(
+                    self._brand(), theme, nav_items=[],
+                    primary_cta=("Get in touch", "/contact"), archetype=archetype,
+                )
+                exact = [n for n in _walk(header) if (n.name or "").lower() == "brand"]
+                self.assertEqual(exact, [], "a layout node is named exactly 'Brand'")
+
+    def test_the_image_mark_scales_on_one_axis(self):
+        # `getShrunkLogoStyles` shrinks whichever of width/height holds a real
+        # px value while the other is 'auto'. Both concrete, or neither, and it
+        # returns null — the mark would not come down with the bar.
+        theme = build_theme("#2563eb")
+        for archetype in self.ARCHETYPES:
+            with self.subTest(archetype):
+                header = build_header(
+                    self._brand(), theme, nav_items=[], archetype=archetype,
+                )
+                logo = _find(header, "Brand Logo")
+                self.assertIsNotNone(logo)
+                self.assertEqual(logo.styles.get("width"), "auto")
+                self.assertTrue(str(logo.styles.get("height", "")).endswith("px"))
+
+    def test_the_stacked_archetype_folds_into_one_row(self):
+        # Its Menu sits in a second row, so it is the one composition that
+        # cannot become `logo | Menu` from the renderer's per-node rules alone.
+        # The catalog states its own collapse (chrome-header-centered-stack).
+        theme = build_theme("#2563eb")
+        header = build_header(
+            self._brand(), theme, nav_items=[], archetype="centered-stack",
+        )
+        bar = _find(header, "Header bar")
+        self.assertIsNotNone(bar)
+        for device in ("mobile", "tablet"):
+            with self.subTest(device):
+                compact = getattr(bar.responsiveStyles, device)
+                self.assertEqual(compact.get("flexDirection"), "row")
+                self.assertEqual(compact.get("justifyContent"), "space-between")
+                for row in ("Header brand row", "Header nav row"):
+                    node = _find(header, row)
+                    override = getattr(node.responsiveStyles, device)
+                    self.assertEqual(override.get("width"), "auto")
+                    # `margin-inline: auto` centres each row on desktop; left in
+                    # place it eats the free space `space-between` needs.
+                    self.assertEqual(override.get("marginLeft"), "0")
+                    self.assertEqual(override.get("marginRight"), "0")

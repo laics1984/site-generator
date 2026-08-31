@@ -1046,9 +1046,9 @@ async def _push_favicon(
     """Send the source site's icon to the CMS, as the entity's favicon.
 
     Everything here is already built: `_resolve_to_bytes` fetches a URL or
-    decodes a data: URI, and `_coerce_to_cms_image` turns whatever came back
-    into something storable — including the `.ico` a `<link rel="icon">` most
-    often points at, which it transcodes to PNG.
+    decodes a data: URI, and `_coerce_to_favicon` normalizes whatever came back
+    to a still PNG — including the `.ico` a `<link rel="icon">` most often
+    points at, and the animated WebP that a brand logo occasionally is.
 
     Never fatal. The pages are pushed by this point, and an icon is a thing the
     owner can set in Site settings; failing the whole push over one would be a
@@ -1069,7 +1069,7 @@ async def _push_favicon(
     try:
         file_bytes, content_type, filename = await _resolve_to_bytes(src)
         coerced = await asyncio.to_thread(
-            _coerce_to_cms_image, file_bytes, content_type, filename
+            _coerce_to_favicon, file_bytes, content_type, filename
         )
         if coerced is None:
             report.record(
@@ -1249,6 +1249,51 @@ def _coerce_to_cms_image(
             img.convert("RGB").save(out, format="JPEG", quality=85)
             return out.getvalue(), "image/jpeg", f"{base}.jpg"
     except Exception:  # noqa: BLE001 — unsupported/corrupt bytes ⇒ leave hotlinked
+        return None
+
+
+# The CMS re-encodes a favicon to a 192px PNG, so anything larger is bytes we
+# upload and it discards.
+_FAVICON_MAX_DIM = 512
+
+
+def _coerce_to_favicon(
+    file_bytes: bytes, content_type: str, filename: str
+) -> tuple[bytes, str, str] | None:
+    """Return (bytes, mime, filename) the CMS favicon endpoint will accept.
+
+    Not `_coerce_to_cms_image`: that one is built for the media library, where
+    passing a format through untouched is the point — webp and avif keep their
+    size advantage and nothing re-encodes them. The favicon endpoint is the
+    opposite case. It decodes what it is sent with GD, whose codecs depend on
+    how the deployed PHP was built, and a source site's declared icon is exactly
+    where the awkward formats turn up: an animated WebP logo, an AVIF, a CMYK
+    JPEG. Every one of those is a 422 that fails the step for no good reason,
+    when Pillow is right here and can hand over a still PNG the server is
+    certain to read.
+
+    SVG is the exception and passes through: the CMS sanitizes and stores it as
+    a vector, which is sharper than any raster we could rasterize it into — and
+    Pillow could not rasterize it anyway.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    if _native_cms_ext(content_type, filename) == "svg":
+        return file_bytes, "image/svg+xml", "favicon.svg"
+
+    try:
+        with Image.open(BytesIO(file_bytes)) as img:
+            # An .ico opens at its largest entry; an animated GIF/WebP opens at
+            # its first frame, which is the one a favicon should be.
+            frame = img.convert("RGBA")
+            if max(frame.size) > _FAVICON_MAX_DIM:
+                frame.thumbnail((_FAVICON_MAX_DIM, _FAVICON_MAX_DIM))
+            out = BytesIO()
+            frame.save(out, format="PNG")
+            return out.getvalue(), "image/png", "favicon.png"
+    except Exception:  # noqa: BLE001 — not a decodable image; the step reports it
         return None
 
 

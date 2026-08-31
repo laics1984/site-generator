@@ -24,6 +24,12 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
+def _rgb_to_hex(r: int, g: int, b: int) -> str:
+    return "#{:02x}{:02x}{:02x}".format(
+        max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b))
+    )
+
+
 def _srgb_to_linear(channel: int) -> float:
     c = channel / 255.0
     return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
@@ -365,6 +371,29 @@ def _split_layers(css: str) -> list[str]:
     return [layer for layer in out if layer]
 
 
+# The SPLIT hero's wash (see `washed_photo_background`). Near-opaque on purpose:
+# this overlay is not a legibility scrim over a focal photo, it is the section's
+# surface, with the photo reading through as faint on-brand texture. At 0.80 the
+# photo beneath can shift the surface by a fifth — never across the light/dark
+# line — which is what lets `washed_surface_hex` measure the copy's real backdrop.
+_WASH_BASE_ALPHA = 0.80
+_WASH_TINT_ALPHA_LIGHT = 0.10
+_WASH_TINT_ALPHA_DARK = 0.18
+
+
+def _wash_base(scheme: str, surface_hex: str, secondary_hex: str) -> tuple[str, float]:
+    """The wash's BASE stop — the colour the hero's copy actually sits over — as
+    (hex, alpha). Light scheme washes with the theme surface, dark with its
+    secondary; both at the same near-opaque alpha.
+
+    One home for the pair, because `washed_photo_background` (which paints it)
+    and `washed_surface_hex` (which measures it, to pick the ink printed on it)
+    must never disagree — a wash whose measured surface differs from the painted
+    one hands the copy exactly the wrong colour.
+    """
+    return (secondary_hex if scheme == "dark" else surface_hex), _WASH_BASE_ALPHA
+
+
 def washed_photo_background(
     url: str,
     *,
@@ -383,18 +412,51 @@ def washed_photo_background(
 
     Light scheme → near-opaque light surface wash + a faint brand tint (dark text
     stays legible). Dark scheme → near-opaque dark wash + a slightly stronger
-    brand tint (light text stays legible).
+    brand tint (light text stays legible) — which is only true of ink chosen for
+    THAT surface, so the caller pairs this with `washed_surface_hex`.
     """
     pr, pg, pb = _hex_to_rgb(primary_hex)
-    if scheme == "dark":
-        br, bg, bb = _hex_to_rgb(secondary_hex)
-        base_a, tint_a = 0.80, 0.18
-    else:
-        br, bg, bb = _hex_to_rgb(surface_hex)
-        base_a, tint_a = 0.80, 0.10
+    base_hex, base_a = _wash_base(scheme, surface_hex, secondary_hex)
+    br, bg, bb = _hex_to_rgb(base_hex)
+    tint_a = _WASH_TINT_ALPHA_DARK if scheme == "dark" else _WASH_TINT_ALPHA_LIGHT
     return (
         f"linear-gradient(135deg, rgba({br},{bg},{bb},{base_a}), "
         f"rgba({pr},{pg},{pb},{tint_a})), url('{url}')"
+    )
+
+
+def washed_surface_hex(
+    *,
+    scheme: str,
+    surface_hex: str,
+    secondary_hex: str,
+    avg_hex: str | None = None,
+) -> str:
+    """The flat colour a washed hero's COPY sits on — the wash's base stop
+    composited over the photo's average colour.
+
+    `washed_photo_background` runs its gradient at 135deg, so the base (opaque)
+    end is the top-left corner, which is where the copy column lives; the faint
+    brand-tint end falls in the opposite corner, over the image column. So the
+    copy's surface is the base stop, and the photo can only shift it by the
+    remaining 20%.
+
+    Unknown average colour → the base stop alone. That is the wash's own intent
+    (light surface in a light scheme, dark in a dark one) and the photo it omits
+    cannot move the result across the light/dark line at this alpha.
+    """
+    base_hex, base_a = _wash_base(scheme, surface_hex, secondary_hex)
+    try:
+        photo_rgb = _hex_to_rgb(avg_hex) if avg_hex else None
+    except ValueError:  # an unparseable colour is the same as no colour
+        photo_rgb = None
+    if photo_rgb is None:
+        return base_hex
+    return _rgb_to_hex(
+        *(
+            round(base_a * b + (1.0 - base_a) * p)
+            for b, p in zip(_hex_to_rgb(base_hex), photo_rgb)
+        )
     )
 
 

@@ -17,24 +17,27 @@ from types import SimpleNamespace
 from app.models.builder_schema import BuilderElement
 from app.models.content_blocks import HeroBlock
 from app.services.hero_director import HeroDirective
-from app.services.image_styling import washed_photo_background
+from app.services.image_styling import washed_photo_background, washed_surface_hex
 from app.services.pexels import PhotoResult
 from app.services.schema_builder import (
+    RenderContext,
     _abstract_theme_query,
     _apply_hero_photo_policy,
     _apply_hero_washed_background,
     _has_composable_subject,
+    block_to_element,
 )
-from app.services.theme import build_theme
+from app.services.theme import _contrast, build_theme
 
 
-def _photo(source, url=None):
+def _photo(source, url=None, avg=None):
     return PhotoResult(
         url=url or f"https://img.example/{source}.jpg",
         alt=f"{source} image",
         photographer=None,
         photographer_url=None,
         source=source,
+        avg_color=avg,
     )
 
 
@@ -342,6 +345,146 @@ class WashedBackgroundTest(unittest.TestCase):
         self.assertNotIn("background", el.styles)  # shorthand removed
         self.assertIn("url('https://x/abs.jpg')", el.styles["backgroundImage"])
         self.assertEqual(el.styles["backgroundSize"], "cover")
+
+
+class WashedHeroInkTest(unittest.IsolatedAsyncioTestCase):
+    """Painting the wash states the ink that goes on it.
+
+    The split templates hard-code dark copy — `var(--builder-color-secondary)`
+    headings, `rgba(15,23,42,…)` body, a ghost CTA in both — which is right on
+    the light page background they were authored for. Repainting the section
+    with the wash makes it wrong in a DARK scheme, where the wash IS the theme's
+    near-black secondary: headline, body and secondary button all shipped black
+    on black, and only when a featured photo resolved (no photo → no wash → the
+    ordinary contrast pass fixes the same inks). That pass cannot help here — a
+    real photo in the fill means it can't know the surface — so the surface is
+    measured and handed to it.
+    """
+
+    async def _hero(self, scheme):
+        from app.services.style_tokens import make_style_tokens
+
+        theme = build_theme("#2563eb", "modern", color_scheme=scheme)
+        featured = _photo("scraped", "https://x/feat.jpg")
+        abstract = _photo("pexels", "https://x/abs.jpg", avg="#2b3440")
+        ctx = RenderContext(
+            theme=theme,
+            resolver=FakeResolver(featured, abstract),
+            styles=make_style_tokens(theme),
+            current_page_slug="",
+            variety_seed="brand",
+        )
+        block = HeroBlock(
+            headline="Great coffee",
+            subheadline="We roast every morning.",
+            image_query="coffee",
+            primary_cta_label="Book a table",
+            primary_cta_href="/contact",
+            secondary_cta_label="See the menu",
+            secondary_cta_href="/menu",
+        )
+        el = await block_to_element(
+            block,
+            ctx,
+            hero_directive=HeroDirective("hero-modern-split", "split", wants_wash=True),
+        )
+        return el, theme
+
+    def _inks(self, el, out=None):
+        """Every text/link's styles, by name. Two nodes can share a name (both
+        hero CTAs are called "Link"), so the value is a list."""
+        out = {} if out is None else out
+        if el.type in ("text", "link"):
+            out.setdefault(el.name, []).append(el.styles or {})
+        if isinstance(el.content, list):
+            for child in el.content:
+                self._inks(child, out)
+        return out
+
+    @staticmethod
+    def _all(inks):
+        return [styles for group in inks.values() for styles in group]
+
+    async def test_dark_scheme_copy_is_light_on_the_wash(self):
+        el, theme = await self._hero("dark")
+        surface = washed_surface_hex(
+            scheme="dark",
+            surface_hex=theme.palette.surface,
+            secondary_hex=theme.palette.secondary,
+            avg_hex="#2b3440",
+        )
+        inks = self._inks(el)
+        for name in ("Heading", "Body"):
+            (styles,) = inks[name]
+            self.assertGreaterEqual(
+                _contrast(styles["color"], surface), 4.5, f"{name} is unreadable"
+            )
+        # The ghost CTA is a link with no surface of its own: same fix, and its
+        # hairline comes with it or the label sits in an invisible frame.
+        ghost = next(
+            s for s in self._all(inks) if s.get("backgroundColor") == "transparent"
+        )
+        self.assertGreaterEqual(_contrast(ghost["color"], surface), 4.5)
+        self.assertIn("255,255,255", ghost["border"])
+
+    async def test_light_scheme_keeps_the_template_ink(self):
+        """The wash is light there, so the catalog's dark copy is already right
+        — the fix must not repaint a hero that was never broken."""
+        el, _theme = await self._hero("light")
+        inks = self._inks(el)
+        (heading,), (body,) = inks["Heading"], inks["Body"]
+        self.assertEqual(heading["color"], "var(--builder-color-secondary, #0f172a)")
+        self.assertEqual(body["color"], "rgba(15,23,42,0.72)")
+
+    async def test_the_primary_cta_keeps_its_own_token_pair(self):
+        el, _theme = await self._hero("dark")
+        inks = self._inks(el)
+        solid = next(
+            s for s in self._all(inks)
+            if s.get("backgroundColor") == "var(--builder-button-background, #2563eb)"
+        )
+        self.assertEqual(solid["color"], "var(--builder-button-text, #ffffff)")
+
+
+class WashedSurfaceTest(unittest.TestCase):
+    def test_the_measured_base_is_the_painted_base(self):
+        """The one property that makes measuring safe: `washed_surface_hex` and
+        `washed_photo_background` read the same base stop, so they cannot
+        disagree about what the copy sits on."""
+        for scheme in ("light", "dark"):
+            with self.subTest(scheme=scheme):
+                css = washed_photo_background(
+                    "u", scheme=scheme, surface_hex="#eff6ff",
+                    secondary_hex="#020617", primary_hex="#2563eb",
+                )
+                base = washed_surface_hex(
+                    scheme=scheme, surface_hex="#eff6ff", secondary_hex="#020617"
+                )
+                r, g, b = int(base[1:3], 16), int(base[3:5], 16), int(base[5:7], 16)
+                self.assertIn(f"rgba({r},{g},{b},0.8)", css)
+
+    def test_the_photo_shifts_the_surface_without_crossing_the_band(self):
+        light = washed_surface_hex(
+            scheme="light", surface_hex="#ffffff", secondary_hex="#020617",
+            avg_hex="#000000",
+        )
+        dark = washed_surface_hex(
+            scheme="dark", surface_hex="#ffffff", secondary_hex="#000000",
+            avg_hex="#ffffff",
+        )
+        self.assertEqual(light, "#cccccc")  # 80% white over black
+        self.assertEqual(dark, "#333333")  # 80% black over white
+
+    def test_an_unknown_or_unreadable_photo_colour_falls_back_to_the_base(self):
+        for avg in (None, "", "not-a-colour"):
+            with self.subTest(avg=avg):
+                self.assertEqual(
+                    washed_surface_hex(
+                        scheme="dark", surface_hex="#ffffff",
+                        secondary_hex="#020617", avg_hex=avg,
+                    ),
+                    "#020617",
+                )
 
 
 class ComposableSubjectTest(unittest.TestCase):
