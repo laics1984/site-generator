@@ -48,6 +48,8 @@ export async function checkLlmHealth(): Promise<{
   models?: string[]
   base_url?: string
   error?: string
+  // The remedy for `error`, classified by the backend (services/llm.py).
+  hint?: string
 }> {
   return jsonRequest('/health/llm')
 }

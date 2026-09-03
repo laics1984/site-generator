@@ -784,7 +784,7 @@ Tests: `test_floating_pill_heroes.BandMarkerTest`/`BandClassificationTest`,
 `test_header_footer.FloatingPillAdaptiveInkTest`, `test_preview_layout.py`;
 `webtree-public/lib/adaptiveInk.test.ts` (vitest);
 `builder/src/lib/adaptive-ink.test.mjs` + `section-catalog.test.mjs`
-(`node --test`).
+(`npm test`).
 
 ## A pass that repaints a section states its ink too
 
@@ -1011,7 +1011,7 @@ workflow on push to `master`; the local gate is `npm test`.
 
 Tests: `test_video_embeds.py`, `test_map_embeds.py` (deliberately parallel — they
 share a DOM walk and an injection spine); `builder/src/lib/{embed-kind,section-catalog}.test.mjs`
-(`node --test`); `webtree-public/lib/videoEmbed.test.ts` (`npm test`).
+(`npm test`); `webtree-public/lib/videoEmbed.test.ts` (`npm test`).
 
 ## SEO
 
@@ -1025,8 +1025,51 @@ markup here.
 - `extract_og_image` walks hero background → split-hero image → first image, and
   skips data URIs.
 - **Exactly one `h1` per page.** Legal pages build theirs via `legal_pages._h1`
-  (sets `htmlTag="h1"`); heroes carry it elsewhere. Zero or multiple is an audit
-  failure.
+  (sets `htmlTag="h1"`); everywhere else `schema_builder.apply_heading_levels`
+  stamps the page's first section title `h1` and every later one `h2`, over the
+  assembled page so catalog templates and programmatic trees are covered alike.
+  Text nodes render as `<div>` otherwise, so an untagged title is invisible to a
+  crawler.
+  **It finds that title by NODE NAME** (`_TITLE_NAMES`), which is a vocabulary
+  and therefore a silent off switch when a section names its title something
+  else: `profile-*` ("Name") and `clients-logo-strip` ("Strip Heading") were
+  missing, so a person's page shipped its CTA slogan as the `h1` and the
+  person's name as a `<div>`. `test_seo.HeadingVocabularyTest` now walks the
+  catalog and fails on any body section whose first match isn't the node the
+  section declares as its title (`$slot` heading/headline/title/name, outside a
+  `$repeat`) — `testimonials-editorial` is the one allowlisted section with no
+  title at all.
+- **A split headline is ONE heading made of two text nodes**, so the tag goes on
+  the group that holds them (`_TITLE_GROUP_NAMES`, derived from `_TITLE_NAMES`)
+  and the whole title sits inside the `<h1>`. Tagging the lead line alone
+  published a truncated heading — `"Bread baked"` for "Bread baked the slow
+  way" — which is the string a crawler reads as the page's subject; inline
+  markup inside one node is not the alternative, since the builder editor
+  rewrites content to `{innerText}` on blur and would drop it. The lines become
+  `<span>`s (a heading takes phrasing content) and each states `display: block`:
+  the catalog path's group stacks plain blocks, its `flexDirection`/`gap` inert
+  without a `display: flex`, so inline spans would run the two lines together.
+  `_HEADING_BOX_RESET` states the box's own `margin`/`fontSize`/`fontWeight`, or
+  the UA sheet's `h1` metrics would move a layout that only changed semantics.
+  Renderer side, `blockRuntime.getHeadingTag` lets a **container** present
+  itself as h1-h6 (`ContainerBlock` in `webtree-public` + the preview mirror);
+  anything else keeps the structural `section`/`div`.
+- **The builder re-levels as the user edits** — `builder/src/lib/heading-levels.ts`
+  is a hand-written mirror of the pass, run from `addToHistory` (the one seam
+  every body mutation passes through) and from `LOAD_DATA`. It has to exist
+  because a section inserted there comes from the catalog, which declares no
+  `htmlTag` in either `baseFields` — so swapping the hero in the editor used to
+  drop the page's `<h1>` and duplicating it shipped two. `HeadingMirrorTest`
+  fails when the two vocabularies drift (skipped when the sibling repo is
+  absent); `heading-levels.test.mjs` covers the behaviour (`npm test` — the
+  builder had no runner at all until this landed; vitest now runs all 16 of its
+  test files, and the one that was silently red is fixed).
+  The builder canvas renders the tag too, now that it means something —
+  Tailwind's preflight makes a heading box visually identical to the div it
+  replaces, so that is semantics only.
+  Zero or multiple is an audit failure — read off `htmlTag`. The check used to
+  count elements *named* `"H1"`, which nothing emits, so it reported "no H1
+  found" on every page ever generated and could not have caught a real miss.
 - Titles must be unique across the site and within the length bounds in
   `ux_audit.py` — duplicate titles/descriptions and missing `ogImage` are flagged
   there. `detect_duplicate_seo` / `detect_orphan_pages` back it.
@@ -1231,6 +1274,18 @@ Tests: `test_deployment_boundary.py`.
   Qwen3-30B-A3B) and reasoning (`REASONING_*` — brand detection, design brain,
   image judge, GLM-Z1-9B). Kill switches: unset `REASONING_MODEL`,
   `REASONING_THINK=false`, `DESIGN_LANGUAGE_ENABLED=false`.
+- **"AI server unreachable" states WHICH failure.** `llm.endpoint_failure_hint`
+  is the one home for the remedy — model discovery, the completion stream and
+  `/health/llm` all read it, so the badge and a failed generation say the same
+  thing. It classifies by exception **type** (`socket.gaierror` /
+  `ConnectionRefusedError` in the `__cause__` chain, then timeout, then status),
+  never by message text: the identical DNS failure reads "Name or service not
+  known" under glibc and "nodename nor servname provided" under macOS, so a
+  string match would be a silent off switch on one of the two. A name that does
+  not resolve is the common one and is almost never the AI server's fault — a
+  Tailscale/VPN host resolves only while the tunnel is up, and **a container does
+  not inherit the host's VPN DNS**, so `LLM_BASE_URL` must name something the
+  *container* can resolve.
 - **Truncation on content-rich sites** needs `LLM_CTX` (ai-server) *and*
   `LLM_CONTEXT_TOKENS` (here) raised together.
 - **`.gitignore` `/lib/` must stay anchored.** An unanchored `lib/` once silently

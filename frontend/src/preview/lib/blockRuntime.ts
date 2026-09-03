@@ -91,6 +91,20 @@ export function getStringField(node: PublicBlockNode | Record<string, unknown> |
   return null
 }
 
+// A container can present itself as a HEADING. A split headline is one heading
+// made of two text nodes — a lead line plus an accent-coloured trailing line —
+// so the <h1> has to be the box that holds both; tagging either line alone
+// leaves half the title outside the heading, which is what a crawler reads.
+// Restricted to h1-h6: a container's tag is otherwise structural (section/div),
+// and `htmlTag` arrives from a stored payload, so anything else keeps the
+// default rather than becoming an arbitrary element.
+const HEADING_TAGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+
+export function getHeadingTag(node: PublicBlockNode | Record<string, unknown> | null | undefined): string | null {
+  const tag = (getStringField(node, 'htmlTag') || '').toLowerCase()
+  return HEADING_TAGS.has(tag) ? tag : null
+}
+
 export function getBooleanField(node: PublicBlockNode | Record<string, unknown> | null | undefined, ...keys: string[]): boolean {
   for (const key of keys) {
     const value = getNodeField(node, key)

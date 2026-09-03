@@ -7,10 +7,14 @@ configured, which is what lets a model swap in ai-server/.env take effect here
 without an edit or a restart.
 """
 
+import asyncio
 import json
 import os
+import socket
 import unittest
 from unittest import mock
+
+import httpx
 
 from pydantic import BaseModel
 
@@ -21,6 +25,7 @@ from app.services.llm import (
     LlmError,
     OpenAIClient,
     TruncatedLlmResponse,
+    endpoint_failure_hint,
     get_llm,
     get_reasoning_llm,
 )
@@ -479,6 +484,99 @@ class ReasoningRoleTest(unittest.IsolatedAsyncioTestCase):
         call = recorder[0]
         self.assertIsNone(call["headers"])
         self.assertEqual(call["payload"]["max_tokens"], s.llm_max_tokens)
+
+
+class EndpointFailureHintTest(unittest.TestCase):
+    """Each transport failure gets its OWN remedy, found by exception type.
+
+    The chains are built the way httpx builds them — the verdict lives on the
+    __cause__, not on the httpx wrapper — and deliberately carry BOTH platform
+    spellings of the DNS error, since a hint that read the message text would
+    work in the Linux container and silently stop working on a Mac.
+    """
+
+    @staticmethod
+    def _wrapped(cause: BaseException) -> httpx.ConnectError:
+        try:
+            try:
+                raise cause
+            except BaseException as inner:
+                raise httpx.ConnectError(str(inner)) from inner
+        except httpx.ConnectError as exc:
+            return exc
+
+    def test_unresolvable_hostname_says_so_on_either_platform(self):
+        for message in (
+            "[Errno -2] Name or service not known",          # glibc / container
+            "nodename nor servname provided, or not known",  # macOS
+        ):
+            with self.subTest(message=message):
+                hint = endpoint_failure_hint(
+                    self._wrapped(socket.gaierror(message)),
+                    "http://workstation.tail0000.ts.net:11434",
+                )
+                self.assertIn("does not resolve", hint)
+                self.assertIn("workstation.tail0000.ts.net:11434", hint)
+                self.assertIn("LLM_BASE_URL", hint)
+
+    def test_refused_connection_points_at_the_engine(self):
+        hint = endpoint_failure_hint(
+            self._wrapped(ConnectionRefusedError(111, "Connect call failed")),
+            "http://host.docker.internal:11434",
+        )
+        self.assertIn("refused", hint)
+        self.assertIn("./ai.sh up", hint)
+        self.assertNotIn("does not resolve", hint)
+
+    def test_timeout_blames_the_load_not_the_address(self):
+        hint = endpoint_failure_hint(
+            httpx.ConnectTimeout("timed out"), "http://10.0.0.9:11434"
+        )
+        self.assertIn("did not answer in time", hint)
+        self.assertIn("10.0.0.9:11434", hint)
+
+    def test_http_status_names_the_code_and_the_url_shape(self):
+        request = httpx.Request("GET", "http://ai.local:11434/v1/models")
+        hint = endpoint_failure_hint(
+            httpx.HTTPStatusError(
+                "404", request=request, response=httpx.Response(404, request=request)
+            ),
+            "http://ai.local:11434",
+        )
+        self.assertIn("404", hint)
+        self.assertIn("/v1/models", hint)
+
+    def test_unknown_transport_failure_still_gets_a_next_step(self):
+        self.assertIn(
+            "./ai.sh status",
+            endpoint_failure_hint(httpx.HTTPError("something else"), "http://ai.local:11434"),
+        )
+
+    def test_discovery_failure_carries_the_hint(self):
+        """The raiser and /health/llm read the same classifier, so a generation
+        that dies on a dead endpoint says the same thing the badge does."""
+
+        class _Unreachable:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, headers=None, **kwargs):
+                raise EndpointFailureHintTest._wrapped(
+                    socket.gaierror("[Errno -2] Name or service not known")
+                )
+
+        original = llm_mod.httpx.AsyncClient
+        llm_mod.httpx.AsyncClient = lambda *a, **k: _Unreachable()
+        self.addCleanup(setattr, llm_mod.httpx, "AsyncClient", original)
+        llm_mod.clear_model_cache()
+        self.addCleanup(llm_mod.clear_model_cache)
+
+        with self.assertRaises(LlmError) as caught:
+            asyncio.run(llm_mod._discover_model("http://ai.local:11434", None))
+        self.assertIn("does not resolve", str(caught.exception))
 
 
 class ConfigCoercionTest(unittest.TestCase):

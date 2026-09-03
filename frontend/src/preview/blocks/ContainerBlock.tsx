@@ -9,7 +9,7 @@ import type { CSSProperties } from 'react'
 import type { PublicBlockNode } from '../lib/public'
 import { renderChildren } from '../ElementRenderer'
 import { SectionDividerLayer } from './SectionDivider'
-import { getNodeClasses, getNodeStyles, getStringField } from '../lib/blockRuntime'
+import { getHeadingTag, getNodeClasses, getNodeStyles, getStringField } from '../lib/blockRuntime'
 import { getNodeDomId } from '../lib/responsiveRuntime'
 import { getNodeChildren, normalizeBlockType } from '../lib/schema'
 import { getNodeDivider } from '../lib/sectionDivider'
@@ -261,7 +261,9 @@ export function ContainerBlock({ node }: { node: PublicBlockNode }) {
     .filter(Boolean)
     .join(' ')
 
-  const Tag = nodeType === 'section' ? 'section' : 'div'
+  // A split headline is one heading spread over two text nodes, so the
+  // heading tag lands on the group that holds them (see getHeadingTag).
+  const Tag = (getHeadingTag(node) ?? (nodeType === 'section' ? 'section' : 'div')) as 'div'
 
   return (
     <Tag className={className} style={resolvedStyles} id={anchorId} data-wt-node-id={nodeDomId}>

@@ -3,6 +3,7 @@ from fastapi import APIRouter
 
 from app.config import settings
 from app.services import text_detection
+from app.services.llm import endpoint_failure_hint
 
 router = APIRouter(tags=["health"])
 
@@ -41,7 +42,13 @@ async def health_llm() -> dict[str, object]:
                 "pinned": bool(settings.llm_model),
             }
         except httpx.HTTPError as exc:
-            result |= {"status": "unreachable", "error": str(exc)}
+            # `hint` carries the remedy, the same way /health/pexels and
+            # /health/ocr do — str(exc) alone names the syscall, not the cause.
+            result |= {
+                "status": "unreachable",
+                "error": str(exc),
+                "hint": endpoint_failure_hint(exc, settings.llm_base_url),
+            }
     if settings.reasoning_base_url or settings.reasoning_model:
         # api_key deliberately excluded — this endpoint is frontend-visible.
         result["reasoning"] = {

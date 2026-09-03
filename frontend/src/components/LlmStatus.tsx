@@ -7,6 +7,7 @@ interface LlmState {
   model: string // what the AI server is actually serving
   models: string[]
   error?: string
+  hint?: string // what to do about `error` — see services/llm.endpoint_failure_hint
 }
 
 interface PexelsState {
@@ -30,6 +31,7 @@ export function LlmStatus() {
           model: llmRes.model ?? 'no model loaded',
           models: llmRes.models ?? [],
           error: llmRes.error,
+          hint: llmRes.hint,
         })
         setPexels({
           configured: pRes.status === 'configured',
@@ -63,9 +65,13 @@ export function LlmStatus() {
 function LlmBadge({ state }: { state: LlmState | null }) {
   if (!state) return <span className="text-slate-500">Checking LLM…</span>
   if (!state.ok) {
+    const reason = state.hint || state.error
     return (
-      <span className="font-medium text-rose-600">
-        AI server unreachable{state.error ? ` — ${state.error}` : ''}
+      <span
+        className="max-w-[26rem] truncate font-medium text-rose-600"
+        title={[state.hint, state.error].filter(Boolean).join('\n\n')}
+      >
+        AI server unreachable{reason ? ` — ${reason}` : ''}
       </span>
     )
   }

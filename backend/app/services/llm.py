@@ -24,8 +24,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import socket
 import time
-from typing import Any, Awaitable, Callable, Protocol, TypeVar
+from typing import Any, Awaitable, Callable, Iterator, Protocol, TypeVar
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -64,6 +66,63 @@ class TruncatedLlmResponse(LlmError):
     same budget, and truncates again."""
 
     pass
+
+
+# --- Why the AI server could not be reached ------------------------------------
+#
+# One home for the remedy, because the two places that fail (model discovery and
+# the completion stream) plus /health/llm would otherwise each carry their own
+# guess. A raw transport error names the syscall, not the cause: "[Errno -2] Name
+# or service not known" is a hostname that does not resolve, which is a different
+# job from a port nothing is listening on, and neither is "check it is running".
+#
+# Classified by exception TYPE, never by message text. The identical DNS failure
+# reads "Name or service not known" under glibc (the backend container) and
+# "nodename nor servname provided" under macOS (the tests, and a bare uvicorn
+# run), so a string match would be a silent off switch on one of the two.
+
+
+def _cause_chain(exc: BaseException) -> Iterator[BaseException]:
+    """`exc` and everything it was raised from. httpx wraps httpcore wraps the
+    OSError that actually carries the verdict, so the cause is where the answer
+    is."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def endpoint_failure_hint(exc: Exception, base_url: str) -> str:
+    """A remedy for a failed call to `base_url`, addressed to the operator."""
+    where = urlsplit(base_url).netloc or base_url
+    causes = {type(c) for c in _cause_chain(exc)}
+    if socket.gaierror in causes:
+        return (
+            f"the hostname {where} does not resolve from this process. A VPN/Tailscale "
+            "name resolves only while that tunnel is up, and a container does not inherit "
+            "the host's VPN DNS — bring the tunnel up, or set LLM_BASE_URL (root .env) to "
+            "an address this process can resolve."
+        )
+    if ConnectionRefusedError in causes:
+        return (
+            f"{where} resolves but refused the connection — nothing is serving there. "
+            "Start the engine: ai-server/: ./ai.sh up (./ai.sh status shows which one is "
+            "configured)."
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            f"{where} accepted the connection but did not answer in time. The model is "
+            "probably still loading — ai-server/: ./ai.sh logs."
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        return (
+            f"{where} answered HTTP {exc.response.status_code} for {exc.request.url.path}. "
+            "LLM_BASE_URL must be the server ROOT (no /v1 suffix), and LLM_API_KEY must "
+            "match what the server expects."
+        )
+    return f"could not reach {where} — ai-server/: ./ai.sh status."
 
 
 class LlmClient(Protocol):
@@ -423,8 +482,7 @@ async def _discover_model(base_url: str, headers: dict[str, str] | None) -> str:
     except httpx.HTTPError as exc:
         raise LlmError(
             f"Could not reach the AI server at {base_url} to discover a model "
-            f"[{type(exc).__name__}]: {exc}. Check it is running — "
-            "ai-server/: ./ai.sh status"
+            f"[{type(exc).__name__}]: {exc}. Because {endpoint_failure_hint(exc, base_url)}"
         ) from exc
     ids = [i for i in ids if i]
     if not ids:
@@ -621,7 +679,12 @@ class OpenAIClient:
                         if reason:
                             finish_reason = reason
         except httpx.HTTPError as exc:
-            raise LlmError(f"LLM request failed [{type(exc).__name__}]: {exc}") from exc
+            raise LlmError(
+                # `url`, not self.base_url — a vision call routes to a
+                # different server, and the hint must name the one that failed.
+                f"LLM request failed [{type(exc).__name__}]: {exc}. Because "
+                f"{endpoint_failure_hint(exc, url)}"
+            ) from exc
 
         content = _strip_think("".join(chunks))
         if not content.strip():
