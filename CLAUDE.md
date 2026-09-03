@@ -429,7 +429,8 @@ decides. **Detection must run before the robots check** — facebook.com/robots.
 refuses unknown agents, so the URL would never reach the reader otherwise.
 
 Fetch chain (`facebook_source.fetch_facebook_page`, injectable for tests):
-Graph API when a token exists → public Playwright render. Graph fields are
+Graph API when a token exists → **logged-out** Playwright render → the same
+render signed in, only when a session exists. Graph fields are
 requested in **tolerant groups**, because Graph fails the *whole* request when
 one field is not permitted — a missing `pages_read_engagement` would otherwise
 turn a missing `emails` into total failure. A denied optional group records
@@ -526,11 +527,62 @@ Three more rules the live DOM taught, all pinned in `test_facebook_render.py`:
   the slot and blocks the real value further down the page. NASA's
   `public-inquiries@hq.nasa.gov` was being reported as missing while sitting in
   plain sight.
+- **A panel heading sits exactly where a value sits** — one line under the
+  label — so nothing but `_CHROME_VALUES` separates them. Three were caught in
+  the wild by reading real Pages: "Personal details" and "Details" became a
+  Page's **category** (which steers `IndustryCategory`, and so the whole visual
+  language), and "Basic info" became Vans's **website**. Adding them is the same
+  bet `_TEXT_LABELS` makes — a closed set of *Facebook's* vocabulary, never a
+  business one.
+- **`website` was the one scanned field with no shape gate**, unlike email and
+  phone right beside it. `to_source_content` turns it into
+  `NavLink(label="Website", href=…)`, which lands in the footer of **every page
+  of the site**, so a value that isn't dereferenceable ships a dead link
+  sitewide: "Basic info" (chrome) and `tadika_murni_1988` (a handle — an
+  underscore isn't legal in a hostname label) were both doing it. `_URL_RE`
+  wants a scheme or a dotted host with a TLD-shaped tail.
 
 ### Signing in once
 
-Logged out, Facebook serves og: tags and the tab strip. Signed in, the About
-panel renders. `./dev.sh fb-login` opens a real Chromium **on the operator's
+**A session is a rescue, not an upgrade — the logged-out render reads more.**
+This section used to open with the opposite claim ("logged out, Facebook serves
+og: tags and the tab strip; signed in, the About panel renders"), which is how
+the feature came to *replace* the anonymous read rather than sit behind it.
+Measured on three unrelated Pages, the signed-in render read **14-34 characters
+against the anonymous read's 146-355**, and shipped a 422 ("doesn't have enough
+public content") for a Page that built fine logged out:
+
+| Page | logged out | signed in |
+|---|---|---|
+| a Malaysian tadika | 355 chars — name, About, phone, email, address, picture, 761 fans | 34 — name = URL slug, category "Personal details" |
+| NASA | 332 — name, category, `public-inquiries@hq.nasa.gov`, website, 28.7M fans | 14 — name, category "Details" |
+| Vans | 146 — name, category, About, picture, 19.4M fans | 14 — name, category "Details" |
+
+Two mechanisms, both invisible from the code:
+
+- **Facebook blanks the og: tags for an authenticated request** — they are
+  served as `content=""`, not omitted. `parse_public_html` is built on
+  `og:title`/`og:description`/`og:image`, so a signed-in read has no identity,
+  no blurb and no profile picture, and `name` falls back to `ref.handle`: it
+  titled a kindergarten `tadikamurni1988`.
+- **The logged-out `/about` view is server-rendered; the signed-in one is the
+  React shell.** The Page's own phone and email were absent from the signed-in
+  HTML *entirely*, while the operator's **notification tray** ("You approved a
+  login.") was in the visible text the label scan reads — the visitor's private
+  chrome, one scan away from becoming site copy. NASA's
+  `public-inquiries@hq.nasa.gov`, the fact this feature was built to find, comes
+  from the anonymous read.
+
+So `default_fetchers` puts the logged-out render first and appends the signed-in
+one **only when a session exists** (a second anonymous render would cost a full
+Playwright pass to learn nothing), and the chain's existing first-success-wins
+loop does the rest — no merge, no new machinery. The session now answers the one
+question only it can: a Page that refuses a logged-out visitor outright, which
+is the case where the first render raises and the chain falls through. Same
+precedent as `mbasic.*` leaving `_candidate_urls`: Facebook changed, and a path
+that costs a render to learn nothing comes out.
+
+`./dev.sh fb-login` opens a real Chromium **on the operator's
 machine** — the backend runs in a container with no display and cannot — waits
 for the `c_user`+`xs` cookies, and POSTs the Playwright storage state to
 `POST /api/facebook/session`. `services/browser_session.py` holds it; a
@@ -557,9 +609,39 @@ Chromium is configured, carries it to the render.
   the remedy that hasn't run yet.
 
 The UI is `FacebookConnect.tsx` inside the token expander `SourcePanel` already
-had. It owns all its own state and polls only until connected, so `App.tsx`
-gains no props and no state. Automating a personal Facebook account is against
-Facebook's terms — use a secondary one.
+had. It owns all its own state, so `App.tsx` gains no props and no state.
+Automating a personal Facebook account is against Facebook's terms — use a
+secondary one. Two rules it states, both of which it got wrong first:
+
+- **A spinner has to be backed by evidence.** The idle state rendered one over
+  *"Waiting — this updates on its own."* — asserting a login was under way
+  before the operator had run anything, with no window open and nothing pending.
+  Nothing on the web side can observe the script, so the claim was
+  indistinguishable from a hang, and the command sitting right under it never
+  got run. Idle is an instruction now ("your turn"), and the login is **not
+  narrated** here at all: the script prints its own progress to the terminal the
+  operator just typed into, and a second copy of that story would be a channel
+  with nothing behind it. That is also why there is no capture heartbeat.
+- **Mounting is the poll gate, so the caller owns it.** `<details>` keeps
+  collapsed children in the DOM, so "polls only while the expander is open" was
+  never what the code did — typing a Facebook Page link started a 2s poll that
+  ran behind a shut panel for the rest of the session. `SourcePanel` mirrors the
+  disclosure's `open` into state (so DOM and mount can't disagree across the
+  remount an URL edit causes) and renders the body only while it is open;
+  unmounting costs nothing, since the token lives in `App` and the session is
+  server-side. Polling is **derived** from the answer — unknown, or
+  enabled-and-not-connected — rather than managed with a flag, which is what
+  makes Disconnect resume watching for free; the imperative version cleared its
+  flag and never restarted. A hidden tab skips the fetch and keeps the schedule.
+
+`scripts/facebook_login.py` explains the two failures that produce **no window
+at all** — Chromium never downloaded, a profile still locked by another run —
+and does it around the `launch_persistent_context` call, not the whole capture:
+Playwright's `TimeoutError` is one of its `Error`s, so a later `goto` timeout
+caught at that width would be reported as a window that never opened when one is
+on screen. An unreachable backend is explained too, since it lands at the worst
+moment (already signed in) and the remedy is not obvious — the sign-in survives
+in the persistent profile, so a re-run needs no typing.
 
 Tests: `test_browser_session.py`, `test_facebook_render.py`.
 

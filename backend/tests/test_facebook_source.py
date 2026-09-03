@@ -304,6 +304,7 @@ class IndustryTest(unittest.TestCase):
 class _FakeFetcher:
     def __init__(self, name, result=None, error=None):
         self.name = name
+        self.label = f"Reading via {name}"
         self._result = result
         self._error = error
         self.calls = 0
@@ -357,9 +358,19 @@ class FetchChainTest(unittest.TestCase):
 
 
 class SessionChainTest(unittest.TestCase):
-    """The saved session has to reach `facebook_render.fetch_page`, and be read
-    fresh — connecting one happens BETWEEN reads, so a cached chain would
-    ignore it."""
+    """A session RESCUES a read it cannot replace.
+
+    Measured on three unrelated Pages, a signed-in render reads 14-34 chars
+    against an anonymous one's 146-355: Facebook blanks the og: tags for an
+    authenticated request, so the signed-in parse has no identity source and
+    names the Page after its URL slug, and the Page's own facts are absent from
+    the React shell it serves while the visitor's notification tray is not. So
+    the logged-out render leads and the session sits behind it, for the one case
+    only it can answer — a Page that refuses a logged-out visitor outright.
+
+    The session also has to be read fresh on every chain build: connecting one
+    happens BETWEEN reads, so a cached chain would ignore it.
+    """
 
     def setUp(self):
         self._fallback = settings.facebook_render_fallback_enabled
@@ -386,36 +397,57 @@ class SessionChainTest(unittest.TestCase):
             },
         )
 
-    def test_no_session_means_an_anonymous_render(self):
+    def test_no_session_means_one_anonymous_render(self):
+        """No session, no second render: a duplicate anonymous pass would cost
+        a full Playwright render to learn nothing."""
         (fetcher,) = default_fetchers(None)
         self.assertEqual(fetcher.name, "render")
         self.assertIsNone(fetcher._storage_state)
 
-    def test_a_connected_session_rides_the_render_fetcher(self):
+    def test_the_anonymous_render_leads_and_the_session_follows(self):
         self._connect()
-        (fetcher,) = default_fetchers(None)
-        self.assertIsNotNone(fetcher._storage_state)
-        names = {c["name"] for c in fetcher._storage_state["cookies"]}
+        anonymous, signed_in = default_fetchers(None)
+        self.assertEqual(anonymous.name, "render")
+        self.assertIsNone(anonymous._storage_state)
+        self.assertEqual(signed_in.name, "render_session")
+        names = {c["name"] for c in signed_in._storage_state["cookies"]}
         self.assertEqual(names, {"c_user", "xs"})
 
-    def test_the_session_is_read_fresh_on_every_chain_build(self):
-        self.assertIsNone(default_fetchers(None)[0]._storage_state)
+    def test_the_session_never_displaces_the_logged_out_read(self):
+        """The regression this ordering exists for: with a session connected,
+        the first fetcher must still be the one that reads more."""
         self._connect()
-        self.assertIsNotNone(default_fetchers(None)[0]._storage_state)
-        browser_session.clear("facebook")
         self.assertIsNone(default_fetchers(None)[0]._storage_state)
+
+    def test_a_fetcher_carries_its_own_progress_label(self):
+        """The chain runner reports `fetcher.label` rather than switching on a
+        name, so the two renders are distinguishable in the UI."""
+        self._connect()
+        anonymous, signed_in = default_fetchers(None)
+        self.assertNotEqual(anonymous.label, signed_in.label)
+        self.assertIn("signed in", signed_in.label)
+
+    def test_the_session_is_read_fresh_on_every_chain_build(self):
+        self.assertEqual(len(default_fetchers(None)), 1)
+        self._connect()
+        self.assertEqual(len(default_fetchers(None)), 2)
+        browser_session.clear("facebook")
+        self.assertEqual(len(default_fetchers(None)), 1)
 
     def test_the_kill_switch_is_a_true_no_op(self):
         self._connect()
         settings.facebook_session_enabled = False
         self.assertIsNone(saved_session())
-        self.assertIsNone(default_fetchers(None)[0]._storage_state)
+        (fetcher,) = default_fetchers(None)
+        self.assertIsNone(fetcher._storage_state)
 
     def test_a_token_still_outranks_a_session(self):
         """Graph reads structured posts and recommendations no render can."""
         self._connect()
         chain = default_fetchers("TOKEN")
-        self.assertEqual([f.name for f in chain], ["graph", "render"])
+        self.assertEqual(
+            [f.name for f in chain], ["graph", "render", "render_session"]
+        )
 
 
 if __name__ == "__main__":

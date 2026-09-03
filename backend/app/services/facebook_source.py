@@ -57,12 +57,17 @@ class FacebookSourceError(Exception):
 
 class FacebookFetcher(Protocol):
     name: str
+    # What to tell the operator while this one runs. On the fetcher rather than
+    # in a conditional inside the chain runner, so adding a way to read a Page
+    # doesn't mean editing the loop that runs them.
+    label: str
 
     async def fetch(self, ref: FacebookRef) -> FacebookPage: ...
 
 
 class _GraphFetcher:
     name = "graph"
+    label = "Reading the Page"
 
     def __init__(self, token: str) -> None:
         self._token = token
@@ -74,10 +79,20 @@ class _GraphFetcher:
 
 
 class _RenderFetcher:
-    name = "render"
+    """One Playwright render of the Page, logged out or signed in.
+
+    `name` is derived from the session rather than passed in, so it cannot
+    disagree with the `fetched_via` that `parse_public_html` stamps from the
+    same fact.
+    """
 
     def __init__(self, storage_state: dict | None = None) -> None:
         self._storage_state = storage_state
+        signed_in = storage_state is not None
+        self.name = "render_session" if signed_in else "render"
+        self.label = (
+            "Reading the Page while signed in" if signed_in else "Reading the public Page"
+        )
 
     async def fetch(self, ref: FacebookRef) -> FacebookPage:
         from app.services.facebook_render import fetch_page
@@ -100,13 +115,40 @@ def saved_session() -> dict | None:
 
 
 def default_fetchers(access_token: str | None) -> list[FacebookFetcher]:
-    """Preferred-first. Graph is skipped entirely when there's no token."""
+    """Preferred-first. Graph is skipped entirely when there's no token.
+
+    **The logged-out render leads, and a session is a rescue behind it** — not
+    the mode the render runs in. Measured on three unrelated Pages (a Malaysian
+    tadika, NASA, Vans), the signed-in render read 14-34 characters against the
+    anonymous read's 146-355, and the difference was every fact a site is built
+    from:
+
+    * Facebook serves `og:title`/`og:description`/`og:image` to a logged-out
+      visitor and blanks them for an authenticated one, so a signed-in read has
+      no identity source at all — `parse_public_html` fell back to the URL slug
+      and named a kindergarten `tadikamurni1988`.
+    * The logged-out `/about` view is server-rendered, phone and email in the
+      markup. The signed-in one is the React shell: the Page's own facts were
+      absent from the HTML entirely, while the visitor's notification tray
+      ("You approved a login.") was in the visible text the label scan reads.
+      NASA's `public-inquiries@hq.nasa.gov` — the fact this feature was built to
+      find — comes from the *anonymous* read.
+
+    So a session can only ever *add* now, and it adds where it is the only thing
+    that can: a Page that refuses a logged-out visitor outright (age- or
+    region-gated) is exactly the case where the first render raises and the
+    chain falls through. It is skipped entirely when there is no session, rather
+    than queued as a second identical anonymous render.
+    """
     token = (access_token or settings.facebook_access_token or "").strip()
     chain: list[FacebookFetcher] = []
     if token:
         chain.append(_GraphFetcher(token))
     if settings.facebook_render_fallback_enabled:
-        chain.append(_RenderFetcher(saved_session()))
+        chain.append(_RenderFetcher())
+        session = saved_session()
+        if session is not None:
+            chain.append(_RenderFetcher(session))
     return chain
 
 
@@ -133,9 +175,7 @@ async def fetch_facebook_page(
     last: Exception | None = None
     for fetcher in chain:
         if on_progress:
-            await on_progress(
-                20, "Reading the Page" if fetcher.name == "graph" else "Reading the public Page"
-            )
+            await on_progress(20, fetcher.label)
         try:
             return await fetcher.fetch(ref)
         except Exception as exc:  # each fetcher raises its own error type

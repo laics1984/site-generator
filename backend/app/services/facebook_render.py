@@ -129,6 +129,12 @@ _CHROME_VALUES = frozenset(
         "log in", "forgotten account?", "page transparency",
         "contact and basic info", "privacy and legal info",
         "websites and social links", "contact info",
+        # Panel headings, all three caught in the wild: a signed-in read of a
+        # tadika reported its category as "Personal details" and NASA's as
+        # "Details", and an anonymous read of Vans reported "Basic info" as its
+        # website. A heading sits exactly where a value sits — one line under
+        # the label — so nothing but this set separates them.
+        "details", "personal details", "basic info",
     }
 )
 
@@ -140,6 +146,13 @@ _HOURS_LINE_RE = re.compile(
 )
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# A website value has to be dereferenceable: an explicit scheme, or a bare host
+# with a dot and a TLD-shaped tail. "Basic info" and "tadika_murni_1988" are
+# neither — an underscore is not legal in a hostname label.
+_URL_RE = re.compile(
+    r"^(?:https?://\S+|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?:[/?#]\S*)?$)",
+    re.I,
+)
 _PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{6,}\d")
 
 
@@ -370,6 +383,15 @@ def parse_public_html(
     phone = labelled.get("phone")
     if phone and not _PHONE_RE.fullmatch(phone.strip()):
         phone = None
+    # Shape-gated for the same reason email and phone are, and it was the one
+    # scanned field with no gate: `to_source_content` turns this into a
+    # `NavLink(label="Website", href=…)` on every page of the site, so a value
+    # that isn't a URL ships a dead link in the footer of the whole build. Two
+    # real ones: "Basic info" (a panel heading) and "tadika_murni_1988" (a
+    # handle, not an address).
+    website = labelled.get("website")
+    if website and not _URL_RE.match(website.strip()):
+        website = None
 
     about = labelled.get("about") or blurb
 
@@ -387,7 +409,7 @@ def parse_public_html(
         price_range=labelled.get("price_range"),
         phone=phone,
         emails=[email] if email else [],
-        website=labelled.get("website"),
+        website=website,
         single_line_address=labelled.get("single_line_address") or None,
         hours=_scan_hours(lines),
         fan_count=fan_count,

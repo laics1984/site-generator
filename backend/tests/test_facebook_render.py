@@ -155,12 +155,79 @@ class SignedInTest(unittest.TestCase):
         )
 
     def test_both_render_paths_stay_partial(self):
-        """Signing in reveals the About panel; it never reveals structured
-        posts or recommendations, so the token offer must remain."""
+        """No render, signed in or not, reveals structured posts or
+        recommendations, so the token offer must remain either way."""
         page = parse_public_html(_page_html("<div>Acme</div>"), REF, signed_in=True)
         self.assertTrue(page.partial)
         self.assertIn("posts", page.missing_fields)
         self.assertIn("reviews", page.missing_fields)
+
+
+class SignedInDomTest(unittest.TestCase):
+    """What a live authenticated render actually serves, pinned.
+
+    Facebook blanks the og: tags for a signed-in request and serves the React
+    shell instead of the server-rendered About view. `default_fetchers` puts the
+    logged-out render first because of it (`test_facebook_source`), and these
+    pin the parse behaviour that ordering rests on.
+    """
+
+    def test_a_blank_og_title_is_absent_not_a_name(self):
+        """`content=""` is what an authenticated read gets — present, empty.
+        Treating it as a name would title the site with nothing at all."""
+        html = """
+        <html><head>
+          <meta property="og:title" content="" />
+          <meta property="og:description" content="" />
+        </head><body><div>Acme</div></body></html>
+        """
+        page = parse_public_html(html, REF, signed_in=True)
+        self.assertEqual(page.name, REF.handle)
+        self.assertIsNone(page.about)
+
+    def test_no_identity_and_no_handle_raises_rather_than_inventing_one(self):
+        html = '<html><head><meta property="og:title" content="" /></head><body></body></html>'
+        with self.assertRaises(FacebookRenderError):
+            parse_public_html(
+                html, FacebookRef(handle=None, page_id=None, canonical_url="x"), signed_in=True
+            )
+
+
+class ChromeIsNeverAValueTest(unittest.TestCase):
+    """A panel heading sits exactly where a value sits — one line under the
+    label — so only `_CHROME_VALUES` separates them. All three of these were
+    caught in the wild: "Personal details" and "Details" became a Page's
+    category, "Basic info" became its website."""
+
+    def test_a_panel_heading_is_not_a_category(self):
+        for heading in ("Details", "Personal details", "Basic info"):
+            with self.subTest(heading=heading):
+                html = _page_html(f"<div>Category</div><div>{heading}</div>")
+                self.assertIsNone(parse_public_html(html, REF).category)
+
+    def test_a_real_category_still_lands(self):
+        html = _page_html("<div>Category</div><div>Nursery</div>")
+        self.assertEqual(parse_public_html(html, REF).category, "Nursery")
+
+
+class WebsiteShapeTest(unittest.TestCase):
+    """`to_source_content` turns `website` into a NavLink on every page of the
+    site, so a value that isn't dereferenceable ships a dead link sitewide. It
+    was the one scanned field with no shape gate, unlike email and phone."""
+
+    def test_a_handle_is_not_a_website(self):
+        html = _page_html("<div>Website</div><div>tadika_murni_1988</div>")
+        self.assertIsNone(parse_public_html(html, REF).website)
+
+    def test_a_panel_heading_is_not_a_website(self):
+        html = _page_html("<div>Website</div><div>Basic info</div>")
+        self.assertIsNone(parse_public_html(html, REF).website)
+
+    def test_a_real_address_survives_with_or_without_a_scheme(self):
+        for value in ("https://www.nasa.gov/nasa-app/", "nasa.gov", "www.vans.com/shop"):
+            with self.subTest(value=value):
+                html = _page_html(f"<div>Website</div><div>{value}</div>")
+                self.assertEqual(parse_public_html(html, REF).website, value)
 
 
 class OgDescriptionTest(unittest.TestCase):
