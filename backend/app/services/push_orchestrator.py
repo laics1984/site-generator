@@ -348,6 +348,13 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                     data={
                         "entity_token": req.entity_token,
                         "entity_id": entity.get("entity_id"),
+                        # Threaded through for callers that create the entity and
+                        # then need to link to it. cms-api returns both on
+                        # POST /api/entities; without them a caller has to
+                        # reconstruct the platform host itself, which means the
+                        # base domain lives in two places and drifts.
+                        "public_identifier": entity.get("public_identifier"),
+                        "public_url": entity.get("public_url"),
                     },
                     warning=url_warning,
                 )

@@ -796,14 +796,31 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-/* A lone child is not a column — it is the row. Generalises the orphan rule
-   below: `$gridFit` (template_filler.py) maps a one-item repeat through its
-   `n <= 2` branch to `2Col`, so a single-branch locations section, a one-member
-   team grid or a one-tier pricing table sat in column 1 at half width with a
-   50% void beside it, on desktop AND tablet. The mobile query already collapses
-   to one column, so this only ever fires above 768px. */
-.wt-container-block--column-layout > :only-child {
+/* A lone item in the final row is the row, not a column.
+
+   `$gridFit` (template_filler.py) already picks the column count that best
+   fits the item count, but no count divides every grid: 4 cards in a 3-wide
+   grid, or any odd count in a 2-wide one, leaves the last item packed into
+   column 1 with the rest of the row void beside it. This states the rule once,
+   per breakpoint, because "alone in its row" is only answerable against that
+   breakpoint's own column count: the last item is alone iff its 1-based index
+   is congruent to 1 modulo the columns.
+
+   It subsumes — and replaces — the `:only-child` rule that used to sit here
+   (a one-item grid is the n = 0 case) and the tablet-only three-col orphan
+   rule below it, which were the same idea written twice for two special cases.
+   A partial row with TWO items is deliberately left alone: that row reads as
+   balanced, and widening one of its items would unbalance it.
+
+   Mobile is one column, so every rule below is inert there. */
+.wt-container-block--two-col > :last-child:nth-child(odd) {
   grid-column: 1 / -1;
+}
+
+@media (min-width: 1024px) {
+  .wt-container-block--three-col > :last-child:nth-child(3n + 1) {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (min-width: 768px) and (max-width: 1023.98px) {
@@ -811,8 +828,9 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  /* Two columns wide here, so the three-col grid takes the two-col test. */
   .wt-container-block--three-col > :last-child:nth-child(odd) {
-    grid-column: span 2 / span 2;
+    grid-column: 1 / -1;
   }
 }
 

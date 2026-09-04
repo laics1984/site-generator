@@ -33,12 +33,8 @@ _REPOS = pathlib.Path(__file__).resolve().parents[3]
 _SITEGEN = pathlib.Path(__file__).resolve().parents[2]
 
 _PUBLIC_VIDEO = _REPOS / "webtree-public" / "components" / "blocks" / "VideoBlock.vue"
-_PUBLIC_CONTAINER = _REPOS / "webtree-public" / "components" / "blocks" / "ContainerBlock.vue"
 _BUILDER_VIDEO = (
     _REPOS / "builder" / "src" / "components" / "tabs" / "editor-components" / "video.tsx"
-)
-_BUILDER_CONTAINER = (
-    _REPOS / "builder" / "src" / "components" / "tabs" / "editor-components" / "container.tsx"
 )
 _PREVIEW_CSS = _SITEGEN / "frontend" / "src" / "preview" / "preview.css"
 
@@ -83,32 +79,6 @@ class VideoFrameSizingTest(unittest.TestCase):
             source,
             "the canvas hard-defaulted 315px and never read the ratio, so every "
             "ratio-sized embed rendered at a different height there",
-        )
-
-
-class LoneGridChildSpansTheRowTest(unittest.TestCase):
-    # `$gridFit` (template_filler) maps a one-item repeat through its `n <= 2`
-    # branch to `2Col`, and no renderer had an `:only-child` rule — so a single
-    # branch, a one-member team or a one-tier pricing table sat in column 1 at
-    # half width with a void beside it.
-    def test_public_spans_a_lone_column_child(self):
-        css = _read(_PUBLIC_CONTAINER, self)
-        body = _rule_body(css, ".wt-container-block--column-layout > :only-child")
-        self.assertRegex(body, r"grid-column:\s*1\s*/\s*-1")
-
-    def test_preview_mirrors_the_span(self):
-        body = _rule_body(
-            _read(_PREVIEW_CSS, self), ".wt-container-block--column-layout > :only-child"
-        )
-        self.assertRegex(body, r"grid-column:\s*1\s*/\s*-1")
-
-    def test_builder_canvas_spans_a_lone_column_child(self):
-        source = _read(_BUILDER_CONTAINER, self)
-        self.assertIn(
-            "'1 / -1'",
-            source,
-            "the canvas derives its column count from the layout type alone and "
-            "ignores content.length, so it showed the same half-width orphan",
         )
 
 

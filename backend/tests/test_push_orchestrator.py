@@ -1030,6 +1030,42 @@ def test_a_clean_create_entity_carries_no_warning():
     assert create_entity.await_count == 1
 
 
+def test_create_entity_step_carries_the_public_url():
+    """A caller that creates the entity gets back the address it lives at.
+
+    cms-api returns `public_identifier` and `public_url` from POST /api/entities.
+    Dropping them here forces every caller to rebuild the platform host from its
+    own copy of the base domain — the same duplication that produced the
+    site_key resolution bug.
+    """
+    create_entity = AsyncMock(
+        return_value={
+            "entity_api_token": "tok",
+            "entity_id": 7,
+            "public_identifier": "acme-a1b2",
+            "public_url": "https://acme-a1b2.myfowable.com",
+        }
+    )
+    report = _push_with_create_entity(create_entity)
+
+    assert report.success, report.error
+    data = _step(report, "create_entity").data
+    assert data["public_url"] == "https://acme-a1b2.myfowable.com"
+    assert data["public_identifier"] == "acme-a1b2"
+
+
+def test_create_entity_step_tolerates_a_cms_that_omits_the_public_url():
+    """An older CMS that does not return the fields must not abort the push —
+    the keys are present and null, and the caller decides what to do about it."""
+    create_entity = AsyncMock(return_value={"entity_api_token": "tok", "entity_id": 7})
+    report = _push_with_create_entity(create_entity)
+
+    assert report.success, report.error
+    data = _step(report, "create_entity").data
+    assert data["public_url"] is None
+    assert data["public_identifier"] is None
+
+
 def test_other_create_entity_failures_still_abort_the_push():
     """Only the entity_url clash is recoverable — detected on the errors KEY, never
     on Laravel's (translatable) message text."""

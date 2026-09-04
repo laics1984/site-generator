@@ -179,8 +179,8 @@ picked. New variants of an existing type need only the catalog entry.
 
 Catalog rules: no `display:grid` (use 2Col/3Col/flex) — the one sanctioned
 exception is a `$bento` fan-out container, which `check_catalog_contract.py`
-exempts by node name. `$bento` has full parity: `_bento_spans` in
-`template_filler.py` and `bentoSpans` in `builder/src/lib/section-catalog.ts`
+exempts by node name. `$bento` has full parity: `_bento_placement` in
+`template_filler.py` and `bentoPlacement` in `builder/src/lib/section-catalog.ts`
 are line-for-line mirrors — keep them in lockstep.
 
 Layout selection precedence is `explicit_id → content preference (_PREFERENCE) →
@@ -1126,24 +1126,81 @@ Both is ambiguous; neither leaves the size to whichever default each renderer
 happens to carry. Pinned from both sides — `test_renderer_video_sizing.py` and
 `section-catalog.test.mjs` walk the catalog and fail on either.
 
-**A lone child is not a column — it is the row.** `$gridFit` maps a one-item
-repeat through its `n <= 2` branch to `2Col`, and no renderer had an
-`:only-child` rule: the tablet orphan rule (`:last-child:nth-child(odd)`) covers
-only `three-col`. So one branch — and a one-member team, a one-tier pricing
-table, any of the 12 `$gridFit` templates — sat in column 1 at half width with a
-50% void beside it, on desktop *and* tablet.
-`.wt-container-block--column-layout > :only-child { grid-column: 1 / -1 }`
-generalises the rule it sits beside. **`$gridFit` itself is deliberately not
-touched**: one fix in one place, and the renderer-side one also reaches sites
-already published.
+**A lone item in the final row is the row, not a column.** `$gridFit` picks the
+column count that best fits the item count, but no count divides every grid: 4
+cards in a 3-wide grid, or any odd count in a 2-wide one, leaves the last item
+packed into column 1 with the rest of the row void beside it — on desktop *and*
+tablet. It reached the non-`$gridFit` grids too (`features-card-grid`,
+`services-offer-grid`, `testimonials-quote-grid`, `features/services-two-col`,
+`video-grid`, `map-grid`, and `schema_builder._build_gallery`), and `$gridFit`'s
+own `n % 3 == 1 → 2Col` branch strands 7 all over again, since 7 is odd too.
+
+The renderer had **two special cases** for this and no rule: a `:only-child`
+rule (a grid holding exactly one item) and a tablet-only `three-col` orphan
+rule. They are the same sentence written twice, for the two counts someone
+happened to hit. One rule replaces both, stated **per breakpoint**, because
+"alone in its row" is only answerable against that breakpoint's own column
+count — the last item is alone iff its 1-based index is congruent to 1 modulo
+the columns, which makes a one-item grid the `n = 0` case rather than a rule of
+its own:
+
+```css
+.wt-container-block--two-col   > :last-child:nth-child(odd)      /* 2 cols */
+.wt-container-block--three-col > :last-child:nth-child(3n + 1)   /* >=1024px */
+.wt-container-block--three-col > :last-child:nth-child(odd)      /* 768-1023.98px */
+```
+
+**The 3-column test must stay fenced above 1024px**: a three-col grid is *two*
+columns wide at tablet, so `3n + 1` would widen a 4th card that is not alone
+there. A partial row holding **two** items is deliberately left alone — it reads
+as balanced, and widening one of them would unbalance it.
+
+**`$gridFit` itself is still deliberately not touched**: one fix in one place,
+and the renderer-side one also reaches sites already published, with no
+regeneration and no re-push.
+
+The builder canvas cannot use a media query — it simulates a device by state,
+not by viewport width — so `builder/src/lib/column-layout.ts` is the hand-written
+mirror, and it owns the column table the canvas *already* needed to draw the
+grid (`currentColumnCount`), so there is one answer per device rather than two.
+
+**`$bento` needs its own answer**: its grid is an inline `display: grid` on a
+plain container, so no `.wt-container-block--*` class ever reaches it. Its lead
+tile is 4 of 6 columns and 2 rows tall, so the two tiles after it fill the
+gutter and everything from index 3 lays out 3 to a row; at the tablet grid's 4
+columns the lead is already full width and every later tile pairs 2 to a row.
+Either way the tail is a plain division and its last tile is alone exactly when
+that division leaves a remainder of 1 — `1 / -1` then, which is the whole row at
+every column count. **The widths strand different counts** (6 columns: 4, 7, 10;
+4 columns: every even count), which is why `_bento_placement` returns
+per-breakpoint layers as well as base styles, and emits one only where that
+width disagrees with the base. The old "every fifth tile is wide" accent is
+gone: it needs 4 free columns at a position where 2 remain, which is what
+punched the mid-grid holes that `dense` auto-flow only accidentally repaired at
+one count.
+
+**A span WIDER than its grid creates implicit columns**, and those steal space
+from the explicit `1fr` tracks. The 4-wide lead sat on a **2-column** mobile
+grid, so every bento ever published rendered its phone layout as alternating
+382px tiles and **8px slivers** — measured in Chromium, and invisible from the
+Python because a span is only wrong relative to a column count that lives in the
+catalog's `responsiveStyles`. Beyond the column count a tile is simply the row,
+so `_bento_tile_span` says `1 / -1` there. Note `1 / -1` counts **explicit** grid
+lines, so it cannot rescue a row implicit columns have already widened — the
+clamp has to prevent them, not compensate for them.
+
+Tests: `test_grid_orphan.py` (drift over all three renderers, plus an
+independent grid-packing simulation asserting that no bento row ever holds one
+tile beside a void); `builder/src/lib/column-layout.test.mjs` and
+`section-catalog.test.mjs` (`npm test`).
 
 ### `$cycleStyles` — index-aware styling on a `$repeat`
 
 `[{}, {"flexDirection": "row-reverse"}]` on a repeat node stamps
-`patches[i % len]` onto child *i*. The general form of what `_bento_spans`
+`patches[i % len]` onto child *i*. The general form of what `_bento_placement`
 already does for one layout, and applied at **fill** time in both engines
 (`template_filler._apply_cycle_styles` ↔ `section-catalog.ts applyCycleStyles`,
-line-for-line mirrors like `bentoSpans`/`_bento_spans`), so the three renderers
+line-for-line mirrors like `bentoPlacement`/`_bento_placement`), so the three renderers
 cannot disagree about which way a row faces. The alternative — a `classes`
 marker plus a `:nth-child(even)` rule — would hand-duplicate CSS across
 `PublicSiteShell.vue`, `builder/src/index.css` and generated `preview.css`, the
