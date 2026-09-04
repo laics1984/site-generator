@@ -796,6 +796,16 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+/* A lone child is not a column — it is the row. Generalises the orphan rule
+   below: `$gridFit` (template_filler.py) maps a one-item repeat through its
+   `n <= 2` branch to `2Col`, so a single-branch locations section, a one-member
+   team grid or a one-tier pricing table sat in column 1 at half width with a
+   50% void beside it, on desktop AND tablet. The mobile query already collapses
+   to one column, so this only ever fires above 768px. */
+.wt-container-block--column-layout > :only-child {
+  grid-column: 1 / -1;
+}
+
 @media (min-width: 768px) and (max-width: 1023.98px) {
   .wt-container-block--three-col {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1320,9 +1330,21 @@ body {
   width: 100%;
 }
 
+/* `height: 100%` makes the aspect ratio a FALLBACK, not an override. The node's
+   own styles land on the outer box, never on this frame, so an authored
+   `height` was silently ignored and the frame sized itself from its width
+   alone — overflowing downward and, being positioned, painting over the next
+   sibling. (`locations-map-cards` states `height: 230px` on its map; at 1280px
+   desktop the frame wanted ~307px and covered 77px of the branch address.)
+   With this, a definite outer height wins and `aspect-ratio` is ignored; an
+   `auto` outer height resolves this to `auto` and the ratio still drives, which
+   is what `map-feature` and every `video-*` template rely on. Same shape as
+   ImageBlock's `.wt-image { width: 100%; height: 100% }`: the inner element
+   defers to the wrapper's authored box. */
 .wt-video-block__frame {
   position: relative;
   width: 100%;
+  height: 100%;
   aspect-ratio: 16 / 9;
   overflow: hidden;
   background: #000;

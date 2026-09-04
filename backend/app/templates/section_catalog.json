@@ -16866,6 +16866,512 @@
       }
     },
     {
+      "id": "locations-map-split",
+      "sectionType": "locations",
+      "layoutVariant": "split",
+      "styleVariant": "map-led",
+      "label": "Locations with Maps (Split)",
+      "description": "One full-width row per branch: a large embedded Google Map beside the address, opening hours and call/WhatsApp buttons, with the map alternating sides down the list. Card-free, so a single branch fills the row instead of sitting in one column of a grid.",
+      "tags": [
+        "Locations",
+        "Branches",
+        "Contact",
+        "Map"
+      ],
+      "thumbnail": "locations-map-split",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "map",
+              "kind": "video"
+            },
+            {
+              "id": "name",
+              "kind": "text"
+            },
+            {
+              "id": "address",
+              "kind": "text"
+            },
+            {
+              "id": "hours",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "whatsapp_cta",
+              "kind": "link",
+              "optional": true
+            },
+            {
+              "id": "phone_cta",
+              "kind": "link",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Our campuses",
+        "heading": "Visit us at either branch.",
+        "subheading": "Drop by for a tour — we'll show you around and answer everything.",
+        "items": [
+          {
+            "map": {
+              "src": "https://maps.google.com/maps?q=Sunrise+Learning+Centre%2C+12+Jalan+Ampang%2C+50450+Kuala+Lumpur&output=embed",
+              "title": "Map: Ampang campus"
+            },
+            "name": "Ampang campus",
+            "address": "12 Jalan Ampang, 50450 Kuala Lumpur",
+            "hours": "Mon–Fri 7:30am–6:30pm · Sat 9am–1pm",
+            "whatsapp_cta": {
+              "innerText": "WhatsApp us",
+              "href": "https://wa.me/60123456789"
+            },
+            "phone_cta": {
+              "innerText": "+60 12-345 6789",
+              "href": "tel:+60123456789"
+            }
+          },
+          {
+            "map": {
+              "src": "https://maps.google.com/maps?q=Sunrise+Learning+Centre%2C+88+Jalan+Maarof%2C+59100+Kuala+Lumpur&output=embed",
+              "title": "Map: Bangsar campus"
+            },
+            "name": "Bangsar campus",
+            "address": "88 Jalan Maarof, 59100 Kuala Lumpur",
+            "hours": "Mon–Fri 7:30am–6:30pm",
+            "whatsapp_cta": {
+              "innerText": "WhatsApp us",
+              "href": "https://wa.me/60129876543"
+            },
+            "phone_cta": {
+              "innerText": "+60 12-987 6543",
+              "href": "tel:+60129876543"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "Locations - Map Split",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "backgroundColor": "var(--builder-page-background, #ffffff)",
+          "alignItems": "center"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "rgba(15,23,42,0.68)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "620px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Branch Rows",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "gap": "56px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "40px"
+              },
+              "tablet": {
+                "gap": "44px"
+              }
+            },
+            "$repeat": "items",
+            "$cycleStyles": [
+              {},
+              {
+                "flexDirection": "row-reverse"
+              }
+            ],
+            "content": [
+              {
+                "name": "Branch Row",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "alignItems": "center",
+                  "gap": "40px"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "flexDirection": "column",
+                    "alignItems": "stretch",
+                    "gap": "20px"
+                  },
+                  "tablet": {
+                    "gap": "28px"
+                  }
+                },
+                "content": [
+                  {
+                    "name": "Branch Map Frame",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "flex": "1.35 1 0%",
+                      "minWidth": "0px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "flex": "0 0 auto"
+                      },
+                      "tablet": {
+                        "flex": "1 1 0%"
+                      }
+                    },
+                    "content": [
+                      {
+                        "name": "Branch Map",
+                        "type": "video",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "display": "block",
+                          "aspectRatio": "16 / 10",
+                          "borderRadius": "20px",
+                          "overflow": "hidden",
+                          "border": "none"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "borderRadius": "16px"
+                          },
+                          "tablet": {}
+                        },
+                        "$slot": "map"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Branch Details",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "justifyContent": "center",
+                      "gap": "12px",
+                      "flex": "1 1 0%",
+                      "minWidth": "0px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "flex": "0 0 auto",
+                        "gap": "10px"
+                      },
+                      "tablet": {
+                        "gap": "10px"
+                      }
+                    },
+                    "content": [
+                      {
+                        "name": "Branch Name",
+                        "type": "text",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-secondary, #0f172a)",
+                          "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                          "width": "100%",
+                          "fontSize": "26px",
+                          "lineHeight": "1.15",
+                          "letterSpacing": "-0.02em",
+                          "fontWeight": 800
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "fontSize": "20px"
+                          },
+                          "tablet": {
+                            "fontSize": "22px"
+                          }
+                        },
+                        "$slot": "name"
+                      },
+                      {
+                        "name": "Branch Address",
+                        "type": "text",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "fontSize": "16px",
+                          "lineHeight": "1.65"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "fontSize": "14px"
+                          },
+                          "tablet": {
+                            "fontSize": "15px"
+                          }
+                        },
+                        "$slot": "address"
+                      },
+                      {
+                        "name": "Branch Hours",
+                        "type": "text",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "fontSize": "15px",
+                          "fontWeight": 600
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "fontSize": "13px"
+                          },
+                          "tablet": {
+                            "fontSize": "14px"
+                          }
+                        },
+                        "$slot": "hours"
+                      },
+                      {
+                        "name": "Branch CTA Row",
+                        "type": "container",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "display": "flex",
+                          "flexWrap": "wrap",
+                          "alignItems": "center",
+                          "gap": "10px",
+                          "marginTop": "6px"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {},
+                          "tablet": {}
+                        },
+                        "content": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "id": "chrome-header-classic",
       "sectionType": "header",
       "layoutVariant": "classic",

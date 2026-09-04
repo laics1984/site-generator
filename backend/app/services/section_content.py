@@ -663,6 +663,23 @@ def _testimonials_preference(content: dict[str, Any], b: TestimonialsBlock) -> l
     return ["testimonials-quote-grid"]
 
 
+def _locations_preference(content: dict[str, Any], b: LocationsBlock) -> list[str]:
+    """Map-led split rows first, the card grid behind it — at every branch count.
+
+    The split is the layout that reads correctly for one branch and for six: it
+    is a flex column of full-width rows, so it never hands a lone branch one
+    column of a grid, and its map is sized by ratio rather than by a fixed
+    height it can outgrow. The card grid stays in the catalog and stays
+    reachable — the design brain can still pick it off `selectable_templates`,
+    and it is insertable in the builder's section browser.
+
+    Both entries are named rather than just the winner, following
+    ``_testimonials_preference``: with the order stated in full, adding a third
+    variant later is a change to this list, not a silent reshuffle.
+    """
+    return ["locations-map-split", "locations-map-cards"]
+
+
 _PREFERENCE: dict[str, Callable[[dict[str, Any], Any], list[str]]] = {
     "hero": _hero_preference,
     "about": _about_preference,
@@ -671,6 +688,7 @@ _PREFERENCE: dict[str, Callable[[dict[str, Any], Any], list[str]]] = {
     "services": _services_preference,
     "testimonials": _testimonials_preference,
     "profile": _profile_preference,
+    "locations": _locations_preference,
 }
 
 

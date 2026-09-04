@@ -1095,6 +1095,94 @@ Tests: `test_video_embeds.py`, `test_map_embeds.py` (deliberately parallel — t
 share a DOM walk and an injection spine); `builder/src/lib/{embed-kind,section-catalog}.test.mjs`
 (`npm test`); `webtree-public/lib/videoEmbed.test.ts` (`npm test`).
 
+## An embed states one sizing axis, and a lone card is a row
+
+Two renderer defects met in the locations section, which is why it looked like
+one bug. Both are fixed **upstream**, so already-published sites are repaired by
+the next `webtree-public` deploy — no regeneration, no re-push.
+
+**A node's styles never reach the frame that sizes the embed.**
+`VideoBlock`'s inner `.wt-video-block__frame` carried an unconditional
+`aspect-ratio: 16 / 9`; the node's own `styles` land on the **outer** box, so an
+authored `height` was ignored and the frame sized itself from its width alone.
+Wherever `width x 9/16` beat that height the frame overflowed downward and —
+being `position: relative` — painted *over* the next sibling.
+`locations-map-cards` was the only video node in the catalog with a fixed height
+and no ratio, so it was the only one that could diverge: at 1280px its map
+wanted ~307px against an authored 230px and **covered 77px of the branch
+address**, and it did the same on every current iPhone (390–430px) while just
+fitting at 375. That is why it read as "the address hides when I resize".
+The fix is `height: 100%` on the frame, which makes the ratio a **fallback**:
+a definite outer height wins, an `auto` one resolves to `auto` and the ratio
+still drives. Same shape as `ImageBlock`'s `.wt-image { width: 100%; height:
+100% }` — the inner element defers to the wrapper's authored box. It cannot live
+in `responsiveRuntime`: `buildCssRule` emits one flat `[data-wt-node-id]`
+selector per node, which can never reach `__frame`.
+**The builder canvas had the mirror-image bug** — it renders one box, honoured
+the height and ignored `aspectRatio`, falling back to a hard-coded 315px. Three
+renderers, three answers. It reads `aspectRatio` now.
+So: **a video node states a ratio OR a height, never both and never neither.**
+Both is ambiguous; neither leaves the size to whichever default each renderer
+happens to carry. Pinned from both sides — `test_renderer_video_sizing.py` and
+`section-catalog.test.mjs` walk the catalog and fail on either.
+
+**A lone child is not a column — it is the row.** `$gridFit` maps a one-item
+repeat through its `n <= 2` branch to `2Col`, and no renderer had an
+`:only-child` rule: the tablet orphan rule (`:last-child:nth-child(odd)`) covers
+only `three-col`. So one branch — and a one-member team, a one-tier pricing
+table, any of the 12 `$gridFit` templates — sat in column 1 at half width with a
+50% void beside it, on desktop *and* tablet.
+`.wt-container-block--column-layout > :only-child { grid-column: 1 / -1 }`
+generalises the rule it sits beside. **`$gridFit` itself is deliberately not
+touched**: one fix in one place, and the renderer-side one also reaches sites
+already published.
+
+### `$cycleStyles` — index-aware styling on a `$repeat`
+
+`[{}, {"flexDirection": "row-reverse"}]` on a repeat node stamps
+`patches[i % len]` onto child *i*. The general form of what `_bento_spans`
+already does for one layout, and applied at **fill** time in both engines
+(`template_filler._apply_cycle_styles` ↔ `section-catalog.ts applyCycleStyles`,
+line-for-line mirrors like `bentoSpans`/`_bento_spans`), so the three renderers
+cannot disagree about which way a row faces. The alternative — a `classes`
+marker plus a `:nth-child(even)` rule — would hand-duplicate CSS across
+`PublicSiteShell.vue`, `builder/src/index.css` and generated `preview.css`, the
+same three-way duplication the adaptive-ink and self-ink sections warn about.
+**It patches BASE styles only**, so the item's own
+`responsiveStyles.mobile.flexDirection: "column"` still wins at its breakpoint —
+which is what lets a reversed row still stack map-first on a phone.
+
+### `locations-map-split`
+
+The default locations layout (`_PREFERENCE["locations"]`), added **alongside**
+`locations-map-cards`, which stays in the catalog and stays reachable via
+`explicit_id`, the design brain's `selectable_templates`, and the builder's
+section browser. A flex column of full-width rows, each a map/details split with
+the map alternating sides.
+
+It removes the *class* of defect rather than one instance: it is not a grid, so
+no count can strand a card in a column; its map is sized by ratio, so it cannot
+outgrow its box; and it has no card, so there is no `overflow: hidden` left to
+clip copy with. Measured: 620/460 at desktop, an even 338/338 at tablet (a
+`responsiveStyles.tablet` `flex` reset, since 1.35:1 is too tight there), and
+stacked map-above-details on a phone.
+
+**Its slot list is byte-identical to the card grid's**, which is what keeps the
+generator side to one preference function — `_locations_content`, `is_feasible`
+and `facebook_authority._locations`' single-item rewrite are all untouched.
+
+**Its copy states its ink in tokens, and must.** The card could hard-code
+`rgba(15,23,42,0.72)` only because it painted its own white fill underneath.
+With the card gone the copy sits straight on the section band, which the
+luminance pass may resolve **dark** — a literal near-black address would ship
+black on black. `var(--builder-color-secondary)` / `var(--builder-color-text)`
+are what let `enforce_text_contrast` measure and flip them. Same rule as
+"a pass that repaints a section states its ink too", one layer down.
+
+Tests: `test_locations_split.py`, `test_renderer_video_sizing.py` (cross-repo
+drift, skipped when a sibling repo is absent — the `test_self_ink.py` idiom);
+`builder/src/lib/section-catalog.test.mjs` (`npm test`).
+
 ## SEO
 
 `services/seo.py` owns the **data**; the CMS renderer owns injection (it wraps
@@ -1210,10 +1298,11 @@ Generator side, three rules:
 
 **`GeneratedSite.brand` is typed `Any`**, so it is a `BrandIdentity` in-process
 and a plain **dict** once the frontend posts the site back to `/api/cms/push` —
-which is every real push. `_brand_field` reads either. A bare `getattr` returns
-None for the dict form; `_upload_media`'s brand-logo block still has that bug at
-lines ~711-717, harmless only because the logo is also reached through the header
-schema.
+which is every real push. `_brand_field` reads either, and a bare `getattr`
+returns None for the dict form. `_upload_media`'s brand-logo block **had** that
+bug; it was fixed in `65e1bc5` and reads `_brand_field` now. (It left one
+artefact: `_brand_field` is defined **twice**, byte-identically, at ~690 and
+~1050. Python keeps the last, so the first is dead code.)
 
 `webtree-public` needed **no change**:
 `usePublicSeo.ts` already emits `<link rel="icon">` from `entity.favicon`, and

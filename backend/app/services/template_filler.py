@@ -95,6 +95,28 @@ def _bento_spans(index: int, count: int) -> dict[str, str]:
     return {"gridColumn": "span 2"}  # standard (3 per row)
 
 
+def _apply_cycle_styles(patches: Any, children: list[BuilderElement]) -> None:
+    """Stamp a repeating style patch onto a `$repeat`'s children, by index.
+
+    The general form of what `_bento_spans` does for one layout: index-aware
+    styling decided at FILL time, so the three renderers cannot disagree about
+    it. `[{}, {"flexDirection": "row-reverse"}]` alternates the sides of a
+    two-column row; child *i* takes `patches[i % len(patches)]`.
+
+    It patches BASE styles only. A `responsiveStyles` entry the item template
+    declares still wins at its own breakpoint, which is what lets an alternating
+    row stack the same way on a phone in both phases.
+
+    Mirrored in builder/src/lib/section-catalog.ts — keep the two in lockstep.
+    """
+    if not isinstance(patches, list) or not patches:
+        return
+    for index, child in enumerate(children):
+        patch = patches[index % len(patches)]
+        if isinstance(patch, dict) and patch:
+            child.styles = {**(child.styles or {}), **patch}
+
+
 def _base_fields(node: dict[str, Any], styles: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {
         "name": node["name"],
@@ -267,6 +289,7 @@ async def _fill_node(
         if node.get("$gridFit"):
             n = len(children)
             base = {**base, "type": "2Col" if (n <= 2 or n % 3 == 1) else "3Col"}
+        _apply_cycle_styles(node.get("$cycleStyles"), children)
         return BuilderElement(id=str(uuid4()), content=children, **base)
 
     # $bento: like $repeat, but stamp each cloned tile with varied grid spans so a
