@@ -113,6 +113,49 @@ class MarkupOutlineTest(unittest.TestCase):
         self.assertEqual(parsed.description, "Small-batch roasters")
 
 
+class LeafDivCopyTest(unittest.TestCase):
+    """A page builder puts body copy in a bare <div>, so the block walk has to
+    read one — as a LEAF, or every sentence is restated at each level of the
+    wrapper nesting it sits in.
+
+    Same predicate the crawler and the section tree ask
+    (`source_outline.is_text_block`), pinned here because `read_html` is the
+    walk that defines it.
+    """
+
+    HTML = """
+        <div class="page">
+          <div class="section">
+            <h2 class="ct-headline">Our Vision</h2>
+            <div class="ct-text-block">We inspire every child to learn.</div>
+          </div>
+          <div class="section">
+            <div class="ct-text-block">A second block of copy.</div>
+          </div>
+        </div>
+    """
+
+    def setUp(self):
+        self.blocks = [b.text for b in read_paste(self.HTML).document.outline]
+
+    def test_div_borne_copy_is_read(self):
+        self.assertIn("We inspire every child to learn.", self.blocks)
+        self.assertIn("A second block of copy.", self.blocks)
+
+    def test_wrappers_do_not_restate_what_their_children_said(self):
+        """The whole reason <div> is admitted only as a leaf: `.page` and
+        `.section` each contain the same sentences, and emitting them too would
+        put the page's entire text into the outline once per level of nesting."""
+        self.assertEqual(
+            self.blocks,
+            [
+                "Our Vision",
+                "We inspire every child to learn.",
+                "A second block of copy.",
+            ],
+        )
+
+
 class PlainTextOutlineTest(unittest.TestCase):
     def test_markdown_headings_set_levels(self):
         parsed = read_paste("# Acme\n\ntext\n\n## Services\n\nmore\n\n#### Detail")

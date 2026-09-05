@@ -610,6 +610,7 @@ def test_segments_are_still_sanitized_inside_a_kept_path():
 
 from app.services.push_orchestrator import (  # noqa: E402
     _collect_document_hrefs,
+    _extract_bg_photo_urls,
     _needs_upload,
     _needs_upload_document,
     _resolve_document_to_bytes,
@@ -752,6 +753,82 @@ def test_rewrite_srcs_rewrites_link_href():
     assert node.content.href == new
 
 
+def _hero(background: str) -> BuilderElement:
+    return BuilderElement(
+        name="Hero - Background",
+        type="container",
+        styles={"backgroundImage": background},
+        content=[],
+    )
+
+
+# A WordPress webp-conversion plugin serves both of these off one site, so a
+# crawl collects both and the push uploads both. One is a strict prefix of the
+# other, which is the whole hazard.
+_JPG = "https://site.test/wp-content/uploads/photo.jpg"
+_WEBP = _JPG + ".webp"
+_CDN_JPG = "https://cms.example/storage/obj/1788photo.jpg"
+_CDN_WEBP = "https://cms.example/storage/obj/1788photojpg.webp"
+_PAIR = {_JPG: _CDN_JPG, _WEBP: _CDN_WEBP}
+
+
+def test_a_background_url_is_never_rewritten_by_prefix():
+    """`str.replace` over the raw CSS value is order-dependent: the shorter key
+    matched inside the longer URL and left its `.webp` tail orphaned onto a
+    `.jpg` CDN path — a URL the CMS never minted. Seven of mykiddyland's heroes
+    published with a background that 404s, which a browser paints as nothing at
+    all: blank space where the photo should be, and no broken-image icon."""
+    node = _hero(f"url('{_WEBP}')")
+
+    _rewrite_srcs(node, _PAIR)
+
+    assert node.styles["backgroundImage"] == f"url('{_CDN_WEBP}')"
+
+
+def test_the_shorter_url_still_rewrites_on_its_own():
+    node = _hero(f'url("{_JPG}")')
+
+    _rewrite_srcs(node, _PAIR)
+
+    assert node.styles["backgroundImage"] == f'url("{_CDN_JPG}")'
+
+
+def test_gradient_and_data_layers_survive_beside_a_rewritten_photo():
+    """Only http(s) url() layers are collected, so only those may be rewritten —
+    the grain texture and the scrim are what make the band readable."""
+    grain = "url(\"data:image/svg+xml;utf8,<svg/>\")"
+    scrim = "linear-gradient(rgba(0,0,0,0.5), rgba(0,0,0,0.2))"
+    node = _hero(f"{grain}, {scrim}, url('{_WEBP}')")
+
+    _rewrite_srcs(node, _PAIR)
+
+    assert node.styles["backgroundImage"] == f"{grain}, {scrim}, url('{_CDN_WEBP}')"
+
+
+def test_a_value_with_nothing_to_rewrite_is_left_byte_identical():
+    original = "linear-gradient(#fff, #000), url('https://other.test/a.jpg') no-repeat"
+    node = _hero(original)
+
+    _rewrite_srcs(node, _PAIR)
+
+    assert node.styles["backgroundImage"] == original
+
+
+def test_collection_and_rewriting_agree_on_what_a_photo_layer_is():
+    """The property that keeps the two halves honest: a URL is rewritten
+    exactly when it was collected, and so exactly when it was uploaded."""
+    value = f"url(\"data:image/png;base64,AAA\"), url('{_WEBP}'), url({_JPG})"
+    node = _hero(value)
+
+    collected = _extract_bg_photo_urls(value)
+    _rewrite_srcs(node, _PAIR)
+
+    assert collected == [_WEBP, _JPG]
+    assert node.styles["backgroundImage"] == (
+        'url("data:image/png;base64,AAA"), ' f"url('{_CDN_WEBP}'), url({_CDN_JPG})"
+    )
+
+
 def test_upload_media_rehosts_document_links_alongside_images():
     """End-to-end through _upload_media: a scraped document href gets
     fetched, uploaded via the same client.upload_media as images, and comes
@@ -839,9 +916,15 @@ def _upload_with_brand(site: GeneratedSite):
         return _FakeImageResponse(png)
 
     upload = AsyncMock(return_value=_LOGO_CDN)
+    # The SSRF guard is stubbed for the same reason the HTTP client is: it is a
+    # DNS lookup, and `acme.test` resolves on a network with wildcard/search-
+    # domain DNS and not on one without — so leaving it live made these four
+    # tests pass or fail by machine rather than by code. What is under test
+    # here is the brand-shape gate, not services/url_guard.py.
     with (
         patch.object(httpx.AsyncClient, "get", new=_fake_get),
         patch.object(CmsClient, "upload_media", new=upload),
+        patch("app.services.push_orchestrator.assert_public_url", new=AsyncMock()),
     ):
         client = CmsClient(base_url="http://localhost:8000")
         rewrites, failed = asyncio.run(_upload_media(client, req))

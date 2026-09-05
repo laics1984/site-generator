@@ -64,6 +64,7 @@ from app.services.image_urls import (
     _IMG_EXT_OK,
     BG_URL_RE,
     absolute_url as _absolute_url,
+    declared_display_width as _declared_display_width,
     image_src_from_tag as _image_src_from_tag,
     looks_like_icon as _looks_like_icon,
     looks_like_logo_url as _looks_like_logo_url,
@@ -96,6 +97,7 @@ from app.services.nav_extraction import (
 from app.services.section_extraction import (
     extract_section_candidates,
     in_repeated_image_group as _in_repeated_image_group,
+    is_decorative_image as _is_decorative_image,
 )
 from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
 
@@ -708,7 +710,12 @@ def _extract_images(
             pass
 
         evidence = parse_evidence(img.get("data-webtree-evidence"))
-        width = _parse_int(img.get("width") if isinstance(img.get("width"), str) else None)
+        # `sizes` backs the width attribute up rather than replacing it: both are
+        # the source stating a size, and a responsive image routinely declares
+        # only the former. See image_urls.declared_display_width.
+        width = _parse_int(
+            img.get("width") if isinstance(img.get("width"), str) else None
+        ) or _declared_display_width(img)
         height = _parse_int(img.get("height") if isinstance(img.get("height"), str) else None)
         if evidence is not None:
             # Measured sizes beat declared attributes: natural is the true
@@ -716,14 +723,14 @@ def _extract_images(
             # never finished loading.
             width = evidence.natural_width or width or evidence.width or None
             height = evidence.natural_height or height or evidence.height or None
-        # Drop tiny declared sizes (decoration / icons) — unless the image is
-        # one cell of a repeating rack, where small IS the expected size. A
-        # logo/badge wall runs at ~150x60 per tile, so this filter deleted the
-        # entire content of every awards, accreditation and partner section it
-        # met. classify_role makes the same exception on measured geometry.
-        if (
-            (width and width < 200) or (height and height < 120)
-        ) and not _in_image_grid(img, evidence):
+        # Drop tiny sizes (decoration / icons) — unless the image is one cell of
+        # a repeating rack, where small IS the expected size. The rule and its
+        # exemption live in section_extraction beside the grid walk they depend
+        # on, so the section tree's card builder screens by exactly this test.
+        # Measured geometry beats the declared size, so both are passed in.
+        if _is_decorative_image(
+            img, size=(width, height), in_grid=_in_image_grid(img, evidence)
+        ):
             continue
 
         if evidence is not None:

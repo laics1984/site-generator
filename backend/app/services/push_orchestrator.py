@@ -636,6 +636,11 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     #     is something the owner can set in the admin afterwards.
     await _push_favicon(client, req, report)
 
+    # 8c. WhatsApp chat button, when the source site published a number
+    #     (services/whatsapp_discovery.py). Non-fatal for the same reason as the
+    #     icon: the site is already in, and this is one switch in Site settings.
+    await _push_whatsapp_widget(client, req, report)
+
     # 9. Publish (optional) — concurrent; every publish uses its own page's saved
     #    draft version plus the shared (post-builder-styles) layout_version_id.
     if req.publish:
@@ -884,23 +889,72 @@ def _split_css_layers(value: str) -> list[str]:
     return parts
 
 
-def _extract_bg_photo_urls(css_value: str | None) -> list[str]:
-    """Real photo URLs referenced by a `background-image` value.
+# The url() a background layer opens with. Group 1 spans the URL itself, so a
+# caller can replace exactly that slice and leave the wrapper, the quoting and
+# any `no-repeat center` tail as the author wrote them.
+_BG_LAYER_URL_RE = re.compile(r"""^\s*url\(\s*['"]?\s*([^'")]+)""", re.IGNORECASE)
 
-    Only http(s) ``url(...)`` layers count — gradient layers and inline ``data:``
-    URIs (grain/mesh) are decoration and must stay in the schema untouched.
+
+def _bg_layer_photo(layer: str) -> re.Match[str] | None:
+    """The http(s) ``url(...)`` this background layer references, as a match.
+
+    None for gradient layers and inline ``data:`` URIs (grain/mesh) — decoration
+    that must stay in the schema untouched.
     """
+    match = _BG_LAYER_URL_RE.match(layer)
+    if match is None:
+        return None
+    return (
+        match
+        if match.group(1).strip().lower().startswith(("http://", "https://"))
+        else None
+    )
+
+
+def _extract_bg_photo_urls(css_value: str | None) -> list[str]:
+    """Real photo URLs referenced by a `background-image` value."""
     if not isinstance(css_value, str) or not css_value.strip():
         return []
-    urls: list[str] = []
+    return [
+        match.group(1).strip()
+        for layer in _split_css_layers(css_value)
+        if (match := _bg_layer_photo(layer)) is not None
+    ]
+
+
+def _rewrite_bg_photo_urls(css_value: str, rewrites: dict[str, str]) -> str:
+    """`css_value` with each photo layer's URL swapped for its re-hosted one.
+
+    Layer by layer, matching each URL WHOLE against the rewrite map — never
+    `str.replace` over the raw value, which is order-dependent and silently
+    corrupts any URL that another collected URL is a prefix of. A WordPress
+    webp-conversion plugin serves `photo.jpeg` and `photo.jpeg.webp` side by side
+    on one site, so both land in the map; replacing the shorter first produced
+    `<cdn>/…photo.jpg` + the orphaned `.webp` — a URL the CMS never minted (the
+    coercer had already normalised `.jpeg` to `.jpg`), and the longer key then
+    had nothing left to match. Seven of mykiddyland's heroes published with a
+    background that 404s, which a browser paints as nothing at all: no
+    broken-image icon, just a blank band.
+
+    Worse, it defeats the net: `_strip_invalid_images` runs after this and finds
+    a dead reference by looking for the SOURCE url, which the mangled value no
+    longer contains.
+
+    This is the mirror of `_extract_bg_photo_urls`, which is what makes the two
+    agree by construction — a URL is rewritten exactly when it was collected,
+    and so exactly when it was uploaded.
+    """
+    changed = False
+    layers: list[str] = []
     for layer in _split_css_layers(css_value):
-        m = re.match(r"""^\s*url\(\s*['"]?\s*([^'")]+)""", layer, re.IGNORECASE)
-        if not m:
+        match = _bg_layer_photo(layer)
+        new_url = rewrites.get(match.group(1).strip()) if match is not None else None
+        if match is None or new_url is None:
+            layers.append(layer)
             continue
-        inner = m.group(1).strip()
-        if inner.lower().startswith(("http://", "https://")):
-            urls.append(inner)
-    return urls
+        layers.append(layer[: match.start(1)] + new_url + layer[match.end(1) :])
+        changed = True
+    return ",".join(layers) if changed else css_value
 
 
 def _collect_image_srcs(node: BuilderElement, out: dict[str, BuilderElement]) -> None:
@@ -1067,6 +1121,47 @@ def _brand_field(brand: Any, name: str) -> Any:
     if isinstance(brand, dict):
         return brand.get(name)
     return getattr(brand, name, None)
+
+
+async def _push_whatsapp_widget(
+    client: CmsClient, req: PushRequest, report: PushReport
+) -> None:
+    """Push the discovered WhatsApp click-to-chat config, if there is one.
+
+    Nothing to push is a success, not a skip with an excuse: most sources do not
+    publish a WhatsApp number, and the country code is never inferred from a
+    plain phone number.
+    """
+    widget = req.site.whatsapp_widget
+
+    if not widget:
+        report.record(
+            PushStep(
+                name="whatsapp_widget",
+                ok=True,
+                detail="Skipped (no WhatsApp number found on the source)",
+            )
+        )
+        return
+
+    try:
+        await client.update_whatsapp_widget(req.entity_token, widget)
+        report.record(
+            PushStep(
+                name="whatsapp_widget",
+                ok=True,
+                detail=f"Chat button enabled for +{widget.get('phone')}",
+            )
+        )
+    except CmsApiError as exc:
+        report.record(
+            PushStep(
+                name="whatsapp_widget",
+                ok=False,
+                error=str(exc),
+                detail="Site is in; set the WhatsApp button manually in Site settings.",
+            )
+        )
 
 
 async def _push_favicon(
@@ -1470,16 +1565,14 @@ def _rewrite_srcs(node: BuilderElement, rewrites: dict[str, str]) -> None:
         if isinstance(href, str) and href in rewrites:
             content.href = rewrites[href]
     # Rewrite photo URLs embedded in background styles, preserving the gradient
-    # overlay + url() wrapper (substring replace of the exact collected URL).
+    # overlay and the url() wrapper. One layer-wise pass per value, whatever the
+    # size of the rewrite map — see _rewrite_bg_photo_urls.
     styles = node.styles or {}
     for key in ("backgroundImage", "background"):
         value = styles.get(key)
         if not isinstance(value, str):
             continue
-        new_value = value
-        for old, new in rewrites.items():
-            if old in new_value:
-                new_value = new_value.replace(old, new)
+        new_value = _rewrite_bg_photo_urls(value, rewrites)
         if new_value != value:
             styles[key] = new_value
     if isinstance(content, list):

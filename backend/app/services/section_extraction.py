@@ -56,7 +56,13 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Tag
 
 from app.models.content_blocks import SectionCandidate, SourceCard, SourceCardKind
-from app.services.image_urls import BG_URL_RE as _BG_URL_RE, descriptive_name_from_url
+from app.services.image_urls import (
+    BG_URL_RE as _BG_URL_RE,
+    declared_display_width,
+    descriptive_name_from_url,
+    image_src_from_tag,
+)
+from app.services.source_outline import is_text_block
 
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
@@ -175,6 +181,24 @@ def _has_image(tag: Tag) -> bool:
     return False
 
 
+def _background_image_src(tag: Tag) -> str | None:
+    """First CSS ``background-image`` url() at or under `tag`, as written."""
+    for el in [tag, *(e for e in tag.find_all(True) if isinstance(e, Tag))]:
+        style = el.get("style")
+        if not isinstance(style, str):
+            continue
+        match = _BG_URL_RE.search(style)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+    return None
+
+
+def _background_image_url(tag: Tag, base_url: str) -> str | None:
+    """First CSS ``background-image`` url() at or under `tag`, absolutized."""
+    src = _background_image_src(tag)
+    return urljoin(base_url, src) if src else None
+
+
 # How far above an <img> the repeating tile can sit. Hand-built and page-builder
 # markup wraps a badge in several presentational divs before reaching the cell
 # that actually repeats (img > span > filter > backdrop > card > column is a
@@ -207,22 +231,100 @@ def in_repeated_image_group(tag: Tag, *, min_cells: int = _GRID_MIN_CELLS) -> bo
             for k in parent.find_all(recursive=False)
             if isinstance(k, Tag) and _signature(k) == signature and _has_image(k)
         ]
-        if len(twins) >= min_cells:
+        if len(twins) >= min_cells and not _shows_one_picture(twins, min_cells):
             return True
         node = parent
     return False
 
 
-def _background_image_url(tag: Tag, base_url: str) -> str | None:
-    """First CSS ``background-image`` url() at or under `tag`, absolutized."""
-    for el in [tag, *(e for e in tag.find_all(True) if isinstance(e, Tag))]:
-        style = el.get("style")
-        if not isinstance(style, str):
-            continue
-        match = _BG_URL_RE.search(style)
-        if match and match.group(1).strip():
-            return urljoin(base_url, match.group(1).strip())
-    return None
+def _shows_one_picture(twins: list[Tag], min_cells: int) -> bool:
+    """True when a repeating group is the SAME file over and over.
+
+    A wall shows N different pictures; an ornament is one picture stamped N
+    times, and only the second is furniture. Without this the exemption rescues
+    exactly what it exists to exclude: mykiddyland stamps one 33x33 star beside
+    each of its five About headings, and five identically-built sections are a
+    repeating group by every structural test there is.
+
+    Reads the file the way the markup states it, so it is a comparison between
+    siblings on one page and never a fetch. Conservative in the direction that
+    matters: a group whose pictures cannot be read is left alone, because
+    deleting a real badge wall costs the section its entire content.
+    """
+    urls = [url for twin in twins if (url := _tile_image_url(twin)) is not None]
+    return len(urls) >= min_cells and len(set(urls)) == 1
+
+
+def _tile_image_url(tag: Tag) -> str | None:
+    """The picture a tile shows, exactly as the markup states it."""
+    img = (
+        tag
+        if tag.name == "img"
+        else next((i for i in tag.find_all("img") if isinstance(i, Tag)), None)
+    )
+    if img is not None and (src := image_src_from_tag(img)):
+        return src.strip()
+    return _background_image_src(tag)
+
+
+# Below this a standalone picture is furniture — a bullet, an icon, a divider,
+# a spacer. The DECLARED-size counterpart to `image_evidence.classify_role`,
+# which measures the rendered box and is only available on the Playwright path;
+# a crawled sub-page arrives over the httpx fast path with no measurement at
+# all, so the size the markup states is the only size there is.
+_MIN_CONTENT_IMAGE_W = 200
+_MIN_CONTENT_IMAGE_H = 120
+
+
+def declared_image_size(tag: Tag) -> tuple[int | None, int | None]:
+    """The size an ``<img>`` states for itself, as (width, height).
+
+    ``sizes`` stands in for a width the ``width`` attribute omits — a responsive
+    image routinely declares only the former. See
+    ``image_urls.declared_display_width``.
+    """
+
+    def _attr(name: str) -> int | None:
+        raw = tag.get(name)
+        if not isinstance(raw, str):
+            return None
+        match = re.search(r"\d+", raw)
+        return int(match.group(0)) or None if match else None
+
+    return _attr("width") or declared_display_width(tag), _attr("height")
+
+
+def is_decorative_image(
+    tag: Tag,
+    *,
+    size: tuple[int | None, int | None] | None = None,
+    in_grid: bool | None = None,
+) -> bool:
+    """True when an ``<img>`` is furniture rather than a picture the page shows.
+
+    THE one home for "is this small thing content?", asked by the image pool
+    (``scraper._extract_images``) and by the section tree's card builder alike.
+    Two spellings of it is one spelling too many: the pool screened the size and
+    the card builder did not, so mykiddyland's 33x33 star bullet — repeated
+    beside all five headings of its About page — became the section's photograph
+    AND the section's classification, publishing "Our Vision" as a one-tile
+    gallery of a star.
+
+    The exemption is the same one ``classify_role`` makes: one cell of a
+    repeating rack is small BY DESIGN (a partner/award wall runs at ~150x60),
+    and screening those deleted the very images that were the section's content.
+
+    ``size`` and ``in_grid`` let a caller substitute a MEASUREMENT for the
+    declared value — the scraper has both on the Playwright path — without
+    either side re-stating the rule.
+    """
+    width, height = declared_image_size(tag) if size is None else size
+    undersized = (width is not None and width < _MIN_CONTENT_IMAGE_W) or (
+        height is not None and height < _MIN_CONTENT_IMAGE_H
+    )
+    if not undersized:
+        return False
+    return not (in_repeated_image_group(tag) if in_grid is None else in_grid)
 
 
 def _has_document_link(card: Tag) -> bool:
@@ -419,12 +521,12 @@ def _build_card(
     else:
         lines = []
         for el in scope:
-            if el.name not in ("p", "li", "span", "div"):
+            if not is_text_block(el):
                 continue
             text = _text(el)
             if text and text != title and text not in lines:
                 lines.append(text)
-        # Keep only the outermost text of nested wrappers: a div and the p
+        # Keep only the outermost text of nested wrappers: a li and the p
         # inside it yield the same sentence twice.
         lines = [ln for ln in lines if not any(ln != o and ln in o for o in lines)]
 
@@ -437,6 +539,8 @@ def _build_card(
     for el in scope:
         for img in el.find_all("img") if el.name != "img" else [el]:
             if not isinstance(img, Tag) or image_url is not None:
+                continue
+            if is_decorative_image(img):
                 continue
             src = img.get("src")
             if isinstance(src, str) and src.strip():
@@ -583,7 +687,7 @@ def _image_only_cards(
     """
     span = _own_span(node)
     for el in span:
-        if el.name in ("p", "li", "h2", "h3", "h4", "h5", "h6") and _text(el):
+        if is_text_block(el) and _text(el):
             return []
 
     out: list[tuple[SourceCard, list[Tag]]] = []
@@ -686,15 +790,24 @@ def extract_section_candidates(
     def emit(node: _Node) -> None:
         if node.is_card:
             return  # claimed as a card by its parent — not a section too
+        # Words a card already carries are that card's, not the section's own.
+        # Asked by IDENTITY, over the spans the cards were built from, rather
+        # than by substring over their finished text: a card's `body` is capped
+        # (_MAX_CARD_BODY_CHARS) and has its short lines split off into `meta`,
+        # so a long paragraph is no longer a substring of either and leaked back
+        # in whole — the About page stated its own Goal twice.
+        claimed = {id(el) for scope in node.card_scopes for el in scope}
         card_text = {c.title for c in node.cards}
         prose_parts: list[str] = []
         for el in _scope(node):
-            if el.name not in ("p", "li", "h2", "h3", "h4"):
+            if not is_text_block(el):
+                continue
+            if claimed and (
+                id(el) in claimed or any(id(a) in claimed for a in el.parents)
+            ):
                 continue
             text = _text(el)
             if not text or text in card_text:
-                continue
-            if any(text in c.body or text in " ".join(c.meta) for c in node.cards):
                 continue
             if any(text in existing for existing in prose_parts):
                 continue

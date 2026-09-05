@@ -4697,6 +4697,7 @@ async def plan_to_site(
     market_cue: str | None = None,
     place_cue: str | None = None,
     social_links: list[tuple[str, str]] | None = None,
+    whatsapp_widget: dict[str, Any] | None = None,
     reserved_image_urls: set[str] | None = None,
     header_override: HeaderArchetype | None = None,
     footer_override: FooterArchetype | None = None,
@@ -5389,6 +5390,10 @@ async def plan_to_site(
         page_tree=page_tree,
         media_credits=resolver.attributions,
         social_links=social_links or [],
+        # Discovered on the source site, not derived from the theme — carried
+        # through so the push can hand it to the CMS's widget endpoint. None
+        # when the source published no WhatsApp number.
+        whatsapp_widget=whatsapp_widget,
         theme=theme,
         builder_styles=builder_styles,
         google_fonts=theme.typography.google_fonts,

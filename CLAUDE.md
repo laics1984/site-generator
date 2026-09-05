@@ -279,6 +279,80 @@ re-asking there is double jeopardy, and both had to be reverted once already.
 Tests: `test_scraper_images.CardRackIsNotARosterTest`,
 `test_directory_roster.PageScopedRosterTest`.
 
+## Semantic HTML is a convention, not a guarantee
+
+A visual page builder puts body copy in a bare `<div>` — Oxygen's
+`ct-text-block`, Elementor's `elementor-text-editor`, Divi's `et_pb_text_inner`,
+Webflow's rich text. `source_outline.is_text_block` is the **one** answer to
+"which tags carry content", and it admits a `div` **only as a leaf**: an element
+holding any `_NESTED_BOX_TAGS` is a layout box whose words belong to the boxes
+inside it, and emitting it too would restate a page's entire text once per level
+of its nesting. Measured: +0.5% on bbc.com and +1.5% on Wikipedia (semantic
+markup, so nothing changes), +27% on mykiddyland — the copy that was missing.
+
+`section_extraction` had **three** narrower spellings of that question and none
+of them knew about `div`, so mykiddyland.com/about reached the planner as five
+headings with `prose=""` under every one. Two consequences, which looked like
+two bugs:
+
+- **The page's content never arrived.** Vision, Mission, History, Goal and
+  Trainers are `<div class="ct-text-block">`; `emit`'s collector read
+  `("p","li","h2","h3","h4")`, so the section tree carried nothing but headings.
+  `raw_text` still had the words, because `_extract_body_text` merges
+  trafilatura in — but **appended**, so all six headings came first and every
+  paragraph after, which is exactly the heading↔prose association
+  `section_candidates` exists to preserve. The published page shipped a hero, a
+  one-tile gallery, an invented "Our Journey" timeline and a CTA.
+- **The ornament became the content.** `_image_only_cards` is gated on the
+  section having "no words of its own" — asked in the same wrong vocabulary, so
+  every section looked wordless, and the one thing left under each heading was
+  the 33x33 star bullet. Five one-tile galleries, `card_kind="gallery"`,
+  `_CARD_KIND_SECTIONS` → a `gallery` section, and "Our Vision" published as a
+  picture grid of a star.
+
+`_build_card` was the one place that already read `div` — which is why the cards
+worked and the sections did not.
+
+**A size the source published is evidence; ignoring it is not neutrality.**
+Three rules, one home each:
+
+1. **`sizes` is a declared width** (`image_urls.declared_display_width`).
+   WordPress writes `sizes` on essentially every image it renders and leaves
+   `width`/`height` off, so on the httpx fast path — where there is no render
+   evidence and `classify_role` never runs — the attributes said nothing and the
+   star entered the pool as an undeclared photograph, winning the About slot on
+   its `context_heading`. Only an absolute px **fallback entry** is read: `100vw`
+   and `calc()` describe a width that does not exist without a viewport.
+2. **The undersized screen has one home**, `section_extraction.is_decorative_image`,
+   asked by `scraper._extract_images` *and* `_build_card`. The pool screened the
+   size and the card builder did not, so the same file was furniture in one pass
+   and a photograph in the next. `size=`/`in_grid=` let the scraper substitute
+   its **measured** geometry without either side re-stating the rule.
+3. **A wall shows N different pictures; an ornament is ONE picture stamped N
+   times.** The grid exemption exists so a partner/award wall keeps its ~150x60
+   tiles, and without that distinction it rescued precisely what it excludes —
+   five identically-built sections carrying the same star are a repeating image
+   group by every structural test there is. `_shows_one_picture` is conservative
+   in the direction that matters: a group whose files cannot be read keeps the
+   exemption, because deleting a real badge wall costs the section everything.
+
+The pixel screen (`image_graphics`) measures this star as a flat graphic
+(43% clear / 3.2% distinct) and would have withdrawn it — but
+`graphic_max_images` is **12 per generation**, ordered by intent alone, and
+mykiddyland's pool is 200+. It is a last resort for sites that declare nothing,
+not a substitute for reading what the markup does declare.
+
+One more, found while verifying: `emit` asked "does a card already carry these
+words?" by substring over the card's finished `body`, which is capped at
+`_MAX_CARD_BODY_CHARS` and has its short lines split off into `meta` — so any
+long card failed the test and its paragraph leaked back into the section's prose
+whole. It reads the card's **span** by identity now, which is what the sibling
+child-section subtraction two lines below already did.
+
+Tests: `test_section_extraction.PageBuilderProseTest`,
+`test_scraper_images.DeclaredDisplaySizeTest`/`RepeatedOrnamentIsNotAWallTest`,
+`test_paste_source.LeafDivCopyTest`.
+
 ## The brand mark is not content
 
 A site's own logo must never fill a photo slot. `image_evidence.classify_role`
@@ -415,6 +489,46 @@ rendering perfectly in the preview — which renders the pre-push tree, so the t
 never disagreed anywhere you could see it.
 
 Tests: `test_push_data_urls.py`.
+
+## A URL is rewritten whole, or it is corrupted
+
+`_apply_src_rewrites` swaps every collected source URL for the CDN URL the CMS
+minted. An `image` node's `content.src` was always an exact-key lookup; the
+`backgroundImage` / `background` branch was a `str.replace` **per rewrite key
+over the raw CSS value**, which is order-dependent and wrong the moment one
+collected URL is a **prefix of another**.
+
+A WordPress webp-conversion plugin serves `photo.jpeg` and `photo.jpeg.webp`
+side by side, so a crawl collects both and the push uploads both. Replacing the
+shorter key first turned
+
+    url('…/kindergarten-selangor.jpeg.webp')
+
+into `<cdn>/1788541037kindergarten-selangor.jpg` **plus the orphaned `.webp`** —
+a URL the CMS never minted (the coercer had already normalised `.jpeg`→`.jpg`),
+and the longer key then had no text left to match, so its own correct CDN URL
+never landed. Seven of mykiddyland's heroes published with a background that
+404s, and **a browser paints a dead background as nothing at all**: no broken-
+image icon, no fallback, just a blank band. That is why it reads as "the photo
+was never added" rather than as an error.
+
+It has a **second** harm that is worse than the first: `_strip_invalid_images`
+runs *after* the rewrite and finds a dead reference by looking for the source
+URL. The mangled value no longer contains it, so the one net that exists to
+delete a broken photo is defeated by the corruption it is there to catch.
+
+`_rewrite_bg_photo_urls` is the mirror of `_extract_bg_photo_urls` — same
+`_split_css_layers`, same `_bg_layer_photo` match — so **a URL is rewritten
+exactly when it was collected, and so exactly when it was uploaded**. Matching
+the layer's URL whole makes a prefix collision unrepresentable rather than
+merely unlikely, and it is one pass per value however large the rewrite map
+(the old loop scanned the whole string once per key — 241 scans per style value
+on this site). `_strip_invalid_images` already read layers this way; the rewrite
+was the outlier.
+
+Tests: `test_push_orchestrator.test_a_background_url_is_never_rewritten_by_prefix`
+and its siblings, including one that asserts collection and rewriting agree on
+what a photo layer is.
 
 ## Facebook Page ingest
 

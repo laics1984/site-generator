@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
@@ -78,6 +79,7 @@ from app.services.source_injection import (
     source_pages,
 )
 from app.services.source_path import normalize_source_slug
+from app.services.whatsapp_discovery import build_whatsapp_widget, discover_whatsapp_number
 from app.services.image_graphics import screen_source_images_for_graphics
 from app.services.image_refs import bind_image_refs
 from app.services.source_images import without_source_imagery
@@ -1281,6 +1283,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         market_cue=market_cue,
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
+        whatsapp_widget=_whatsapp_widget_for(payload.source, plan.site_name),
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
         stock_only=payload.stock_images_only,
@@ -1685,6 +1688,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         market_cue=market_cue,
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
+        whatsapp_widget=_whatsapp_widget_for(payload.source, plan.site_name),
         reserved_image_urls=bound_image_urls,
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
@@ -1772,6 +1776,23 @@ def _translation_sources(source: SourceContent) -> dict[str, SourceContent]:
 
 def _social_links_for(source: SourceContent) -> list[tuple[str, str]]:
     return [(link.label, link.href) for link in source.social_links]
+
+
+def _whatsapp_widget_for(
+    source: SourceContent, site_name: str | None
+) -> dict[str, Any] | None:
+    """The WhatsApp chat button the source site already offered, if any.
+
+    Fail-open: a site is not worth losing over a contact button, and every
+    branch of the discovery is already a "None unless certain" decision.
+    """
+    try:
+        return build_whatsapp_widget(
+            discover_whatsapp_number(source), site_name=site_name
+        )
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("WhatsApp discovery failed; continuing without a widget")
+        return None
 
 
 def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:

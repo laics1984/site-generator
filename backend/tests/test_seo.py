@@ -24,6 +24,7 @@ from app.services.schema_builder import (
     _TITLE_NAMES,
     apply_heading_levels,
 )
+from app.models.content_blocks import PagePlan, clamp_seo_description, clamp_seo_title
 from app.services.template_filler import load_catalog
 from app.services.ux_audit import audit_seo
 
@@ -529,3 +530,144 @@ class HeadingMirrorTest(unittest.TestCase):
         self.assertIsNotNone(block, "HEADING_BOX_RESET not found in the mirror")
         declared = dict(re.findall(r"(\w+):\s*'([^']+)'", block.group(1)))
         self.assertEqual(declared, _HEADING_BOX_RESET)
+
+
+class SeoDescriptionBudgetTest(unittest.TestCase):
+    """`clamp_seo_description`: no page ships a snippet the SERP would cut.
+
+    The LLM is asked for 140-160 chars and mostly complies; the pages where it
+    does not were reaching the CMS at 170+ and lighting up its SEO audit
+    ("snippets get cut around 160") on almost every page of a fresh site.
+    """
+
+    LONG = (
+        "Artisan sourdough baked overnight in a stone oven, delivered to "
+        "Melbourne cafes every morning, plus baking classes, event catering "
+        "and a weekend market stall in Fitzroy North"
+    )
+
+    def setUp(self):
+        from app.config import settings
+
+        self.budget = settings.seo_description_max_length
+        self.floor = settings.seo_description_min_length
+
+    def test_a_description_within_budget_is_untouched(self):
+        text = "Stone-milled sourdough, baked overnight and delivered before six."
+        self.assertEqual(clamp_seo_description(text), text)
+
+    def test_it_collapses_whitespace(self):
+        self.assertEqual(clamp_seo_description("  Baked\n  fresh\tdaily. "), "Baked fresh daily.")
+
+    def test_it_trims_a_long_description_to_the_budget(self):
+        self.assertGreater(len(self.LONG), self.budget)
+        trimmed = clamp_seo_description(self.LONG)
+
+        self.assertLessEqual(len(trimmed), self.budget)
+        self.assertGreaterEqual(len(trimmed), self.floor)
+        self.assertTrue(self.LONG.startswith(trimmed.rstrip(",;:")))
+
+    def test_it_never_cuts_mid_word_or_leaves_dangling_punctuation(self):
+        trimmed = clamp_seo_description(self.LONG)
+
+        self.assertNotEqual(trimmed[-1], ",")
+        self.assertFalse(trimmed.endswith("..."))
+        self.assertFalse(trimmed.endswith("…"))
+        # The cut landed on a word the source also ends there.
+        self.assertIn(trimmed.split()[-1], self.LONG.split())
+
+    def test_it_prefers_ending_on_a_full_stop(self):
+        text = (
+            "Stone-milled sourdough baked overnight in a wood oven and delivered "
+            "to cafes across the inner north before six every morning. "
+            "We also run weekend baking classes and cater events."
+        )
+        trimmed = clamp_seo_description(text)
+
+        self.assertTrue(trimmed.endswith("morning."), trimmed)
+        self.assertLessEqual(len(trimmed), self.budget)
+
+    def test_a_sentence_end_too_early_is_ignored_for_a_word_cut(self):
+        # A full stop at char 12 would leave a uselessly short description, so
+        # the word-boundary cut wins instead.
+        text = "Baked daily. " + "sourdough loaves and pastries " * 8
+        trimmed = clamp_seo_description(text)
+
+        self.assertGreaterEqual(len(trimmed), self.floor)
+        self.assertLessEqual(len(trimmed), self.budget)
+
+    def test_the_page_plan_applies_the_budget(self):
+        plan = PagePlan(
+            page_type="landing",
+            slug="about",
+            title="About",
+            blocks=[],
+            seo_title="About us",
+            seo_description=self.LONG,
+        )
+
+        self.assertLessEqual(len(plan.seo_description), self.budget)
+        self.assertEqual(plan.seo_description, clamp_seo_description(self.LONG))
+
+
+class SeoTitleBudgetTest(unittest.TestCase):
+    """`clamp_seo_title`: no page ships a title Google would truncate.
+
+    60 chars is ~600px of rendered title — where Google cuts — and the number
+    the CMS audit flags against. The generator used to tolerate 65, so a title
+    could pass its own audit and fail the dashboard's.
+    """
+
+    def setUp(self):
+        from app.config import settings
+
+        self.budget = settings.seo_title_max_length
+
+    def test_a_title_within_budget_is_untouched(self):
+        title = "Sourdough Baked Overnight in Fitzroy North"
+        self.assertEqual(clamp_seo_title(title), title)
+
+    def test_it_trims_a_long_title_on_a_word_boundary(self):
+        title = "Stone Milled Sourdough Baked Overnight and Delivered Before Six Every Morning"
+        trimmed = clamp_seo_title(title)
+
+        self.assertLessEqual(len(trimmed), self.budget)
+        self.assertIn(trimmed.split()[-1], title.split())
+        self.assertTrue(title.startswith(trimmed))
+
+    def test_a_brand_suffix_that_no_longer_fits_is_dropped_whole(self):
+        title = "Stone Milled Sourdough Baked Overnight and Delivered | Loaves & Fishes"
+        trimmed = clamp_seo_title(title)
+
+        self.assertLessEqual(len(trimmed), self.budget)
+        self.assertFalse(trimmed.rstrip().endswith("|"), trimmed)
+        self.assertNotIn("Loaves", trimmed)
+
+    def test_it_keeps_a_word_that_fits_exactly(self):
+        # The budget landing on a space must not cost the word before it.
+        title = "Family Dentistry in Petaling Jaya | Checkups, Braces, Whitening"
+        trimmed = clamp_seo_title(title)
+
+        self.assertLessEqual(len(trimmed), self.budget)
+        self.assertTrue(trimmed.endswith("Braces"), trimmed)
+
+    def test_it_never_leaves_a_dangling_separator(self):
+        title = "Stone Milled Sourdough Baked Overnight in Fitzroy North | Loaves"
+        trimmed = clamp_seo_title(title)
+
+        self.assertFalse(trimmed.rstrip().endswith("|"), trimmed)
+        self.assertFalse(trimmed.rstrip().endswith("-"), trimmed)
+
+    def test_the_page_plan_applies_the_budget(self):
+        long_title = "Stone Milled Sourdough Baked Overnight and Delivered Before Six Daily"
+        plan = PagePlan(
+            page_type="landing",
+            slug="about",
+            title="About",
+            blocks=[],
+            seo_title=long_title,
+            seo_description="Baked overnight in a stone oven and delivered to cafes across the inner north before six every morning.",
+        )
+
+        self.assertEqual(plan.seo_title, clamp_seo_title(long_title))
+        self.assertLessEqual(len(plan.seo_title), self.budget)

@@ -308,6 +308,17 @@ class GeneratedSite(BaseModel):
             "footer's social-inline menu element binds that slot."
         ),
     )
+    whatsapp_widget: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Site-wide WhatsApp click-to-chat widget config discovered on the "
+            "source site (services/whatsapp_discovery.py), in the CMS's shape "
+            "(App\\Support\\WhatsApp\\WhatsAppWidgetConfig). None when the "
+            "source published no WhatsApp number — the country code is never "
+            "inferred from a plain phone number. The push orchestrator sends "
+            "this to PUT /entities/{token}/whatsapp-widget."
+        ),
+    )
     collections: ContentCollections | None = Field(
         default=None,
         description=(

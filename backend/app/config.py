@@ -473,13 +473,22 @@ class Settings(BaseSettings):
     # Structured data (JSON-LD) generation: Organization/LocalBusiness on
     # homepage, BreadcrumbList on sub-pages, FAQPage on FAQ blocks.
     seo_structured_data_enabled: bool = True
-    # SEO title length bounds (chars). The LLM targets 50-60; the audit flags
-    # titles outside these bounds.
+    # SEO title length bounds (chars). The max is ENFORCED, not just audited:
+    # `clamp_seo_title` trims every page plan's title to it. 60 is ~600px of
+    # rendered title, which is what Google shows before it truncates, and the
+    # number the CMS's own audit flags against
+    # (webtree-cms-api SeoAuditService::SEO_TITLE_MAX). The min is a quality
+    # floor of ours, not a Google rule, so it stays advisory.
     seo_title_min_length: int = 30
-    seo_title_max_length: int = 65
-    # SEO meta description length bounds (chars).
+    seo_title_max_length: int = 60
+    # SEO meta description length bounds (chars). The max is ENFORCED, not just
+    # audited: `clamp_seo_description` trims every page plan's description to it
+    # (models/content_blocks.py). 160 is the SERP display budget Google clips at
+    # and the same number the CMS's own SEO audit flags against
+    # (webtree-cms-api SeoAuditService::SEO_DESCRIPTION_MAX) — one budget, so a
+    # generated site cannot ship a page that its own dashboard then warns about.
     seo_description_min_length: int = 100
-    seo_description_max_length: int = 170
+    seo_description_max_length: int = 160
 
     # --- Deployment posture -------------------------------------------------
     # WHERE this generator runs — not where a push lands (that is a CmsTarget,

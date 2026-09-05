@@ -1728,3 +1728,87 @@ class CardRackIsNotARosterTest(unittest.TestCase):
         ):
             with self.subTest(line=line):
                 self.assertFalse(profile_text.looks_like_spec_line(line))
+
+
+class DeclaredDisplaySizeTest(unittest.TestCase):
+    """A responsive image usually declares its size ONLY in `sizes`.
+
+    WordPress writes `sizes` on essentially every image it renders and leaves
+    `width`/`height` off, so a reader that consults only the attributes has no
+    size at all for most of the real web. On the httpx fast path there is no
+    render evidence either, and mykiddyland's 33x33 star bullet — declared
+    `sizes="(max-width: 33px) 100vw, 33px"` — entered the photo pool on that
+    silence and won the About page's picture slot.
+    """
+
+    def _one(self, tag: str, base: str = "https://example.my"):
+        soup = BeautifulSoup(f"<html><body>{tag}</body></html>", "lxml")
+        return _extract_images(soup, base)
+
+    def test_sizes_declares_a_width_the_attributes_omit(self):
+        images = self._one(
+            '<img src="/star-element.png" alt="Star" srcset="" '
+            'sizes="(max-width: 33px) 100vw, 33px"/>'
+        )
+
+        self.assertEqual(images, [])
+
+    def test_a_full_width_sizes_declaration_is_not_a_disqualifier(self):
+        images = self._one(
+            '<img src="/hero.jpg" alt="Clinic team" '
+            'sizes="(max-width: 1024px) 100vw, 1024px"/>'
+        )
+
+        self.assertEqual([i.url for i in images], ["https://example.my/hero.jpg"])
+
+    def test_a_relative_sizes_value_states_nothing(self):
+        """`100vw` and `calc(...)` describe a width that does not exist without
+        a viewport. Reading one as a number would be a guess, and the image is
+        left exactly as unsized as it was."""
+        images = self._one('<img src="/photo.jpg" alt="Storefront" sizes="100vw"/>')
+
+        self.assertEqual([i.url for i in images], ["https://example.my/photo.jpg"])
+
+    def test_the_width_attribute_still_wins(self):
+        """`sizes` backs the attribute up; it does not overrule it."""
+        images = self._one(
+            '<img src="/photo.jpg" alt="Storefront" width="1200" height="800" '
+            'sizes="33px"/>'
+        )
+
+        self.assertEqual([i.url for i in images], ["https://example.my/photo.jpg"])
+
+
+class RepeatedOrnamentIsNotAWallTest(unittest.TestCase):
+    """A wall shows N different pictures; an ornament is ONE picture stamped N
+    times — and only the second is furniture.
+
+    The grid exemption exists so a partner/award wall keeps its ~150x60 tiles,
+    and without this distinction it rescued exactly what it exists to exclude:
+    five identically-built sections each carrying the same star bullet are a
+    repeating image group by every structural test there is.
+    """
+
+    _STAR_ROWS = "".join(
+        f'<div class="row"><h2>Heading {n}</h2>'
+        f'<img src="/star.png" alt="Star" sizes="33px"/></div>'
+        for n in range(1, 6)
+    )
+    _BADGE_WALL = "".join(
+        f'<div class="row"><img src="/award-{n}.png" alt="Award {n}" '
+        f'width="150" height="60"/></div>'
+        for n in range(1, 6)
+    )
+
+    def _pool(self, markup: str) -> list[str]:
+        soup = BeautifulSoup(f"<html><body>{markup}</body></html>", "lxml")
+        return [i.url for i in _extract_images(soup, "https://example.my")]
+
+    def test_one_file_repeated_is_furniture(self):
+        self.assertEqual(self._pool(self._STAR_ROWS), [])
+
+    def test_a_wall_of_distinct_marks_keeps_its_exemption(self):
+        urls = self._pool(self._BADGE_WALL)
+
+        self.assertEqual(len(urls), 5)
+        self.assertIn("https://example.my/award-1.png", urls)

@@ -82,6 +82,40 @@ def absolute_url(base: str, src: str) -> str | None:
     return upgrade_source_image_url(urljoin(base, src))
 
 
+# One `sizes` entry is "[media-condition] <source-size-value>"; the LAST carries
+# no condition and is the default the browser falls back to. Only an absolute
+# px length is a measurement — `100vw` and `calc(...)` describe a width that
+# does not exist without a viewport.
+_SIZES_PX_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)px\s*$", re.IGNORECASE)
+
+
+def declared_display_width(tag: Tag) -> int | None:
+    """The layout width the markup itself states for an ``<img>``, or None.
+
+    ``sizes`` is the author's own statement of how wide the image is laid out,
+    and it is the only size a responsive image usually declares: WordPress
+    writes ``sizes`` on essentially every image it renders while leaving
+    ``width``/``height`` off entirely. Unread, a 33x33 ornament repeated beside
+    five headings looks exactly like an undeclared photograph, and mykiddyland's
+    star bullet won the About page's picture slot on that silence.
+
+    Deliberately the same KIND of evidence as the ``width`` attribute — a size
+    the source published — so callers feed it to the size rules they already
+    have rather than growing a second filter. A relative or computed value
+    yields None: a guess here is worse than the attribute we already lack.
+    """
+    raw = tag.get("sizes")
+    if isinstance(raw, list):
+        raw = ",".join(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    match = _SIZES_PX_RE.match(raw.rsplit(",", 1)[-1])
+    if match is None:
+        return None
+    width = int(float(match.group(1)))
+    return width if width > 0 else None
+
+
 def looks_like_icon(url: str, alt: str) -> bool:
     low = url.lower()
     if any(h in low for h in _BAD_IMG_HINTS):
