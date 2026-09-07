@@ -58,6 +58,31 @@ export function getNodeStyles(node: PublicBlockNode | Record<string, unknown> | 
   )
 }
 
+/**
+ * How many lines this node's own styles clamp its text to, or null if it does
+ * not clamp.
+ *
+ * The line-clamp IS the clamp declaration — there is no second marker to keep
+ * in step with it. A `wt-clamp` class used to carry that signal alongside the
+ * inline `WebkitLineClamp`, which meant two sources of truth for one behaviour
+ * and nothing an editor could set: the class was not reachable from the
+ * builder, so the line count could never be changed. Reading the style is what
+ * makes "Max lines" an ordinary style edit.
+ *
+ * Sites published before that change ship the class AND the style, so they
+ * keep their toggle with no regeneration.
+ *
+ * Base styles only, exactly as the marker class was — a per-device clamp set
+ * through `responsiveStyles` reaches the DOM as CSS, not as a value here.
+ */
+export function getClampLines(node: PublicBlockNode | Record<string, unknown> | null | undefined): number | null {
+  const raw = getNodeStyles(node).WebkitLineClamp
+  if (raw === undefined || raw === null) return null
+  const lines = typeof raw === 'number' ? raw : Number.parseInt(String(raw).trim(), 10)
+  // `unset`/`none`/`initial` and anything unparseable mean "no clamp".
+  return Number.isFinite(lines) && lines > 0 ? lines : null
+}
+
 export function getNodeClasses(node: PublicBlockNode | Record<string, unknown> | null | undefined): string {
   const record = asRecord(node)
   const value = record?.classes ?? getNodePropsRecord(node)?.classes

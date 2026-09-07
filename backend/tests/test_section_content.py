@@ -2,7 +2,15 @@ import unittest
 
 from app.models.content_blocks import CtaBlock, HeroBlock
 from app.services.section_content import block_to_section
-from app.services.template_filler import get_template
+from app.services.template_filler import get_template, load_catalog
+
+
+def _walk_nodes(node):
+    yield node
+    content = node.get("content")
+    if isinstance(content, list):
+        for child in content:
+            yield from _walk_nodes(child)
 
 
 def _find_node(node, name):
@@ -88,14 +96,34 @@ class SectionContentTemplateSelectionTest(unittest.TestCase):
         self.assertEqual(bio["styles"]["lineHeight"], "1.65")
 
     def test_team_grid_bio_is_clamped(self):
-        # Long bios are truncated so cards stay even: an inline line-clamp is the
-        # static fallback; the `wt-clamp` class is the hook the frontend uses to
-        # add a show-more toggle.
-        template = get_template("team-grid")
-        bio = _find_node(template["tree"], "Member Bio")
-        self.assertIn("wt-clamp", bio.get("classes", ""))
-        self.assertEqual(bio["styles"]["WebkitLineClamp"], "4")
-        self.assertEqual(bio["styles"]["overflow"], "hidden")
+        # Long bios are truncated so cards stay even. The inline line-clamp is
+        # BOTH the static truncation and the signal every renderer reads to
+        # offer a show-more toggle (`getClampLines` in webtree-public's
+        # blockRuntime, its preview mirror, and builder/src/lib/text-clamp.ts).
+        # All four properties are required: a WebkitLineClamp without
+        # `display: -webkit-box` claims to clamp and doesn't.
+        for template_id, node_name in (
+            ("team-grid", "Member Bio"),
+            ("team-founders", "Founder Bio"),
+        ):
+            with self.subTest(template_id):
+                bio = _find_node(get_template(template_id)["tree"], node_name)
+                self.assertEqual(bio["styles"]["WebkitLineClamp"], "4")
+                self.assertEqual(bio["styles"]["display"], "-webkit-box")
+                self.assertEqual(bio["styles"]["WebkitBoxOrient"], "vertical")
+                self.assertEqual(bio["styles"]["overflow"], "hidden")
+
+    def test_no_section_declares_a_clamp_marker_class(self):
+        # The clamp used to be declared TWICE — a `wt-clamp` marker class beside
+        # the inline WebkitLineClamp — so one behaviour had two sources of truth,
+        # and the half an editor could reach (the style) was not the half the
+        # renderers read (the class). The line count could never be changed.
+        # The style is the whole declaration now; a marker class coming back
+        # would silently reintroduce the split.
+        for section in load_catalog()["sections"]:
+            for node in _walk_nodes(section["tree"]):
+                with self.subTest(section["id"], node=node.get("name")):
+                    self.assertNotIn("wt-clamp", node.get("classes") or "")
 
 
 class AboutZigzagTest(unittest.TestCase):

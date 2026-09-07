@@ -83,6 +83,7 @@ from app.services.profile_text import (
     has_contact_token,
     is_boilerplate_line,
     roster_is_people,
+    truncate_bio,
 )
 from app.services.nav_extraction import (
     DOCUMENT_EXTENSIONS,
@@ -1447,8 +1448,12 @@ def _extract_profile_bio(container: Tag, name: str, role: str | None) -> str | N
     # Newline-joined so a directory card's distinct facts (credentials,
     # serving populations, clinic address) stay separate lines — the team
     # builder renders bios white-space: pre-line.
-    bio = "\n".join(kept)
-    return bio[:480]
+    #
+    # The bound lives in profile_text, which is also where `clean_team_bio`
+    # applies it downstream. It used to be a bare `480` here and a
+    # `_BIO_MAX_LEN` there — one rule, two spellings, so raising it in the
+    # obvious place would have changed nothing.
+    return truncate_bio("\n".join(kept))
 
 
 def _has_portrait_aspect(

@@ -5552,7 +5552,6 @@
                     "name": "Member Bio",
                     "type": "text",
                     "$slot": "bio",
-                    "classes": "wt-clamp wt-clamp-4",
                     "styles": {
                       "backgroundPosition": "center",
                       "objectFit": "cover",
@@ -5986,7 +5985,6 @@
                     "name": "Founder Bio",
                     "type": "text",
                     "$slot": "bio",
-                    "classes": "wt-clamp wt-clamp-4",
                     "styles": {
                       "backgroundPosition": "center",
                       "objectFit": "cover",

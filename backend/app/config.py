@@ -233,6 +233,17 @@ class Settings(BaseSettings):
     # consistent one, because the dropped tail silently loses its pages.
     paste_structure_max_chars: int = 24000
 
+    # Fit a team CARD's biography to a card by keeping a subset of the source's
+    # own sentences (services/bio_condense.py). A person's own profile page
+    # keeps the complete text — a grid introduces people, a profile page tells
+    # the story. Off makes `truncate_bio`'s bound the only shortener, which is
+    # what shipped before this existed.
+    team_bio_condense_enabled: bool = True
+    # Roughly what the card's 4-line clamp shows, so most cards read complete
+    # with no "Show more" at all. Bios already at or under it never reach the
+    # model.
+    team_bio_card_max_chars: int = 400
+
     # Temperature for the design-brain pass (services/design_brain.py), which
     # picks per-section template variety/drama. Deliberately higher than the
     # 0.3 content/fidelity calls — bolder, less repetitive choices are exactly

@@ -1,15 +1,15 @@
 /**
  * PORT of webtree-public/components/blocks/TextBlock.vue — keep in lockstep.
  *
- * Includes the progressive "show more" for clamped text (e.g. team-member bios
- * marked `wt-clamp`): the element ships a static line-clamp inline so it is
- * truncated on first paint, then measures overflow and offers a toggle only
- * when the content is actually cut off.
+ * Includes the progressive "show more" for clamped text (e.g. team-member
+ * bios): the element ships a static line-clamp inline so it is truncated on
+ * first paint, then measures overflow and offers a toggle only when the content
+ * is actually cut off.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { PublicBlockNode } from '../lib/public'
-import { getNodeClasses, getNodeStyles, getStringField } from '../lib/blockRuntime'
+import { getClampLines, getNodeClasses, getNodeStyles, getStringField } from '../lib/blockRuntime'
 import { getNodeDomId } from '../lib/responsiveRuntime'
 
 export function TextBlock({ node }: { node: PublicBlockNode }) {
@@ -23,7 +23,7 @@ export function TextBlock({ node }: { node: PublicBlockNode }) {
   const nodeClasses = getNodeClasses(node)
   const nodeStyles = getNodeStyles(node) as CSSProperties
   const nodeDomId = getNodeDomId(node) || undefined
-  const isClamp = /\bwt-clamp\b/.test(nodeClasses)
+  const isClamp = getClampLines(node) !== null
 
   const textEl = useRef<HTMLDivElement | null>(null)
   const [expanded, setExpanded] = useState(false)

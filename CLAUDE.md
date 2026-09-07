@@ -279,6 +279,202 @@ re-asking there is double jeopardy, and both had to be reverted once already.
 Tests: `test_scraper_images.CardRackIsNotARosterTest`,
 `test_directory_roster.PageScopedRosterTest`.
 
+## A scraped card vouches for a whole person
+
+`_enrich_plan_profile_cards` is the **one** place that pairs an LLM-written
+person with their source card, so it is where everything that card can vouch
+for is handed over. It used to pass the portrait alone (it was
+`_enrich_plan_profile_photos`), and the bio sitting on the matched
+`ProfileCandidate` was dropped on the floor.
+
+The damage is not that one field went missing — it is that **the missing field
+then looked like a complete card**. `_ensure_scraped_team_blocks` decides
+whether to replace a block wholesale with the scraped roster (which does carry
+bios) by asking `any(member.photo_url)`, and enrichment had just put photos
+there. So watr.org.my published four team cards with real faces, real names,
+invented roles and **no biography**, while four 480-char bios sat one object
+away. The tell was in the DOM: `alt="DR. WONG SUM KEONG portrait"` — the
+scraper's own uppercase alt — on a title-cased LLM name. `_bind_slot` drops a
+`$slot` node whose value is empty, so the card had no bio *node*, not an empty
+one, which is why it read as "the template has no bio".
+
+That photo test is a proxy for **"was this block enriched"**, never for "does
+it have a photo". Keep the two in step: any field enrichment learns to fill,
+it must fill *before* that branch runs, or the branch starts lying again.
+
+Every field backfills **independently, and only into a gap** — the shape the
+profile-page refill beside it already had, whose comment records why: *"gating
+the contacts refill on a missing photo left it almost never firing."*
+
+Two rules the backfill inherits rather than restates:
+
+- **Grounding is skipped, on purpose.** A `ProfileCandidate` bio is page text by
+  construction, so re-checking it against the page is guaranteed-true work — the
+  same exemption `_roster_members` documents. `clean_team_bio` still runs (with
+  the block's `other_names`, so one person's paragraph cannot bleed onto a
+  colleague's card), so a scraped bio is cleaned identically on both paths.
+  The LLM's own bio has *already* been through `_sanitize_team_block`'s verbatim
+  haystack, which is why a surviving one is never overwritten.
+- **`description` must be written with `bio`.** It is a deprecated alias kept in
+  sync by `TeamMember.sync_description_aliases`, which only fires on
+  **construction** — attribute assignment and `model_copy` both bypass it, and
+  `_team_content` reads `bio or description`.
+
+Tests: `test_directory_roster.ScrapedBioBackfillTest`.
+
+## `BIO_MAX_LEN` is a safety rail, not an editorial length
+
+`_extract_profile_bio` keeps every qualifying line inside a card's container, so
+a mis-detected container — a whole column, a whole section — would otherwise
+make the page's body text somebody's biography. That is the only job the cap
+has.
+
+At **480** it was doing a second job it was never meant to do: cutting real
+biographies down. On watr.org.my three of four people lost **58-65%** of their
+story, and the fourth — 316 characters — came through whole, which is what
+pinned the cap as the cause rather than the renderer. It is 2400 now: ~4
+paragraphs, comfortably past the longest measured real bio (1385).
+
+Two properties, both of which were absent:
+
+- **One home.** The bound was a bare `480` in `scraper._extract_profile_bio`
+  *and* `_BIO_MAX_LEN` in `profile_text.clean_team_bio` — one rule, two
+  spellings, so raising it in the obvious place would have changed nothing. It
+  is `profile_text.BIO_MAX_LEN`, applied through `truncate_bio`, at both sites.
+- **A cut lands on a boundary.** Both were bare character slices, so a bio ended
+  mid-word — *"coaching and training both young medical and para-medical st"*.
+  A card's **Show more** expands to the stored value, so a half-word is what the
+  reader gets *after* asking for the rest: the page states a fragment and looks
+  broken. `truncate_bio` cuts at a sentence end when one falls late enough to be
+  worth taking, and between words otherwise (`…` only in that second case — a
+  sentence end already reads as finished, and punctuating it would state a
+  truncation the reader cannot see).
+
+**Under the cap it returns the text unchanged**, which is the case that matters
+most and the one every real bio hits: nothing is rewritten, so a short bio is
+byte-identical to what the source published.
+
+Nothing in the renderers crops a bio — no `maxHeight`, and the only
+`overflow: hidden` on the node is the clamp's own, which expanding lifts. If a
+bio ends early, the cap is where to look.
+
+Tests: `test_profile_bio_length.py`,
+`test_scraper_images.test_a_runaway_container_is_still_bounded_and_never_cut_mid_word`.
+
+### Fitting a bio to a card — the model picks sentences, never writes them
+
+`truncate_bio` is a bound, not an edit: it keeps whatever comes first, so a bio
+opening with where someone grew up loses the qualification that made them worth
+introducing. Choosing WHICH sentences a card keeps is editorial judgement, so
+`services/bio_condense.py` asks — and **the model answers in sentence numbers**,
+the same contract `paste_structure` runs on. Three properties follow:
+
+1. **A condensed bio is a SUBSEQUENCE of the original**, so every word on the
+   card is verbatim source text and passes `clean_team_bio`'s verbatim haystack
+   and every other grounding gate **with no exemption anywhere**. Nothing
+   downstream learns this pass exists.
+2. **A credential cannot be invented.** This matters more here than anywhere
+   else in the pipeline: a bio is a claim about a named, identifiable person's
+   professional qualifications, published under their photograph. A free
+   rewrite could turn *"practising obstetrician and gynaecologist, then a
+   gynaecologic oncologist"* into *"senior cancer specialist"* — fluent,
+   plausible, false, and libellous. An index cannot do that.
+3. The reply is small however long the bios are, and **one call covers a whole
+   block** — which is also what lets the model drop a fact two cards both state.
+
+**The budget is arithmetic, so code enforces it.** Asked for ~400 characters
+with no other help the model returned **1110, 1120 and 727**: it dropped the
+hobbies and kept every professional sentence, which is the right ranking and the
+wrong length. Two fixes, both needed — each sentence is rendered with its
+character count so the model *can* budget, and `_apply` then trims trailing kept
+sentences until the total fits. Same division as the rest of the pipeline: the
+model supplies the judgement, deterministic code does the mapping. The first
+kept sentence is never trimmed away; **which** sentence that is stays the
+model's call, and it legitimately skips a scene-setting opener for the one that
+states the qualification.
+
+Two more rules, both of which the reply can get wrong:
+
+- **Indices are re-sorted into source order, and de-duplicated.** A reply that
+  reordered sentences would be rewriting the bio in the source's own words,
+  which is the one thing indices exist to prevent. Note `join_bio_segments`
+  orders *lines*, not sentences within one — so a cross-line pair looks correct
+  even without the sort, and only a same-line pair tests it.
+- **`split_bio_segments`/`join_bio_segments` are inverses**, and newlines are
+  hard boundaries: `_extract_profile_bio` newline-joins a directory card's
+  distinct facts and a page's paragraphs alike, and the card renders them
+  `white-space: pre-line`.
+
+Scope is **`team` blocks only**. A `ProfileBlock` is the page that is *about*
+this person and keeps the complete biography — a grid introduces people, a
+profile page tells the story. The two carry separate `bio` fields already, so
+nothing is threaded and no member is condensed twice. `description` must be
+written alongside `bio` (the `_team_content` alias trap again), and a bio
+already at or under `team_bio_card_max_chars` never reaches the model at all —
+on a directory of short cards this pass makes no calls whatsoever.
+
+Every failure keeps the full bio: flag off, no client, `LlmError`, indices out
+of range, an empty selection. A shortened card is an improvement; a missing one
+is a regression. `conftest._offline_bio_condense` pins it off for the suite
+(mirroring `_offline_paste_structure`), so the team and roster tests keep
+asserting `truncate_bio`'s deterministic bound; `test_bio_condense.py` turns it
+on and injects a fake client.
+
+Knobs: `TEAM_BIO_CONDENSE_ENABLED` (default on), `TEAM_BIO_CARD_MAX_CHARS`
+(400 — roughly what the 4-line clamp shows, so most cards read complete with no
+"Show more" at all).
+
+Tests: `test_bio_condense.py`.
+
+## The line-clamp is the whole clamp declaration
+
+A clamped text node (a team-member bio) is truncated inline and offered a
+**Show more** by every renderer. That behaviour used to be declared **twice** —
+a `wt-clamp` marker class beside the inline `WebkitLineClamp` — so one
+behaviour had two sources of truth, and **the half an editor could reach was
+not the half the renderers read**: the builder has no free-text `classes`
+editor, so the line count could never be changed by anyone.
+
+`getClampLines` reads the style and is the only signal. `wt-clamp` / `wt-clamp-4`
+are gone from the catalog (`wt-clamp-4` never had a CSS rule at all).
+**Already-published sites ship both**, so they keep their toggle through the
+next `webtree-public` deploy with no regeneration — which is exactly why the
+class check could be dropped rather than kept alongside.
+
+Four properties declare a clamp and **move as one unit** (`clampStylePatch`): a
+`WebkitLineClamp` without `display: -webkit-box` claims to clamp and doesn't.
+Expanding writes `WebkitLineClamp: unset`, which the predicate reads back as
+"no clamp" — so `unset`, `none` and anything unparseable must all mean null, or
+the toggle re-offers itself on text that is already fully shown.
+
+Three renderers, one predicate, none able to import the others':
+`webtree-public/lib/blockRuntime.ts`, vendored to
+`frontend/src/preview/lib/blockRuntime.ts`, mirrored as
+`builder/src/lib/text-clamp.ts` — the `adaptiveInk.ts` idiom.
+
+The builder canvas is the one that cannot just copy the renderer, for two
+reasons invisible from the other two:
+
+- **The element's styles land on the WRAPPER**
+  (`editor-component-wrapper.tsx`), whose child is a block — and a
+  `-webkit-box` wrapping a block does not clamp the way the published site
+  does, where the styles sit on the text element itself. The canvas applies the
+  clamp to the node that holds the words.
+- **The text is `contentEditable`.** Clamping while it is being edited hides the
+  copy the author is reaching for, so editing lifts the clamp.
+
+The **Max lines** control lives in the Typography accordion and writes ordinary
+inline styles through `updateElement`, the `applyFontFamily` pattern. **No
+`BuilderElement` field is added**, so none of the six whitelist places needs an
+edit. The canvas toggle is styled with Tailwind utilities rather than a fourth
+copy of `.wt-clamp-toggle` — the three-way CSS duplication the adaptive-ink and
+self-ink sections warn about.
+
+Tests: `test_text_clamp.py` (cross-repo drift),
+`test_section_content.test_no_section_declares_a_clamp_marker_class`;
+`webtree-public/lib/blockRuntime.test.ts` and
+`builder/src/lib/text-clamp.test.mjs` (`npm test`).
+
 ## Semantic HTML is a convention, not a guarantee
 
 A visual page builder puts body copy in a bare `<div>` — Oxygen's

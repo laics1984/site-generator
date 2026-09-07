@@ -81,6 +81,8 @@ from app.services.source_injection import (
 from app.services.source_path import normalize_source_slug
 from app.services.whatsapp_discovery import build_whatsapp_widget, discover_whatsapp_number
 from app.services.image_graphics import screen_source_images_for_graphics
+from app.services.bio_condense import condense_bios
+from app.services.llm import LlmClient
 from app.services.image_refs import bind_image_refs
 from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
@@ -462,17 +464,67 @@ def _profile_photo_vision_ok(
     return annotation.kind == "photo" and annotation.people_count >= 1
 
 
-def _enrich_plan_profile_photos(
+def _backfill_member_bio(
+    member: TeamMember | ProfileBlock,
+    candidate: ProfileCandidate,
+    sibling_names: tuple[str, ...],
+) -> None:
+    """Give a matched person the story their own scraped card tells.
+
+    A card states a face, a name, a title AND a story, so a refill that hands
+    over only the face leaves the rest on the floor. Each field backfills
+    INDEPENDENTLY, and only into a gap — the same shape as the profile-page
+    refill below, whose comment records why: gating one field's refill on
+    another being absent left it almost never firing.
+
+    Grounding is deliberately skipped, exactly as in ``_roster_members``: a
+    ``ProfileCandidate`` bio is page text by construction, so re-checking it
+    against the page is guaranteed-true work. ``clean_team_bio`` still runs, so
+    a scraped bio reaching a card is cleaned identically on both paths.
+
+    ``sibling_names`` are the block's other members — a line naming one of them
+    belongs to that person's card, not this one. A profile block is one person
+    and has no siblings.
+    """
+    if getattr(member, "bio", None) or getattr(member, "description", None):
+        return
+    bio = clean_team_bio(
+        candidate.bio,
+        other_names=tuple(n for n in sibling_names if n and n != member.name),
+    )
+    if not bio:
+        return
+    member.bio = bio
+    # `description` is a deprecated alias kept in sync by
+    # TeamMember.sync_description_aliases, which only fires on CONSTRUCTION.
+    # Assigning `bio` alone would leave the two disagreeing, and _team_content
+    # reads `bio or description` — the same trap _sanitize_team_block documents.
+    # ProfileBlock carries no alias.
+    if isinstance(member, TeamMember):
+        member.description = bio
+
+
+def _enrich_plan_profile_cards(
     plan: SitePlan,
     source: SourceContent,
     annotations: dict[str, VisionAnnotation] | None = None,
     profiles: list[ProfileCandidate] | None = None,
 ) -> None:
-    """Attach confidently matched scraped portraits to generated team members.
+    """Fill generated people in from the scraped card that matches them.
 
-    Mutates the plan in place. Only concrete URLs from scraper-produced
+    Mutates the plan in place. Only concrete values from scraper-produced
     ProfileCandidate objects are applied, so older payloads and LLM-only plans
     keep using the existing photo_query fallback.
+
+    This is the ONE place that pairs an LLM-written person with their source
+    card, so it is where everything that card can vouch for is handed over —
+    portrait and bio. It used to pass the portrait alone, which is how
+    watr.org.my published four team cards with real faces, real names and no
+    biography: the four 480-char bios sat on the matched candidates, and
+    ``_ensure_scraped_team_blocks`` — the path that would have replaced the
+    block with the scraped roster wholesale — then short-circuited on
+    ``any(member.photo_url)``, reading a block this function had just given
+    photos to as already complete.
 
     "Already used" is scoped to ONE PAGE. The rule it enforces is that a grid
     must not show the same face twice — a page-level concern. Applied across the
@@ -480,6 +532,10 @@ def _enrich_plan_profile_photos(
     all nine portraits, and each member's own page, rendered later, found none
     left and fell back to a monogram. A person's portrait belongs on their card
     AND on their page.
+
+    The candidate pool is still photo-gated (below): a face is what the vision
+    screen and the one-face-per-page rule are written against. A bio therefore
+    rides along with a portrait rather than arriving on its own.
     """
     if profiles is None:
         profiles = _profile_pool_for(source)
@@ -496,9 +552,10 @@ def _enrich_plan_profile_photos(
             if block.kind not in ("team", "profile"):
                 continue
             # A profile block is one person; a team block is a list of them.
-            # Both want the same thing: this person's real portrait, matched by
-            # name, never a stock face.
+            # Both want the same thing: this person's real portrait and their
+            # own story, matched by name, never a stock face.
             people = [block] if block.kind == "profile" else block.members
+            sibling_names = tuple(person.name for person in people)
             for member in people:
                 scored = sorted(
                     (
@@ -516,6 +573,7 @@ def _enrich_plan_profile_photos(
                 member.photo_alt = matched.photo_alt or member.name
                 if matched.photo_url:
                     used_urls.add(matched.photo_url)
+                _backfill_member_bio(member, matched, sibling_names)
 
 
 def _detail_page_href(profile_url: str | None) -> str | None:
@@ -731,6 +789,61 @@ def _profile_contacts(candidate: ProfileCandidate | None) -> list[ProfileContact
     return contacts
 
 
+async def _condense_team_card_bios(
+    plan: SitePlan, *, llm: LlmClient | None = None
+) -> None:
+    """Fit each TEAM CARD's bio to a card, in the source's own sentences.
+
+    `team` blocks only, deliberately. A `ProfileBlock` is the page that is
+    *about* this person, and it keeps the complete biography — a grid
+    introduces people, a profile page tells the story. That split costs nothing
+    to maintain: the two blocks already carry separate `bio` fields, so nothing
+    has to be threaded and no member is condensed twice.
+
+    Runs AFTER `_ensure_scraped_team_blocks`, so it sees the final roster
+    whichever path filled it, and after `align_page_to_scaffold`'s grounding
+    net — which it does not need, since a condensed bio is a subsequence of the
+    text that net already accepted.
+
+    Every failure keeps the full bio (`bio_condense` returns an empty map), and
+    a bio already at or under the target never reaches the model at all — on a
+    directory of short cards this pass makes no calls whatsoever.
+    """
+    if not settings.team_bio_condense_enabled:
+        return
+    target = settings.team_bio_card_max_chars
+    for page in plan.pages:
+        for block in page.blocks:
+            if getattr(block, "kind", None) != "team":
+                continue
+            # Index against the block's own member list so a returned index
+            # cannot land on a different person.
+            oversized = [
+                (index, member)
+                for index, member in enumerate(block.members)
+                if member.bio and len(member.bio) > target
+            ]
+            if not oversized:
+                continue
+            condensed = await condense_bios(
+                [(member.name, member.bio or "") for _index, member in oversized],
+                target_chars=target,
+                client=llm,
+            )
+            for entry, bio in condensed.items():
+                member = oversized[entry][1]
+                member.bio = bio
+                # The deprecated alias is read by _team_content as
+                # `bio or description`; leaving it behind would resurrect the
+                # full text. Same trap _sanitize_team_block documents.
+                member.description = bio
+            if condensed:
+                logger.info(
+                    "Bio condense: shortened %d of %d card bios on /%s",
+                    len(condensed), len(oversized), page.slug,
+                )
+
+
 def _ensure_scraped_team_blocks(
     plan: SitePlan,
     source: SourceContent,
@@ -751,8 +864,8 @@ def _ensure_scraped_team_blocks(
     Pages in ``directory_slugs`` (detected profile directories, e.g. a "find a
     therapist" listing) get their team block replaced WHOLESALE with the source
     page's own full roster: the LLM keeps only a subset of a long listing, and
-    ``_enrich_plan_profile_photos`` can only attach photos to the members the
-    LLM kept, so a partially photo-bearing block must not short-circuit here.
+    ``_enrich_plan_profile_cards`` can only fill in the members the LLM kept,
+    so a partially enriched block must not short-circuit here.
 
     A page carrying a single profile card instead gets that one person's card
     (see ``_profile_page_member``) — the detail pages a directory links to.
@@ -830,10 +943,10 @@ def _ensure_scraped_team_blocks(
             if profile is not None and (profile.photo_url or profile.contacts):
                 # The LLM wrote the block itself; the page's own scraped card is
                 # the authority on this person's portrait AND contacts, so each
-                # backfills independently — `_enrich_plan_profile_photos` (run
-                # just before this) already fills photo_url on most matched
-                # profiles, and gating the contacts refill on a missing photo
-                # left it almost never firing.
+                # backfills independently — `_enrich_plan_profile_cards` (run
+                # just before this) already fills photo_url and bio on most
+                # matched profiles, and gating the contacts refill on a missing
+                # photo left it almost never firing.
                 for idx in profile_indexes:
                     existing = page.blocks[idx]
                     updates: dict[str, object] = {}
@@ -874,6 +987,15 @@ def _ensure_scraped_team_blocks(
         if team_indexes:
             for idx in team_indexes:
                 block = page.blocks[idx]
+                # A photo means `_enrich_plan_profile_cards` matched these
+                # members to their scraped cards a moment ago, so the block is
+                # already carrying everything those cards can vouch for —
+                # portrait AND bio — and replacing it wholesale would only
+                # discard the LLM's own headings and ordering. This test is a
+                # proxy for "was this block enriched", NOT for "does it have a
+                # photo": when it was only the latter, a block enriched with
+                # faces but no stories short-circuited here and shipped
+                # bio-less cards. Keep the two in step.
                 if any(getattr(member, "photo_url", None) for member in block.members):
                     continue
                 page.blocks[idx] = TeamBlock(
@@ -1107,7 +1229,7 @@ def _drop_person_photos(pages: list[PagePlan]) -> None:
 
     The stock-images-only counterpart to ``_drop_unbound_gallery_items``, and
     placed for the same reason: it runs on the FINISHED plan, after
-    ``_enrich_plan_profile_photos`` and ``_ensure_scraped_team_blocks`` have
+    ``_enrich_plan_profile_cards`` and ``_ensure_scraped_team_blocks`` have
     built the roster. Cutting the photo earlier — on the source — would delete
     the roster itself, because both roster passes skip a candidate that has no
     photo (``if not profile.photo_url: continue``); a photo-less candidate is
@@ -1266,8 +1388,9 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     await _screen_source_images_for_graphics(scraped_metadata)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
-    _enrich_plan_profile_photos(plan, payload.source, annotations)
+    _enrich_plan_profile_cards(plan, payload.source, annotations)
     _ensure_scraped_team_blocks(plan, payload.source, annotations)
+    await _condense_team_card_bios(plan)
     if payload.stock_images_only:
         _drop_person_photos(plan.pages)
 
@@ -1593,7 +1716,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     annotations = await _annotate_source_images(
         payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
     )
-    _enrich_plan_profile_photos(plan, payload.source, annotations, profiles=profiles)
+    _enrich_plan_profile_cards(plan, payload.source, annotations, profiles=profiles)
     team_section_slugs = {s.slug for s in content_scaffolds if "team" in s.sections}
     # Directory pages: scaffolds with a team section whose grounding source is
     # itself a profile roster. Intersecting with the team scaffolds guarantees
@@ -1614,6 +1737,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         directory_slugs=directory_slugs,
     )
     _drop_hollow_team_pages(plan)
+    await _condense_team_card_bios(plan)
     # After the last pass that can remove a page, so a member's link is checked
     # against the pages the site actually ships.
     _prune_dead_profile_links(plan)
@@ -2432,7 +2556,7 @@ async def plan_only(source: SourceContent) -> SitePlan:
     """Debug endpoint: returns the raw SitePlan without converting to BuilderElement trees."""
     try:
         plan = await plan_site(source)
-        _enrich_plan_profile_photos(plan, source)
+        _enrich_plan_profile_cards(plan, source)
         _ensure_scraped_team_blocks(plan, source)
         return plan
     except LlmError as exc:

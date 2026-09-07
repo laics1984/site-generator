@@ -23,7 +23,7 @@ from app.models.content_blocks import (
 )
 from app.routers.generate import (
     _directory_roster_members,
-    _enrich_plan_profile_photos,
+    _enrich_plan_profile_cards,
     _ensure_scraped_team_blocks,
     _profile_page_block,
     _prune_dead_profile_links,
@@ -470,7 +470,7 @@ class ProfileDetailPageTest(unittest.TestCase):
         self.assertIsNone(page.blocks[2].image_ref)
 
     def test_contacts_are_backfilled_even_when_the_llm_already_has_a_photo(self):
-        # The common case in practice: _enrich_plan_profile_photos (which runs
+        # The common case in practice: _enrich_plan_profile_cards (which runs
         # right before _ensure_scraped_team_blocks) has already matched the
         # LLM's own profile block to its portrait, so only contacts are still
         # missing. The refill must not skip just because the photo is already
@@ -870,7 +870,7 @@ class PortraitReuseAcrossPagesTest(unittest.TestCase):
     def test_roster_and_member_pages_both_get_the_portrait(self):
         plan, entry = self._plan_and_source()
 
-        _enrich_plan_profile_photos(plan, entry)
+        _enrich_plan_profile_cards(plan, entry)
 
         team = next(b for p in plan.pages for b in p.blocks if getattr(b, "kind", None) == "team")
         profiles = [b for p in plan.pages for b in p.blocks if getattr(b, "kind", None) == "profile"]
@@ -894,7 +894,142 @@ class PortraitReuseAcrossPagesTest(unittest.TestCase):
         )
         plan = SitePlan(site_name="T", pages=[page])
 
-        _enrich_plan_profile_photos(plan, _source(roster))
+        _enrich_plan_profile_cards(plan, _source(roster))
 
         urls = [m.photo_url for m in page.blocks[0].members if m.photo_url]
         self.assertEqual(len(urls), len(set(urls)))
+
+
+class ScrapedBioBackfillTest(unittest.TestCase):
+    """The scraped card is the authority on this person's story, not just their face.
+
+    watr.org.my published four team cards with real portraits, real names and
+    no biography, while four 480-char bios sat on the matched
+    ProfileCandidates. `_enrich_plan_profile_cards` handed over the portrait
+    alone, and `_ensure_scraped_team_blocks` — the path that would have
+    replaced the block with the scraped roster wholesale — then short-circuited
+    on `any(member.photo_url)`, reading a block this function had just given
+    photos to as already complete.
+    """
+
+    def _llm_block(self, profiles, *, bios=None):
+        """A team block as the LLM writes one: names it rephrased, no photos."""
+        return TeamBlock(
+            heading="Our Team",
+            members=[
+                TeamMember(
+                    name=p.name.title(),
+                    role="Practitioner",
+                    bio=(bios or {}).get(p.name),
+                )
+                for p in profiles
+            ],
+        )
+
+    def test_matched_member_gains_the_scraped_bio(self):
+        profiles = _profiles(3)
+        block = self._llm_block(profiles)
+        plan = SitePlan(
+            site_name="X", industry_category="professional_services",
+            pages=[_page("team", [block])],
+        )
+
+        _enrich_plan_profile_cards(plan, _source(profiles))
+
+        for member in plan.pages[0].blocks[0].members:
+            self.assertTrue(member.photo_url, member.name)
+            self.assertEqual(member.bio, "Children with special needs\nHome visits")
+            # The deprecated alias is kept in step: _team_content reads
+            # `bio or description`, and the model validator that syncs them
+            # only fires on construction.
+            self.assertEqual(member.description, member.bio)
+
+    def test_an_existing_bio_is_never_overwritten(self):
+        # Gap-fill only, the shape of the profile-page refill beside it. A bio
+        # the LLM wrote has already passed `_sanitize_team_block`'s verbatim
+        # grounding, so it is source text too — there is nothing to correct.
+        profiles = _profiles(2)
+        block = self._llm_block(profiles, bios={profiles[0].name: "Her own words."})
+        plan = SitePlan(
+            site_name="X", industry_category="professional_services",
+            pages=[_page("team", [block])],
+        )
+
+        _enrich_plan_profile_cards(plan, _source(profiles))
+
+        members = plan.pages[0].blocks[0].members
+        self.assertEqual(members[0].bio, "Her own words.")
+        self.assertEqual(members[1].bio, "Children with special needs\nHome visits")
+
+    def test_a_profile_block_is_filled_the_same_way(self):
+        # One rule, both kinds: a profile block is one person, a team block is a
+        # list of them, and both want what their own scraped card says.
+        profiles = _profiles(1)
+        plan = SitePlan(
+            site_name="X", industry_category="professional_services",
+            pages=[_page(
+                "aisha-rahman",
+                [ProfileBlock(name=profiles[0].name.title(), role="Practitioner")],
+                page_type="about",
+            )],
+        )
+
+        _enrich_plan_profile_cards(plan, _source(profiles))
+
+        profile = plan.pages[0].blocks[0]
+        self.assertTrue(profile.photo_url)
+        self.assertEqual(profile.bio, "Children with special needs\nHome visits")
+
+    def test_a_line_naming_another_member_stays_off_this_card(self):
+        # clean_team_bio's `other_names`, applied here exactly as
+        # `_roster_members` applies it — one person's paragraph must not bleed
+        # onto their colleague's card.
+        profiles = _profiles(2)
+        profiles[0].bio = "Works with Ivy Rahman\nHome visits"
+        block = self._llm_block(profiles)
+        plan = SitePlan(
+            site_name="X", industry_category="professional_services",
+            pages=[_page("team", [block])],
+        )
+
+        _enrich_plan_profile_cards(plan, _source(profiles))
+
+        self.assertEqual(plan.pages[0].blocks[0].members[0].bio, "Home visits")
+
+    def test_enriched_block_survives_the_ensure_pass_with_its_bios(self):
+        # The regression in full: enrichment runs, then `_ensure_scraped_team_blocks`
+        # sees photos and leaves the block alone. That short-circuit is only
+        # correct while "has a photo" means "was enriched" — which is what this
+        # pins.
+        profiles = _profiles(3)
+        block = self._llm_block(profiles)
+        source = _source(profiles)
+        plan = SitePlan(
+            site_name="X", industry_category="professional_services",
+            pages=[_page("team", [block])],
+        )
+
+        _enrich_plan_profile_cards(plan, source)
+        _ensure_scraped_team_blocks(plan, source)
+
+        members = plan.pages[0].blocks[0].members
+        self.assertEqual(len(members), 3)
+        for member in members:
+            self.assertTrue(member.bio, f"{member.name} shipped with no story")
+
+    def test_an_unmatched_member_is_left_alone(self):
+        # No confident match, nothing to vouch for — the card keeps whatever the
+        # LLM gave it rather than borrowing a stranger's biography.
+        profiles = _profiles(2)
+        block = TeamBlock(
+            heading="Our Team",
+            members=[TeamMember(name="Zulkifli Mokhtar", role="Practitioner")],
+        )
+        plan = SitePlan(
+            site_name="X", industry_category="professional_services",
+            pages=[_page("team", [block])],
+        )
+
+        _enrich_plan_profile_cards(plan, _source(profiles))
+
+        self.assertIsNone(plan.pages[0].blocks[0].members[0].bio)

@@ -145,6 +145,25 @@ def _offline_paste_structure():
 
 
 @pytest.fixture(autouse=True)
+def _offline_bio_condense():
+    """Pin the LLM bio-condensing pass off for every test.
+
+    Same reason as `_offline_paste_structure` above: the suite runs offline, and
+    this would reach a server for every team block carrying a long bio, falling
+    back after a timeout — the tests would pass while quietly waiting out the
+    socket. Off, `truncate_bio`'s bound is the only shortener, which is what the
+    team and roster tests assert. tests/test_bio_condense.py turns it on itself
+    and injects a fake client.
+    """
+    original = settings.team_bio_condense_enabled
+    settings.team_bio_condense_enabled = False
+    try:
+        yield
+    finally:
+        settings.team_bio_condense_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _no_design_schemes():
     """Pin design schemes off for every test.
 

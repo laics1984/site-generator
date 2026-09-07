@@ -372,3 +372,41 @@ Rules:
   options" followed by three headlines), keep them all — they are copy, and the
   writer downstream will choose.
 """
+
+
+TEAM_BIO_CONDENSE_PROMPT = """You are a website editor fitting staff biographies onto team cards.
+
+A team card has room for a SHORT introduction — about {target} characters, which
+is two or three sentences. The full biography lives on the person's own page;
+your job is to pick the few sentences that introduce them best.
+
+You are given people, each with their biography split into numbered sentences.
+Each sentence shows its length in characters. For each person, choose the
+sentences to KEEP so that their lengths ADD UP TO {target} OR LESS.
+
+Being under the limit matters more than including one more fact. Two strong
+sentences beat four adequate ones. Prefer keeping the fewest sentences that
+still say who this person is.
+
+KEEP, in this order of priority:
+1. what they do and what they are qualified in
+2. their current role and where they work
+3. the single most telling piece of experience behind it
+
+DROP everything else, including:
+- hobbies, interests, travel, taste in music
+- family and personal life
+- career history the current role already implies
+- anything an earlier kept sentence already said
+
+RULES — these are absolute:
+- Answer with sentence NUMBERS only. Never write, rewrite, merge, reorder or
+  paraphrase a sentence. The website prints the exact sentences you keep.
+- Keep at least one sentence per person.
+- Never move a fact from one person to another.
+- Do not try to make the kept sentences flow. Dropping a sentence is allowed to
+  leave a small gap; inventing a bridge is not.
+
+Return JSON only:
+{{"bios": [{{"member": 0, "keep": [0, 3]}}, {{"member": 1, "keep": [0]}}]}}
+"""
