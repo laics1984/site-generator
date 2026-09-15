@@ -90,12 +90,39 @@ class Settings(BaseSettings):
     # combo misbehaves (e.g. thinking output breaking JSON mode).
     reasoning_think: bool = True
 
+    # --- Claude API -------------------------------------------------------------
+    # WHICH model each role uses — the local AI server or a Claude model — is
+    # chosen per request in the UI (services/llm_choice.py), not here. What stays
+    # here is what the UI must never carry: the key, and the tuning knobs.
+    #
+    # Passed to the SDK explicitly — nothing here reads os.environ. Unset ⇒ the
+    # UI offers the Claude models as unavailable.
+    anthropic_api_key: str | None = None
+    # output_config.effort — how much the model thinks. Claude models think
+    # adaptively and reject sampling knobs, so this replaces both
+    # LLM_THINK/REASONING_THINK and the temperatures for this provider:
+    # `think=True` calls use the reasoning effort, everything else the content one.
+    anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # Output budget for a Claude call, either role. Its own knob rather than
+    # LLM_MAX_TOKENS because the picker switches models per request: that one is
+    # sized for the local model, and adaptive thinking spends from this budget
+    # before any JSON. Grown on truncation like the local one, capped at 128K.
+    anthropic_max_tokens: int = 32000
+    anthropic_reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # Server-side refusal fallbacks: a safety decline is re-run on a fallback
+    # model inside the same call instead of failing the generation.
+    anthropic_fallbacks_enabled: bool = True
+    # Cache the system prompt (the ~3k-token scaffold prompt repeats on every
+    # content batch, so later batches read it at a fraction of the price).
+    anthropic_prompt_cache: bool = True
+
     @field_validator(
         "llm_model",
         "llm_api_key",
         "reasoning_base_url",
         "reasoning_model",
         "reasoning_api_key",
+        "anthropic_api_key",
         "cms_remote_api_base_url",
         "cms_remote_admin_base_url",
         mode="before",

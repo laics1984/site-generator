@@ -12,6 +12,10 @@ trafilatura==1.12.2
 pillow==10.4.0
 pymupdf==1.24.10
 aiosqlite==0.20.0
+# Claude API provider (services/llm.AnthropicClient), used only when
+# LLM_PROVIDER / REASONING_PROVIDER = anthropic. Runs on httpx2, a separate
+# package, so it does not move the httpx pin above.
+anthropic==1.5.0
 # OCR text detection for hero backgrounds (services/text_detection.py):
 # flags source images that already carry a headline so we never draw ours
 # over them. Pulls onnxruntime + opencv (~400MB in the image). Set

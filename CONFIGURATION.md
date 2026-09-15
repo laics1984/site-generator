@@ -8,7 +8,7 @@ upper-cased field name) or a `.env` file at the repo root. No other module reads
 
 - **Required:** none. Every value has a working local default. `PEXELS_API_KEY`
   is *recommended* for real photos (falls back to gradient placeholders).
-- **Secrets** (`PEXELS_API_KEY`, `LLM_API_KEY`, `REASONING_API_KEY`): keep them in `.env` only
+- **Secrets** (`PEXELS_API_KEY`, `LLM_API_KEY`, `REASONING_API_KEY`, `ANTHROPIC_API_KEY`): keep them in `.env` only
   — `.env` is gitignored and must stay untracked. See [SECURITY.md](SECURITY.md).
 - See [`.env.example`](.env.example) for a heavily-commented catalogue.
 
@@ -53,6 +53,38 @@ which endpoint is an application decision, not a serving one. Unset both
 | `REASONING_TIMEOUT_SECONDS` | `None` | `None` ⇒ `LLM_TIMEOUT_SECONDS`. |
 | `REASONING_MAX_TOKENS` | `16384` | Higher — thinking tokens count against it. |
 | `REASONING_THINK` | `true` | Thinking on by default for this role. |
+
+## Claude API (optional)
+
+**Which model each role uses is not configured here.** The model menu in the
+header picks it per request, independently for *page content* and *brand &
+design decisions*: the local AI server, Claude Opus 5, Claude Fable 5.1 or
+Claude Sonnet 5 (catalogue: `backend/app/services/llm_choice.py`). The choice
+travels as two request headers; a request without them — curl, scripts, tests —
+uses the local server for both roles, exactly as before. Only the key and the
+tuning knobs live in `.env`.
+
+On a Claude model the schema is sent as structured output, and sampling knobs
+(`*_TEMPERATURE`, `LLM_REPETITION_PENALTY`) and `LLM_THINK`/`REASONING_THINK` are
+not sent: current Claude models reject them and think adaptively, so effort
+replaces them. Picking one sends source content to Anthropic — see
+[SECURITY.md](SECURITY.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | `None` | **Secret.** Unset ⇒ the menu shows the Claude models as unavailable. |
+| `ANTHROPIC_EFFORT` | `high` | `output_config.effort` for content calls: `low`…`max`. |
+| `ANTHROPIC_REASONING_EFFORT` | `high` | Effort for the reasoning role. |
+| `ANTHROPIC_MAX_TOKENS` | `32000` | Output budget per Claude call, either role; thinking spends from it. Separate from `LLM_MAX_TOKENS`, which stays sized for the local model. |
+| `ANTHROPIC_FALLBACKS_ENABLED` | `true` | Server-side refusal fallbacks (a safety decline re-runs on a fallback model in the same call), for the models the catalogue lists them for. |
+| `ANTHROPIC_PROMPT_CACHE` | `true` | Cache the system prompt, which repeats on every content batch. |
+
+Batching (`LLM_CONTEXT_TOKENS`, `MAX_PAGES_PER_BATCH`, …) stays sized for the
+local model whichever model is picked — a Claude generation makes more,
+smaller calls than it strictly needs, but never an oversized one for the local
+server. Claude Fable 5.1 needs 30-day data retention on the Anthropic
+organisation. Each Claude call logs its token usage (`Claude … usage:`), which
+is the cost record.
 
 ## LLM tuning, caching & batching
 

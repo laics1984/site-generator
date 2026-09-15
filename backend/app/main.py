@@ -21,6 +21,7 @@ from app.routers import (
     facebook_session,
     generate,
     health,
+    llm_models,
     pages,
     paste,
     preview,
@@ -28,6 +29,7 @@ from app.routers import (
     source,
 )
 from app.services.db import init_db
+from app.services.llm_choice import CONTENT_HEADER, REASONING_HEADER, LlmChoiceMiddleware
 
 
 @asynccontextmanager
@@ -42,10 +44,18 @@ async def lifespan(app: FastAPI):
     # a model: the ai-server is an independent stack that may start after the
     # backend, and the model id is discovered lazily on first use (see
     # services/llm._discover_model) so a swap needs no restart here.
+    # Which model a request uses is picked per request in the UI
+    # (services/llm_choice.py); this is only what each choice would reach.
     logging.getLogger("app").info(
         "LLM endpoint: %s (model=%s)",
         settings.llm_base_url,
         settings.llm_model or "auto-discovered from /v1/models",
+    )
+    logging.getLogger("app").info(
+        "Claude API: %s",
+        "key configured — Claude models selectable in the UI"
+        if settings.anthropic_api_key
+        else "no ANTHROPIC_API_KEY — the UI offers local models only",
     )
     if settings.reasoning_base_url or settings.reasoning_model:
         logging.getLogger("app").info(
@@ -72,6 +82,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Added before CORS so CORS stays outermost and its headers reach a 400 too.
+app.add_middleware(LlmChoiceMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -79,10 +91,11 @@ app.add_middleware(
     # Explicit rather than wildcard: a credentialed CORS surface should only
     # advertise the methods/headers the API actually uses.
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", CONTENT_HEADER, REASONING_HEADER],
 )
 
 app.include_router(health.router)
+app.include_router(llm_models.router)
 app.include_router(brand.router)
 app.include_router(scrape.router)
 app.include_router(facebook_session.router)

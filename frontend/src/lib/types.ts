@@ -565,3 +565,29 @@ export interface CmsPushReport {
    * guessing a URL — or, worse, offering a localhost link after a remote push. */
   admin_url?: string | null
 }
+
+/** Which model an LLM role uses: `'local'` (the ai-server) or a Claude model id.
+ * Mirrors backend services/llm_choice.py — the backend refuses any id its
+ * catalogue doesn't list. */
+export interface LlmChoice {
+  /** Page copy, paste structure, bios, record pages, translations. */
+  content: string
+  /** Brand detection, design decisions, the image tie-break judge. */
+  reasoning: string
+}
+
+/** One entry in the model picker (GET /api/llm/models). */
+export interface LlmModelOption {
+  id: string
+  label: string
+  provider: 'local' | 'anthropic'
+  note: string
+  /** False for a Claude model while ANTHROPIC_API_KEY is unset. */
+  available: boolean
+  hint?: string
+}
+
+export interface LlmModelsResponse {
+  choices: LlmModelOption[]
+  default: LlmChoice
+}

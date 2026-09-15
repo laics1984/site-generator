@@ -14,6 +14,7 @@ import type {
   GeneratedSite,
   HeroHeight,
   IndustryCategory,
+  LlmModelsResponse,
   PageRecipeResponse,
   PageScaffold,
   PreviewLayout,
@@ -21,6 +22,7 @@ import type {
   SitemapProbeResult,
   SourceContent,
 } from '@/lib/types'
+import { llmChoiceHeaders } from '@/lib/llmChoice'
 
 const API_BASE = ''
 
@@ -29,6 +31,8 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      // The model picker's choice rides on every JSON call; see lib/llmChoice.ts.
+      ...llmChoiceHeaders(),
       ...(init?.headers ?? {}),
     },
   })
@@ -39,19 +43,32 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T
 }
 
-// One call: the backend no longer knows (or cares) which engine serves the
-// model — it reports what the AI server advertises on /v1/models. See
-// ai-server/README.md.
-export async function checkLlmHealth(): Promise<{
+export interface LlmRoleHealth {
   status: string
+  /** 'local' = the ai-server; 'anthropic' = the Claude API. */
+  provider?: string
+  /** The picker id this role is using. */
+  choice?: string
   model?: string | null
   models?: string[]
   base_url?: string
   error?: string
   // The remedy for `error`, classified by the backend (services/llm.py).
   hint?: string
-}> {
+}
+
+// Answers for the model choice this request carries (lib/llmChoice.ts): the
+// top level is the content role, `reasoning` the reasoning role. For the local
+// server it reports what /v1/models advertises. See ai-server/README.md.
+export async function checkLlmHealth(): Promise<
+  LlmRoleHealth & { reasoning?: LlmRoleHealth }
+> {
   return jsonRequest('/health/llm')
+}
+
+/** What each LLM role can be pointed at. Static — reachability is checkLlmHealth. */
+export async function fetchLlmModels(): Promise<LlmModelsResponse> {
+  return jsonRequest('/api/llm/models')
 }
 
 export async function checkPexelsHealth(): Promise<{ status: string; provider?: string; hint?: string }> {

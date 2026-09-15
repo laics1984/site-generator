@@ -2,8 +2,9 @@
 
 Turns a scraped URL or an uploaded PDF/DOCX into a multi-page site whose JSON
 matches the webtree **builder** `BuilderElement` schema 1:1, then pushes it to
-the webtree CMS. All LLM calls go to a **locally/self-hosted** OpenAI-compatible
-server — never a cloud LLM.
+the webtree CMS. LLM calls go to a **locally/self-hosted** OpenAI-compatible
+server by default; a Claude model can be picked per role in the UI's model menu
+(see "The Claude API provider").
 
 ## Where this repo sits
 
@@ -1890,6 +1891,83 @@ Test: `test_image_walls.ChromeSectionsTest`.
 
 Tests: `test_record_pages.py`; `conftest._offline_record_template` pins the call off.
 
+## The Claude API provider
+
+`services/llm.AnthropicClient` is a second implementation of the `LlmClient`
+Protocol. **Which client a role gets is picked in the UI, per request**: the
+header's model menu (`frontend/src/components/LlmStatus.tsx`) chooses the local
+server or a Claude model separately for *content* and *reasoning*.
+
+**The choice is a ContextVar, not a parameter.** `lib/llmChoice.ts` holds the
+selection. `jsonRequest` in `lib/api.ts` — the one request helper — sends it as
+`X-Webtree-Llm-Content` / `X-Webtree-Llm-Reasoning` on every call, and
+`llm_choice.LlmChoiceMiddleware` (pure ASGI) puts it in a ContextVar for the
+life of the request. `get_llm` / `get_reasoning_llm` read it. So the nine
+services that call an LLM, and every endpoint that reaches one (paste preview,
+page recipe, generation), follow the menu with no edit and no threaded argument.
+A task spawned in the request (`asyncio.create_task` copies the context)
+inherits it, and that includes a crawl job. **No headers = both roles local**,
+which is what tests, curl and scripts get.
+
+Rules the choice needs:
+
+- **The wire carries a NAME** — `local` or an id from `llm_choice.CLAUDE_MODELS`
+  — and anything else is a 400, never a silent fallback. The key stays in
+  `.env`; `/api/llm/models` lists what may be picked, marked unavailable while
+  `ANTHROPIC_API_KEY` is unset. The frontend sends **no headers until it has
+  read that menu** and checked the remembered choice (`localStorage`) against
+  it, so a stale id cannot turn the first requests into 400s.
+- **A per-process cache of an LLM result must key on the choice.**
+  `chat_json_cached` already does (class, base_url, resolved model).
+  `planner.detect_brand_cached` did not, and replayed the previous model's brand
+  for 5 minutes after a switch — it keys on `current().reasoning` now.
+- **A local-sized knob must not size a Claude call.** Batching
+  (`LLM_CONTEXT_TOKENS` etc.) is global and stays sized for the local model
+  whichever model is picked; that is safe in both directions, just more calls on
+  Claude. Output budget is per client: `ANTHROPIC_MAX_TOKENS`, never
+  `LLM_MAX_TOKENS`.
+- **`get_llm(model=…)` is the local vision pass** (`LLM_VISION_MODEL`) and ignores
+  the menu.
+- `/health/llm` answers for the request's own choice, and always reports both
+  roles (top level = content, `reasoning`), one probe per distinct endpoint.
+
+`AnthropicClient` reuses `_validated` rather than growing a second retry loop.
+That works because the loop only touches `messages` and `max_tokens`, and both
+keys mean the same thing on the Messages API. Four differences are forced by
+the API:
+
+- **The schema is structured output** (`output_config.format` via
+  `anthropic.transform_schema`), and Pydantic still validates — the SDK strips
+  min/max constraints. A schema the API refuses falls back to a written JSON
+  instruction, and is remembered **only if the retry without the format
+  succeeds**. A 400 is also what a data-retention refusal looks like, so one
+  failure proves nothing about the schema.
+- **No `temperature`, no `thinking`.** Current models reject sampling knobs and
+  think adaptively. `think=True` selects `ANTHROPIC_REASONING_EFFORT` instead.
+  Don't add `thinking: disabled`: it trades tokens for tag leakage in the JSON.
+- **The repair turn is a user turn quoting the reply** (`repair=` hook on
+  `_validated`), never a replayed assistant turn. The response carries thinking
+  blocks, and an assistant turn stripped of them is edited history to
+  `claude-fable-5-1`.
+- **`stop_reason == "max_tokens"` is checked before emptiness.** Thinking can
+  spend the whole budget before any text, which needs a bigger budget, not a
+  retry at the same one. Growth stops at 128K (`max_tokens_cap`), the API's hard
+  ceiling.
+
+Refusal fallbacks (`fallbacks="default"`) are sent only for catalogue entries
+with `fallbacks=True`.
+
+`ANTHROPIC_API_KEY` is required and read only from settings. The SDK's own
+lookup would read the environment behind `config.py`'s back, and when it finds
+nothing it raises a bare `TypeError` mid-generation. A missing key or package is
+an `LlmError` at **call** time (`_sdk`), so the `llm or get_llm()` idiom never
+raises. `conftest._offline_claude` drops the key, so a developer `.env` cannot
+bill the suite.
+
+Tests: `test_llm_anthropic.py` (fake SDK client injected; middleware, menu,
+health and brand-cache key included). The local path stays covered by
+`test_llm_backend.py` / `test_llm_cache.py`, unchanged.
+
 ## Gotchas
 
 - **Docker dependency skew.** Compose mounts only `./backend/app`, so code edits
@@ -1916,7 +1994,9 @@ Tests: `test_record_pages.py`; `conftest._offline_record_template` pins the call
   id is discovered from `/v1/models` at runtime. Two roles exist: default (content,
   Qwen3-30B-A3B) and reasoning (`REASONING_*` — brand detection, design brain,
   image judge, GLM-Z1-9B). Kill switches: unset `REASONING_MODEL`,
-  `REASONING_THINK=false`, `DESIGN_LANGUAGE_ENABLED=false`.
+  `REASONING_THINK=false`, `DESIGN_LANGUAGE_ENABLED=false`. A Claude model is
+  picked in the UI's model menu, per request — only `ANTHROPIC_API_KEY` and its
+  tuning knobs live in `.env`.
 - **"AI server unreachable" states WHICH failure.** `llm.endpoint_failure_hint`
   is the one home for the remedy — model discovery, the completion stream and
   `/health/llm` all read it, so the badge and a failed generation say the same
@@ -1928,7 +2008,9 @@ Tests: `test_record_pages.py`; `conftest._offline_record_template` pins the call
   not resolve is the common one and is almost never the AI server's fault — a
   Tailscale/VPN host resolves only while the tunnel is up, and **a container does
   not inherit the host's VPN DNS**, so `LLM_BASE_URL` must name something the
-  *container* can resolve.
+  *container* can resolve. Claude API failures take the same route by **SDK
+  exception type** (`_anthropic_failure_hint`), and the badge says "Claude API
+  unavailable" instead.
 - **Truncation on content-rich sites** needs `LLM_CTX` (ai-server) *and*
   `LLM_CONTEXT_TOKENS` (here) raised together.
 - **`.gitignore` `/lib/` must stay anchored.** An unanchored `lib/` once silently

@@ -1,10 +1,13 @@
 import type { ReactNode } from 'react'
 
 import { LlmStatus } from '@/components/LlmStatus'
+import { useLlmChoice } from '@/lib/llmChoice'
 
 /** The one persistent bar. Deliberately slim: in the preview stage every pixel
  * it takes comes out of the rendered site below it. */
 export function WorkspaceHeader({ actions }: { actions?: ReactNode }) {
+  const choice = useLlmChoice()
+  const onClaude = !!choice && (choice.content !== 'local' || choice.reasoning !== 'local')
   return (
     <header className="sticky top-0 z-30 border-b border-line bg-surface/85 backdrop-blur">
       <div className="flex h-14 items-center justify-between gap-4 px-4 sm:px-6">
@@ -17,7 +20,7 @@ export function WorkspaceHeader({ actions }: { actions?: ReactNode }) {
               Webtree Site Generator
             </span>
             <span className="block truncate text-[11px] text-ink-faint">
-              Local · AI-powered · Builder-compatible
+              {onClaude ? 'Claude API' : 'Local'} · AI-powered · Builder-compatible
             </span>
           </span>
         </div>

@@ -78,6 +78,13 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
         severity=EFFICIENCY,
     ),
     ProcessLocal(
+        module="app.services.llm",
+        attribute="_UNCONSTRAINED_SCHEMAS",
+        holds="schemas the Claude API refused as structured output",
+        at_scale="Each worker spends one rejected (unbilled) request per such schema to relearn it.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
         module="app.services.planner",
         attribute="_DETECT_BRAND_CACHE",
         holds="brand detection results (TTL)",
