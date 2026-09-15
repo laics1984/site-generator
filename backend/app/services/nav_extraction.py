@@ -23,11 +23,13 @@ import hashlib
 import logging
 import re
 from collections import Counter
+from itertools import chain
 from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
 
-from app.models.content_blocks import LinkCluster, NavLink, SourceContent
+from app.models.content_blocks import LinkCluster, NavLink, SectionCandidate, SourceContent
+from app.services.site_url import is_same_site
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +73,11 @@ def site_relative_href(href: str | None, base_url: str) -> str | None:
     try:
         absolute = urljoin(base_url, href)
         parsed = urlparse(absolute)
-        base = urlparse(base_url)
     except ValueError:
         return None
     if parsed.scheme not in ("http", "https"):
         return None
-    if parsed.netloc.lower().removeprefix("www.") != base.netloc.lower().removeprefix("www."):
+    if not is_same_site(absolute, base_url):
         return None
     path = parsed.path or "/"
     if len(path) > 1 and path.endswith("/"):
@@ -97,37 +98,104 @@ def _anchor_label(a: Tag) -> str:
 # --- header navigation ------------------------------------------------------------
 
 
+# Classes a site's own menu walker stamps on every menu item. WordPress core's
+# Walker_Nav_Menu and Drupal's menu template both emit "menu-item" — on <li> in
+# most themes, but on plain <div>s in page-builder kits that emit no <nav>, no
+# <ul> and no role at all (feruni.com's Elementor/LaStudio header: 14 menu links
+# in the HTML, zero semantic markup, so the site used to read as having no
+# navigation). A positive declaration the markup makes about itself, like
+# scraper._PROFILE_CONTAINER_HINTS — never a guess from layout; a data edit
+# extends it.
+_DECLARED_MENU_ITEM_CLASSES = frozenset({"menu-item"})
+
+
 def extract_nav_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
     """Pull the primary header navigation as an ordered, nested NavLink list.
 
     Candidates are ``<nav>`` elements and ``role="navigation"`` containers;
     ones inside ``<header>`` win ties. Within the chosen container, top-level
-    ``<li>`` items become NavLinks and nested ``<ul>`` lists become their
+    menu items become NavLinks and each item's nested item list becomes its
     children — the standard dropdown markup. Navs without list markup fall
     back to a flat anchor walk.
+
+    Only when no semantic candidate yields a menu are declared menus read:
+    containers of ``_DECLARED_MENU_ITEM_CLASSES`` items, scored the same way.
+    Sites whose navigation is already marked up keep exactly what they had.
     """
+    for find_candidates in (_semantic_nav_candidates, _declared_menu_roots):
+        items = _best_menu(find_candidates(soup), base_url)
+        if items:
+            return items[:_MAX_NAV_ITEMS]
+    return []
+
+
+def _semantic_nav_candidates(soup: BeautifulSoup) -> list[Tag]:
     candidates: list[Tag] = [t for t in soup.find_all("nav") if isinstance(t, Tag)]
     for t in soup.find_all(attrs={"role": "navigation"}):
         if isinstance(t, Tag) and t.name != "nav" and t not in candidates:
             candidates.append(t)
-    if not candidates:
-        return []
+    return candidates
 
-    def _score(nav: Tag) -> tuple[int, int]:
-        items = _parse_nav_container(nav, base_url)
-        in_header = nav.find_parent("header") is not None
-        # Score on top-level item count (bounded) with a header bonus.
-        return (1 if in_header else 0, min(len(items), _MAX_NAV_ITEMS))
 
-    best = max(candidates, key=_score)
-    items = _parse_nav_container(best, base_url)
-    return items[:_MAX_NAV_ITEMS]
+def _is_declared_menu_item(tag: object) -> bool:
+    return isinstance(tag, Tag) and not _DECLARED_MENU_ITEM_CLASSES.isdisjoint(
+        tag.get("class") or ()
+    )
+
+
+def _declared_menu_roots(soup: BeautifulSoup) -> list[Tag]:
+    """The containers holding each declared menu's TOP-level items, in document
+    order — an item nested inside another item belongs to that item's submenu."""
+    roots: dict[int, Tag] = {}  # by identity: bs4 Tag equality compares whole subtrees
+    for item in soup.find_all(_is_declared_menu_item):
+        if item.find_parent(_is_declared_menu_item) is not None:
+            continue
+        parent = item.parent
+        if isinstance(parent, Tag):
+            roots.setdefault(id(parent), parent)
+    return list(roots.values())
+
+
+def _best_menu(candidates: list[Tag], base_url: str) -> list[NavLink]:
+    """The candidate with the most top-level items (bounded), a header bonus
+    first; the earliest wins a tie. Each candidate is parsed once."""
+    best: list[NavLink] = []
+    best_score = (-1, -1)
+    for container in candidates:
+        items = _parse_nav_container(container, base_url)
+        in_header = container.find_parent("header") is not None
+        score = (1 if in_header else 0, min(len(items), _MAX_NAV_ITEMS))
+        if score > best_score:
+            best, best_score = items, score
+    return best
+
+
+def _is_menu_item(tag: object) -> bool:
+    return isinstance(tag, Tag) and (tag.name == "li" or _is_declared_menu_item(tag))
+
+
+def _menu_list_in(root: Tag, *, include_root: bool = True) -> Tag | None:
+    """The first element in ``root`` that directly holds menu items.
+
+    For ``<ul>/<li>`` markup that is the nested ``<ul>``; for declared markup it
+    is whatever wrapper the theme puts around its item ``<div>``s. One rule for
+    both, so there is one menu parser rather than one per markup style.
+
+    An item looks for its submenu with ``include_root=False``: the item itself
+    is the parent of its own anchor, so it must never be mistaken for the
+    submenu that anchor is excluded from.
+    """
+    descendants = (node for node in root.descendants if isinstance(node, Tag))
+    for tag in chain((root,), descendants) if include_root else descendants:
+        if any(_is_menu_item(child) for child in tag.children):
+            return tag
+    return None
 
 
 def _parse_nav_container(nav: Tag, base_url: str) -> list[NavLink]:
-    top_ul = nav.find("ul")
-    if isinstance(top_ul, Tag):
-        items = _parse_menu_list(top_ul, base_url, depth=0)
+    menu_list = _menu_list_in(nav)
+    if menu_list is not None:
+        items = _parse_menu_list(menu_list, base_url, depth=0)
         if items:
             return items
     # No list markup — flat anchors directly under the nav.
@@ -145,29 +213,27 @@ def _parse_nav_container(nav: Tag, base_url: str) -> list[NavLink]:
     return flat
 
 
-def _parse_menu_list(ul: Tag, base_url: str, *, depth: int) -> list[NavLink]:
+def _parse_menu_list(menu_list: Tag, base_url: str, *, depth: int) -> list[NavLink]:
     if depth > 2:  # guard against pathological nesting
         return []
     items: list[NavLink] = []
     seen: set[str] = set()
-    for li in ul.find_all("li", recursive=False):
-        if not isinstance(li, Tag):
-            continue
-        nested_ul = li.find("ul")
-        # The item's own anchor is any <a> in the li that is NOT inside the
-        # nested submenu list.
+    for li in (child for child in menu_list.children if _is_menu_item(child)):
+        submenu = _menu_list_in(li, include_root=False)
+        # The item's own anchor is any <a> in the item that is NOT inside its
+        # submenu.
         anchor: Tag | None = None
         for a in li.find_all("a", href=True):
             if not isinstance(a, Tag):
                 continue
-            if isinstance(nested_ul, Tag) and nested_ul in a.parents:
+            if submenu is not None and any(parent is submenu for parent in a.parents):
                 continue
             anchor = a
             break
 
         children = (
-            _parse_menu_list(nested_ul, base_url, depth=depth + 1)
-            if isinstance(nested_ul, Tag)
+            _parse_menu_list(submenu, base_url, depth=depth + 1)
+            if submenu is not None
             else []
         )
 
@@ -486,16 +552,36 @@ def strip_linkbar_lines(source: SourceContent, cluster: LinkCluster) -> None:
     )
 
 
-# A section heading seen on this many crawled pages is template furniture —
-# the same threshold, and the same reasoning, as find_repeated_cluster_keys.
+# A section seen on this many crawled pages is template furniture — the same
+# threshold, and the same reasoning, as find_repeated_cluster_keys.
 _CHROME_SECTION_MIN_PAGES = 2
 
 
+def _section_identity(section: SectionCandidate) -> tuple[str, str, tuple[str, ...], tuple[str, ...]] | None:
+    """What a section IS for chrome purposes: its heading AND what it holds.
+
+    A heading alone is a template's label, not its furniture. A catalogue's
+    product pages all say "Product Specification" and "2 Collections" over
+    different content — keyed on the heading, every product lost its content as
+    "chrome" (feruni.com's modular pages kept only their title). A footer widget
+    repeats its words and pictures too.
+    """
+    heading = section.heading.strip().lower()
+    if not heading:
+        return None
+    return (
+        heading,
+        " ".join(section.prose.split()),
+        tuple(section.image_urls),
+        tuple(card.title for card in section.cards),
+    )
+
+
 def strip_chrome_sections(source: SourceContent) -> None:
-    """Drop section candidates whose heading repeats across crawled pages.
+    """Drop section candidates that repeat, heading and content, across pages.
 
     Same reasoning as ``strip_chrome_lines``, applied to the section tree: a
-    heading that appears on every page is the template's, not the page's. The
+    section that appears on every page is the template's, not the page's. The
     tree is built per page during parsing, where the repetition is invisible —
     and ``_in_chrome`` only recognises chrome that says so in its tags, which a
     hand-built site whose footer is a plain ``<section>`` never does. Those
@@ -503,28 +589,25 @@ def strip_chrome_sections(source: SourceContent) -> None:
     planner as page content. Mutates in place; needs two pages to conclude
     anything, so a single-page crawl is left alone.
 
-    Only ever removes a DUPLICATE: the heading has to appear on more than one
-    page, so a genuine section is safe even when it shares a name with one.
+    Only ever removes a DUPLICATE: the same heading over the same content has to
+    appear on more than one page (``_section_identity``), so a genuine section is
+    safe even when it shares a name with one.
     """
     pages = [source, *source.discovered_pages]
     if len(pages) < _CHROME_SECTION_MIN_PAGES:
         return
-    seen: Counter[str] = Counter()
+    seen: Counter[tuple] = Counter()
     for page in pages:
-        for heading in {
-            section.heading.strip().lower()
-            for section in page.section_candidates
-            if section.heading.strip()
-        }:
-            seen[heading] += 1
-    chrome = {h for h, n in seen.items() if n >= _CHROME_SECTION_MIN_PAGES}
+        for identity in {_section_identity(section) for section in page.section_candidates} - {None}:
+            seen[identity] += 1
+    chrome = {key for key, n in seen.items() if n >= _CHROME_SECTION_MIN_PAGES}
     if not chrome:
         return
     for page in pages:
         kept = [
             section
             for section in page.section_candidates
-            if section.heading.strip().lower() not in chrome
+            if _section_identity(section) not in chrome
         ]
         # Never strip a page down to nothing. If every section it has looks
         # repeated, the repetition is the page's own content being served at a

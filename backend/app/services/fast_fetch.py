@@ -24,6 +24,7 @@ import trafilatura
 from bs4 import BeautifulSoup
 
 from app.config import settings
+from app.services.polite import is_bot_challenge
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class FastFetchSkipReason:
     TOO_SHORT = "too_short"           # HTML returned but text < threshold
     EXCEPTION = "exception"
     BLOCKED = "blocked"               # URL failed the SSRF guard (non-public host)
+    CHALLENGED = "challenged"         # bot protection answered with a challenge page
 
 
 @dataclass
@@ -117,6 +119,11 @@ async def try_fast_fetch(
     except UnsafeUrlError as exc:
         logger.warning("fast fetch refused redirect target %s: %s", response.url, exc)
         return FastFetchSkipped(reason=FastFetchSkipReason.BLOCKED, detail=str(exc))
+
+    if is_bot_challenge(response.headers):
+        return FastFetchSkipped(
+            reason=FastFetchSkipReason.CHALLENGED, http_status=response.status_code
+        )
 
     if response.status_code >= 400:
         return FastFetchSkipped(

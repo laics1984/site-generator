@@ -7,6 +7,7 @@ import { PagePicker } from '@/components/PagePicker'
 import { PagePreview } from '@/components/PagePreview'
 import { PublishDrawer } from '@/components/PublishDrawer'
 import { ScopeChoice } from '@/components/ScopeChoice'
+import { fullCrawlCap } from '@/lib/crawlScope'
 import { ScrapePreview } from '@/components/ScrapePreview'
 import { SiteSummaryBar } from '@/components/SiteSummaryBar'
 import { SourcePanel } from '@/components/SourcePanel'
@@ -175,7 +176,6 @@ export default function App() {
   }
 
   const QUICK_SCAN_CAP = 20  // matches backend default
-  const FULL_CAP_MAX = 40    // backend ceiling
 
   type UrlPlan = { crawl: boolean; maxPages: number; accessToken?: string }
 
@@ -378,7 +378,7 @@ export default function App() {
 
   function handleScopeFull() {
     if (!pendingScope) return
-    const maxPages = Math.min(pendingScope.probe.total_urls, FULL_CAP_MAX)
+    const maxPages = fullCrawlCap(pendingScope.probe)
     setPendingScope(null)
     runComposed({ crawl: true, maxPages })
   }
@@ -418,6 +418,7 @@ export default function App() {
           discovered_count: (prev.discovered_count ?? 0) + ext.added_count,
           unvisited_urls: ext.unvisited_urls,
           unvisited_count: ext.unvisited_count,
+          crawl_stop_reason: ext.crawl_stop_reason,
         }
         return merged
       })

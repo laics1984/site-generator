@@ -72,7 +72,7 @@ def _patch_crawl(test, links_by_url: dict[str, list[str]] | None = None):
 
 
 async def _crawl(entry, seeds, *, max_pages=20, max_depth=3):
-    pages, unvisited = await scraper._crawl_extra_pages(
+    pages, unvisited, _reason = await scraper._crawl_extra_pages(
         None,
         entry,
         seeds,

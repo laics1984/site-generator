@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 
 JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
 _TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled"})
+# `scraper.CrawlStopReason`s meaning the host refused us, not that the site ran
+# out of pages — see CrawlJobManager.find_reusable.
+_UNREUSABLE_STOP_REASONS: frozenset[str] = frozenset({"bot_challenge", "host_failures"})
 
 
 @dataclass
@@ -211,6 +214,12 @@ class CrawlJobManager:
 
         Options are compared as PARSED dicts rather than as their stored JSON so
         key order can never produce a false miss.
+
+        A crawl the HOST cut short (``_UNREUSABLE_STOP_REASONS``) is never
+        reused: it is not the site's answer, and the usual fix — the owner
+        allowlisting the crawler, or the block lifting — happens within the
+        retention window. Reusing it handed back the same empty crawl on every
+        retry, so an allowlist looked like it had done nothing.
         """
         cutoff = time.time() - max_age_seconds
         async with connect() as conn:
@@ -222,7 +231,11 @@ class CrawlJobManager:
             rows = await cur.fetchall()
         for row in rows:
             job = _row_to_job(row)
-            if job.options == options and job.result:
+            if (
+                job.options == options
+                and job.result
+                and job.result.get("crawl_stop_reason") not in _UNREUSABLE_STOP_REASONS
+            ):
                 return job
         return None
 

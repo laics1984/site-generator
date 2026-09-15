@@ -111,4 +111,5 @@ def _result_to_payload(result) -> dict[str, Any]:
         image_candidates=result.image_candidates,
         fetched_at=result.fetched_at,
         unvisited_urls=result.unvisited_urls,
+        crawl_stop_reason=result.crawl_stop_reason,
     )

@@ -65,6 +65,7 @@ which endpoint is an application decision, not a serving one. Unset both
 | `LLM_CACHE_TTL_SECONDS` | `1800` | Cache TTL. |
 | `LLM_CACHE_MAX_ENTRIES` | `64` | Cache size. |
 | `SCRAPE_CACHE_TTL_SECONDS` | `1800` | Scrape-preview cache TTL (covers an editing session). |
+| `CRAWL_MAX_PAGES_CEILING` | `500` | Most pages one crawl / crawl-more pass may fetch; also the sitemap URL cap and the scope picker's "Full" ceiling. |
 | `PLAN_TEMPERATURE` | `0.3` | Brand detection / legacy planner. |
 | `SCAFFOLD_TEMPERATURE` | `0.25` | Scaffolded content (stay close to source). |
 | `DESIGN_TEMPERATURE` | `0.7` | Design-brain (bolder, enum-constrained). |
@@ -107,7 +108,9 @@ which endpoint is an application decision, not a serving one. Unset both
 | `PEXELS_TIMEOUT_SECONDS` | `10.0` | Pexels request timeout. |
 | `PEXELS_CACHE_SIZE` | `256` | Per-query result cache size. |
 | `CONTENT_MIGRATION_ENABLED` | `true` | Migrate blog/event listings as CMS entries. |
-| `CONTENT_MIGRATION_MAX_ENTRIES` | `12` | Cap on migrated entries. |
+| `CONTENT_MIGRATION_MAX_ENTRIES` | `60` | Cap on migrated entries. |
+| `RECORD_TEMPLATE_LLM_ENABLED` | `true` | Let the LLM choose one layout (by section number) per set of look-alike detail pages; off ⇒ deterministic default layout. |
+| `RECORD_SET_MIN_PAGES` | `6` | Same-parent, same-template sibling pages before they're built as a record set instead of one content batch each. |
 
 ## Facebook Page reading
 

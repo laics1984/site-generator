@@ -30,17 +30,21 @@ from typing import AsyncIterator, NamedTuple
 from playwright.async_api import async_playwright
 
 from app.config import settings
+from app.services.polite import is_bot_challenge
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
 
 
 class RenderError(Exception):
-    """A page that could not be rendered. Carries a user-facing status code."""
+    """A page that could not be rendered. Carries a user-facing status code, and
+    whether the refusal was a bot-protection challenge (``polite.is_bot_challenge``)
+    rather than an ordinary error — a crawl stops asking a host that challenges."""
 
-    def __init__(self, message: str, status: int = 502):
+    def __init__(self, message: str, status: int = 502, *, challenged: bool = False):
         super().__init__(message)
         self.status = status
+        self.challenged = challenged
 
 
 class RenderedPage(NamedTuple):
@@ -151,13 +155,15 @@ async def rendered_page(context, url: str, *, timeout_ms: int) -> AsyncIterator:
         response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
         if response is None:
             raise RenderError(f"No response from {url}", status=502)
-        if response.status == 403:
+        challenged = is_bot_challenge(await response.all_headers())
+        if response.status == 403 or challenged:
             raise RenderError(
-                f"{url} blocked our request (403). The site has bot-detection "
+                f"{url} blocked our request ({response.status}). The site has bot-detection "
                 "active and won't render in a headless browser. Try pasting the "
                 "page content into the document tab instead, or pick a different "
                 "URL on the same site that's less protected (e.g. a blog post).",
                 status=403,
+                challenged=challenged,
             )
         if response.status == 401:
             raise RenderError(

@@ -28,7 +28,7 @@ import time
 import urllib.robotparser
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal, NamedTuple
 from urllib.parse import urlparse
 
 import httpx
@@ -50,12 +50,14 @@ from app.models.content_blocks import (
 )
 from app.services.brand_candidate import build_brand_candidate
 from app.services.browser import RenderError, browser_context, rendered_page
+from app.services.site_url import crawl_key, is_same_site, rebase_to_origin
 from app.services.source_outline import text_blocks
 from app.services.source_preview import ImageCandidate
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 from app.services.timing import stage
 from app.services.fast_fetch import (
     FastFetchResult,
+    FastFetchSkipReason,
     FastFetchSkipped,
     try_fast_fetch,
 )
@@ -125,14 +127,18 @@ class ScrapeResult:
     # URLs the BFS frontier had ready but didn't fetch because max_pages was
     # reached. Frontend uses these to offer "Crawl N more" without restarting.
     unvisited_urls: list[str] = field(default_factory=list)
+    # Why the crawl ended (see CrawlOutcome); None when no crawl ran.
+    crawl_stop_reason: "CrawlStopReason | None" = None
 
 
 class ScrapeError(Exception):
-    """User-facing scrape failure with a clear status code."""
+    """User-facing scrape failure with a clear status code; ``challenged`` when
+    bot protection answered instead of the page (see ``browser.RenderError``)."""
 
-    def __init__(self, message: str, status: int = 502):
+    def __init__(self, message: str, status: int = 502, *, challenged: bool = False):
         super().__init__(message)
         self.status = status
+        self.challenged = challenged
 
 
 # --- robots.txt -----------------------------------------------------------------
@@ -311,7 +317,7 @@ async def _goto_and_render(
             await _stamp_render_evidence(page)
             return page.url, await page.content()
     except RenderError as exc:
-        raise ScrapeError(str(exc), status=exc.status) from exc
+        raise ScrapeError(str(exc), status=exc.status, challenged=exc.challenged) from exc
 
 
 # --- HTML parsing ---------------------------------------------------------------
@@ -1653,8 +1659,7 @@ def _profile_card_link(img: Tag, container: Tag, base_url: str) -> str | None:
     pages; and a link back to the page the card is ON is chrome — the "Back"
     arrow on a detail page's own card, not a link to a detail page.
     """
-    here = _normalize_crawl_url(base_url)
-    entry_host = urlparse(base_url).netloc
+    here = crawl_key(base_url)
 
     for anchor in _card_anchors(img, container):
         href = anchor.get("href")
@@ -1665,12 +1670,12 @@ def _profile_card_link(img: Tag, container: Tag, base_url: str) -> str | None:
         absolute = _absolute_url(base_url, href.strip())
         if not absolute:
             continue
-        normalized = _normalize_crawl_url(absolute)
-        if not normalized or normalized == here:
+        key = crawl_key(absolute)
+        if not key or key == here:
             continue
-        if not _is_crawlable_link(normalized, entry_host):
+        if not _is_crawlable_link(absolute, base_url):
             continue
-        return normalized
+        return rebase_to_origin(absolute, base_url)
     return None
 
 
@@ -2189,7 +2194,8 @@ _MAX_LINKS_PER_PAGE = 200
 
 
 def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
-    """Absolute links on the page, crawlable same-host ones first.
+    """Absolute links on the page: crawlable same-site ones first, shallow
+    paths before deep ones.
 
     The order is load-bearing: this list is the crawl's seed frontier
     (``scrape_url`` passes it as ``seed_links``), and the cap used to be applied
@@ -2197,6 +2203,12 @@ def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     the first 50 links are all chrome, external and asset URLs — so genuine
     content links were cut before ``_is_crawlable_link`` ever saw them, and the
     crawl silently explored a fraction of the site.
+
+    Depth is the second key because a bounded frontier fills in document order:
+    a homepage's product teasers and latest posts sit above its footer, so
+    ``/product/relievo`` and ``/journal/some-post`` used to take the budget from
+    ``/contact-us`` and ``/retail-stores``. A site's structure lives in its
+    shallow paths; its items live deeper and are reachable from those pages.
 
     Sorting is stable, so within each group document order is preserved.
     """
@@ -2213,8 +2225,12 @@ def _extract_links(soup: BeautifulSoup, base_url: str) -> list[str]:
             seen.add(abs_url)
             out.append(abs_url)
 
-    entry_host = urlparse(base_url).netloc
-    out.sort(key=lambda url: 0 if _is_crawlable_link(url, entry_host) else 1)
+    def frontier_rank(url: str) -> tuple[int, int]:
+        if not _is_crawlable_link(url, base_url):
+            return (1, 0)
+        return (0, len([s for s in urlparse(url).path.split("/") if s]))
+
+    out.sort(key=frontier_rank)
     return out[:_MAX_LINKS_PER_PAGE]
 
 
@@ -2406,23 +2422,6 @@ _SKIP_PATH_HINTS = (
 )
 
 
-def _normalize_crawl_url(url: str) -> str | None:
-    """Strip fragments, normalize trailing slash, lowercase host. None ⇒ skip."""
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return None
-    if parsed.scheme not in ("http", "https"):
-        return None
-    host = parsed.netloc.lower()
-    path = parsed.path or "/"
-    # Drop trailing slash except for root
-    if len(path) > 1 and path.endswith("/"):
-        path = path[:-1]
-    # Drop fragment; keep query — some sites use ?lang=en etc.
-    return f"{parsed.scheme}://{host}{path}{('?' + parsed.query) if parsed.query else ''}"
-
-
 # A translated mirror (/bm/committee, /zh/about, /fr-fr/produits) duplicates the
 # whole site under one language segment. The translations are real content the
 # owner maintains, but they carry no NEW structure, so on a bounded frontier
@@ -2460,10 +2459,12 @@ def _is_locale_mirror(path: str, *, entry_locale: str | None, known_paths: set[s
     return "/" + "/".join(segments[1:]) in known_paths
 
 
-def _is_crawlable_link(url: str, entry_host: str) -> bool:
-    parsed = urlparse(url)
-    if parsed.netloc.lower() != entry_host.lower():
+def _is_crawlable_link(url: str, entry_url: str) -> bool:
+    """A same-site page link (``www.`` alias included) that isn't an asset or
+    an obviously useless path."""
+    if not is_same_site(url, entry_url):
         return False
+    parsed = urlparse(url)
     path_low = (parsed.path or "/").lower()
     if path_low.endswith(_NON_PAGE_EXTENSIONS):
         return False
@@ -2478,6 +2479,24 @@ def _is_crawlable_link(url: str, entry_host: str) -> bool:
 # level the old batch-of-3 crawl exercised.
 _CRAWL_WORKERS = 6
 _CRAWL_PLAYWRIGHT_CONCURRENCY = 3
+
+
+CrawlStopReason = Literal["exhausted", "page_cap", "cancelled", "bot_challenge", "host_failures"]
+
+
+class CrawlOutcome(NamedTuple):
+    """What a bounded crawl fetched, what it left queued, and why it stopped.
+
+    ``stop_reason`` is what tells a user whether missing pages are a budget
+    they can raise or a site that is refusing us. It is ``"bot_challenge"``
+    whenever bot protection challenged any page — those pages lead
+    ``unvisited`` so a later "crawl more" can pick them up — because a crawl
+    that silently ends short reads exactly like a site that has no more pages.
+    """
+
+    pages: list[_ParsedPage]
+    unvisited: list[str]
+    stop_reason: CrawlStopReason
 
 
 async def _crawl_extra_pages(
@@ -2495,9 +2514,9 @@ async def _crawl_extra_pages(
     priority_seed_urls: set[str] | None = None,
     on_progress: "Callable[[int, str], Awaitable[None]] | None" = None,
     is_cancelled: "Callable[[], bool] | None" = None,
-) -> tuple[list[_ParsedPage], list[str]]:
+) -> CrawlOutcome:
     """BFS-crawl same-domain pages starting from ``seed_links`` (already extracted
-    from the entry page). Returns (parsed pages, leftover frontier URLs).
+    from the entry page). Returns a ``CrawlOutcome``.
 
     Caps total at ``max_pages``, depth at ``max_depth``. Pages are fetched by a
     sliding-window pool of ``_CRAWL_WORKERS`` workers (per-host politeness still
@@ -2527,15 +2546,21 @@ async def _crawl_extra_pages(
     than a statement of importance, so it must not outrank the owner's own
     navigation — its job is to reach pages the link graph hides, not to reorder
     the ones it doesn't.
+
+    Page identity is ``site_url.crawl_key`` (``www.``-alias, trailing-slash and
+    fragment insensitive); every queued URL is requested on the entry's own
+    origin with its path exactly as linked — see ``services/site_url.py``.
     """
-    entry_parsed = urlparse(entry_final_url)
-    entry_host = entry_parsed.netloc
-    entry_norm = _normalize_crawl_url(entry_final_url)
-    # `seen` starts with whatever caller already crawled (extend path) plus
-    # the entry itself.
-    seen: set[str] = set(already_seen) if already_seen else set()
-    if entry_norm:
-        seen.add(entry_norm)
+    entry_host = urlparse(entry_final_url).netloc
+    previously_crawled = list(already_seen or ())
+    # `seen` holds page identities: whatever the caller already crawled
+    # (extend path) plus the entry itself.
+    seen: set[str] = {
+        key for url in (entry_final_url, *previously_crawled) if (key := crawl_key(url))
+    }
+    priority_keys: set[str] = {
+        key for url in (priority_seed_urls or ()) if (key := crawl_key(url))
+    }
 
     # Per-host politeness gates every fetch. Without this, parallel crawls
     # against a single host trigger 429s within seconds on real WAF'd sites.
@@ -2548,12 +2573,21 @@ async def _crawl_extra_pages(
     known_paths: set[str] = set()
 
     def _register_paths(urls) -> None:
-        """Record same-host paths as pages this site is known to have."""
+        """Record same-site paths as pages this site is known to have."""
         for url in urls:
-            if urlparse(url).netloc.lower() == entry_host.lower():
+            if is_same_site(url, entry_final_url):
                 known_paths.add(_path_key(url))
 
-    _register_paths([entry_final_url, *seen])
+    def _admit(url: str) -> tuple[str, str] | None:
+        """(fetch URL, identity) for a crawlable page not seen yet, else None.
+        Marks it seen."""
+        key = crawl_key(url)
+        if not key or key in seen or not _is_crawlable_link(url, entry_final_url):
+            return None
+        seen.add(key)
+        return rebase_to_origin(url, entry_final_url), key
+
+    _register_paths([entry_final_url, *previously_crawled])
 
     # depth 1 frontier seeded from the entry's links + any explicit extra seeds.
     # Each entry carries a discovery index so results can be re-sorted into the
@@ -2578,10 +2612,10 @@ async def _crawl_extra_pages(
     frontier: deque[tuple[str, int, int, int]] = deque()
     deferred: deque[tuple[str, int, int, int]] = deque()
 
-    def _enqueue(norm: str, depth: int, *, priority_link: bool = False) -> None:
+    def _enqueue(url: str, depth: int, *, priority_link: bool = False) -> None:
         nonlocal discovery_count
         is_mirror = _is_locale_mirror(
-            _path_key(norm), entry_locale=entry_locale, known_paths=known_paths
+            _path_key(url), entry_locale=entry_locale, known_paths=known_paths
         )
         if is_mirror:
             queue = deferred
@@ -2589,7 +2623,7 @@ async def _crawl_extra_pages(
             queue = priority
         else:
             queue = frontier
-        queue.append((norm, depth, discovery_count, 1 if is_mirror else 0))
+        queue.append((url, depth, discovery_count, 1 if is_mirror else 0))
         discovery_count += 1
 
     # Register every candidate path before queueing: /about must be known when
@@ -2601,13 +2635,11 @@ async def _crawl_extra_pages(
     ]
     _register_paths(_all_seeds)
     for link in _all_seeds:
-        norm = _normalize_crawl_url(link)
-        if not norm or norm in seen:
+        admitted = _admit(link)
+        if admitted is None:
             continue
-        if not _is_crawlable_link(norm, entry_host):
-            continue
-        seen.add(norm)
-        _enqueue(norm, 1, priority_link=norm in (priority_seed_urls or ()))
+        fetch_url, key = admitted
+        _enqueue(fetch_url, 1, priority_link=key in priority_keys)
         if len(priority) + len(frontier) + len(deferred) >= max_pages * 3:  # cap how many we even queue
             break
 
@@ -2626,6 +2658,15 @@ async def _crawl_extra_pages(
     new_work = asyncio.Event()
     pw_sem = asyncio.Semaphore(_CRAWL_PLAYWRIGHT_CONCURRENCY)
     stop_logged = False
+    # Pages bot protection answered with a challenge instead of the page.
+    challenged: list[str] = []
+
+    def _record_challenge(url: str) -> None:
+        """A challenge from either fetch path: a retriable failure (consecutive
+        challenges open the politeness circuit), and the page stays resumable."""
+        politeness.record_failure(retriable=True)
+        challenged.append(url)
+        logger.info("crawl challenged by bot protection %s", url)
 
     def _should_stop() -> bool:
         nonlocal stop_logged
@@ -2674,6 +2715,14 @@ async def _crawl_extra_pages(
                     logger.info("crawl httpx-parse failed %s: %s", url, exc)
                     # Fall through to Playwright
 
+            # A bot challenge is the host's verdict on this client, not on this
+            # page: a headless render is challenged too, so falling through to
+            # Playwright only spends a 3-5s render to fail again and dig the
+            # client's bot score deeper.
+            if isinstance(fast, FastFetchSkipped) and fast.reason == FastFetchSkipReason.CHALLENGED:
+                _record_challenge(url)
+                return depth, None
+
             # If httpx hit a retriable HTTP status, record + back off but
             # don't fall through to Playwright — same host, same problem.
             if isinstance(fast, FastFetchSkipped) and fast.http_status in RETRIABLE_STATUS_CODES:
@@ -2696,8 +2745,11 @@ async def _crawl_extra_pages(
                         context, url, timeout_ms=timeout_ms
                     )
             except ScrapeError as exc:
-                politeness.record_failure(retriable=exc.status in RETRIABLE_STATUS_CODES)
-                logger.info("crawl skipped %s: %s", url, exc)
+                if exc.challenged:
+                    _record_challenge(url)
+                else:
+                    politeness.record_failure(retriable=exc.status in RETRIABLE_STATUS_CODES)
+                    logger.info("crawl skipped %s: %s", url, exc)
                 return depth, None
             except Exception as exc:  # noqa: BLE001
                 politeness.record_failure(retriable=False)
@@ -2774,22 +2826,21 @@ async def _crawl_extra_pages(
             # a Team block's member pages don't lose the page budget to nav
             # or footer links just because this roster wasn't crawled first.
             candidates = getattr(parsed.source_content, "profile_candidates", None) or []
-            priority_urls: set[str] = set()
-            if len(candidates) >= 2:
-                for candidate in candidates:
-                    if not candidate.profile_url:
-                        continue
-                    norm_p = _normalize_crawl_url(candidate.profile_url)
-                    if norm_p:
-                        priority_urls.add(norm_p)
+            roster_keys: set[str] = (
+                {
+                    key
+                    for candidate in candidates
+                    if candidate.profile_url and (key := crawl_key(candidate.profile_url))
+                }
+                if len(candidates) >= 2
+                else set()
+            )
             for child in parsed.source_content.links:
-                norm = _normalize_crawl_url(child)
-                if not norm or norm in seen:
+                admitted = _admit(child)
+                if admitted is None:
                     continue
-                if not _is_crawlable_link(norm, entry_host):
-                    continue
-                seen.add(norm)
-                _enqueue(norm, depth + 1, priority_link=norm in priority_urls)
+                fetch_url, key = admitted
+                _enqueue(fetch_url, depth + 1, priority_link=key in roster_keys)
             new_work.set()
 
     if priority or frontier or deferred:
@@ -2804,10 +2855,39 @@ async def _crawl_extra_pages(
     parsed_pages = [p for _t, _d, _i, p in collected]
 
     # Whatever the queues still hold when we stop is "unvisited" — surface it so
-    # callers can resume via /api/scrape/extend. Untranslated pages lead, so a
-    # "crawl N more" pass keeps picking up new content before translations.
-    unvisited = [url for url, _depth, _i, _tier in (*priority, *frontier, *deferred)]
-    return parsed_pages, unvisited
+    # callers can resume via /api/scrape/extend. Challenged pages lead (they
+    # were dequeued first, so they outrank what is still queued), then
+    # untranslated pages, so a "crawl N more" pass keeps picking up new content
+    # before translations.
+    unvisited = [
+        *challenged,
+        *(url for url, _depth, _i, _tier in (*priority, *frontier, *deferred)),
+    ]
+    return CrawlOutcome(
+        pages=parsed_pages,
+        unvisited=unvisited,
+        stop_reason=_crawl_stop_reason(
+            cancelled=bool(is_cancelled and is_cancelled()),
+            challenged=bool(challenged),
+            circuit_open=politeness.circuit_open,
+            page_cap_reached=len(collected) >= max_pages,
+        ),
+    )
+
+
+def _crawl_stop_reason(
+    *, cancelled: bool, challenged: bool, circuit_open: bool, page_cap_reached: bool
+) -> CrawlStopReason:
+    """Why a crawl ended, most actionable reason first."""
+    if cancelled:
+        return "cancelled"
+    if challenged:
+        return "bot_challenge"
+    if circuit_open:
+        return "host_failures"
+    if page_cap_reached:
+        return "page_cap"
+    return "exhausted"
 
 
 # --- top-level orchestration ----------------------------------------------------
@@ -2830,6 +2910,37 @@ async def _sitemap_seed_urls(entry_final_url: str) -> list[str]:
         logger.debug("sitemap seed unavailable for %s: %s", entry_final_url, exc)
         return []
     return list(result.urls)
+
+
+async def _entry_with_navigation(context, parsed: _ParsedPage, url: str) -> _ParsedPage:
+    """The entry page as a browser sees it, when its static HTML shows no menu.
+
+    Some sites server-render their content but build the header menu in
+    client-side JavaScript, so the httpx fast path reads a page with text and
+    no navigation — and page inference loses the owner's page order, dropdown
+    hierarchy and the menu pages the crawl never reached. Navigation is site
+    chrome, the same on every page, so only the entry pays for it: one render in
+    the context that is already open, and only when the static HTML (declared
+    menus included — see nav_extraction) yielded none.
+
+    Advisory, never load-bearing: a failed render, or a render that finds no
+    menu either, keeps the fast parse. A menu fetched only on click is still out
+    of reach — nothing here clicks.
+    """
+    try:
+        final_url, html = await _goto_and_render(
+            context, url, timeout_ms=settings.playwright_goto_timeout_ms
+        )
+        rendered = await asyncio.to_thread(
+            _parse_rendered_html, html, final_url, require_text=False
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory render, see docstring
+        logger.info("entry navigation render failed for %s: %s", url, exc)
+        return parsed
+    if not rendered.source_content.nav_links:
+        return parsed
+    logger.info("entry navigation found only after rendering %s", url)
+    return rendered
 
 
 async def scrape_url(
@@ -2887,9 +2998,12 @@ async def scrape_url(
         entry = await asyncio.to_thread(
             _parse_rendered_html, html, final_url, require_text=True
         )
+        if isinstance(fast_entry, FastFetchResult) and not entry.source_content.nav_links:
+            entry = await _entry_with_navigation(context, entry, url)
         entry.source_content.url_path = None  # primary page has no path tag
 
         unvisited_urls: list[str] = []
+        crawl_stop_reason: CrawlStopReason | None = None
         if crawl:
             # If the entry page IS the roster (the user pasted the committee
             # page directly), its member links deserve the same front-of-queue
@@ -2898,13 +3012,7 @@ async def scrape_url(
             entry_candidates = getattr(entry.source_content, "profile_candidates", None) or []
             priority_seed_urls: set[str] | None = None
             if len(entry_candidates) >= 2:
-                priority_seed_urls = {
-                    norm
-                    for c in entry_candidates
-                    if c.profile_url
-                    for norm in (_normalize_crawl_url(c.profile_url),)
-                    if norm
-                }
+                priority_seed_urls = {c.profile_url for c in entry_candidates if c.profile_url}
             # The site's own inventory, as a LAST-resort seed set. The BFS
             # only ever sees pages some crawled page links to, so anything
             # reachable solely from a page beyond the budget — or from no
@@ -2919,32 +3027,35 @@ async def scrape_url(
                 crawl_max_pages, final_url, len(sitemap_seeds),
             )
             with stage("crawl_extra_pages"):
-                discovered, unvisited_urls = await _crawl_extra_pages(
-                context,
-                entry_final_url=final_url,
-                seed_links=entry.source_content.links,
-                fallback_seed_urls=sitemap_seeds,
-                max_pages=crawl_max_pages,
-                max_depth=crawl_max_depth,
-                timeout_ms=12000,
-                respect_robots=respect_robots,
-                priority_seed_urls=priority_seed_urls,
-                on_progress=on_progress,
-                is_cancelled=is_cancelled,
-            )
+                outcome = await _crawl_extra_pages(
+                    context,
+                    entry_final_url=final_url,
+                    seed_links=entry.source_content.links,
+                    fallback_seed_urls=sitemap_seeds,
+                    max_pages=crawl_max_pages,
+                    max_depth=crawl_max_depth,
+                    timeout_ms=12000,
+                    respect_robots=respect_robots,
+                    priority_seed_urls=priority_seed_urls,
+                    on_progress=on_progress,
+                    is_cancelled=is_cancelled,
+                )
+            unvisited_urls = outcome.unvisited
+            crawl_stop_reason = outcome.stop_reason
             entry.source_content.discovered_pages = [
-                p.source_content for p in discovered
+                p.source_content for p in outcome.pages
             ]
             # With the full page set known, body link clusters repeated
             # across pages are template chrome — purge their labels from
-            # every page's raw_text so they don't read as content. Section
-            # headings repeated the same way are chrome for the same reason.
+            # every page's raw_text so they don't read as content. Sections
+            # repeated the same way (heading and content) are chrome too.
             strip_chrome_lines(entry.source_content)
             strip_chrome_sections(entry.source_content)
             logger.info(
-                "crawl found %d additional pages, %d more in unvisited frontier",
-                len(discovered),
+                "crawl found %d additional pages, %d more in unvisited frontier (stopped: %s)",
+                len(outcome.pages),
                 len(unvisited_urls),
+                crawl_stop_reason,
             )
 
     # The entry page's icon, not a sub-page's: a site declares one favicon and
@@ -2960,6 +3071,7 @@ async def scrape_url(
         brand_candidate=brand_candidate,
         image_candidates=entry.image_candidates,
         unvisited_urls=unvisited_urls,
+        crawl_stop_reason=crawl_stop_reason,
     )
 
 
@@ -2969,6 +3081,7 @@ class ExtendCrawlResult:
 
     additional_pages: list[SourceContent]
     unvisited_urls: list[str]
+    crawl_stop_reason: CrawlStopReason | None = None
 
 
 async def extend_crawl(
@@ -2999,7 +3112,7 @@ async def extend_crawl(
         raise ScrapeError(str(exc), status=400) from exc
 
     async with browser_context() as context:
-        discovered, unvisited = await _crawl_extra_pages(
+        outcome = await _crawl_extra_pages(
             context,
             entry_final_url=entry_url,
             seed_links=[],  # primary entry not re-rendered
@@ -3012,6 +3125,7 @@ async def extend_crawl(
         )
 
     return ExtendCrawlResult(
-        additional_pages=[p.source_content for p in discovered],
-        unvisited_urls=unvisited,
+        additional_pages=[p.source_content for p in outcome.pages],
+        unvisited_urls=outcome.unvisited,
+        crawl_stop_reason=outcome.stop_reason,
     )

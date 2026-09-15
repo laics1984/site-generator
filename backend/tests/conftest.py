@@ -145,6 +145,23 @@ def _offline_paste_structure():
 
 
 @pytest.fixture(autouse=True)
+def _offline_record_template():
+    """Pin the LLM record-template pass off for every test.
+
+    Same reason as `_offline_paste_structure` above: the suite runs offline, and
+    a crawl fixture with a record set would otherwise reach a server, falling
+    back after a timeout. Off, `default_record_template` lays the pages out.
+    tests/test_record_pages.py turns it on itself and injects a fake client.
+    """
+    original = settings.record_template_llm_enabled
+    settings.record_template_llm_enabled = False
+    try:
+        yield
+    finally:
+        settings.record_template_llm_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _offline_bio_condense():
     """Pin the LLM bio-condensing pass off for every test.
 

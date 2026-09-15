@@ -108,6 +108,57 @@ class ExtractNavLinksTest(unittest.TestCase):
         self.assertEqual(extract_nav_links(_soup("<p>hello</p>"), BASE), [])
 
 
+class DeclaredMenuTest(unittest.TestCase):
+    """A page-builder header with no <nav>, <ul> or role — only the menu
+    walker's own ``menu-item`` classes (feruni.com's Elementor/LaStudio kit,
+    trimmed). It sits in a CSS-hidden hamburger panel, which changes nothing:
+    the links are in the HTML either way."""
+
+    FERUNI = """
+    <div data-elementor-type="header"><div class="lakit-hamburger-panel">
+      <div class="lakit-nav lakit-nav--vertical">
+        <div class="menu-item"><a class="menu-item-link" href="https://www.example.com/">Home</a></div>
+        <div class="menu-item"><a class="menu-item-link" href="https://www.example.com/about-us/">About Us</a></div>
+        <div class="menu-item menu-item-has-children">
+          <a class="menu-item-link" href="#"><span class="menu-text">Products</span></a>
+          <div class="lakit-nav__sub">
+            <div class="menu-item"><a class="menu-item-link" href="/our-collections/">Our Collections</a></div>
+            <div class="menu-item menu-item-has-children">
+              <a class="menu-item-link" href="#">Spaces</a>
+              <div class="lakit-nav__sub">
+                <div class="menu-item"><a class="menu-item-link" href="/kitchen-tiles/">Kitchen Tiles</a></div>
+                <div class="menu-item"><a class="menu-item-link" href="/bathroom-tiles/">Bathroom Tiles</a></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="menu-item"><a class="menu-item-link" href="https://example.com/design_concept/">Design Concept</a></div>
+      </div>
+    </div></div>
+    <div class="content"><a href="/product/relievo/">Relievo</a></div>
+    """
+
+    def test_declared_items_become_a_nested_menu(self):
+        nav = extract_nav_links(_soup(self.FERUNI), BASE)
+
+        self.assertEqual(
+            [(n.label, n.href) for n in nav],
+            [("Home", "/"), ("About Us", "/about-us"), ("Products", "#"), ("Design Concept", "/design_concept")],
+        )
+        products = nav[2]
+        self.assertEqual(
+            [(c.label, c.href) for c in products.children],
+            [("Our Collections", "/our-collections"), ("Spaces", "#")],
+        )
+        self.assertEqual(
+            [c.href for c in products.children[1].children], ["/kitchen-tiles", "/bathroom-tiles"]
+        )
+
+    def test_semantic_navigation_still_wins(self):
+        html = self.FERUNI + '<header><nav><ul><li><a href="/shop">Shop</a></li></ul></nav></header>'
+        self.assertEqual([n.label for n in extract_nav_links(_soup(html), BASE)], ["Shop"])
+
+
 class ExtractBodyClustersTest(unittest.TestCase):
     def test_menu_strip_in_body_is_detected(self):
         html = """

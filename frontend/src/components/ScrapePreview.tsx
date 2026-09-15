@@ -2,8 +2,37 @@ import { useState } from 'react'
 
 import { FacebookFactsPanel } from '@/components/FacebookFactsPanel'
 import { exportSiteDocument } from '@/lib/api'
-import type { PasteReport, ScrapePreview as ScrapePreviewType } from '@/lib/types'
+import type {
+  CrawlStopReason,
+  PasteReport,
+  ScrapePreview as ScrapePreviewType,
+} from '@/lib/types'
 import { Button } from '@/ui'
+
+/**
+ * Why the crawler left URLs unread, for the "more pages" banner. A crawl that a
+ * site's bot protection cut short must not read as "stopped at the page cap" —
+ * the fix is waiting or an allowlist, not a bigger budget.
+ */
+const STOP_EXPLANATIONS: Partial<Record<CrawlStopReason, { title: string; detail: string }>> = {
+  bot_challenge: {
+    title: 'Blocked by bot protection',
+    detail:
+      "the site's bot protection challenged our requests. Try again in a couple of minutes, or ask the site owner to allowlist the crawler.",
+  },
+  host_failures: {
+    title: 'Site stopped responding',
+    detail: 'the site kept failing our requests. Try again in a couple of minutes.',
+  },
+  cancelled: {
+    title: 'Crawl cancelled',
+    detail: 'the crawl was cancelled. Want to keep going?',
+  },
+}
+const PAGE_CAP_EXPLANATION = {
+  title: 'More pages available',
+  detail: 'stopped at the page cap. Want to keep going?',
+}
 
 interface ScrapePreviewProps {
   preview: ScrapePreviewType
@@ -73,6 +102,16 @@ export function ScrapePreview({
 
   const unvisitedCount = preview.unvisited_count ?? preview.unvisited_urls?.length ?? 0
   const canCrawlMore = !isDocument && !isFacebook && unvisitedCount > 0 && !!onCrawlMore
+  const stopExplanation =
+    (preview.crawl_stop_reason && STOP_EXPLANATIONS[preview.crawl_stop_reason]) ||
+    PAGE_CAP_EXPLANATION
+  // Bot protection refused every page and nothing else (a paste) supplies any:
+  // generating now would build a generic template site under the brand's name,
+  // which reads as "the pages were not scraped" rather than "we were blocked".
+  const blockedByBotProtection =
+    preview.crawl_stop_reason === 'bot_challenge' &&
+    (preview.discovered_count ?? 0) === 0 &&
+    !preview.paste
 
   return (
     <div className="space-y-4">
@@ -98,16 +137,30 @@ export function ScrapePreview({
 
       {facts && <FacebookFactsPanel facts={facts} />}
 
+      {blockedByBotProtection && (
+        <div
+          role="alert"
+          className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-900"
+        >
+          <div className="font-semibold">Nothing to build from — the site blocked the crawler</div>
+          <div className="mt-0.5">
+            Its bot protection challenged every page we asked for, so only the
+            homepage was read. A site generated now would contain generic template
+            pages, not this site&apos;s. Ask the site owner to allowlist the
+            crawler (or wait for the block to lift), then fetch the site again.
+          </div>
+        </div>
+      )}
+
       {canCrawlMore && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1">
-              <div className="font-semibold">More pages available</div>
+              <div className="font-semibold">{stopExplanation.title}</div>
               <div className="mt-0.5">
                 The crawler queued{' '}
                 <span className="font-semibold">{unvisitedCount}</span> more URL
-                {unvisitedCount === 1 ? '' : 's'} but stopped at the page cap.
-                Want to keep going?
+                {unvisitedCount === 1 ? '' : 's'} but {stopExplanation.detail}
               </div>
             </div>
             <div className="flex flex-col gap-1.5">
@@ -286,7 +339,7 @@ export function ScrapePreview({
           variant="primary"
           size="lg"
           fullWidth
-          disabled={!text.trim()}
+          disabled={!text.trim() || blockedByBotProtection}
           busy={busy}
           onClick={() => onConfirm(text, title)}
         >

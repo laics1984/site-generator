@@ -24,6 +24,7 @@ from app.models.content_blocks import (
     GalleryItem,
     HeroBlock,
     PagePlan,
+    SectionCandidate,
     SourceContent,
 )
 from app.models.industry import PageScaffold
@@ -466,6 +467,25 @@ class ChromeSectionsTest(unittest.TestCase):
 
         self.assertEqual([s.heading for s in awards.section_candidates], ["Winning Awards"])
         self.assertEqual([s.heading for s in source.section_candidates], ["Our Awards"])
+
+    def test_a_template_heading_over_different_content_is_not_chrome(self):
+        # A catalogue: every product page labels a section "Product Specification",
+        # each over its own specs. The label repeats; the content never does.
+        def product(slug: str, spec: str) -> SourceContent:
+            page = self._page(f"/product/{slug}", "")
+            page.section_candidates = [
+                SectionCandidate(heading="Product Specification", level=1, prose=spec)
+            ]
+            return page
+
+        source = self._page(None, BADGE_WALL_HTML)
+        relievo, eterna = product("relievo", "Size 76x230mm"), product("eterna", "Size 200x200mm")
+        source.discovered_pages = [relievo, eterna]
+
+        strip_chrome_sections(source)
+
+        self.assertEqual([s.prose for s in relievo.section_candidates], ["Size 76x230mm"])
+        self.assertEqual([s.prose for s in eterna.section_candidates], ["Size 200x200mm"])
 
     def test_a_page_is_never_stripped_to_nothing(self):
         # The same content served at two URLs (an alias, a print view) makes

@@ -31,7 +31,16 @@ from collections.abc import Callable, Container, Hashable, Iterable
 from math import ceil
 from typing import TypeVar
 
-from app.models.content_blocks import ContentBlock, PagePlan, SourceContent
+from pydantic import BaseModel
+
+from app.models.content_blocks import (
+    ContentBlock,
+    GalleryBlock,
+    GalleryItem,
+    PagePlan,
+    SectionCandidate,
+    SourceContent,
+)
 from app.services.source_path import normalize_source_slug
 
 T = TypeVar("T")
@@ -40,6 +49,61 @@ K = TypeVar("K", bound=Hashable)
 # Slugs a key must appear on before it reads as template chrome rather than
 # content. Two is the floor at which "repeated" means anything at all.
 CHROME_MIN_SLUGS = 2
+
+def max_items(block: type[BaseModel]) -> int:
+    """A block model's own ``items`` ceiling, read from its schema so a builder
+    that fills items verbatim never restates (and never drifts from) the bound."""
+    return next(
+        rule.max_length
+        for rule in block.model_fields["items"].metadata
+        if getattr(rule, "max_length", None) is not None
+    )
+
+
+# GalleryBlock.items ceiling; every unique image is one media upload at push.
+MAX_GALLERY_ITEMS = max_items(GalleryBlock)
+
+
+def gallery_block_from_section(
+    section: SectionCandidate, *, limit: int = MAX_GALLERY_ITEMS
+) -> GalleryBlock:
+    """One source picture rack → a gallery of exactly those pictures.
+
+    Shared by ``routers.generate._inject_image_walls`` and the record-page
+    filler (``services/record_pages.py``) — both place a section's own photos
+    verbatim, so there is one builder.
+
+    ``image_url`` is set directly, which is what makes this deterministic: the
+    slot is already filled, so nothing downstream resolves a stock photo for it
+    and ``image_refs.bind_image_refs`` never gets to reject a badge for being
+    the wrong shape. ``image_query`` still has to be a non-empty string for the
+    model's schema, but it is dead weight once ``image_url`` is set — see
+    ``section_content._gallery_content``, which prefers the URL.
+
+    The album name falls through to ``caption``, never ``title``:
+    ``_gallery_content`` reads either as alt text, but ``schema_builder._build_
+    gallery`` runs ``_match_child_by_title`` on ``title``, so putting one album
+    name on nine tiles would link all nine at a child page.
+    """
+    captions = {card.image_url: card.title for card in section.cards if card.image_url}
+    items: list[GalleryItem] = []
+    seen: set[str] = set()
+    for url in section.image_urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        caption = (captions.get(url) or "").strip()
+        items.append(
+            GalleryItem(
+                title=caption or None,
+                caption=caption or section.heading or None,
+                image_query=caption or section.heading,
+                image_url=url,
+            )
+        )
+        if len(items) >= limit:
+            break
+    return GalleryBlock(heading=section.heading, items=items)
 
 
 def source_pages(source: SourceContent) -> list[SourceContent]:

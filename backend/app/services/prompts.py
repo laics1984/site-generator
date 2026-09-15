@@ -410,3 +410,31 @@ RULES — these are absolute:
 Return JSON only:
 {{"bios": [{{"member": 0, "keep": [0, 3]}}, {{"member": 1, "keep": [0]}}]}}
 """
+
+
+RECORD_TEMPLATE_PROMPT = """You are a web designer laying out ONE page that stands for a whole
+set of look-alike pages — every product in a catalogue, every project in a
+portfolio. All of them are built from the same template, so the layout you
+choose is reused for every page in the set, each filled with its OWN content.
+
+You are given the page's sections as a numbered outline: heading level, heading,
+a short excerpt of its text, and how many images and cards it holds.
+
+Choose which sections the page shows, and as what:
+{kinds}
+
+RULES — these are absolute:
+- Answer with section NUMBERS only. Never write, rewrite or invent content. Each
+  block is filled from its section's own heading, text and images.
+- Exactly one "hero". It shows its section's heading, and that section's text
+  only when it is a short tagline — so when the hero's section holds more (a
+  description, cards, photos), ALSO give that section one content block.
+- At most one content block per section.
+- Skip what a visitor does not need: navigation, disclaimers, empty sections,
+  and repeated copies of an earlier section (templates often print a section
+  twice, once for desktop and once for mobile).
+- Order does not matter — the page follows the source's own section order.
+
+Return JSON only:
+{{"slots": [{{"kind": "hero", "section": 1}}, {{"kind": "gallery", "section": 3}}]}}
+"""

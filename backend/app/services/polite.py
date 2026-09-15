@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import AsyncIterator
@@ -178,3 +179,29 @@ def reset_politeness(host: str | None = None) -> None:
 
 # Status codes that signal we should back off and retry rather than fail.
 RETRIABLE_STATUS_CODES: frozenset[int] = frozenset({429, 503, 502, 504})
+
+
+# (response header, value) pairs a bot-protection layer sets when it answers
+# with a challenge page instead of the site. Cloudflare documents
+# `cf-mitigated: challenge` for exactly this. Matched on the header, never on
+# the page text: a challenge interstitial is a "Just a moment..." page that
+# would otherwise pass as thin content. Add a vendor's documented signal here.
+_CHALLENGE_SIGNATURES: tuple[tuple[str, str], ...] = (
+    ("cf-mitigated", "challenge"),
+)
+
+
+def is_bot_challenge(headers: Mapping[str, str]) -> bool:
+    """True when a response is a bot-protection challenge, not the page.
+
+    A challenge is about the HOST's view of this client, not about the page
+    that was asked for: the next page gets the same answer, and a headless
+    browser is challenged too (measured on feruni.com — the render never
+    cleared it). Callers stop spending requests on it instead of retrying
+    through a slower path. Deliberately detection only: getting past a
+    challenge is the site owner's call (allowlist the crawler), not ours.
+    """
+    return any(
+        (headers.get(name) or "").strip().lower() == value
+        for name, value in _CHALLENGE_SIGNATURES
+    )

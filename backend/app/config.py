@@ -146,6 +146,12 @@ class Settings(BaseSettings):
     # invisible even when the sitemap listed it. Costs 1-3s of plain HTTP per
     # crawl; off → links-only discovery, exactly as before.
     crawl_seed_from_sitemap: bool = True
+    # The most pages one crawl (or one "crawl more" pass) may fetch. The API
+    # validates against it and the scope picker offers it, so the backend and
+    # the UI can never disagree about the ceiling (they used to spell 40 twice).
+    # Sized for a whole catalogue site — feruni.com is ~295 pages — and matched
+    # to sitemap._MAX_URLS_RETURNED so a full sitemap can always be crawled.
+    crawl_max_pages_ceiling: int = 500
 
     # Brand detection + the legacy free-form planner: faithful rewrite — keep it
     # close to the source, not creative.
@@ -232,6 +238,18 @@ class Settings(BaseSettings):
     # to the heuristic rather than truncating: half a structure is worse than a
     # consistent one, because the dropped tail silently loses its pages.
     paste_structure_max_chars: int = 24000
+
+    # Look-alike detail pages — a catalogue's products, a portfolio's projects —
+    # are built from ONE layout per source template (services/record_pages.py)
+    # instead of a content batch each. The LLM picks which of an exemplar's
+    # sections become which block, answering in section numbers; every page in
+    # the set is then filled verbatim from its own source. Off ⇒ a deterministic
+    # default layout: still no content call per page, just no model judgement.
+    record_template_llm_enabled: bool = True
+    # Same-template sibling pages before they count as a set. Below it each page
+    # is planned individually: a handful of service sub-pages is worth bespoke
+    # copy, while a catalogue of dozens is not worth a content batch per page.
+    record_set_min_pages: int = 6
 
     # Fit a team CARD's biography to a card by keeping a subset of the source's
     # own sentences (services/bio_condense.py). A person's own profile page
@@ -464,9 +482,11 @@ class Settings(BaseSettings):
     # Content migration: when the source site has a blog / events listing,
     # crawl the post/event detail pages and push them as real CMS
     # article/event entries (services/content_collections.py). The cap bounds
-    # generation time — each entry costs a page fetch + an image upload.
+    # generation time — each entry costs a page fetch + an image upload. 60
+    # migrates a typical brand site's whole archive (feruni.com: 25 journal + 24
+    # news posts, ~5-10s of fetches) while still bounding a site with thousands.
     content_migration_enabled: bool = True
-    content_migration_max_entries: int = 12
+    content_migration_max_entries: int = 60
 
     cors_origins: list[str] = [
         "http://localhost:5173",

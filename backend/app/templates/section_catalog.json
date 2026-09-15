@@ -8902,7 +8902,8 @@
                 },
                 "responsiveStyles": {
                   "mobile": {
-                    "flexDirection": "column",
+                    "display": "grid",
+                    "gridTemplateColumns": "minmax(0, 1fr)",
                     "gap": "32px"
                   },
                   "tablet": {}
@@ -18136,7 +18137,8 @@
                 },
                 "responsiveStyles": {
                   "mobile": {
-                    "flexDirection": "column",
+                    "display": "grid",
+                    "gridTemplateColumns": "minmax(0, 1fr)",
                     "gap": "32px"
                   }
                 },
@@ -18469,7 +18471,8 @@
                 },
                 "responsiveStyles": {
                   "mobile": {
-                    "flexDirection": "column",
+                    "display": "grid",
+                    "gridTemplateColumns": "minmax(0, 1fr)",
                     "gap": "32px"
                   }
                 },
@@ -19023,7 +19026,8 @@
                 },
                 "responsiveStyles": {
                   "mobile": {
-                    "flexDirection": "column",
+                    "display": "grid",
+                    "gridTemplateColumns": "minmax(0, 1fr)",
                     "gap": "32px"
                   }
                 },

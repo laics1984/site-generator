@@ -26,6 +26,9 @@ the real bottlenecks remain.
 - **Dynamic batching** — content generation packs multiple pages/sections per
   call (`MAX_SECTIONS_PER_BATCH`, `MAX_PAGES_PER_BATCH`, `LLM_CONTEXT_TOKENS`) to
   amortize the fixed prompt prefill.
+- **Record pages** — look-alike detail pages (a catalogue's products) cost one
+  small layout call per template set instead of a content batch every few pages;
+  each page is filled deterministically (`record_pages.py`).
 
 ### Scraping
 - **httpx-first fast path** — `fast_fetch.py` tries a plain GET (~250–600ms) and
@@ -34,7 +37,11 @@ the real bottlenecks remain.
 - **CPU-bound parsing off the event loop** — trafilatura/lxml parsing runs in a
   worker thread (`asyncio.to_thread`) so other crawl workers keep fetching.
 - **Politeness + concurrency** — `polite.py` gates per-host concurrency and delay;
-  crawls run concurrently within those bounds.
+  crawls run concurrently within those bounds. A bot-challenged page is never
+  retried through Playwright (headless is challenged too).
+- **No redirect hops** — crawl URLs keep their trailing slash and are requested
+  on the entry's origin (`site_url.rebase_to_origin`), so neither a WordPress
+  slash redirect nor a `www` alias redirect costs a round trip per page.
 - **Scrape-preview cache** — absorbs double-clicks / regeneration re-POSTs for a
   whole editing session (`SCRAPE_CACHE_TTL_SECONDS`).
 - **Stock pre-warming** — `media.prewarm_stock` concurrently warms the Pexels

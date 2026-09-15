@@ -1785,6 +1785,111 @@ makes forgetting it impossible rather than papering over it.
 
 Tests: `test_deployment_boundary.py`.
 
+## Same site, one spelling
+
+`services/site_url.py` is the only answer to "is this the same site" (`www.` is
+an alias) and "is this the same page" (`crawl_key`: alias, trailing slash and
+fragment insensitive). The crawler compared hosts exactly while
+`nav_extraction` ignored `www.`, so feruni.com's header named pages — Contact
+Us, a whole menu item — that the crawl dropped as "another site". Identity and
+address are separate: a page is deduped by `crawl_key` but **requested** by
+`rebase_to_origin`, with its path exactly as linked. The old normalizer stripped
+the trailing slash from the request too, which un-disallowed
+`Disallow: /private/` for `/private` and cost every WordPress page a 301.
+
+`_extract_links` orders crawlable links shallow-first: a homepage lists product
+teasers above its footer, and a bounded frontier used to spend its budget on
+`/product/x` before `/contact-us`. `CRAWL_MAX_PAGES_CEILING` is the one crawl
+ceiling — the API validates against it and `/api/scrape/probe` hands it to the
+scope picker (`frontend/src/lib/crawlScope.ts`). Sitemaps read only
+`<url>/<loc>`: `<image:loc>` counted a catalogue's photos as pages.
+
+Tests: `test_site_url.py`, `test_crawl_pool.SiteIdentityTest`/`FrontierOrderTest`, `test_sitemap.py`.
+
+## A menu is what the markup declares
+
+`extract_nav_links` reads `<nav>` / `role="navigation"` first. Only when those
+yield nothing does it read **declared** menus — containers of
+`_DECLARED_MENU_ITEM_CLASSES` (`menu-item`, stamped by WordPress/Drupal menu
+walkers). Page-builder kits (feruni.com's Elementor/LaStudio header) emit no
+`<nav>`, `<ul>` or role, so the site used to read as having no navigation. A
+hidden hamburger panel changes nothing: its links are in the HTML. One parser
+covers both markups (`_is_menu_item` + `_menu_list_in`) — no second copy.
+
+Menus built by client-side JS: `scraper._entry_with_navigation` renders **the
+entry page only**, and only when its static HTML yields no menu. Advisory — a
+failed render keeps the fast parse. Menus fetched only on click are not covered.
+
+Tests: `test_nav_extraction.DeclaredMenuTest`, `test_entry_navigation.py`.
+
+## A bot challenge is a stop, not a missing page
+
+`polite.is_bot_challenge` recognizes a challenge by its vendor's documented
+header (`cf-mitigated: challenge`), never by page text — on both fetch paths
+(`fast_fetch` → `CHALLENGED`; `browser.rendered_page` → `RenderError.challenged`).
+A page httpx saw challenged is **not** retried through Playwright — measured on
+feruni.com, headless is challenged too, so the render only burns 3-5s and the
+client's bot score. Either way it is
+recorded as a retriable failure (the politeness circuit still trips), kept at the
+front of `unvisited`, and `CrawlOutcome.stop_reason` becomes `"bot_challenge"`,
+which the preview states instead of "stopped at the page cap". **Detection
+only**: no stealth, solvers or cookie replay — the fix is the site owner
+allowlisting the crawler.
+
+Two consequences, both paid for on feruni.com once Cloudflare blocked the
+crawler outright: a crawl stopped by `bot_challenge` / `host_failures` is never
+served by `find_reusable` (an allowlist added within the 30-minute window used to
+get the same empty crawl back), and `ScrapePreview` refuses "Choose pages" when
+such a crawl found no pages — otherwise the generator silently builds the
+industry template under the brand's name, which reads as "the pages weren't
+scraped".
+
+`stop_reason` is mirrored as `CrawlStopReason` in `frontend/src/lib/types.ts` —
+change both. Tests: `test_bot_challenge.py`, `test_crawl_pool.CrawlStopReasonTest`,
+`test_crawl_job_reuse.test_a_crawl_the_host_refused_is_never_reused`.
+
+## Record pages: plan once, fill many
+
+A catalogue gives every item its own page from one template (feruni.com: 170
+`/product/*`). `record_pages.mark_record_sets` (called from page inference)
+groups sub-pages sharing a parent **and** a `template_signature` (each
+section's level / has-images / has-cards, in order); `RECORD_SET_MIN_PAGES`+
+members get `record_set` (the exemplar slug) and `menu_hidden`. Roster-linked
+profile pages, translations and top-level pages are never records.
+
+`routers.generate.split_scaffolds` keeps them away from the content planner.
+`build_record_pages` makes **one** `chat_json_cached` call per set — the model
+answers in section NUMBERS (the `paste_structure` / `bio_condense` contract)
+— then `fill_record_page` fills every page from **its own** section at that
+position, so every word and photo is that page's source and nothing moves
+between items. `_SLOT_KINDS` is the single registry of block kinds (prompt,
+validation and dispatch). Any failure falls back to `default_record_template`.
+Record pages join `plan.pages` before the deterministic injectors and skip
+alignment. The gallery builder is `source_injection.gallery_block_from_section`,
+shared with `_inject_image_walls`.
+
+Two rules verbatim filling needs that paraphrase never did:
+
+- **A shared tail is template chrome.** A heading-less page-builder footer lands
+  in the last section's prose (feruni: ~400 chars of share buttons + copyright
+  on every product). `without_shared_tails` cuts the words EVERY page of the set
+  ends a section with (≥ `_SHARED_TAIL_MIN_WORDS`), before planning and filling.
+- **Text appears once.** The hero shows its section's text only as a tagline
+  (≤ `_TAGLINE_MAX_CHARS`); longer text goes to that section's content block,
+  which the hero's section may also have. Nothing is truncated, nothing repeats.
+  A slot this page's section can't fill (cards without text) falls back to the
+  section's text rather than dropping it.
+
+One upstream rule catalogues exposed: **a template heading is not chrome.**
+`nav_extraction.strip_chrome_sections` used to drop any section whose HEADING
+appeared on 2+ pages, so every product lost "Product Specification", "2
+Collections"… — feruni's modular pages kept only their title, in the LLM path
+too. `_section_identity` keys on heading AND content (prose, images, card
+titles): a footer widget repeats both; a catalogue label repeats only the first.
+Test: `test_image_walls.ChromeSectionsTest`.
+
+Tests: `test_record_pages.py`; `conftest._offline_record_template` pins the call off.
+
 ## Gotchas
 
 - **Docker dependency skew.** Compose mounts only `./backend/app`, so code edits

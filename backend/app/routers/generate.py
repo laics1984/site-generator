@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import re
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
@@ -26,7 +26,6 @@ from app.models.content_blocks import (
     DownloadLink,
     DownloadsBlock,
     GalleryBlock,
-    GalleryItem,
     ImageMetadata,
     IndustryCategoryLiteral,
     industry_locked_mood,
@@ -57,6 +56,8 @@ from app.services.facebook_authority import enforce_facebook_facts
 from app.services.facebook_source import to_contact_dict
 from app.services.industry_templates import get_template
 from app.services.design_brain import generate_design_language
+from app.services.record_pages import build_record_pages
+from app.services.source_router import pages_by_source_slug
 from app.services.translations import build_translated_pages
 from app.services.text_detection import prefetch_text_flags
 from app.services.legal_pages import build_privacy_page, build_terms_page
@@ -70,8 +71,10 @@ from app.services.planner import (
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
 from app.services.page_inference import DIRECTORY_MIN_PROFILES
 from app.services.source_injection import (
+    MAX_GALLERY_ITEMS,
     accumulate_by_slug,
     companion_insert_index,
+    gallery_block_from_section,
     group_by_heading,
     hero_insert_index,
     insert_after_hero,
@@ -1457,6 +1460,38 @@ class GenerateWithPagesRequest(BaseModel):
     facebook_facts: FacebookPage | None = None
 
 
+class ScaffoldSplit(NamedTuple):
+    """How each selected page is built."""
+
+    content: list[PageScaffold]  # planned by the content LLM
+    records: list[PageScaffold]  # laid out once per set, filled verbatim (record_pages)
+    translations: list[PageScaffold]  # cloned from their counterpart's finished plan
+    legal: list[PageScaffold]  # boilerplate
+
+
+def split_scaffolds(selected: list[PageScaffold]) -> ScaffoldSplit:
+    """Route every selected page to the one pass that builds it.
+
+    Only ``content`` reaches the planner. Translated mirrors are cloned from
+    their counterpart's finished plan further down — paying the planner to write
+    them again would cost a full generation per language AND let the versions
+    drift apart visually. Record pages (a catalogue's products) are the same
+    idea at catalogue scale: one layout per template, each page filled from its
+    own source, instead of a content batch every few pages.
+    """
+    split = ScaffoldSplit([], [], [], [])
+    for scaffold in selected:
+        if scaffold.is_legal:
+            split.legal.append(scaffold)
+        elif scaffold.locale:
+            split.translations.append(scaffold)
+        elif scaffold.record_set:
+            split.records.append(scaffold)
+        else:
+            split.content.append(scaffold)
+    return split
+
+
 @router.post("/with-pages", response_model=GeneratedSite)
 async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
     # Locale detection reads image URLs as domain evidence
@@ -1469,18 +1504,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     if payload.stock_images_only:
         payload.source = without_source_imagery(payload.source)
 
-    # Split scaffolds: LLM-generated content pages vs. boilerplate legal pages.
-    # Translated mirrors are held out of the content pass entirely — they're
-    # cloned from their counterpart's finished plan further down, so paying the
-    # planner to write them again would cost a full generation per language AND
-    # let the two versions drift apart visually.
-    content_scaffolds = [
-        s for s in payload.selected_pages if not s.is_legal and not s.locale
-    ]
-    translation_scaffolds = [
-        s for s in payload.selected_pages if not s.is_legal and s.locale
-    ]
-    legal_scaffolds = [s for s in payload.selected_pages if s.is_legal]
+    content_scaffolds, record_scaffolds, translation_scaffolds, legal_scaffolds = (
+        split_scaffolds(payload.selected_pages)
+    )
 
     if not content_scaffolds:
         raise HTTPException(
@@ -1621,6 +1647,12 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     graphics_task = asyncio.create_task(
         _screen_source_images_for_graphics(scraped_metadata)
     )
+    # Record pages ride beside the content pass: one small layout call per
+    # template set, then deterministic filling — nothing here waits on the
+    # planner, and the planner never sees these pages.
+    record_pages_task = asyncio.create_task(
+        build_record_pages(record_scaffolds, _sources_by_slug(payload.source))
+    )
 
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
     # This is the heaviest LLM pass (it writes all page copy); time it so the
@@ -1636,6 +1668,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         prefetch_task.cancel()
         ocr_task.cancel()
         graphics_task.cancel()
+        record_pages_task.cancel()
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
 
     # Per-batch failures no longer abort the run (see planner._run_item_safe) —
@@ -1665,6 +1698,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             source_map=source_map,
         ),
     )
+    # Record pages join before every deterministic pass below (hub links,
+    # downloads, walls, videos, maps), so those treat them like any other page.
+    # They skip alignment above: their content is already verbatim source.
+    plan.pages.extend(await record_pages_task)
     # FAQ items the model manufactured out of profile listings are dropped
     # before any rendering — the roster ships as a team grid, not as Q&As.
     _strip_profile_faq_items(plan, payload.source)
@@ -1774,7 +1811,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
                 await build_translated_pages(
                     plan.pages,
                     translation_scaffolds,
-                    _translation_sources(payload.source),
+                    _sources_by_slug(payload.source),
                 )
             )
 
@@ -1887,15 +1924,15 @@ def _align_pages_to_scaffolds(
     return aligned
 
 
-def _translation_sources(source: SourceContent) -> dict[str, SourceContent]:
-    """slug → crawled page, so a clone can be filled with the owner's own words
-    in that language rather than a re-translation of our copy."""
-    out: dict[str, SourceContent] = {}
-    for page in source.discovered_pages:
-        slug = normalize_source_slug(page.url_path)
-        if slug:
-            out[slug] = page
-    return out
+def _sources_by_slug(source: SourceContent) -> dict[str, SourceContent]:
+    """slug → crawled page, for the passes that build a page from its own
+    source rather than from the planner: a translation filled with the owner's
+    own words, a record page filled verbatim. Where several crawled URLs share a
+    slug the query-less page represents it, as in page inference."""
+    return {
+        slug: pages[0]
+        for slug, pages in pages_by_source_slug(source.discovered_pages).items()
+    }
 
 
 def _social_links_for(source: SourceContent) -> list[tuple[str, str]]:
@@ -2001,8 +2038,6 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
 # Card kinds whose section IS its pictures — mirrors page_inference's set, which
 # decides the scaffold these blocks fill.
 _WALL_CARD_KINDS = frozenset({"gallery"})
-# GalleryBlock.items ceiling; every unique image is one media upload at push.
-_MAX_GALLERY_ITEMS = 24
 # Photos under one heading before it counts as an album rather than an
 # illustrated paragraph — mirrors page_inference._WALL_MIN_IMAGES.
 _MIN_ALBUM_PHOTOS = 3
@@ -2164,7 +2199,7 @@ def _place_walls(page: PagePlan, walls: list[SectionCandidate], *, gated: bool) 
     for wall in walls[:_MAX_GALLERY_BLOCKS]:
         if budget <= 0:
             break
-        block = _wall_gallery_block(wall, limit=min(_MAX_GALLERY_ITEMS, budget))
+        block = gallery_block_from_section(wall, limit=min(MAX_GALLERY_ITEMS, budget))
         if not block.items:
             continue
         budget -= len(block.items)
@@ -2456,44 +2491,6 @@ def _inject_maps(pages: list[PagePlan], source: SourceContent) -> None:
             continue
         insert_at = companion_insert_index(page, _MAP_COMPANION_KINDS)
         page.blocks[insert_at:insert_at] = blocks
-
-
-def _wall_gallery_block(
-    wall: SectionCandidate, *, limit: int = _MAX_GALLERY_ITEMS
-) -> GalleryBlock:
-    """One source picture rack → a gallery of exactly those pictures.
-
-    ``image_url`` is set directly, which is what makes this deterministic: the
-    slot is already filled, so nothing downstream resolves a stock photo for it
-    and ``image_refs.bind_image_refs`` never gets to reject a badge for being
-    the wrong shape. ``image_query`` still has to be a non-empty string for the
-    model's schema, but it is dead weight once ``image_url`` is set — see
-    ``section_content._gallery_content``, which prefers the URL.
-
-    The album name falls through to ``caption``, never ``title``:
-    ``_gallery_content`` reads either as alt text, but ``schema_builder._build_
-    gallery`` runs ``_match_child_by_title`` on ``title``, so putting one album
-    name on nine tiles would link all nine at a child page.
-    """
-    captions = {card.image_url: card.title for card in wall.cards if card.image_url}
-    items: list[GalleryItem] = []
-    seen: set[str] = set()
-    for url in wall.image_urls:
-        if url in seen:
-            continue
-        seen.add(url)
-        caption = (captions.get(url) or "").strip()
-        items.append(
-            GalleryItem(
-                title=caption or None,
-                caption=caption or wall.heading or None,
-                image_query=caption or wall.heading,
-                image_url=url,
-            )
-        )
-        if len(items) >= limit:
-            break
-    return GalleryBlock(heading=wall.heading, items=items)
 
 
 def _ensure_hub_child_links(pages: list[PagePlan]) -> None:
