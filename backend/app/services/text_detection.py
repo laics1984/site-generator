@@ -1,12 +1,18 @@
 """
-Optional OCR pass: which images have words baked into their pixels.
+Optional OCR pass: which images carry words — or a code — in their pixels.
 
 A full-bleed background has the section's headline drawn over it. An image that
 is ITSELF a headline — the source's own hero graphic, a promo banner, a price
 list — puts two sets of words in the same space, and no scrim fixes that
-because the problem is the wording, not the contrast. Such an image is still
-fine as a featured image or an untitled card, so the flag produced here bars
-one slot, not the image (see image_match.bears_text).
+because the problem is the wording, not the contrast. Every other slot in the
+catalog crops its image, which cuts the same words off instead. So the flags
+produced here decide where an image may go, and which images the site must show
+whole (see image_match.must_show_whole and services/legible_images.py).
+
+A QR code is read from the same decoded frame (services/qr_codes.py). It is
+machine-readable text: a code covers almost none of the frame in OCR terms
+(watr.org.my's measured 3.6%, its caption line only), so without its own reading
+a donation code passed as a photograph and was stretched behind a headline.
 
 Why OCR and not pixel statistics: text over a photograph is not separable by
 edge/contrast heuristics. Measured on 10 real photographs plus 5 text-bearing
@@ -20,10 +26,11 @@ is deliberately serialized AFTER content generation — two models on one GPU
 thrash. This pass is pure CPU, so it rides the existing prefetch window
 alongside the content LLM and costs roughly nothing in wall time.
 
-Bounded and optional throughout: capped at `settings.ocr_max_images`, results
-cached by URL for the process lifetime, and a no-op returning {} when the
-package isn't installed or the setting is off. Never load-bearing — a failure
-just leaves the flag unset, which is exactly the pre-OCR behaviour.
+Bounded and optional throughout: the prefetch is capped at
+`settings.ocr_max_images`, results are cached by URL for the process lifetime,
+and every entry point is a no-op when the package isn't installed or the setting
+is off. Never load-bearing — a failure just leaves the flags unset, which is
+exactly the pre-OCR behaviour.
 """
 
 from __future__ import annotations
@@ -32,11 +39,13 @@ import asyncio
 import base64
 import binascii
 import logging
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Any
 
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
+from app.services import qr_codes
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +55,7 @@ logger = logging.getLogger(__name__)
 # photographs top out around 3%, text-bearing images start around 10%. 6% sits
 # between the two with ~2x margin on each side — deliberately nearer the clean
 # ceiling, because a missed banner is a bad hero while a false positive only
-# costs one photo its background slot.
+# costs one photo its cropped slots (it is still shown, whole).
 _COVERAGE_THRESHOLD = 0.06
 
 # Per-box confidence and length floors. A single stray glyph read out of leaf
@@ -54,13 +63,24 @@ _COVERAGE_THRESHOLD = 0.06
 _MIN_BOX_CONFIDENCE = 0.5
 _MIN_BOX_CHARS = 2
 
-# Roles that can never reach a full-bleed background anyway (existing gates in
-# media/image_match already exclude them), so screening them is pure waste.
+# Roles the PREFETCH spends nothing on. A portrait or decoration can reach no
+# slot this pass protects, a logo is the brand mark rather than content, and a
+# gallery cell is replayed verbatim by its own rack (with a lightbox to read it
+# whole). `verify_many` screens whatever it is handed, whatever its role.
 _SKIP_ROLES = frozenset({"portrait", "decoration", "logo", "gallery"})
 
-# Process-lifetime cache: {url: has_text}. Regenerations commonly reuse the same
+
+@dataclass(frozen=True)
+class PixelReading:
+    """What one image says in its pixels."""
+
+    has_text: bool
+    qr_payload: str | None
+
+
+# Process-lifetime cache: {url: reading}. Regenerations commonly reuse the same
 # scrape, and OCR is the expensive part. Bounded (FIFO) like the vision cache.
-_TEXT_CACHE: dict[str, bool] = {}
+_TEXT_CACHE: dict[str, PixelReading] = {}
 _TEXT_CACHE_MAX = 512
 
 # The detector is built once (model load is ~350ms) and reused. None until the
@@ -69,8 +89,8 @@ _ENGINE: Any = None
 _ENGINE_TRIED = False
 
 
-def _cache(url: str, has_text: bool) -> None:
-    _TEXT_CACHE[url] = has_text
+def _cache(url: str, reading: PixelReading) -> None:
+    _TEXT_CACHE[url] = reading
     while len(_TEXT_CACHE) > _TEXT_CACHE_MAX:
         _TEXT_CACHE.pop(next(iter(_TEXT_CACHE)), None)
 
@@ -137,34 +157,17 @@ def _decode(payload: bytes | str) -> Any:
         return np.array(rgb)
 
 
-def text_coverage(payload: bytes | str) -> float | None:
-    """Fraction of the frame covered by detected text. None if undetectable.
+def _coverage(boxes: Any, width: int, height: int) -> float:
+    """Fraction of the frame the confident detected text boxes cover.
 
     Detection only — what the words SAY is irrelevant, so a misread is
     harmless; all that matters is that glyphs are there and how much room they
     take. That is also the robust half of OCR, which is why a wrong
     transcription never becomes a wrong decision here.
     """
-    engine = _engine()
-    if engine is None:
-        return None
-    try:
-        arr = _decode(payload)
-        if arr is None:
-            return None
-        result, _elapsed = engine(arr)
-    except Exception:  # noqa: BLE001 — undecodable payload, model hiccup
-        return None
-    if not result:
-        return 0.0
-    height, width = arr.shape[:2]
-    if height <= 0 or width <= 0:
-        return None
     covered = 0.0
-    for box, text, confidence in result:
-        if confidence < _MIN_BOX_CONFIDENCE:
-            continue
-        if len(str(text).strip()) < _MIN_BOX_CHARS:
+    for box, text, confidence in boxes or []:
+        if confidence < _MIN_BOX_CONFIDENCE or len(str(text).strip()) < _MIN_BOX_CHARS:
             continue
         xs = [point[0] for point in box]
         ys = [point[1] for point in box]
@@ -172,12 +175,32 @@ def text_coverage(payload: bytes | str) -> float | None:
     return covered / (width * height)
 
 
-def _candidates(metadata: list[ImageMetadata], max_images: int) -> list[ImageMetadata]:
-    """The images worth screening, most background-plausible first.
+def read_pixels(payload: bytes | str) -> PixelReading | None:
+    """Read one image's words and code from a single decode. None if unreadable."""
+    engine = _engine()
+    if engine is None:
+        return None
+    try:
+        pixels = _decode(payload)
+        if pixels is None:
+            return None
+        boxes, _elapsed = engine(pixels)
+    except Exception:  # noqa: BLE001 — undecodable payload, model hiccup
+        return None
+    height, width = pixels.shape[:2]
+    if height <= 0 or width <= 0:
+        return None
+    return PixelReading(
+        has_text=_coverage(boxes, width, height) >= _COVERAGE_THRESHOLD,
+        qr_payload=qr_codes.decode(pixels),
+    )
 
-    Only images that could actually reach a full-bleed slot are worth an
-    inference: a headshot or a 40px icon is barred from backgrounds by other
-    gates long before this flag is read.
+
+def _candidates(metadata: list[ImageMetadata], max_images: int) -> list[ImageMetadata]:
+    """The images worth a prefetch inference, most background-plausible first.
+
+    A headshot or a 40px icon is barred from every slot by other gates long
+    before these flags are read, so it is not worth one.
     """
     eligible = [
         item
@@ -198,13 +221,21 @@ def _candidates(metadata: list[ImageMetadata], max_images: int) -> list[ImageMet
     return eligible[: max(0, max_images)]
 
 
+def _stamp(metadata: list[ImageMetadata], readings: dict[str, PixelReading]) -> None:
+    for item in metadata:
+        reading = readings.get(item.url)
+        if reading is not None:
+            item.ocr_has_text = reading.has_text
+            item.qr_payload = reading.qr_payload
+
+
 async def prefetch_text_flags(
     metadata: list[ImageMetadata],
     *,
     prefetched: dict[str, str] | None = None,
     max_images: int | None = None,
-) -> dict[str, bool]:
-    """Stamp `ocr_has_text` on up to `max_images` scraped images.
+) -> dict[str, PixelReading]:
+    """Stamp `ocr_has_text` and `qr_payload` on up to `max_images` scraped images.
 
     SOURCE IMAGES ONLY — this is the scraped pool's warm-up, and its whole
     point is riding the prefetch window for free. Stock candidates aren't known
@@ -216,57 +247,45 @@ async def prefetch_text_flags(
     image_vision.prefetch_image_pool. Reused when present, so with the vision
     pass on this costs no extra network at all.
 
-    Returns {url: has_text} for what it managed to judge. Mutates `metadata` in
+    Returns {url: reading} for what it managed to judge. Mutates `metadata` in
     place. Safe to run concurrently with the content-generation LLM call: it is
     pure CPU, and the LLM owns the GPU.
     """
     if not ocr_enabled():
         return {}
     limit = settings.ocr_max_images if max_images is None else max_images
-    targets = _candidates(metadata, limit)
-    by_url = {item.url: item for item in metadata if item.url}
-
-    # Anything already judged this process is free.
-    flags = {url: _TEXT_CACHE[url] for url in by_url if url in _TEXT_CACHE}
-    if targets and _engine() is not None:
-        payloads = await _payloads(targets, prefetched or {})
-        if payloads:
-            # One thread for the whole batch, not one per image: onnxruntime
-            # already saturates every core per inference, so a pool only adds
-            # contention (measured 30 images: 18.9s serial vs 21.3s on two
-            # workers). This keeps the event loop free without fighting itself.
-            flags.update(await asyncio.to_thread(_judge_batch, payloads))
-
-    for url, has_text in flags.items():
-        item = by_url.get(url)
-        if item is not None:
-            item.ocr_has_text = has_text
-    return flags
+    # Anything already judged this process is free, whatever the cap.
+    judged = [item.url for item in metadata if item.url in _TEXT_CACHE]
+    targets = [item.url for item in _candidates(metadata, limit)]
+    readings = await _screen([*judged, *targets], prefetched or {})
+    _stamp(metadata, readings)
+    return readings
 
 
-async def verify_one(meta: ImageMetadata) -> bool:
-    """Screen a SINGLE image on demand and stamp it. Returns its text flag.
+async def verify_many(metas: list[ImageMetadata]) -> None:
+    """Screen every not-yet-screened image in `metas`, in one batch, and stamp it.
 
     The prefetch above is a warm-up over a capped sample; on a large multi-page
     scrape most of the pool never fits that budget. This is the authoritative
-    check, called at the moment a background slot is about to accept an image —
-    so what gets screened is always what would actually be used, not a guess
-    about what might be.
+    check, called at the moment an image is about to fill a slot — so what gets
+    screened is always what would actually be used, not a guess about what
+    might be. No cap and no role filter: the caller already chose these.
 
-    Free when the prefetch already covered the URL (process-lifetime cache) and
-    a no-op when the pass is off, so the common paths cost nothing.
+    Free for anything the prefetch covered (process-lifetime cache), and a no-op
+    when the pass is off.
     """
-    if not meta.url:
-        return False
-    if meta.ocr_has_text is not None:
-        return meta.ocr_has_text
-    has_text = await verify_url(meta.url)
-    meta.ocr_has_text = has_text
-    return has_text
+    unscreened = [meta for meta in metas if meta.url and meta.ocr_has_text is None]
+    if unscreened and ocr_enabled():
+        _stamp(unscreened, await _screen([meta.url for meta in unscreened], {}))
+
+
+async def verify_one(meta: ImageMetadata) -> None:
+    """`verify_many` for the single image a slot is about to accept."""
+    await verify_many([meta])
 
 
 async def verify_url(url: str) -> bool:
-    """Screen a bare URL — the same check as `verify_one`, minus the metadata.
+    """Whether a bare URL carries text — the same check, minus the metadata.
 
     STOCK PHOTOGRAPHY GOES THROUGH HERE. The module originally screened source
     images only, on the reasoning that "Pexels ships photographs, not posters".
@@ -285,40 +304,39 @@ async def verify_url(url: str) -> bool:
     Returns False whenever the pass can't judge (off, no wheel, undecodable):
     never block a slot on a screen that didn't run.
     """
-    if not url:
+    if not url or not ocr_enabled():
         return False
-    cached = _TEXT_CACHE.get(url)
-    if cached is not None:
-        return cached
-    if not ocr_enabled() or _engine() is None:
-        return False
-    payloads = await _payloads_for_urls([url])
-    if not payloads:
-        return False
-    flags = await asyncio.to_thread(_judge_batch, payloads)
-    return flags.get(url, False)
+    reading = (await _screen([url], {})).get(url)
+    return reading is not None and reading.has_text
+
+
+async def _screen(urls: list[str], prefetched: dict[str, str]) -> dict[str, PixelReading]:
+    """Readings for `urls`: cached ones free, the rest read in one batch."""
+    unique = list(dict.fromkeys(url for url in urls if url))
+    readings = {url: _TEXT_CACHE[url] for url in unique if url in _TEXT_CACHE}
+    unread = [url for url in unique if url not in readings]
+    if unread and _engine() is not None:
+        payloads = await _payloads(unread, prefetched)
+        if payloads:
+            # One thread for the whole batch, not one per image: onnxruntime
+            # already saturates every core per inference, so a pool only adds
+            # contention (measured 30 images: 18.9s serial vs 21.3s on two
+            # workers). This keeps the event loop free without fighting itself.
+            readings.update(await asyncio.to_thread(_judge_batch, payloads))
+    return readings
 
 
 async def _payloads(
-    targets: list[ImageMetadata], prefetched: dict[str, str]
+    urls: list[str], prefetched: dict[str, str]
 ) -> list[tuple[str, bytes | str]]:
-    """(url, image payload) for each target, reusing prefetched downloads."""
-    out: list[tuple[str, bytes | str]] = []
-    missing: list[str] = []
-    for item in targets:
-        payload = prefetched.get(item.url)
-        if payload is not None:
-            out.append((item.url, payload))
-        else:
-            missing.append(item.url)
-    out.extend(await _payloads_for_urls(missing))
-    return out
-
-
-async def _payloads_for_urls(urls: list[str]) -> list[tuple[str, bytes | str]]:
-    """(url, downloaded bytes) for each URL, dropping the ones that don't fetch."""
-    if not urls:
-        return []
+    """(url, image payload) for each URL, reusing prefetched downloads and
+    dropping the ones that don't fetch."""
+    out: list[tuple[str, bytes | str]] = [
+        (url, prefetched[url]) for url in urls if url in prefetched
+    ]
+    missing = [url for url in urls if url not in prefetched]
+    if not missing:
+        return out
     import httpx
 
     from app.services.image_vision import _fetch_image_bytes  # lazy: import chain
@@ -332,23 +350,23 @@ async def _payloads_for_urls(urls: list[str]) -> list[tuple[str, bytes | str]]:
     async with httpx.AsyncClient(
         timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
     ) as client:
-        fetched = await asyncio.gather(*(one(url, client) for url in urls))
-    return [(url, raw) for url, raw in fetched if raw is not None]
+        fetched = await asyncio.gather(*(one(url, client) for url in missing))
+    return out + [(url, raw) for url, raw in fetched if raw is not None]
 
 
-def _judge_batch(payloads: list[tuple[str, bytes | str]]) -> dict[str, bool]:
+def _judge_batch(payloads: list[tuple[str, bytes | str]]) -> dict[str, PixelReading]:
     """Sync/CPU on purpose — the caller runs it via asyncio.to_thread."""
-    flags: dict[str, bool] = {}
+    readings: dict[str, PixelReading] = {}
     for url, payload in payloads:
-        coverage = text_coverage(payload)
-        if coverage is None:
+        reading = read_pixels(payload)
+        if reading is None:
             continue
-        has_text = coverage >= _COVERAGE_THRESHOLD
-        flags[url] = has_text
-        _cache(url, has_text)
-        if has_text:
+        readings[url] = reading
+        _cache(url, reading)
+        if reading.has_text or reading.qr_payload:
             logger.debug(
-                "OCR: %s carries text (%.1f%% coverage) — barred from background slots",
-                url[:120], coverage * 100,
+                "Pixels: %s carries %s — shown whole, never cropped or overprinted",
+                url[:120],
+                "a QR code" if reading.qr_payload else "its own text",
             )
-    return flags
+    return readings

@@ -16372,8 +16372,8 @@
         "subheading": "Drop by for a tour — we'd love to show you around.",
         "items": [
           {
-            "name": "Kepong Campus",
-            "address": "12, Jalan Prima 3, Metro Prima, 52100 Kepong, Kuala Lumpur",
+            "name": "Branch Name",
+            "address": "Address and location details here",
             "hours": "Mon-Fri 8:00am - 6:00pm",
             "whatsapp_cta": {
               "innerText": "WhatsApp us",
@@ -16384,23 +16384,23 @@
               "href": "tel:0362571234"
             },
             "map": {
-              "src": "https://maps.google.com/maps?q=Metro+Prima+Kepong+Kuala+Lumpur&output=embed"
+              "src": "https://maps.google.com/maps?q=Kuala+Lumpur&output=embed"
             }
           },
           {
-            "name": "Kota Damansara Campus",
-            "address": "8, Jalan Teknologi 3/9, Kota Damansara, 47810 Petaling Jaya, Selangor",
+            "name": "Branch Name",
+            "address": "Address and location details here",
             "hours": "Mon-Fri 8:00am - 6:00pm",
             "whatsapp_cta": {
               "innerText": "WhatsApp us",
-              "href": "https://wa.me/60198765432"
+              "href": "https://wa.me/60123456789"
             },
             "phone_cta": {
-              "innerText": "03-6142 5678",
-              "href": "tel:0361425678"
+              "innerText": "03-6257 1234",
+              "href": "tel:0362571234"
             },
             "map": {
-              "src": "https://maps.google.com/maps?q=Kota+Damansara+Petaling+Jaya&output=embed"
+              "src": "https://maps.google.com/maps?q=Kuala+Lumpur&output=embed"
             }
           }
         ]
@@ -21301,17 +21301,17 @@
         "items": [
           {
             "map": {
-              "src": "https://maps.google.com/maps?q=Metro+Prima+Kepong+Kuala+Lumpur&output=embed",
-              "title": "Map: Kepong branch"
+              "src": "https://maps.google.com/maps?q=Petaling+Jaya+Selangor&output=embed",
+              "title": "Map: Petaling Jaya branch"
             },
-            "caption": "Kepong branch"
+            "caption": "Petaling Jaya branch"
           },
           {
             "map": {
-              "src": "https://maps.google.com/maps?q=Bandar+Menjalara+Kuala+Lumpur&output=embed",
-              "title": "Map: Menjalara branch"
+              "src": "https://maps.google.com/maps?q=Kuala+Lumpur&output=embed",
+              "title": "Map: Kuala Lumpur branch"
             },
-            "caption": "Menjalara branch"
+            "caption": "Kuala Lumpur branch"
           }
         ]
       },
@@ -21627,10 +21627,10 @@
         "items": [
           {
             "map": {
-              "src": "https://maps.google.com/maps?q=Metro+Prima+Kepong+Kuala+Lumpur&output=embed",
-              "title": "Map: Kepong branch"
+              "src": "https://maps.google.com/maps?q=Kuala+Lumpur&output=embed",
+              "title": "Map: Branch name"
             },
-            "caption": "Kepong branch"
+            "caption": "Branch name here"
           }
         ]
       },
@@ -21884,6 +21884,711 @@
                     },
                     "responsiveStyles": {
                       "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "qr-cards",
+      "sectionType": "qr",
+      "layoutVariant": "cards",
+      "styleVariant": "scan",
+      "label": "QR Codes",
+      "description": "The site's QR codes, each shown whole on a white mat so it still scans, with what scanning it does and, for a link, a button a phone visitor can tap instead. Codes are never cropped. Centred cards that wrap, so one code or four read equally well.",
+      "tags": [
+        "QR code",
+        "Payment",
+        "Donate",
+        "Contact"
+      ],
+      "thumbnail": "qr-cards",
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "code",
+              "kind": "image"
+            },
+            {
+              "id": "title",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "description",
+              "kind": "text"
+            },
+            {
+              "id": "action",
+              "kind": "link",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "QR code",
+        "heading": "Scan with your phone",
+        "items": [
+          {
+            "code": {
+              "src": "https://api.qrserver.com/v1/create-qr-code/?size=480x480&data=https%3A%2F%2Fwa.me%2F60123456789",
+              "alt": "QR code: Chat on WhatsApp"
+            },
+            "title": "Chat on WhatsApp",
+            "description": "Scan to start a WhatsApp chat.",
+            "action": {
+              "innerText": "Open WhatsApp",
+              "href": "https://wa.me/60123456789"
+            }
+          },
+          {
+            "code": {
+              "src": "https://api.qrserver.com/v1/create-qr-code/?size=480x480&data=https%3A%2F%2Fexample.com",
+              "alt": "QR code: Visit example.com"
+            },
+            "title": "Visit example.com",
+            "description": "Scan with your phone's camera to open example.com.",
+            "action": {
+              "innerText": "Open link",
+              "href": "https://example.com"
+            }
+          }
+        ]
+      },
+      "tree": {
+        "name": "QR - Cards",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "$slot": "eyebrow",
+                "type": "text",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "$slot": "heading",
+                "type": "text",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "QR Row",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "$repeat": "items",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexWrap": "wrap",
+              "justifyContent": "center",
+              "alignItems": "flex-start",
+              "gap": "24px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "20px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "QR Card",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "maxWidth": "360px",
+                  "flex": "0 1 320px",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "gap": "14px",
+                  "paddingTop": "28px",
+                  "paddingRight": "24px",
+                  "paddingBottom": "28px",
+                  "paddingLeft": "24px",
+                  "borderRadius": "20px",
+                  "backgroundColor": "var(--builder-color-surface, #f8fafc)",
+                  "border": "1px solid rgba(15,23,42,0.08)"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "paddingTop": "22px",
+                    "paddingRight": "18px",
+                    "paddingBottom": "22px",
+                    "paddingLeft": "18px"
+                  },
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "QR Mat",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "232px",
+                      "maxWidth": "100%",
+                      "backgroundColor": "#ffffff",
+                      "paddingTop": "14px",
+                      "paddingRight": "14px",
+                      "paddingBottom": "14px",
+                      "paddingLeft": "14px",
+                      "borderRadius": "14px",
+                      "boxShadow": "0 12px 28px -18px rgba(15,23,42,0.35)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {},
+                      "tablet": {}
+                    },
+                    "content": [
+                      {
+                        "name": "QR Code",
+                        "$slot": "code",
+                        "type": "image",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "contain",
+                          "backgroundRepeat": "no-repeat",
+                          "textAlign": "left",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "width": "100%",
+                          "display": "block"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {},
+                          "tablet": {}
+                        },
+                        "classes": "h-auto"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "QR Title",
+                    "$slot": "title",
+                    "type": "text",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-secondary, #0f172a)",
+                      "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "18px",
+                      "lineHeight": "1.3",
+                      "fontWeight": 700
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "17px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "QR Description",
+                    "$slot": "description",
+                    "type": "text",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.6"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Action",
+                    "$slot": "action",
+                    "type": "link",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-button-text, #ffffff)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "backgroundColor": "var(--builder-button-background, #2563eb)",
+                      "paddingTop": "10px",
+                      "paddingRight": "22px",
+                      "paddingBottom": "10px",
+                      "paddingLeft": "22px",
+                      "borderRadius": "var(--builder-button-radius, 14px)",
+                      "textDecoration": "none",
+                      "display": "inline-flex",
+                      "alignItems": "center",
+                      "justifyContent": "center",
+                      "fontWeight": 600,
+                      "fontSize": "15px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "100%",
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "poster-cards",
+      "sectionType": "poster",
+      "layoutVariant": "cards",
+      "styleVariant": "whole",
+      "label": "Posters",
+      "description": "Posters, flyers, slides and titled banners shown whole at their own aspect ratio — never cropped, never covered by text — and enlargeable on click so the fine print stays readable. For images whose message is their words.",
+      "tags": [
+        "Poster",
+        "Flyer",
+        "Announcement",
+        "Event"
+      ],
+      "thumbnail": "poster-cards",
+      "slots": [
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "items",
+          "kind": "list",
+          "item": [
+            {
+              "id": "poster",
+              "kind": "image"
+            },
+            {
+              "id": "caption",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "action",
+              "kind": "link",
+              "optional": true
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "heading": "What's on",
+        "items": [
+          {
+            "poster": {
+              "src": "https://images.pexels.com/photos/1190298/pexels-photo-1190298.jpeg?auto=compress&w=900",
+              "alt": "Community concert poster"
+            },
+            "caption": "Community concert — every first Saturday of the month.",
+            "action": {
+              "innerText": "Register",
+              "href": "#contact"
+            }
+          },
+          {
+            "poster": {
+              "src": "https://images.pexels.com/photos/7180617/pexels-photo-7180617.jpeg?auto=compress&w=900",
+              "alt": "Volunteer drive flyer"
+            },
+            "caption": null,
+            "action": null
+          }
+        ]
+      },
+      "tree": {
+        "name": "Poster - Cards",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "textAlign": "left",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "40px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "28px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "32px"
+          }
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Heading",
+                "$slot": "heading",
+                "type": "text",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-secondary, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Poster Row",
+            "motion": {
+              "preset": "rise",
+              "stagger": 0.08
+            },
+            "$repeat": "items",
+            "lightbox": true,
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "left",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexWrap": "wrap",
+              "justifyContent": "center",
+              "alignItems": "flex-start",
+              "gap": "32px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "20px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Poster Card",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "left",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "maxWidth": "560px",
+                  "flex": "1 1 320px",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "alignItems": "center",
+                  "gap": "14px"
+                },
+                "responsiveStyles": {
+                  "mobile": {},
+                  "tablet": {}
+                },
+                "content": [
+                  {
+                    "name": "Poster Image",
+                    "$slot": "poster",
+                    "type": "image",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "contain",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "left",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "display": "block",
+                      "borderRadius": "16px",
+                      "boxShadow": "0 18px 40px -24px rgba(15,23,42,0.35)"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "borderRadius": "12px"
+                      },
+                      "tablet": {}
+                    },
+                    "classes": "h-auto"
+                  },
+                  {
+                    "name": "Poster Caption",
+                    "$slot": "caption",
+                    "type": "text",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "width": "100%",
+                      "fontSize": "15px",
+                      "lineHeight": "1.6"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "fontSize": "14px"
+                      },
+                      "tablet": {}
+                    }
+                  },
+                  {
+                    "name": "Action",
+                    "$slot": "action",
+                    "type": "link",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "textAlign": "center",
+                      "opacity": "100%",
+                      "color": "var(--builder-button-text, #ffffff)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "backgroundColor": "var(--builder-button-background, #2563eb)",
+                      "paddingTop": "10px",
+                      "paddingRight": "22px",
+                      "paddingBottom": "10px",
+                      "paddingLeft": "22px",
+                      "borderRadius": "var(--builder-button-radius, 14px)",
+                      "textDecoration": "none",
+                      "display": "inline-flex",
+                      "alignItems": "center",
+                      "justifyContent": "center",
+                      "fontWeight": 600,
+                      "fontSize": "15px"
+                    },
+                    "responsiveStyles": {
+                      "mobile": {
+                        "width": "100%",
                         "fontSize": "14px"
                       },
                       "tablet": {}

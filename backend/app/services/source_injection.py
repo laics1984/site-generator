@@ -9,7 +9,8 @@ invent, and an invented href is a dead link while an invented video id is a
 are placed, verbatim, from what the crawler read.
 
 ``routers.generate`` has four such passes — ``_inject_downloads``,
-``_inject_image_walls``, ``_inject_videos`` and ``_inject_maps``. They differ in
+``_inject_image_walls``, ``_inject_videos`` and ``_inject_maps`` — and
+``services.legible_images`` a fifth, for posters and QR codes. They differ in
 what they collect and how they gate it, but they share the same spine, and each
 step encodes a bug that was paid for once already:
 
@@ -49,6 +50,15 @@ K = TypeVar("K", bound=Hashable)
 # Slugs a key must appear on before it reads as template chrome rather than
 # content. Two is the floor at which "repeated" means anything at all.
 CHROME_MIN_SLUGS = 2
+
+# For media where a second appearance is ORDINARY, a key must be on most of the
+# site before it reads as template furniture. The flat two-slug rule that works
+# for photos is wrong for a video: an index re-shows what its topic pages show,
+# and the entry page is itself crawled twice (`/` and `/index.php`), so two slugs
+# is the normal count for real content. See `repeated_across_slugs` for what
+# that cost. The same holds for a QR code or a poster in a page's own body.
+SITEWIDE_MIN_SLUGS = 3
+SITEWIDE_MIN_SHARE = 0.5
 
 def max_items(block: type[BaseModel]) -> int:
     """A block model's own ``items`` ceiling, read from its schema so a builder
@@ -109,6 +119,12 @@ def gallery_block_from_section(
 def source_pages(source: SourceContent) -> list[SourceContent]:
     """The entry page plus every page the crawl discovered, in one list."""
     return [source, *source.discovered_pages]
+
+
+def pages_by_slug(pages: list[PagePlan]) -> dict[str, PagePlan]:
+    """Each generated page under the key ``normalize_source_slug`` gives its
+    source page (surrounding slashes stripped, lowercased; "" = homepage)."""
+    return {p.slug.strip("/").lower(): p for p in pages}
 
 
 def accumulate_by_slug(
@@ -187,6 +203,15 @@ def repeated_across_slugs(
     return {key for key, n in seen.items() if n >= threshold}
 
 
+def sitewide_across_slugs(
+    source: SourceContent, extract: Callable[[SourceContent], Iterable[K]]
+) -> set[K]:
+    """Keys on most of the site — ``repeated_across_slugs`` at the sitewide bar."""
+    return repeated_across_slugs(
+        source, extract, min_slugs=SITEWIDE_MIN_SLUGS, min_share=SITEWIDE_MIN_SHARE
+    )
+
+
 def hero_insert_index(page: PagePlan) -> int:
     """Where a deterministic section goes: right after the hero, else the top.
 
@@ -203,20 +228,35 @@ def insert_after_hero(page: PagePlan, block: ContentBlock) -> None:
     page.blocks.insert(hero_insert_index(page), block)
 
 
-def companion_insert_index(page: PagePlan, kinds: Iterable[str]) -> int:
-    """Just after the last block of a companion kind, else ``hero_insert_index``.
+def closing_insert_index(page: PagePlan) -> int:
+    """Just before the page's closing CTA, else the end of the page.
+
+    For a section that is itself an ask — scan to give, scan to chat — which
+    belongs with the page's other asks, after the content that earns them.
+    """
+    end = len(page.blocks)
+    return end - 1 if end and page.blocks[-1].kind == "cta" else end
+
+
+def companion_insert_index(
+    page: PagePlan,
+    kinds: Iterable[str],
+    *,
+    fallback: Callable[[PagePlan], int] = hero_insert_index,
+) -> int:
+    """Just after the last block of a companion kind, else ``fallback``.
 
     Some deterministic sections are not top-of-page content in their own right —
     they ANNOTATE a section the model wrote. A map belongs beside the address
     that names the place, not stranded above it under the hero. When the page
-    has no such companion the hero rule applies unchanged.
+    has no such companion the fallback rule applies unchanged.
     """
     wanted = set(kinds)
     last = next(
         (i for i in range(len(page.blocks) - 1, -1, -1) if page.blocks[i].kind in wanted),
         None,
     )
-    return last + 1 if last is not None else hero_insert_index(page)
+    return last + 1 if last is not None else fallback(page)
 
 
 def group_by_heading(

@@ -1601,6 +1601,11 @@ _TEMPLATE_PAGE_DEFAULTS: dict[str, tuple[str, str, str]] = {
         "Default layout used to render article index, category, and tag listing pages.",
         "article-listing-template",
     ),
+    "eventListing": (
+        "Event Listing Template",
+        "Default layout used to render the event index page.",
+        "event-listing-template",
+    ),
 }
 
 _DEFAULT_ARTICLE_CATEGORY = "News"
@@ -1734,7 +1739,9 @@ async def _push_content_types(
     if need_articles:
         wanted += ["article", "articleListing"]
     if need_events:
-        wanted += ["event"]
+        # The public /events route renders from the eventListing template and
+        # 404s without one.
+        wanted += ["event", "eventListing"]
     try:
         existing_pages = await client.list_pages(req.entity_token)
         have = {p.get("templateFor") for p in existing_pages if p.get("templateFor")}

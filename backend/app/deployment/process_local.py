@@ -132,7 +132,7 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
     ProcessLocal(
         module="app.services.text_detection",
         attribute="_TEXT_CACHE",
-        holds="url → has_text OCR results (bounded FIFO)",
+        holds="url → text/QR pixel readings (bounded FIFO)",
         at_scale="Cache miss on another worker — the image is re-OCR'd.",
         severity=EFFICIENCY,
     ),

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 # Mirrors YOUTUBE_ID in videoEmbed.ts.
 _YOUTUBE_ID = r"[A-Za-z0-9_-]{6,}"
@@ -118,3 +118,18 @@ def parse_video_src(raw: str | None, base_url: str = "") -> ParsedVideo | None:
     if vimeo:
         return _vimeo(vimeo.group(1))
     return None
+
+
+# Hosts that serve nothing but frames of the providers' videos — the posters a
+# facade or a lazy-loading plugin paints before the player loads.
+_PLAYER_THUMBNAIL_HOSTS = frozenset({"i.ytimg.com", "img.youtube.com", "i.vimeocdn.com"})
+
+
+def is_player_thumbnail(url: str) -> bool:
+    """Whether an image URL is a video provider's still of one of its videos.
+
+    Such a still carries the video's title burned in, so it reads exactly like
+    a poster — but it belongs to the video, and shown alone it is a player that
+    doesn't play.
+    """
+    return (urlparse(url).hostname or "").lower() in _PLAYER_THUMBNAIL_HOSTS

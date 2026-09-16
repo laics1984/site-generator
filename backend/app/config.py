@@ -420,25 +420,30 @@ class Settings(BaseSettings):
     # pass existed. The backend test suite turns this off — it is the only thing
     # in ImageResolver that touches the network.
     # OCR text detection (services/text_detection.py): flags scraped images that
-    # carry their own headline/tagline/price list so they never fill a slot we
-    # draw OUR headline over. Requires rapidocr-onnxruntime; the pass no-ops
-    # cleanly when the wheel is absent, so turning this off is also how you run
-    # without that dependency installed.
+    # carry their own words, and decodes any QR code, so they never fill a slot
+    # that crops or overprints them and are placed whole instead
+    # (services/legible_images.py). Requires rapidocr-onnxruntime (which brings
+    # the OpenCV the QR reader uses); the pass no-ops cleanly when the wheel is
+    # absent, so turning this off is also how you run without that dependency.
     #
     # Runs on SOURCE images only (never stock) and rides the existing prefetch
-    # window alongside the content LLM, so it is ~free in wall time: measured
-    # ~630ms/image, i.e. ~7s for the default cap, against an LLM pass that owns
-    # the GPU meanwhile. Do NOT raise the cap far — it is CPU-bound and
-    # single-batch (thread pools measured SLOWER: onnxruntime already uses every
-    # core per inference).
+    # window alongside the content LLM, so it is ~free in wall time. The cap is
+    # also what decides which posters and codes get PLACED — an image outside
+    # the sample is still kept out of cropping slots by the on-demand screen,
+    # but nothing learns it deserves a section. So it covers a typical small-
+    # business site's whole pool (watr.org.my: 46 eligible images) rather than a
+    # hero-sized sample. Measured in the container: 46 images in 18.3s including
+    # downloads, against a content pass of 60-270s. CPU-bound and single-batch
+    # (thread pools measured SLOWER: onnxruntime already uses every core per
+    # inference), so it scales linearly — raise with that in mind.
     ocr_text_detection_enabled: bool = True
-    ocr_max_images: int = 12  # screening cap per generation
+    ocr_max_images: int = 48  # screening cap per generation
     ocr_input_px: int = 512  # matches the vision thumbnail, so downloads are shared
     ocr_fetch_concurrency: int = 3
-    # How many text-bearing candidates a single background slot may reject
-    # before giving up and falling through to stock. Each rejection costs a
-    # download plus an inference, so this bounds the worst case (a source whose
-    # every image is a promo graphic) instead of screening the whole pool.
+    # How many legible candidates a single slot may reject before giving up and
+    # falling through to stock. Each rejection costs a download plus an
+    # inference, so this bounds the worst case (a source whose every image is a
+    # promo graphic) instead of screening the whole pool.
     ocr_verify_budget: int = 4
 
     # Graphic screening (services/image_graphics.py): read the alpha channel and

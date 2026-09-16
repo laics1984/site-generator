@@ -235,7 +235,7 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
             await _push_content_types(client, self._request(), report)
 
         kinds = {call.kwargs["template_for"] for call in create_page.call_args_list}
-        self.assertEqual(kinds, {"article", "articleListing", "event"})
+        self.assertEqual(kinds, {"article", "articleListing", "event", "eventListing"})
         step = next(s for s in report.steps if s.name == "template_pages")
         self.assertTrue(step.ok)
 
@@ -245,6 +245,7 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
             {"id": "1", "templateFor": "article"},
             {"id": "2", "templateFor": "articleListing"},
             {"id": "3", "templateFor": "event"},
+            {"id": "4", "templateFor": "eventListing"},
         ]
         with (
             patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=existing)),

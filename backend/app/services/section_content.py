@@ -39,9 +39,11 @@ from app.models.content_blocks import (
     LocationsBlock,
     MapBlock,
     MenuBlock,
+    PosterBlock,
     PricingBlock,
     ProcessBlock,
     ProfileBlock,
+    QrBlock,
     ServicesBlock,
     TeamBlock,
     TestimonialsBlock,
@@ -402,6 +404,45 @@ def _map_content(b: MapBlock) -> dict[str, Any]:
     }
 
 
+def _qr_content(b: QrBlock) -> dict[str, Any]:
+    """QR codes → catalog slots. Nothing to resolve: each image is the source's
+    own code, placed by `{src}`, and a code has no stock equivalent.
+
+    A lone code's title IS the section heading (services.legible_images sets
+    it), so the card repeats it only when several codes share the section.
+    """
+    several = len(b.items) > 1
+    return {
+        "eyebrow": "QR code",
+        "heading": b.heading,
+        "items": [
+            {
+                "code": {"src": i.image_url, "alt": f"QR code: {i.title}"},
+                "title": i.title if several else None,
+                "description": i.description,
+                "action": _link(i.action_label, i.action_href),
+            }
+            for i in b.items
+        ],
+    }
+
+
+def _poster_content(b: PosterBlock) -> dict[str, Any]:
+    """Posters → catalog slots. Placed by `{src}` like `_qr_content`: the words
+    are the source's own and live in the pixels, so there is nothing to search."""
+    return {
+        "heading": b.heading,
+        "items": [
+            {
+                "poster": {"src": i.image_url, "alt": i.alt},
+                "caption": i.caption,
+                "action": _link(i.action_label, i.action_href),
+            }
+            for i in b.items
+        ],
+    }
+
+
 def _process_content(b: ProcessBlock) -> dict[str, Any]:
     return {
         "eyebrow": "Process",
@@ -542,6 +583,8 @@ _MAPPERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "gallery": _gallery_content,
     "video": _video_content,
     "map": _map_content,
+    "qr": _qr_content,
+    "poster": _poster_content,
     "process": _process_content,
     "menu": _menu_content,
     "pricing": _pricing_content,

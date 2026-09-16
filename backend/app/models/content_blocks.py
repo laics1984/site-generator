@@ -59,6 +59,8 @@ SectionType = Literal[
     "downloads",
     "video",
     "map",
+    "qr",
+    "poster",
 ]
 
 
@@ -78,12 +80,14 @@ SectionType = Literal[
 # download href, a video id, a pinned map coordinate. An invented one is not
 # vague, it is *wrong*, and it looks authoritative: a hallucinated 11-character
 # YouTube id is a stranger's video embedded on a client's site, and a guessed
-# map pin sends their customers to the wrong street. So it is enforced on both
+# map pin sends their customers to the wrong street. A QR code is the same kind
+# of fact — a payment account or a link — and a poster is the source's own
+# wording, so neither is narrated either. So it is enforced on both
 # sides —
 # the model is never invited (planner), and its output for these kinds is
 # discarded even if it volunteers one (scaffold_enforcement).
 DETERMINISTIC_SECTION_KINDS: frozenset[str] = frozenset(
-    {"downloads", "linkbar", "video", "map"}
+    {"downloads", "linkbar", "video", "map", "qr", "poster"}
 )
 
 
@@ -961,6 +965,73 @@ class MapBlock(BaseModel):
         return _default_if_blank(v, "Find us")
 
 
+class LegibleImageItem(BaseModel):
+    """A source image whose content is in its pixels, placed whole.
+
+    Every image slot elsewhere in the catalog crops (``objectFit: cover``) or
+    draws our copy over the picture, and either one destroys an image whose
+    meaning is its words or its code (see ``image_match.must_show_whole``). The
+    sections built from these items are the one place such an image is shown
+    uncropped, at its own aspect ratio.
+
+    ``action_label``/``action_href`` carry a link the image's QR code encodes: a
+    visitor reading the site on a phone cannot scan the phone's own screen, so
+    the same destination is offered as a tap.
+    """
+
+    image_url: str
+    action_label: str | None = None
+    action_href: str | None = None
+
+
+class QrItem(LegibleImageItem):
+    # What scanning does and how, derived from the decoded payload by
+    # services.qr_codes.purpose_of — never written by the LLM.
+    title: str
+    description: str
+
+
+class QrBlock(BaseModel):
+    """QR codes the source published, replayed with what each one is for.
+
+    NEVER produced by the LLM — see DETERMINISTIC_SECTION_KINDS. A payment QR is
+    a bank account and a link QR is an address; the image is placed verbatim by
+    services.legible_images, and its caption is read off the decoded payload.
+    """
+
+    kind: Literal["qr"] = "qr"
+    heading: str = "Scan with your phone"
+    items: list[QrItem] = Field(min_length=1, max_length=4)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Scan with your phone")
+
+
+class PosterItem(LegibleImageItem):
+    alt: str = ""
+    caption: str | None = None
+
+
+class PosterBlock(BaseModel):
+    """Posters, flyers, slides and titled banners the source published, whole.
+
+    NEVER produced by the LLM — see DETERMINISTIC_SECTION_KINDS. The wording is
+    the source's own and lives in the pixels, so the only faithful thing to do
+    is show all of it. Placed by services.legible_images.
+    """
+
+    kind: Literal["poster"] = "poster"
+    heading: str = "Announcements"
+    items: list[PosterItem] = Field(min_length=1, max_length=6)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Announcements")
+
+
 class TimelineItem(BaseModel):
     year: str
     title: str
@@ -1094,7 +1165,9 @@ ContentBlock = Annotated[
     | LocationsBlock
     | DownloadsBlock
     | VideoBlock
-    | MapBlock,
+    | MapBlock
+    | QrBlock
+    | PosterBlock,
     Field(discriminator="kind"),
 ]
 
@@ -1639,6 +1712,10 @@ class ImageMetadata(BaseModel):
     # independent of the vision model and runs off the critical path. None until
     # that pass runs / when it is disabled.
     ocr_has_text: bool | None = None
+    # The decoded content of a QR code in the pixels, read by the same pass on
+    # the same frame (services/qr_codes.py). None when there is no readable code
+    # or the pass has not run — `ocr_has_text is None` says which.
+    qr_payload: str | None = None
     # Luminance-band inputs for the schema_builder pass (SECTION_VISUAL_POLICY_SPEC.md
     # §4.3). Dominant colour comes free from Pexels avg_color or a generated base —
     # NO pixel download. luminance/band stay None until set by media.py.

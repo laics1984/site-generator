@@ -59,7 +59,7 @@ from app.services.design_brain import generate_design_language
 from app.services.record_pages import build_record_pages
 from app.services.source_router import pages_by_source_slug
 from app.services.translations import build_translated_pages
-from app.services.text_detection import prefetch_text_flags
+from app.services.text_detection import prefetch_text_flags, verify_many
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
 from app.services.planner import (
@@ -78,7 +78,9 @@ from app.services.source_injection import (
     group_by_heading,
     hero_insert_index,
     insert_after_hero,
+    pages_by_slug,
     repeated_across_slugs,
+    sitewide_across_slugs,
     source_pages,
 )
 from app.services.source_path import normalize_source_slug
@@ -86,7 +88,8 @@ from app.services.whatsapp_discovery import build_whatsapp_widget, discover_what
 from app.services.image_graphics import screen_source_images_for_graphics
 from app.services.bio_condense import condense_bios
 from app.services.llm import LlmClient
-from app.services.image_refs import bind_image_refs
+from app.services.image_refs import bind_image_refs, referenced_images
+from app.services.legible_images import inject_legible_images
 from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
@@ -387,8 +390,9 @@ async def _screen_source_images_for_text(
     metadata: list[ImageMetadata],
     prefetched: dict[str, str] | None = None,
 ) -> None:
-    """Flag SOURCE images that carry their own headline, so none of them fills a
-    slot we draw ours over (services/text_detection.py).
+    """Flag SOURCE images that carry their own words or a QR code, so none of them
+    fills a slot that overprints or crops it, and each is placed whole instead
+    (services/text_detection.py, services/legible_images.py).
 
     Stock photography is never screened — Pexels ships photographs, not posters,
     and these are `ImageMetadata`, which stock results never become.
@@ -1753,6 +1757,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     annotations = await _annotate_source_images(
         payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
     )
+    # Every pixel reading is in now. An image carrying words or a code can fill
+    # no slot that crops or overprints it, so it is placed whole instead.
+    inject_legible_images(plan.pages, payload.source, scraped_metadata)
     _enrich_plan_profile_cards(plan, payload.source, annotations, profiles=profiles)
     team_section_slugs = {s.slug for s in content_scaffolds if "team" in s.sections}
     # Directory pages: scaffolds with a team section whose grounding source is
@@ -1790,7 +1797,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         plan.pages = enforce_facebook_facts(plan.pages, payload.facebook_facts)
 
     # Resolve LLM-bound image refs (block.image_ref → block.image_url) against
-    # the same per-page photo lists the planner prompt showed the model.
+    # the same per-page photo lists the planner prompt showed the model. The
+    # photos the model chose are screened first, in one batch: a bound card
+    # photo never meets the resolver's on-demand screen.
+    await verify_many(referenced_images(plan.pages, source_map))
     bound_image_urls = bind_image_refs(plan.pages, source_map)
     # A gallery ref the binder rejected has nothing behind it — drop the tile
     # rather than let it resolve a stock photo at render time. Suspended under
@@ -1986,13 +1996,6 @@ def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:
     )
 
 
-def _page_by_url_path(pages: list[PagePlan]) -> dict[str, PagePlan]:
-    """Map each generated page's slug to its PagePlan, keyed the same way
-    ``site_relative_href``/``_path_to_slug`` normalize a source url_path
-    (strip surrounding slashes, lowercase; empty string = homepage)."""
-    return {p.slug.strip("/").lower(): p for p in pages}
-
-
 def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
     """Recreate each page's scraped document cards (e.g. a brochure offered in
     EN/ZH/MS, or a resource library) as ONE downloads section per page.
@@ -2011,7 +2014,7 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
     document_card_lines already kept the LLM from also narrating this content
     into its own services/about section, so there's nothing to duplicate).
     """
-    pages_by_path = _page_by_url_path(pages)
+    pages_by_path = pages_by_slug(pages)
     for slug, cards in accumulate_by_slug(
         source, lambda page: page.document_cards or []
     ).items():
@@ -2261,7 +2264,7 @@ def _inject_image_walls(
     page would grow a gallery nobody asked for.
     """
     gated_slugs = gallery_section_slugs or set()
-    pages_by_path = _page_by_url_path(pages)
+    pages_by_path = pages_by_slug(pages)
     chrome = _repeated_image_urls(source)
     # Kept as its own loop rather than routed through
     # source_injection.accumulate_by_slug: what counts as a wall here depends on
@@ -2294,13 +2297,6 @@ def _inject_image_walls(
 
 # VideoBlock.items ceiling (mirrors the model's max_length).
 _MAX_VIDEO_ITEMS = 24
-# A video must be on MOST of the site before it reads as template furniture.
-# The flat two-slug rule that works for photos is wrong for video: a video index
-# re-shows what its topic pages show, and the entry page is itself crawled twice
-# (`/` and `/index.php`), so two slugs is the NORMAL count for real content.
-# See source_injection.repeated_across_slugs for what this cost.
-_VIDEO_CHROME_MIN_SLUGS = 3
-_VIDEO_CHROME_MIN_SHARE = 0.5
 # Distinct video groups placed on one page. Roomier than the source usually
 # needs, because `_topic_regrouped` turns one flat index into several real
 # sections — and `group_by_heading` DROPS groups past the cap, so a tight cap
@@ -2377,12 +2373,11 @@ def _inject_videos(pages: list[PagePlan], source: SourceContent) -> None:
     slugs — a sidebar or footer promo reel is the template's, not this page's.
     Both rules, and the bugs behind them, live in ``services.source_injection``.
     """
-    pages_by_path = _page_by_url_path(pages)
-    chrome = repeated_across_slugs(
-        source,
-        lambda page: (v.embed_url for v in page.video_embeds or []),
-        min_slugs=_VIDEO_CHROME_MIN_SLUGS,
-        min_share=_VIDEO_CHROME_MIN_SHARE,
+    pages_by_path = pages_by_slug(pages)
+    # A video must be on MOST of the site before it reads as template furniture
+    # — see source_injection.SITEWIDE_MIN_SLUGS.
+    chrome = sitewide_across_slugs(
+        source, lambda page: (v.embed_url for v in page.video_embeds or [])
     )
     by_slug = accumulate_by_slug(source, lambda page: page.video_embeds or [])
     for slug, embeds in by_slug.items():
@@ -2464,7 +2459,7 @@ def _inject_maps(pages: list[PagePlan], source: SourceContent) -> None:
       Two maps of the same place, one pinned and one searched, reads as a bug.
       The authored section keeps the page; see MapBlock's docstring.
     """
-    pages_by_path = _page_by_url_path(pages)
+    pages_by_path = pages_by_slug(pages)
     by_slug = accumulate_by_slug(source, lambda page: page.map_embeds or [])
     for slug, embeds in by_slug.items():
         page = pages_by_path.get(slug)

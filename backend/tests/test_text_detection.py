@@ -1,6 +1,7 @@
 """OCR text screening (services/text_detection.py).
 
-Bars source images that already carry a headline from slots we draw ours over.
+Bars source images that carry words or a QR code from slots that overprint or
+crop them.
 The engine itself is an optional wheel, so these tests pin the wiring, the
 scope, and the degradation — the parts that must hold whether or not
 rapidocr-onnxruntime is installed. Accuracy was validated separately against a
@@ -80,7 +81,7 @@ class DegradationTest(unittest.TestCase):
 
     def test_an_undecodable_payload_is_skipped_not_raised(self):
         with mock.patch.object(text_detection, "_engine", return_value=object()):
-            self.assertIsNone(text_detection.text_coverage(b"not an image"))
+            self.assertIsNone(text_detection.read_pixels(b"not an image"))
 
     def test_threshold_sits_between_the_measured_populations(self):
         # Clean photographs measured up to ~3.1%, text-bearing from ~10.5%.
@@ -194,32 +195,57 @@ class OnDemandVerificationTest(unittest.TestCase):
             )
         self.assertNotEqual(got.source, "scraped")
 
-    def test_inline_slots_are_never_verified(self):
-        """Nothing is drawn over a featured image, so screening it would only
-        spend an inference to reject a usable photo."""
-        wordy = _img("https://x/promo.jpg", role="content", alt="summer promotion")
-        calls = []
+    def test_inline_slots_are_verified_too(self):
+        """An inline slot draws nothing over its image, but it CROPS it
+        (`objectFit: cover`), which cuts a poster's words off just as surely.
+        This used to skip inline winners, and watr.org.my shipped an Alpha
+        course poster as a 3:4-cropped editorial hero."""
+        # The poster is the better lexical match, so it is what ranking picks
+        # first — the re-rank past it is the behaviour under test.
+        # Neutral filenames: "poster" in a URL is itself a naming signal.
+        poster = _img("https://x/img-1.jpg", role="content", alt="summer promotion")
+        photo = _img("https://x/img-2.jpg", role="content", alt="summer", width=600, height=400)
 
-        async def spy(meta):
-            calls.append(meta.url)
-            return False
+        async def fake_verify(meta):
+            meta.ocr_has_text = meta.url == poster.url
 
-        with mock.patch("app.services.media.verify_one", side_effect=spy):
-            asyncio.run(
-                self._resolver([wordy]).resolve(
+        with mock.patch("app.services.media.verify_one", side_effect=fake_verify):
+            got = asyncio.run(
+                self._resolver([poster, photo]).resolve(
                     "summer promotion", intent="generic", slot_usage="inline"
                 )
             )
-        self.assertEqual(calls, [])
+        self.assertEqual(got.url, photo.url)
+        self.assertTrue(poster.ocr_has_text)
+
+    def test_a_legible_sign_still_fills_an_inline_slot(self):
+        """Any readable words bar a BACKGROUND; only words that are the picture's
+        content bar a crop. A shopfront whose sign the vision pass can read loses
+        nothing in a card."""
+        shopfront = _img("https://x/shop.jpg", role="content", alt="summer promotion")
+        shopfront.vision_has_text = True
+
+        async def screened(meta):
+            meta.ocr_has_text = False
+
+        with mock.patch("app.services.media.verify_one", side_effect=screened):
+            got = asyncio.run(
+                self._resolver([shopfront]).resolve(
+                    "summer promotion", intent="generic", slot_usage="inline"
+                )
+            )
+        self.assertEqual(got.url, shopfront.url)
 
     def test_a_prescreened_image_costs_no_inference(self):
         from app.services.text_detection import verify_one
 
         meta = _img("https://x/known.jpg")
         meta.ocr_has_text = True
-        with mock.patch.object(text_detection, "_engine") as engine:
-            self.assertTrue(asyncio.run(verify_one(meta)))
+        with mock.patch.object(settings, "ocr_text_detection_enabled", True), \
+             mock.patch.object(text_detection, "_engine") as engine:
+            asyncio.run(verify_one(meta))
             engine.assert_not_called()
+        self.assertTrue(meta.ocr_has_text)
 
     def test_the_reject_budget_is_bounded(self):
         self.assertGreaterEqual(settings.ocr_verify_budget, 1)
@@ -404,12 +430,18 @@ class StockScreeningTest(unittest.TestCase):
 
 
 class BudgetTest(unittest.TestCase):
-    """OCR is CPU-bound at ~630ms/image with no parallel speedup (onnxruntime
-    already uses every core; thread pools measured slower). The cap is what
-    keeps it inside the prefetch window, so it must stay modest."""
+    """OCR is CPU-bound with no parallel speedup (onnxruntime already uses every
+    core; thread pools measured slower). The cap is what keeps it inside the
+    prefetch window — measured 46 images in 18.3s in the container, downloads
+    included, against a content pass of 60-270s."""
+
+    SECONDS_PER_IMAGE = 0.4
+    PREFETCH_WINDOW_SECONDS = 20
 
     def test_default_cap_stays_within_the_prefetch_window(self):
-        self.assertLessEqual(settings.ocr_max_images, 16)
+        self.assertLessEqual(
+            settings.ocr_max_images * self.SECONDS_PER_IMAGE, self.PREFETCH_WINDOW_SECONDS
+        )
 
     def test_input_size_matches_the_vision_thumbnail(self):
         """Same size ⇒ prefetched downloads are reused verbatim, so with vision

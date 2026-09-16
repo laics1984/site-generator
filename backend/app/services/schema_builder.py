@@ -1596,11 +1596,14 @@ def _stamp_band_markers(elements: list[BuilderElement], theme: ThemeTokens) -> N
         el.classes = " ".join(filter(None, [el.classes, cls]))
 
 
-def _extract_og_image_safe(elements: list[BuilderElement]) -> str | None:
+def _extract_og_image_safe(
+    elements: list[BuilderElement], blocks: list[Any] | None = None
+) -> str | None:
+    """og:image for a page, never one of its QR codes (``blocks`` names them)."""
     try:
-        from app.services.seo import extract_og_image
+        from app.services.seo import extract_og_image, scan_code_urls
 
-        return extract_og_image(elements)
+        return extract_og_image(elements, exclude=scan_code_urls(blocks or []))
     except Exception:  # noqa: BLE001
         return None
 
@@ -5187,7 +5190,9 @@ async def plan_to_site(
             elements.append(_cms_list_element("articles"))
         elif page_plan.page_type == "events":
             elements.append(_cms_list_element("events"))
-        og_image = _extract_og_image_safe(elements) if settings.seo_enabled else None
+        og_image = (
+            _extract_og_image_safe(elements, page_plan.blocks) if settings.seo_enabled else None
+        )
         if settings.seo_enabled and not og_image:
             # A video page can legitimately carry no photography at all — its
             # content is players. The first video's poster is a real image OF

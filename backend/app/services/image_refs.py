@@ -19,9 +19,10 @@ Rules:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 
 from app.models.content_blocks import ImageMetadata, PagePlan, SourceContent
-from app.services.image_match import _UNPINNABLE_VISION_KINDS
+from app.services.image_match import _UNPINNABLE_VISION_KINDS, hides_legible_content
 from app.services.source_router import promptable_images
 
 logger = logging.getLogger(__name__)
@@ -51,13 +52,14 @@ def _unfit_for_kind(meta: ImageMetadata, kind: str, *, layout: str | None) -> st
     portrait = meta.role == "portrait" or meta.vision_portrait is True
     if portrait and kind not in _PORTRAIT_OK_KINDS:
         return "portrait"
+    full_bleed = kind in _BACKGROUND_OK_KINDS or (kind == "hero" and layout == "background")
     background = meta.role == "background" or meta.source_usage == "css_background"
-    if background and not (
-        kind in _BACKGROUND_OK_KINDS or (kind == "hero" and layout == "background")
-    ):
+    if background and not full_bleed:
         return "decorative background"
     if meta.vision_kind in _UNPINNABLE_VISION_KINDS:
         return f"vision_kind={meta.vision_kind}"
+    if hides_legible_content(meta, "background" if full_bleed else "inline"):
+        return "words or a code the slot would hide"
     return None
 
 
@@ -99,6 +101,50 @@ def _bind_one(
     return meta.url
 
 
+def _pages_with_images(
+    pages: list[PagePlan], source_map: dict[str, SourceContent]
+) -> Iterator[tuple[PagePlan, list[ImageMetadata]]]:
+    """Each page with the numbered image list its prompt showed, when it had one."""
+    for page in pages:
+        source = source_map.get(page.slug)
+        images = promptable_images(source) if source is not None else []
+        if images:
+            yield page, images
+
+
+def _ref_holders(page: PagePlan) -> Iterator[tuple[object, str, str | None]]:
+    """(holder, owning kind, owning layout) for every block and item on a page.
+
+    Items inherit their block's kind and layout, which is what gates the photos
+    they may take — see `_unfit_for_kind`.
+    """
+    for block in page.blocks:
+        kind = getattr(block, "kind", "") or ""
+        layout = getattr(block, "layout", None)
+        yield block, kind, layout
+        for item in getattr(block, "items", None) or []:
+            yield item, kind, layout
+
+
+def referenced_images(
+    pages: list[PagePlan], source_map: dict[str, SourceContent]
+) -> list[ImageMetadata]:
+    """Every scraped image an ``image_ref`` points at, before any is bound.
+
+    A bound ITEM url goes straight into its card's image slot and never meets
+    the resolver's on-demand screen, so the caller screens these first
+    (text_detection.verify_many) — otherwise a poster the prefetch sample never
+    reached would be cropped into a card on the model's say-so.
+    """
+    return [
+        images[ref]
+        for page, images in _pages_with_images(pages, source_map)
+        for holder, _kind, _layout in _ref_holders(page)
+        if isinstance(ref := getattr(holder, "image_ref", None), int)
+        and 0 <= ref < len(images)
+    ]
+
+
 def bind_image_refs(
     pages: list[PagePlan],
     source_map: dict[str, SourceContent],
@@ -110,13 +156,7 @@ def bind_image_refs(
     against exactly the image list the LLM saw.
     """
     bound: set[str] = set()
-    for page in pages:
-        source = source_map.get(page.slug)
-        if source is None:
-            continue
-        images = promptable_images(source)
-        if not images:
-            continue
+    for page, images in _pages_with_images(pages, source_map):
         # Portraits already rendering as a person's photo on this page are
         # spoken for — a ref landing on one shows the same face twice (a
         # person's own profile page, where it's the only photo there is).
@@ -130,16 +170,10 @@ def bind_image_refs(
             )
             if person.photo_url
         }
-        for block in page.blocks:
-            kind = getattr(block, "kind", "") or ""
-            layout = getattr(block, "layout", None)
-            url = _bind_one(block, images, page_used, kind=kind, layout=layout)
+        for holder, kind, layout in _ref_holders(page):
+            url = _bind_one(holder, images, page_used, kind=kind, layout=layout)
             if url:
                 bound.add(url)
-            for item in getattr(block, "items", None) or []:
-                url = _bind_one(item, images, page_used, kind=kind, layout=layout)
-                if url:
-                    bound.add(url)
     if bound:
         logger.info("Bound %d scraped photos via image_ref", len(bound))
     return bound

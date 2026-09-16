@@ -615,6 +615,89 @@ Tests: `test_image_graphics.py`, `test_logo_extraction.BrandMarkUrlsTest`,
 pins the pixel pass off for the suite (it downloads bytes), mirroring
 `_offline_ocr`.
 
+## An image whose message is in its pixels is shown whole
+
+A poster, a flyer, a slide, a photo with its title burned in, a QR code. **Every
+inline image slot in the catalog crops** (`objectFit: cover`) and every
+background overprints, so such an image can fill none of them — and must still
+be shown. watr.org.my shipped all four failures at once: its footer DuitNow
+donation code stretched behind an About headline and cropped 4:3 into another
+About split, an Alpha course poster as a 3:4 editorial hero and og:image, and a
+volunteering slide as a split hero.
+
+**Two questions, nested, in `image_match`**:
+
+- `bears_text` — *any* readable words, so nothing may sit behind ours. Includes
+  the vision pass's legible shopfront sign (`vision_has_text`).
+- `must_show_whole` — the words ARE the content (`shows_words`: OCR's 6%
+  coverage flag, `vision_kind == "banner"`, poster/flyer filenames), or a QR
+  code. A shop sign loses nothing in a card; a poster does.
+
+`hides_legible_content(meta, slot_usage)` is the one gate — `bears_text` for a
+background, `must_show_whole` for everything else — asked by `rank_candidates`,
+the resolver's pin path, its page-local size fallback, `strongest_source_background`
+and `image_refs._unfit_for_kind`. **Inline slots used to be exempt** on the
+reasoning that nothing is drawn over them; it forgot that they crop.
+
+**The QR code is read, not guessed.** OCR measured watr's code at 3.6% — its
+caption line only — and `image_graphics` needs transparency, so it passed as a
+photograph. `text_detection.read_pixels` now decodes the frame once and returns
+both readings (`PixelReading`); OpenCV comes with rapidocr and adds ~10ms. A
+successful DECODE is the signal: detection alone produced corner points on a
+building facade. Stamped as `ImageMetadata.qr_payload`.
+
+**The caption is derived from the payload** (`qr_codes.purpose_of`), never
+written by a model — a guessed purpose on a bank account is a false claim about
+where a visitor's money goes. EMVCo merchant codes name their scheme (DuitNow,
+PayNow, PromptPay, QRIS, Pix, VietQR) and their ISO 18245 category (8398/8661 →
+"give", else "pay"); URLs name their host, with WhatsApp special-cased; `tel:`
+and `mailto:` become buttons; anything else gets a generic caption and **no
+button** — only http(s)/tel/mailto ever reach an `href`. EMVCo is recognised by
+**structure** (opens with tag 00, parses to the mandatory CRC tag 63), not by the
+Payload Format Indicator's value: the spec says `01`, watr's code says `02`.
+
+**Placement** (`services/legible_images.py`, called after every pixel pass,
+before image refs bind) replays, never narrates — `qr` and `poster` are
+`DETERMINISTIC_SECTION_KINDS`:
+
+- A code alone is an ask: one `qr` section after the page's contact section,
+  else just before its closing CTA (`closing_insert_index`). Heading = the
+  shared purpose title ("Give with DuitNow"), a lone card doesn't repeat it.
+- Words are content: `poster` sections after the hero, grouped by the heading
+  the source showed them under. A code INSIDE a poster (`_is_code` is false
+  when `shows_words`) lends it a tap-through — a phone can't scan its own screen.
+- Page = where the source showed it; on most of the site (`sitewide_across_slugs`,
+  the video rule, now shared in `source_injection`) = homepage only. watr's
+  code is on all six pages.
+- **Readings are looked up in the pool by URL**: each crawled page carries its
+  own unstamped `ImageMetadata` copies, and the pool de-duplicates by URL.
+- Not placed: portraits, decorations, gallery cells (their rack replays them),
+  brand marks (a logo-role image is placed only if it decodes as a code —
+  `image_graphics` rightly calls a transparent code a flat graphic), player
+  stills (`video_embed.is_player_thumbnail` — a YouTube thumbnail carries its
+  title and reads exactly like a poster), and anything already on the page.
+
+**Screening coverage.** The prefetch sample is what finds images to PLACE, so
+`OCR_MAX_IMAGES` is 48 (a small site's whole pool; watr's is 46, screened in
+18.3s in the container against a 60-270s content pass). Correctness never rests
+on the cap: whatever wins a slot is verified on demand, and the photos an LLM
+bound are verified in one batch (`verify_many(referenced_images(...))`) before
+`bind_image_refs`, because a bound card photo never meets the resolver.
+
+**Rendering.** `qr-cards` and `poster-cards` frame the image with `objectFit:
+contain` plus the `h-auto` class — the one height all three renderers resolve to
+the natural aspect ratio (webtree-public's safelist, the builder canvas's fluid
+frame) — so an editor who later sets a height still can't crop it. The code sits
+on a literal white mat: a scanner needs a light quiet zone whatever the band.
+`poster-cards` carries `lightbox: true` for the fine print. A code is never a
+page's og:image (`seo.scan_code_urls`); a poster may be.
+
+Not covered, deliberately: galleries still crop their tiles (the lightbox shows
+each whole), and `stock_images_only` strips a source's codes with its photos.
+
+Tests: `test_legible_images.py`, `test_qr_codes.py`,
+`test_text_detection.OnDemandVerificationTest`; builder `section-catalog.test.mjs`.
+
 ## Stock images only
 
 A request-scoped `stock_images_only` on both generate endpoints dresses the
@@ -1550,6 +1633,55 @@ are what let `enforce_text_contrast` measure and flip them. Same rule as
 Tests: `test_locations_split.py`, `test_renderer_video_sizing.py` (cross-repo
 drift, skipped when a sibling repo is absent — the `test_self_ink.py` idiom);
 `builder/src/lib/section-catalog.test.mjs` (`npm test`).
+
+## Article and event listings
+
+The `articlesList` / `eventsList` element (`_cms_list_element` here, the
+builder's own seed and palette item) is rendered by `CmsListBlock.vue` in
+webtree-public, a hand-written copy in the builder canvas (`cms-list.tsx`), and a
+heading-only port in the preview. Three rules, each paid for on a real site:
+
+- **The list is the section.** It pads itself to the site's column at every
+  breakpoint (80 → 32 → 20px), so nothing may wrap it in a padded container.
+  The builder's listing template once did: 100px a side on a phone (175px
+  cards), 112px on a tablet, a 960px column where the site's is 1280. It seeds
+  the list alone now, and webtree-cms-api's
+  `unwrap_seeded_article_listing_template_lists` migration unwrapped every
+  stored draft and revision still exactly as seeded.
+- **It lays out by its own width, never the window's.** The builder canvas
+  simulates a device by width, not by viewport, so a media query there answers
+  for the wrong device — its Mobile preview drew the desktop grid. Columns are a
+  self-sizing grid (`repeat(auto-fill, …)`: cards ≥16rem, capped at 3, or 4 once
+  there are four), which also stopped a 1024px tablet getting four 201px cards;
+  card direction, type steps and compact pagination ("Previous [5] Next" under
+  30rem) are container queries on `wt-cms-list` / `wt-cms-column`. The canvas
+  uses the grid declaration verbatim (`cms-list-layout.ts`) and the same
+  container widths as Tailwind `@min-[…]/wt-cms-*` variants. Only the section's
+  own gutter stays on the viewport, where every other section's is.
+- **Headings ink with `--builder-color-heading`, never raw `secondary`.** On a
+  dark palette `secondary` is the darkest band colour — Feruni's card titles
+  measured **1.04:1**. The token is `secondary` where it reads (4.5:1) and
+  `text` where it doesn't, which is this repo's own `ink = text if dark else
+  secondary` (`style_tokens`) answered from the colours, because
+  `color_scheme` never reaches the wire. **Derived, never stored** — like
+  `primaryInk` in the builder, it follows a live palette edit — in
+  `webtree-public/lib/styles.ts` (vendored verbatim to the preview) and
+  `builder/src/lib/builder-styles.ts`. The same pass moved the category pill to
+  `--builder-color-primary-ink` (4.0 → 14.7:1 dark) and the current page number
+  to the button pair, and `--wt-color-muted` — which no palette states, so it
+  was always light-theme `#6b7280` (4.09:1 dark) under archive descriptions,
+  form labels and blockquotes — is now held to 4.5:1 against the background
+  (`ensureContrast`, the `primaryInk` idiom): byte-identical on light palettes.
+
+`eventListing` is a template type in all four repos: the public `/events` route
+renders from it and 404s without one, so the push creates it whenever the site
+has events (`_TEMPLATE_PAGE_DEFAULTS`), as the builder's `ensureTemplatePages`
+does.
+
+Tests: `test_cms_list_layout.py` (cross-repo drift: grid formula, container
+questions, preview vendoring, heading ink), `test_content_push.py`;
+`webtree-public/lib/styles.test.ts`; `builder/src/lib/{builder-styles,cms-detail-templates,page-management}.test.ts`;
+`webtree-cms-api` `ArticleListingUnwrapMigrationTest`.
 
 ## SEO
 

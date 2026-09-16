@@ -8,6 +8,7 @@ generator controls the DATA; the renderer controls the injection.
 from __future__ import annotations
 
 import re
+from collections.abc import Container
 from typing import Any
 
 from app.models.builder_schema import (
@@ -203,8 +204,28 @@ def _build_video_object(item: Any) -> dict[str, Any]:
 # og:image extraction from the rendered element tree
 # ---------------------------------------------------------------------------
 
-def extract_og_image(elements: list[BuilderElement]) -> str | None:
-    """Best image URL for og:image, preferring the hero's resolved photo."""
+def scan_code_urls(blocks: list[Any]) -> frozenset[str]:
+    """The page's QR code images, which are never its social card.
+
+    A link preview renders og:image a few hundred pixels wide in someone else's
+    feed, where a code is unscannable noise that says nothing about the page —
+    and on a page with no other imagery, the first image in the tree IS the code.
+    """
+    return frozenset(
+        item.image_url
+        for block in blocks
+        if getattr(block, "kind", None) == "qr"
+        for item in block.items
+    )
+
+
+def extract_og_image(
+    elements: list[BuilderElement], *, exclude: Container[str] = frozenset()
+) -> str | None:
+    """Best image URL for og:image, preferring the hero's resolved photo.
+
+    ``exclude`` lists image URLs that must never be the card (``scan_code_urls``).
+    """
     for el in elements:
         if getattr(el, "name", None) == "Hero":
             bg = (el.styles or {}).get("backgroundImage", "")
@@ -212,17 +233,17 @@ def extract_og_image(elements: list[BuilderElement]) -> str | None:
                 m = _URL_RE.search(bg)
                 if m:
                     return m.group(1)
-            found = _find_image_src(el)
+            found = _find_image_src(el, exclude)
             if found:
                 return found
     for el in elements:
-        found = _find_image_src(el)
+        found = _find_image_src(el, exclude)
         if found:
             return found
     return None
 
 
-def _find_image_src(el: BuilderElement) -> str | None:
+def _find_image_src(el: BuilderElement, exclude: Container[str]) -> str | None:
     """First real image URL in the subtree — `type == "image"` nodes only.
 
     The type check is load-bearing. `content.src` is not image-specific: a
@@ -238,12 +259,16 @@ def _find_image_src(el: BuilderElement) -> str | None:
         and content.src
     ):
         src = content.src
-        if isinstance(src, str) and src.startswith(("http://", "https://")):
+        if (
+            isinstance(src, str)
+            and src.startswith(("http://", "https://"))
+            and src not in exclude
+        ):
             return src
     if isinstance(content, list):
         for child in content:
             if isinstance(child, BuilderElement):
-                found = _find_image_src(child)
+                found = _find_image_src(child, exclude)
                 if found:
                     return found
     return None
