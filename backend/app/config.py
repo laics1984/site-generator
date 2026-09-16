@@ -90,12 +90,39 @@ class Settings(BaseSettings):
     # combo misbehaves (e.g. thinking output breaking JSON mode).
     reasoning_think: bool = True
 
+    # --- Claude API -------------------------------------------------------------
+    # WHICH model each role uses — the local AI server or a Claude model — is
+    # chosen per request in the UI (services/llm_choice.py), not here. What stays
+    # here is what the UI must never carry: the key, and the tuning knobs.
+    #
+    # Passed to the SDK explicitly — nothing here reads os.environ. Unset ⇒ the
+    # UI offers the Claude models as unavailable.
+    anthropic_api_key: str | None = None
+    # output_config.effort — how much the model thinks. Claude models think
+    # adaptively and reject sampling knobs, so this replaces both
+    # LLM_THINK/REASONING_THINK and the temperatures for this provider:
+    # `think=True` calls use the reasoning effort, everything else the content one.
+    anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # Output budget for a Claude call, either role. Its own knob rather than
+    # LLM_MAX_TOKENS because the picker switches models per request: that one is
+    # sized for the local model, and adaptive thinking spends from this budget
+    # before any JSON. Grown on truncation like the local one, capped at 128K.
+    anthropic_max_tokens: int = 32000
+    anthropic_reasoning_effort: Literal["low", "medium", "high", "xhigh", "max"] = "high"
+    # Server-side refusal fallbacks: a safety decline is re-run on a fallback
+    # model inside the same call instead of failing the generation.
+    anthropic_fallbacks_enabled: bool = True
+    # Cache the system prompt (the ~3k-token scaffold prompt repeats on every
+    # content batch, so later batches read it at a fraction of the price).
+    anthropic_prompt_cache: bool = True
+
     @field_validator(
         "llm_model",
         "llm_api_key",
         "reasoning_base_url",
         "reasoning_model",
         "reasoning_api_key",
+        "anthropic_api_key",
         "cms_remote_api_base_url",
         "cms_remote_admin_base_url",
         mode="before",
@@ -146,6 +173,12 @@ class Settings(BaseSettings):
     # invisible even when the sitemap listed it. Costs 1-3s of plain HTTP per
     # crawl; off → links-only discovery, exactly as before.
     crawl_seed_from_sitemap: bool = True
+    # The most pages one crawl (or one "crawl more" pass) may fetch. The API
+    # validates against it and the scope picker offers it, so the backend and
+    # the UI can never disagree about the ceiling (they used to spell 40 twice).
+    # Sized for a whole catalogue site — feruni.com is ~295 pages — and matched
+    # to sitemap._MAX_URLS_RETURNED so a full sitemap can always be crawled.
+    crawl_max_pages_ceiling: int = 500
 
     # Brand detection + the legacy free-form planner: faithful rewrite — keep it
     # close to the source, not creative.
@@ -232,6 +265,29 @@ class Settings(BaseSettings):
     # to the heuristic rather than truncating: half a structure is worse than a
     # consistent one, because the dropped tail silently loses its pages.
     paste_structure_max_chars: int = 24000
+
+    # Look-alike detail pages — a catalogue's products, a portfolio's projects —
+    # are built from ONE layout per source template (services/record_pages.py)
+    # instead of a content batch each. The LLM picks which of an exemplar's
+    # sections become which block, answering in section numbers; every page in
+    # the set is then filled verbatim from its own source. Off ⇒ a deterministic
+    # default layout: still no content call per page, just no model judgement.
+    record_template_llm_enabled: bool = True
+    # Same-template sibling pages before they count as a set. Below it each page
+    # is planned individually: a handful of service sub-pages is worth bespoke
+    # copy, while a catalogue of dozens is not worth a content batch per page.
+    record_set_min_pages: int = 6
+
+    # Fit a team CARD's biography to a card by keeping a subset of the source's
+    # own sentences (services/bio_condense.py). A person's own profile page
+    # keeps the complete text — a grid introduces people, a profile page tells
+    # the story. Off makes `truncate_bio`'s bound the only shortener, which is
+    # what shipped before this existed.
+    team_bio_condense_enabled: bool = True
+    # Roughly what the card's 4-line clamp shows, so most cards read complete
+    # with no "Show more" at all. Bios already at or under it never reach the
+    # model.
+    team_bio_card_max_chars: int = 400
 
     # Temperature for the design-brain pass (services/design_brain.py), which
     # picks per-section template variety/drama. Deliberately higher than the
@@ -364,25 +420,30 @@ class Settings(BaseSettings):
     # pass existed. The backend test suite turns this off — it is the only thing
     # in ImageResolver that touches the network.
     # OCR text detection (services/text_detection.py): flags scraped images that
-    # carry their own headline/tagline/price list so they never fill a slot we
-    # draw OUR headline over. Requires rapidocr-onnxruntime; the pass no-ops
-    # cleanly when the wheel is absent, so turning this off is also how you run
-    # without that dependency installed.
+    # carry their own words, and decodes any QR code, so they never fill a slot
+    # that crops or overprints them and are placed whole instead
+    # (services/legible_images.py). Requires rapidocr-onnxruntime (which brings
+    # the OpenCV the QR reader uses); the pass no-ops cleanly when the wheel is
+    # absent, so turning this off is also how you run without that dependency.
     #
     # Runs on SOURCE images only (never stock) and rides the existing prefetch
-    # window alongside the content LLM, so it is ~free in wall time: measured
-    # ~630ms/image, i.e. ~7s for the default cap, against an LLM pass that owns
-    # the GPU meanwhile. Do NOT raise the cap far — it is CPU-bound and
-    # single-batch (thread pools measured SLOWER: onnxruntime already uses every
-    # core per inference).
+    # window alongside the content LLM, so it is ~free in wall time. The cap is
+    # also what decides which posters and codes get PLACED — an image outside
+    # the sample is still kept out of cropping slots by the on-demand screen,
+    # but nothing learns it deserves a section. So it covers a typical small-
+    # business site's whole pool (watr.org.my: 46 eligible images) rather than a
+    # hero-sized sample. Measured in the container: 46 images in 18.3s including
+    # downloads, against a content pass of 60-270s. CPU-bound and single-batch
+    # (thread pools measured SLOWER: onnxruntime already uses every core per
+    # inference), so it scales linearly — raise with that in mind.
     ocr_text_detection_enabled: bool = True
-    ocr_max_images: int = 12  # screening cap per generation
+    ocr_max_images: int = 48  # screening cap per generation
     ocr_input_px: int = 512  # matches the vision thumbnail, so downloads are shared
     ocr_fetch_concurrency: int = 3
-    # How many text-bearing candidates a single background slot may reject
-    # before giving up and falling through to stock. Each rejection costs a
-    # download plus an inference, so this bounds the worst case (a source whose
-    # every image is a promo graphic) instead of screening the whole pool.
+    # How many legible candidates a single slot may reject before giving up and
+    # falling through to stock. Each rejection costs a download plus an
+    # inference, so this bounds the worst case (a source whose every image is a
+    # promo graphic) instead of screening the whole pool.
     ocr_verify_budget: int = 4
 
     # Graphic screening (services/image_graphics.py): read the alpha channel and
@@ -453,9 +514,11 @@ class Settings(BaseSettings):
     # Content migration: when the source site has a blog / events listing,
     # crawl the post/event detail pages and push them as real CMS
     # article/event entries (services/content_collections.py). The cap bounds
-    # generation time — each entry costs a page fetch + an image upload.
+    # generation time — each entry costs a page fetch + an image upload. 60
+    # migrates a typical brand site's whole archive (feruni.com: 25 journal + 24
+    # news posts, ~5-10s of fetches) while still bounding a site with thousands.
     content_migration_enabled: bool = True
-    content_migration_max_entries: int = 12
+    content_migration_max_entries: int = 60
 
     cors_origins: list[str] = [
         "http://localhost:5173",
@@ -473,13 +536,22 @@ class Settings(BaseSettings):
     # Structured data (JSON-LD) generation: Organization/LocalBusiness on
     # homepage, BreadcrumbList on sub-pages, FAQPage on FAQ blocks.
     seo_structured_data_enabled: bool = True
-    # SEO title length bounds (chars). The LLM targets 50-60; the audit flags
-    # titles outside these bounds.
+    # SEO title length bounds (chars). The max is ENFORCED, not just audited:
+    # `clamp_seo_title` trims every page plan's title to it. 60 is ~600px of
+    # rendered title, which is what Google shows before it truncates, and the
+    # number the CMS's own audit flags against
+    # (webtree-cms-api SeoAuditService::SEO_TITLE_MAX). The min is a quality
+    # floor of ours, not a Google rule, so it stays advisory.
     seo_title_min_length: int = 30
-    seo_title_max_length: int = 65
-    # SEO meta description length bounds (chars).
+    seo_title_max_length: int = 60
+    # SEO meta description length bounds (chars). The max is ENFORCED, not just
+    # audited: `clamp_seo_description` trims every page plan's description to it
+    # (models/content_blocks.py). 160 is the SERP display budget Google clips at
+    # and the same number the CMS's own SEO audit flags against
+    # (webtree-cms-api SeoAuditService::SEO_DESCRIPTION_MAX) — one budget, so a
+    # generated site cannot ship a page that its own dashboard then warns about.
     seo_description_min_length: int = 100
-    seo_description_max_length: int = 170
+    seo_description_max_length: int = 160
 
     # --- Deployment posture -------------------------------------------------
     # WHERE this generator runs — not where a push lands (that is a CmsTarget,

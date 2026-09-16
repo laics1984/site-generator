@@ -14,6 +14,10 @@ they live here and ``doc_parser`` imports them.
 blocks (heading level kept) plus the images anchored between them. The crawler
 takes its recall spine from ``text_blocks`` here, so "which tags carry content"
 and "which tags are chrome" have exactly one answer for every reader.
+
+``is_text_block`` is that answer, exported so the section tree
+(``section_extraction``) asks it rather than keeping a narrower copy — a tag
+whitelist is a silent off switch on whatever markup it does not describe.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from bs4 import BeautifulSoup, Tag
 
 from app.services.image_urls import (
     absolute_url,
+    declared_display_width,
     image_src_from_tag,
     looks_like_icon,
     upgrade_source_image_url,
@@ -83,15 +88,56 @@ class ParsedDocument:
 # --- HTML → outline -------------------------------------------------------------
 
 
-# Block-level tags whose text is content. Anything else is a wrapper.
+# Block-level tags whose text is content, stated by the tag itself.
 HTML_BLOCK_TAGS = (
     "p", "li", "blockquote", "figcaption",
     "h1", "h2", "h3", "h4", "h5", "h6",
     "dt", "dd", "td", "th", "summary",
 )
 
+# Wrapper tags that carry a block of copy DIRECTLY, when they hold no box of
+# their own. Semantic markup is a convention, not a guarantee: every visual page
+# builder emits body copy in a bare div — Oxygen's `ct-text-block`, Elementor's
+# `elementor-text-editor`, Divi's `et_pb_text_inner`, Webflow's rich text — so a
+# reader that trusts only <p> is blind on a large share of the real web. It read
+# mykiddyland.com/about as five headings with no words under any of them.
+HTML_TEXT_CONTAINER_TAGS = ("div",)
+
+# Reading one of these inside an element proves it is a layout box rather than a
+# block of copy: its words belong to the boxes within it, and reading it whole
+# would emit every sentence twice — once for the wrapper, once for each child.
+# This is what confines HTML_TEXT_CONTAINER_TAGS to LEAVES; without it, admitting
+# <div> would restate a page's entire text at every level of its nesting.
+_NESTED_BOX_TAGS = sorted(
+    {*HTML_BLOCK_TAGS, *HTML_TEXT_CONTAINER_TAGS,
+     "ul", "ol", "dl", "table", "section", "article", "main",
+     "header", "footer", "aside", "nav", "figure", "form"}
+)
+
+# Every tag the walk considers, block or leaf wrapper. `is_text_block` decides.
+TEXT_BLOCK_TAGS = (*HTML_BLOCK_TAGS, *HTML_TEXT_CONTAINER_TAGS)
+
 # Containers stripped before the walk — chrome, not content.
 HTML_CHROME_TAGS = ("script", "style", "noscript", "template", "svg", "nav", "footer")
+
+
+def is_text_block(tag: Tag) -> bool:
+    """True when this element's own text is one block of the source's copy.
+
+    THE one answer to "which tags carry content", for every reader: the crawler
+    (`scraper._extract_body_text`), the section tree (`section_extraction`), and
+    the paste/document outline below. A second, narrower spelling of it is a
+    silent off switch on whichever markup it fails to describe — which is how a
+    page-builder site reached the planner with no prose at all.
+    """
+    if tag.name in HTML_BLOCK_TAGS:
+        return True
+    if tag.name not in HTML_TEXT_CONTAINER_TAGS:
+        return False
+    # `find` stops at the first hit, so a wrapper is rejected on its first child
+    # box and only genuine leaves pay for a walk of their (inline) subtree.
+    return tag.find(_NESTED_BOX_TAGS) is None
+
 
 # h4-h6 all collapse to 3: doc_structure only opens pages at level 1-2, and a
 # deeply nested heading is in-page detail either way. Mirrors the PDF reader's
@@ -148,7 +194,7 @@ def read_html(html: str, *, base_url: str | None = None) -> HtmlOutline:
 
     # One traversal in document order over text blocks AND images, so each
     # image's anchor is its true position among the blocks.
-    for el in soup.find_all([*HTML_BLOCK_TAGS, "img"]):
+    for el in soup.find_all([*TEXT_BLOCK_TAGS, "img"]):
         if not isinstance(el, Tag):
             continue
         if el.name == "img":
@@ -168,13 +214,15 @@ def read_html(html: str, *, base_url: str | None = None) -> HtmlOutline:
                 OutlineImage(
                     url=url,
                     alt=_attr(el, "alt"),
-                    width=_int(_attr(el, "width")),
+                    width=_int(_attr(el, "width")) or declared_display_width(el),
                     height=_int(_attr(el, "height")),
                     anchor=len(outline.blocks),
                 )
             )
             continue
 
+        if not is_text_block(el):
+            continue
         text = el.get_text(" ", strip=True)
         if len(text) < _MIN_BLOCK_CHARS:
             continue

@@ -1,5 +1,10 @@
 import clsx from 'clsx'
-import type { InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
+import type {
+  InputHTMLAttributes,
+  ReactNode,
+  SelectHTMLAttributes,
+  TextareaHTMLAttributes,
+} from 'react'
 
 const CONTROL =
   'block w-full rounded-xl border border-line bg-surface px-3.5 py-2.5 text-sm text-ink shadow-card transition ' +
@@ -41,6 +46,10 @@ export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputEleme
 
 export function Textarea({ className, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return <textarea {...rest} className={clsx(CONTROL, 'resize-y', className)} />
+}
+
+export function Select({ className, ...rest }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return <select {...rest} className={clsx(CONTROL, 'pr-8', className)} />
 }
 
 export interface CheckboxProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'type'> {

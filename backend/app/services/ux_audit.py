@@ -17,6 +17,7 @@ findings; it never mutates or blocks generation.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -244,27 +245,30 @@ def audit_seo(site: GeneratedSite) -> list[Finding]:
     return out
 
 
-def _count_elements_by_name(
-    el: BuilderElement, prefix: str, counts: dict[str, int]
-) -> None:
-    name = getattr(el, "name", "") or ""
-    if name.startswith(prefix):
-        counts[name] = counts.get(name, 0) + 1
-    content = el.content
-    if isinstance(content, list):
-        for child in content:
-            if isinstance(child, BuilderElement):
-                _count_elements_by_name(child, prefix, counts)
+def _descendants(elements: Iterable[BuilderElement]) -> Iterator[BuilderElement]:
+    """Every element in these subtrees, in document order."""
+    for el in elements:
+        yield el
+        content = el.content
+        if isinstance(content, list):
+            yield from _descendants(content)
 
 
 def _check_heading_hierarchy(
     elements: list[BuilderElement], slug: str, out: list[Finding]
 ) -> None:
-    h1_count = 0
-    for el in elements:
-        counts: dict[str, int] = {}
-        _count_elements_by_name(el, "H1", counts)
-        h1_count += sum(v for k, v in counts.items() if k == "H1")
+    """Exactly one <h1> per page.
+
+    Counts `htmlTag`, the field the renderers actually read (a text node renders
+    as its htmlTag, defaulting to <div>), whose only writers are
+    `schema_builder.apply_heading_levels` and `legal_pages._h1`. It used to
+    count elements NAMED "H1" — a convention nothing has ever emitted — so it
+    reported "no H1 found" on every page of every site while being structurally
+    incapable of seeing a real one, or of catching a page carrying two.
+    """
+    h1_count = sum(
+        1 for el in _descendants(elements) if (el.htmlTag or "").lower() == "h1"
+    )
     if h1_count == 0 and elements:
         _add(out, "heading-hierarchy", slug, "no H1 found")
     elif h1_count > 1:
@@ -280,12 +284,9 @@ def _check_cta_present(
 
 
 def _has_cta(elements: list[BuilderElement]) -> bool:
-    for el in elements:
-        name = (getattr(el, "name", "") or "").lower()
+    for el in _descendants(elements):
+        name = (el.name or "").lower()
         if "cta" in name or name in ("contact form", "contact"):
-            return True
-        content = el.content
-        if isinstance(content, list) and _has_cta(content):
             return True
     return False
 

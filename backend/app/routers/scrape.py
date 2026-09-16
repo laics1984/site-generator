@@ -58,7 +58,12 @@ class ExtendCrawlRequest(BaseModel):
         default_factory=list,
         description="URLs the prior crawl already visited; we won't re-fetch them.",
     )
-    max_more: int = Field(default=20, ge=1, le=40, description="How many more pages to fetch this pass.")
+    max_more: int = Field(
+        default=20,
+        ge=1,
+        le=settings.crawl_max_pages_ceiling,
+        description="How many more pages to fetch this pass.",
+    )
     crawl_max_depth: int = Field(default=3, ge=1, le=4)
     respect_robots: bool = True
 
@@ -92,6 +97,7 @@ async def scrape_extend(payload: ExtendCrawlRequest) -> dict[str, Any]:
         "added_count": len(result.additional_pages),
         "unvisited_urls": result.unvisited_urls,
         "unvisited_count": len(result.unvisited_urls),
+        "crawl_stop_reason": result.crawl_stop_reason,
     }
 
 
@@ -101,7 +107,7 @@ class StartCrawlRequest(BaseModel):
     url: str
     respect_robots: bool = True
     crawl: bool = True
-    crawl_max_pages: int = Field(default=20, ge=0, le=40)
+    crawl_max_pages: int = Field(default=20, ge=0, le=settings.crawl_max_pages_ceiling)
     crawl_max_depth: int = Field(default=3, ge=1, le=4)
     # Optional Facebook Page access token. Request-scoped: held in memory for
     # the life of the job and never written to the jobs table. Ignored for
@@ -265,6 +271,9 @@ async def probe(payload: SitemapProbeRequest) -> dict[str, Any]:
     + sample URLs) so the UI can offer a Quick/Full choice BEFORE paying for
     Playwright. Falls back to {has_sitemap: false, total_urls: 0} when there's
     no sitemap — the UI then proceeds with the default cap silently.
+
+    `crawl_page_ceiling` is the largest `crawl_max_pages` /start will accept, so
+    the "Full" option offers exactly what the backend allows.
     """
     try:
         await assert_public_url(payload.url)
@@ -276,4 +285,5 @@ async def probe(payload: SitemapProbeRequest) -> dict[str, Any]:
         "total_urls": result.total_urls,
         "urls": result.urls[:50],  # cap what we ship over the wire
         "sources": result.sources,
+        "crawl_page_ceiling": settings.crawl_max_pages_ceiling,
     }

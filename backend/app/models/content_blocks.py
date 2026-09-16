@@ -21,6 +21,7 @@ Robustness strategy:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Literal, get_args, get_origin
 
@@ -58,6 +59,8 @@ SectionType = Literal[
     "downloads",
     "video",
     "map",
+    "qr",
+    "poster",
 ]
 
 
@@ -77,12 +80,14 @@ SectionType = Literal[
 # download href, a video id, a pinned map coordinate. An invented one is not
 # vague, it is *wrong*, and it looks authoritative: a hallucinated 11-character
 # YouTube id is a stranger's video embedded on a client's site, and a guessed
-# map pin sends their customers to the wrong street. So it is enforced on both
+# map pin sends their customers to the wrong street. A QR code is the same kind
+# of fact — a payment account or a link — and a poster is the source's own
+# wording, so neither is narrated either. So it is enforced on both
 # sides —
 # the model is never invited (planner), and its output for these kinds is
 # discarded even if it volunteers one (scaffold_enforcement).
 DETERMINISTIC_SECTION_KINDS: frozenset[str] = frozenset(
-    {"downloads", "linkbar", "video", "map"}
+    {"downloads", "linkbar", "video", "map", "qr", "poster"}
 )
 
 
@@ -960,6 +965,73 @@ class MapBlock(BaseModel):
         return _default_if_blank(v, "Find us")
 
 
+class LegibleImageItem(BaseModel):
+    """A source image whose content is in its pixels, placed whole.
+
+    Every image slot elsewhere in the catalog crops (``objectFit: cover``) or
+    draws our copy over the picture, and either one destroys an image whose
+    meaning is its words or its code (see ``image_match.must_show_whole``). The
+    sections built from these items are the one place such an image is shown
+    uncropped, at its own aspect ratio.
+
+    ``action_label``/``action_href`` carry a link the image's QR code encodes: a
+    visitor reading the site on a phone cannot scan the phone's own screen, so
+    the same destination is offered as a tap.
+    """
+
+    image_url: str
+    action_label: str | None = None
+    action_href: str | None = None
+
+
+class QrItem(LegibleImageItem):
+    # What scanning does and how, derived from the decoded payload by
+    # services.qr_codes.purpose_of — never written by the LLM.
+    title: str
+    description: str
+
+
+class QrBlock(BaseModel):
+    """QR codes the source published, replayed with what each one is for.
+
+    NEVER produced by the LLM — see DETERMINISTIC_SECTION_KINDS. A payment QR is
+    a bank account and a link QR is an address; the image is placed verbatim by
+    services.legible_images, and its caption is read off the decoded payload.
+    """
+
+    kind: Literal["qr"] = "qr"
+    heading: str = "Scan with your phone"
+    items: list[QrItem] = Field(min_length=1, max_length=4)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Scan with your phone")
+
+
+class PosterItem(LegibleImageItem):
+    alt: str = ""
+    caption: str | None = None
+
+
+class PosterBlock(BaseModel):
+    """Posters, flyers, slides and titled banners the source published, whole.
+
+    NEVER produced by the LLM — see DETERMINISTIC_SECTION_KINDS. The wording is
+    the source's own and lives in the pixels, so the only faithful thing to do
+    is show all of it. Placed by services.legible_images.
+    """
+
+    kind: Literal["poster"] = "poster"
+    heading: str = "Announcements"
+    items: list[PosterItem] = Field(min_length=1, max_length=6)
+
+    @field_validator("heading", mode="before")
+    @classmethod
+    def heal_heading(cls, v: object) -> object:
+        return _default_if_blank(v, "Announcements")
+
+
 class TimelineItem(BaseModel):
     year: str
     title: str
@@ -1093,7 +1165,9 @@ ContentBlock = Annotated[
     | LocationsBlock
     | DownloadsBlock
     | VideoBlock
-    | MapBlock,
+    | MapBlock
+    | QrBlock
+    | PosterBlock,
     Field(discriminator="kind"),
 ]
 
@@ -1149,6 +1223,83 @@ def _block_is_valid(block: object) -> bool:
         return False
 
 
+# --- SEO text budgets ---------------------------------------------------------
+
+# A sentence terminator followed by whitespace or the end of the string.
+_SENTENCE_END = re.compile(r"[.!?\u2026](?=\s|$)")
+
+# What a word-boundary cut can leave dangling ("... classes," -> "... classes").
+_DANGLING_PUNCT = " \t\u00a0,;:-\u2013\u2014|\u00b7(\u2018\u201c"
+
+
+def _trim_to_word_boundary(text: str, budget: int) -> str:
+    """The longest prefix of `text` within `budget`, ending on a whole word."""
+    if budget <= 0:
+        return ""
+    if len(text) <= budget:
+        return text
+    if text[budget] == " ":
+        # The budget already lands on a word end; cutting back to the previous
+        # space would throw away a word that fits.
+        return text[:budget].rstrip(_DANGLING_PUNCT)
+
+    window = text[:budget]
+    cut = window.rfind(" ")
+
+    return (window[:cut] if cut > 0 else window).rstrip(_DANGLING_PUNCT)
+
+
+def clamp_seo_title(value: str) -> str:
+    """Trim a title tag to the SERP display budget.
+
+    Google renders about 600px of title, which is ~60 characters — the number
+    the CMS's SEO audit flags against. The prompt asks for 50-60 and the model
+    mostly obliges; enforced here for the same reason as the description.
+
+    Trimmed from the END, which is what Google itself does — deliberately not
+    "keep the brand, trim the lead". Which half of "Family Dentistry in Petaling
+    Jaya | Checkups and Braces" is the brand is not knowable from the string, and
+    guessing wrong mangles a place name to preserve a description. A brand
+    suffix that no longer fits is dropped whole, separator and all; Google
+    routinely appends the site name to a SERP title on its own.
+    """
+    from app.config import settings
+
+    return _trim_to_word_boundary(" ".join(value.split()), settings.seo_title_max_length)
+
+
+def clamp_seo_description(value: str) -> str:
+    """Trim a meta description to the SERP display budget.
+
+    Google clips a snippet around 160 characters and the CMS's SEO audit flags
+    anything longer, so a 172-char description ships a visibly cut sentence.
+    The prompt asks for 140-160 and the model mostly obliges; "mostly" is the
+    problem, and it is not worth another LLM round-trip to fix, so the budget is
+    enforced here — on the one field every page plan passes through, including
+    the salvage default and a translated clone.
+
+    Cuts at the last sentence end that still leaves a substantial description,
+    else at the last word boundary. Never mid-word, and never with an appended
+    ellipsis: that spends characters to announce a truncation the SERP already
+    shows. The rules are punctuation-based, so they behave the same in every
+    locale the pipeline translates into.
+    """
+    from app.config import settings
+
+    text = " ".join(value.split())
+    budget = settings.seo_description_max_length
+    if len(text) <= budget:
+        return text
+
+    window = text[:budget]
+
+    sentence_ends = [m.end() for m in _SENTENCE_END.finditer(window)]
+    if sentence_ends and sentence_ends[-1] >= settings.seo_description_min_length:
+        return window[: sentence_ends[-1]]
+
+    return _trim_to_word_boundary(text, budget)
+
+
 class PagePlan(BaseModel):
     """The LLM's blueprint for a single page.
 
@@ -1195,12 +1346,16 @@ class PagePlan(BaseModel):
     def heal_seo_title(cls, v: object, info: object) -> object:  # noqa: ARG003
         # If missing, leave it for the second-pass retry to fill — but accept
         # an empty string gracefully so other validation can proceed.
-        return v if isinstance(v, str) and v.strip() else ""
+        if not (isinstance(v, str) and v.strip()):
+            return ""
+        return clamp_seo_title(v)
 
     @field_validator("seo_description", mode="before")
     @classmethod
     def heal_seo_description(cls, v: object) -> object:
-        return v if isinstance(v, str) and v.strip() else ""
+        if not (isinstance(v, str) and v.strip()):
+            return ""
+        return clamp_seo_description(v)
 
     @model_validator(mode="before")
     @classmethod
@@ -1557,6 +1712,10 @@ class ImageMetadata(BaseModel):
     # independent of the vision model and runs off the critical path. None until
     # that pass runs / when it is disabled.
     ocr_has_text: bool | None = None
+    # The decoded content of a QR code in the pixels, read by the same pass on
+    # the same frame (services/qr_codes.py). None when there is no readable code
+    # or the pass has not run — `ocr_has_text is None` says which.
+    qr_payload: str | None = None
     # Luminance-band inputs for the schema_builder pass (SECTION_VISUAL_POLICY_SPEC.md
     # §4.3). Dominant colour comes free from Pexels avg_color or a generated base —
     # NO pixel download. luminance/band stay None until set by media.py.

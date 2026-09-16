@@ -192,24 +192,34 @@ _EXCLUDED_ROLES = frozenset({"decoration", "logo"})
 # is legitimate for a SaaS feature card) — this only vetoes the pin.
 _UNPINNABLE_VISION_KINDS = frozenset({"logo", "banner", "screenshot", "graphic", "map"})
 
-# --- words burned into the pixels ------------------------------------------------
+# --- words (and codes) in the pixels ----------------------------------------------
 #
-# A full-bleed background has OUR headline drawn over it. If the image already
-# carries a headline, tagline or price list of its own, the two collide: two
-# sets of words at two sizes fighting for the same space, and no scrim can fix
-# it because the problem is the words, not the contrast. The source's own hero
-# graphic is the usual offender — a scrape faithfully picks it up precisely
-# because the source used it full-bleed.
+# Two questions, and they have different answers:
 #
-# Such an image is NOT unusable. With nothing drawn over it, it reads fine as a
-# featured/side image or as an untitled card, so these signals bar the
-# BACKGROUND slot only and leave inline slots alone.
+# 1. Would OUR copy collide with words already in the picture? A full-bleed
+#    background has our headline drawn over it; if the image carries a headline,
+#    a tagline or even a legible shopfront sign, two sets of words fight for the
+#    same space and no scrim fixes it. Any readable words at all → `bears_text`.
+#
+# 2. Is the picture's MESSAGE in its pixels, so that cropping it loses the
+#    message? A poster, a flyer, a slide, a photo with its title baked in, a QR
+#    code. Every inline slot in the catalog crops (`objectFit: cover`), so such
+#    an image can fill none of them — it is placed whole instead, by
+#    services/legible_images.py → `must_show_whole`.
+#
+# (2) implies (1); the converse does not hold. A shopfront photo with a legible
+# sign reads fine cropped into a card, it just cannot sit behind a headline.
 
 # Kinds that carry wording by definition (see image_vision._JUDGE_SYSTEM):
 # a banner IS "promotional graphic with overlaid text", a screenshot is UI
 # chrome and labels, a logo is a wordmark, a map is place names. `graphic` is
 # excluded — an illustration or pattern often has no words at all.
 _TEXT_BEARING_VISION_KINDS = frozenset({"logo", "banner", "screenshot", "map"})
+
+# The one of those whose wording IS the picture. A screenshot stays croppable on
+# a SaaS feature card (see `_UNPINNABLE_VISION_KINDS`), a logo is withdrawn as a
+# role elsewhere, and a map is framed as a map.
+_ARTWORK_VISION_KINDS = frozenset({"banner"})
 
 # Filename/alt tokens naming an artwork whose whole purpose is to carry a
 # message. Deliberately high-precision, not exhaustive: this is the only signal
@@ -228,16 +238,15 @@ _TEXT_IN_IMAGE_HINTS = (
 )
 
 
-def bears_text(meta: ImageMetadata | None) -> bool:
-    """Whether an image likely has readable words baked into its pixels.
+def shows_words(meta: ImageMetadata) -> bool:
+    """Whether words are the picture's content — a poster, not a photo with a sign.
 
     Signals in order of how directly they observe the pixels:
 
-    1. OCR (`ocr_has_text`, services/text_detection.py) and the vision pass
-       (`vision_has_text`) — both read the image itself. `vision_kind` covers
-       the kinds that carry wording by definition. Trusted above everything
-       below. Either saying yes is enough: they use different evidence, and a
-       missed banner costs more than one photo losing its background slot.
+    1. OCR (`ocr_has_text`, services/text_detection.py) reads the image itself:
+       its threshold is text covering a real share of the frame, which a
+       legible sign in a photograph measures under. `vision_kind == "banner"`
+       is the vision pass saying the same thing.
     2. the source's own rendering — `role == "background"` is assigned only when
        the scraper measured >=24 characters of live HTML text inside that
        element (image_evidence.classify_role). A designer laid a headline on
@@ -246,10 +255,34 @@ def bears_text(meta: ImageMetadata | None) -> bool:
        the naming signal below.
     3. the URL/alt naming, which is weak but costs nothing.
 
-    Without vision, (3) catches only what the source happened to name honestly.
-    Detecting a headline burned into an otherwise ordinary photograph needs the
-    model, or OCR — pixel statistics alone do not separate that case from a
-    normal photo.
+    Without vision or OCR, (3) catches only what the source happened to name
+    honestly — pixel statistics alone do not separate a headline burned into a
+    photograph from a normal photo.
+    """
+    if meta.ocr_has_text or meta.vision_kind in _ARTWORK_VISION_KINDS:
+        return True
+    if meta.role == "background":
+        return False  # measured: the source put its own live text on this image
+    haystack = f"{meta.url or ''} {meta.alt or ''}".lower()
+    return any(hint in haystack for hint in _TEXT_IN_IMAGE_HINTS)
+
+
+def must_show_whole(meta: ImageMetadata | None) -> bool:
+    """Whether the picture's message is in its pixels, so no slot may crop it.
+
+    Words that are the content (`shows_words`), or a QR code: a cropped code
+    no longer scans, and a code with nothing saying what it is for is an
+    instruction with the instruction missing.
+    """
+    return meta is not None and (bool(meta.qr_payload) or shows_words(meta))
+
+
+def bears_text(meta: ImageMetadata | None) -> bool:
+    """Whether an image carries ANY readable words, so none may sit behind ours.
+
+    `must_show_whole`, plus the vision pass's broader reading: a legible sign in
+    an otherwise ordinary photograph (`vision_has_text`), and every kind that
+    carries wording by definition.
 
     SCOPE: source images only. The parameter type enforces it — stock photos are
     `pexels.PhotoResult` and never become `ImageMetadata`, so they cannot reach
@@ -261,14 +294,23 @@ def bears_text(meta: ImageMetadata | None) -> bool:
     """
     if meta is None:
         return False
-    if meta.ocr_has_text or meta.vision_has_text:
-        return True
-    if meta.vision_kind in _TEXT_BEARING_VISION_KINDS:
-        return True
-    if meta.role == "background":
-        return False  # measured: the source put its own live text on this image
-    haystack = f"{meta.url or ''} {meta.alt or ''}".lower()
-    return any(hint in haystack for hint in _TEXT_IN_IMAGE_HINTS)
+    return (
+        must_show_whole(meta)
+        or bool(meta.vision_has_text)
+        or meta.vision_kind in _TEXT_BEARING_VISION_KINDS
+    )
+
+
+def hides_legible_content(meta: ImageMetadata | None, slot_usage: SlotUsage) -> bool:
+    """Whether putting `meta` in this slot would hide words or a code it carries.
+
+    THE gate every slot that takes a scraped image asks. A background slot
+    overprints its image, so any readable words disqualify it; every other slot
+    crops (the catalog frames its photos `objectFit: cover`), so a picture whose
+    message is in its pixels is disqualified there. Such an image is not lost —
+    services/legible_images.py places it whole.
+    """
+    return bears_text(meta) if slot_usage == "background" else must_show_whole(meta)
 
 # Slots where exactly one real image usually exists on the source and the
 # scraper has already identified it (the hero / lead about image). For these,
@@ -343,13 +385,11 @@ def rank_candidates(
         # Gallery cells were cropped for a grid, never art-directed full-bleed;
         # keep them off the hero background specifically.
         candidates = [c for c in candidates if c.role != "gallery"]
-    if slot_usage == "background":
-        # An image that already carries a headline, tagline or price list can't
-        # take ours on top of it. It stays rankable for every inline slot — see
-        # bears_text — because nothing is drawn over those.
-        candidates = [c for c in candidates if not bears_text(c)]
+    # Words or a code in the picture: a background would overprint them and every
+    # other slot would crop them. See hides_legible_content.
+    candidates = [c for c in candidates if not hides_legible_content(c, slot_usage)]
     # Large featured slots (hero / about) must be real featured photographs. A
-    # banner, UI screenshot, graphic (e.g. a QR code) or map blown up as the
+    # banner, UI screenshot, graphic or map blown up as the
     # hero/about image reads as a scrape failure, so exclude those here, not
     # just from the intent-pin below. They stay eligible for ordinary content
     # slots (a screenshot is legitimate on a small SaaS feature card).

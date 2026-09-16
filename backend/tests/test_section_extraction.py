@@ -270,3 +270,91 @@ class ProfileConfirmationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# Oxygen Builder's shape, as mykiddyland.com/about serves it: every heading is a
+# real <h2>, every paragraph is a `<div class="ct-text-block">`, and one 33x33
+# star ornament is stamped beside each heading. Divi, Elementor and Webflow all
+# emit the same thing under different class names.
+_PAGE_BUILDER_ABOUT = """
+<html><body>
+  <section><div class="ct-section-inner-wrap">
+    <h1 class="ct-headline">About MyKiddyLand</h1>
+    <div class="ct-div-block pos-rel">
+      <h2 class="ct-headline">Our Vision</h2>
+      <img alt="Star" src="/star-element.png" srcset=""
+           sizes="(max-width: 33px) 100vw, 33px"/>
+    </div>
+    <div class="ct-text-block">MyKiddyLand inspires to ignite each child's
+      passion for learning and gives them the opportunity to become the best
+      versions of themselves in a modern, personalised environment.</div>
+  </div></section>
+  <section><div class="ct-section-inner-wrap">
+    <div class="ct-div-block pos-rel">
+      <h2 class="ct-headline">Our Mission</h2>
+      <img alt="Star" src="/star-element.png" srcset=""
+           sizes="(max-width: 33px) 100vw, 33px"/>
+    </div>
+    <div class="ct-text-block">To provide high-quality early learning education
+      in a fun, safe and clean environment, and to take care of our children's
+      health and well-being both physically and emotionally.</div>
+  </div></section>
+  <section><div class="ct-section-inner-wrap">
+    <div class="ct-div-block pos-rel">
+      <h2 class="ct-headline">Our History</h2>
+      <img alt="Star" src="/star-element.png" srcset=""
+           sizes="(max-width: 33px) 100vw, 33px"/>
+    </div>
+    <div class="ct-text-block">Founded in 2010 under the auspices of Lunix
+      Education, an organisation specialising in educational services, with over
+      a decade of experience managing child education programmes.</div>
+  </div></section>
+</body></html>
+"""
+
+
+class PageBuilderProseTest(unittest.TestCase):
+    """A page builder's copy lives in a bare <div>, and reading only <p> made
+    the whole page invisible: every section arrived with `prose=""`, so the one
+    thing left under each heading was the star ornament — which then classified
+    all of them `gallery` and published "Our Vision" as a one-tile picture
+    grid."""
+
+    def test_div_borne_copy_reaches_the_section_tree(self):
+        sections = _extract(_PAGE_BUILDER_ABOUT)
+
+        words = " ".join(
+            [s.prose for s in sections]
+            + [c.body for s in sections for c in s.cards]
+        )
+        for claim in (
+            "ignite each child's passion",
+            "high-quality early learning education",
+            "Founded in 2010",
+        ):
+            self.assertIn(claim, words)
+
+    def test_a_wordless_gallery_is_not_declared_over_copy_the_reader_can_see(self):
+        sections = _extract(_PAGE_BUILDER_ABOUT)
+
+        self.assertTrue(sections)
+        for section in sections:
+            self.assertNotEqual(section.card_kind, "gallery")
+
+    def test_a_repeated_ornament_is_not_a_section_photograph(self):
+        sections = _extract(_PAGE_BUILDER_ABOUT)
+
+        for section in sections:
+            self.assertEqual(section.image_urls, [])
+            for card in section.cards:
+                self.assertIsNone(card.image_url)
+
+    def test_a_card_does_not_restate_its_section_prose(self):
+        """A card's body is capped and split into meta lines, so asking whether
+        the section's paragraph is a substring of it fails on any long card and
+        the page states the same paragraph twice."""
+        sections = _extract(_PAGE_BUILDER_ABOUT)
+
+        for section in sections:
+            for card in section.cards:
+                self.assertNotIn(card.body[:60], section.prose)

@@ -39,9 +39,11 @@ from app.models.content_blocks import (
     LocationsBlock,
     MapBlock,
     MenuBlock,
+    PosterBlock,
     PricingBlock,
     ProcessBlock,
     ProfileBlock,
+    QrBlock,
     ServicesBlock,
     TeamBlock,
     TestimonialsBlock,
@@ -402,6 +404,45 @@ def _map_content(b: MapBlock) -> dict[str, Any]:
     }
 
 
+def _qr_content(b: QrBlock) -> dict[str, Any]:
+    """QR codes → catalog slots. Nothing to resolve: each image is the source's
+    own code, placed by `{src}`, and a code has no stock equivalent.
+
+    A lone code's title IS the section heading (services.legible_images sets
+    it), so the card repeats it only when several codes share the section.
+    """
+    several = len(b.items) > 1
+    return {
+        "eyebrow": "QR code",
+        "heading": b.heading,
+        "items": [
+            {
+                "code": {"src": i.image_url, "alt": f"QR code: {i.title}"},
+                "title": i.title if several else None,
+                "description": i.description,
+                "action": _link(i.action_label, i.action_href),
+            }
+            for i in b.items
+        ],
+    }
+
+
+def _poster_content(b: PosterBlock) -> dict[str, Any]:
+    """Posters → catalog slots. Placed by `{src}` like `_qr_content`: the words
+    are the source's own and live in the pixels, so there is nothing to search."""
+    return {
+        "heading": b.heading,
+        "items": [
+            {
+                "poster": {"src": i.image_url, "alt": i.alt},
+                "caption": i.caption,
+                "action": _link(i.action_label, i.action_href),
+            }
+            for i in b.items
+        ],
+    }
+
+
 def _process_content(b: ProcessBlock) -> dict[str, Any]:
     return {
         "eyebrow": "Process",
@@ -542,6 +583,8 @@ _MAPPERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "gallery": _gallery_content,
     "video": _video_content,
     "map": _map_content,
+    "qr": _qr_content,
+    "poster": _poster_content,
     "process": _process_content,
     "menu": _menu_content,
     "pricing": _pricing_content,
@@ -663,6 +706,23 @@ def _testimonials_preference(content: dict[str, Any], b: TestimonialsBlock) -> l
     return ["testimonials-quote-grid"]
 
 
+def _locations_preference(content: dict[str, Any], b: LocationsBlock) -> list[str]:
+    """Map-led split rows first, the card grid behind it — at every branch count.
+
+    The split is the layout that reads correctly for one branch and for six: it
+    is a flex column of full-width rows, so it never hands a lone branch one
+    column of a grid, and its map is sized by ratio rather than by a fixed
+    height it can outgrow. The card grid stays in the catalog and stays
+    reachable — the design brain can still pick it off `selectable_templates`,
+    and it is insertable in the builder's section browser.
+
+    Both entries are named rather than just the winner, following
+    ``_testimonials_preference``: with the order stated in full, adding a third
+    variant later is a change to this list, not a silent reshuffle.
+    """
+    return ["locations-map-split", "locations-map-cards"]
+
+
 _PREFERENCE: dict[str, Callable[[dict[str, Any], Any], list[str]]] = {
     "hero": _hero_preference,
     "about": _about_preference,
@@ -671,6 +731,7 @@ _PREFERENCE: dict[str, Callable[[dict[str, Any], Any], list[str]]] = {
     "services": _services_preference,
     "testimonials": _testimonials_preference,
     "profile": _profile_preference,
+    "locations": _locations_preference,
 }
 
 

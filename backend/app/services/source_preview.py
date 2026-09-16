@@ -85,15 +85,16 @@ def source_preview_payload(
     image_candidates: Sequence[ImageCandidate],
     fetched_at: float | None = None,
     unvisited_urls: Sequence[str] = (),
+    crawl_stop_reason: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical preview payload.
 
-    `unvisited_urls` is crawl-only — a document or a Facebook Page has no
-    frontier, so it defaults empty and the UI's "crawl N more" affordance stays
-    hidden without either caller having to think about it. `extra` carries
-    reader-specific keys (the Facebook facts) additively, so adding one can
-    never change the shared shape.
+    `unvisited_urls` and `crawl_stop_reason` are crawl-only — a document or a
+    Facebook Page has no frontier, so they default empty and the UI's "crawl N
+    more" affordance stays hidden without either caller having to think about
+    it. `extra` carries reader-specific keys (the Facebook facts) additively, so
+    adding one can never change the shared shape.
     """
     unvisited = list(unvisited_urls)
     payload: dict[str, Any] = {
@@ -108,6 +109,7 @@ def source_preview_payload(
         "discovered_count": len(source_content.discovered_pages),
         "unvisited_urls": unvisited,
         "unvisited_count": len(unvisited),
+        "crawl_stop_reason": crawl_stop_reason,
     }
     if extra:
         payload.update(extra)

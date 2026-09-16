@@ -35,9 +35,9 @@ from app.config import settings
 from app.models.content_blocks import ImageMetadata
 from app.services.image_match import (
     _UNPINNABLE_VISION_KINDS,
-    bears_text,
     SlotUsage,
     _tokens,
+    hides_legible_content,
     rank_candidates,
     rank_candidates_with_llm_tiebreaker,
 )
@@ -127,23 +127,6 @@ def _below_hero_bg_min(meta: ImageMetadata | None, min_long_edge: int) -> bool:
     ):
         return True
     return False
-
-
-def _unfit_for_background(meta: ImageMetadata | None) -> bool:
-    """True when a scraped image must not fill a full-bleed BACKGROUND slot
-    because it already carries words of its own.
-
-    A background has the section's headline drawn over it. An image that is
-    itself a headline — the source's own hero graphic, a promo banner, a price
-    list — puts two sets of words in the same space, and no scrim fixes that
-    because the problem is the wording, not the contrast.
-
-    Rejecting here is cheap: the resolver falls through to stock for the
-    background, and the image stays fully eligible for the inline/featured slots
-    that draw nothing on top of it (see `_unfit_for_featured_pin`, which gates
-    the opposite direction).
-    """
-    return bears_text(meta)
 
 
 def _unfit_for_featured_pin(
@@ -247,7 +230,7 @@ class ImageResolver:
         self._primary_hex = primary_hex or "#64748b"
         self._secondary_hex = secondary_hex or "#1e293b"
 
-    async def _reject_text_backgrounds(
+    async def _reject_hidden_legible(
         self,
         picked: ImageMetadata | None,
         query: str | None,
@@ -258,28 +241,30 @@ class ImageResolver:
         min_long_edge: int,
         allow_portrait: bool,
     ) -> ImageMetadata | None:
-        """Re-rank past any winner that turns out to carry its own headline.
+        """Re-rank past any winner this slot would crop or overprint words on.
 
         The prefetch screen (services/text_detection) covers a capped sample of
         the pool, which on a multi-page scrape is a small fraction of it — a
         newsletter scan sitting on page nine is exactly what slips through. So
-        the image that actually WINS a background slot is screened here, on
-        demand, whatever the sample covered.
+        the image that actually WINS a slot is screened here, on demand,
+        whatever the sample covered.
 
-        Stamping the flag is what removes it: `bears_text` reads it, and
-        `rank_candidates` filters on that, so re-ranking simply returns the next
-        best candidate. Bounded by `ocr_verify_budget` — each miss costs a
-        download plus an inference, and a source whose every image is a text
-        graphic should fall through to stock rather than screen the whole pool.
+        Stamping the flags is what removes it: `hides_legible_content` reads
+        them, and `rank_candidates` filters on that, so re-ranking simply
+        returns the next best candidate. Bounded by `ocr_verify_budget` — each
+        miss costs a download plus an inference, and a source whose every image
+        is a text graphic should fall through to stock rather than screen the
+        whole pool.
         """
-        if slot_usage != "background":
-            return picked
         for _ in range(max(0, settings.ocr_verify_budget)):
-            if picked is None or not await verify_one(picked):
+            if picked is None:
+                return None
+            await verify_one(picked)
+            if not hides_legible_content(picked, slot_usage):
                 return picked
             logger.info(
-                "Hero/background candidate %s carries its own text; re-ranking",
-                picked.url[:120],
+                "Candidate %s carries words or a code a %s slot would hide; re-ranking",
+                picked.url[:120], slot_usage,
             )
             picked = await self._take_best_scraped(
                 query, intent, prefer=prefer, slot_usage=slot_usage,
@@ -384,21 +369,20 @@ class ImageResolver:
         if pinned_url:
             meta = next((c for c in self._pool if c.url == pinned_url), None)
             # Honour the bound photo unless it's unfit for a full-bleed
-            # background (too small, a headshot, the wrong shape, or already
-            # carrying words of its own), or it's a decorative/background-style
-            # scrape being asked to fill an inline featured slot — then fall
-            # through so the resolver reaches Pexels for a real photo instead.
-            # An LLM image_ref binds by topic and cannot see the picture, so a
-            # promo banner captioned "our restaurant" is exactly the kind of
-            # pin that arrives here and must not be honoured full-bleed.
-            # An LLM image_ref binds by topic and never sees the picture, so a
-            # pinned background is screened on demand too — the pin bypasses
-            # ranking, and with it every filter that reads the text flag.
-            if slot_usage == "background" and meta is not None:
+            # background (too small, a headshot, the wrong shape), it carries
+            # words or a code this slot would hide, or it's a decorative/
+            # background-style scrape being asked to fill an inline featured
+            # slot — then fall through so the resolver reaches Pexels for a real
+            # photo instead. An LLM image_ref binds by topic and never sees the
+            # picture, so a promo banner captioned "our restaurant" is exactly
+            # the kind of pin that arrives here — screened on demand, because
+            # the pin bypasses ranking and with it every filter that reads the
+            # flags.
+            if meta is not None:
                 await verify_one(meta)
             if (
                 not _below_hero_bg_min(meta, min_long_edge)
-                and not (slot_usage == "background" and _unfit_for_background(meta))
+                and not hides_legible_content(meta, slot_usage)
                 and not _unfit_for_featured_pin(
                     meta, slot_usage, allow_portrait=allow_portrait
                 )
@@ -433,7 +417,7 @@ class ImageResolver:
                 query, intent, prefer=prefer, slot_usage=slot_usage,
                 min_long_edge=min_long_edge, allow_portrait=allow_portrait,
             )
-            picked = await self._reject_text_backgrounds(
+            picked = await self._reject_hidden_legible(
                 picked, query, intent,
                 prefer=prefer, slot_usage=slot_usage,
                 min_long_edge=min_long_edge, allow_portrait=allow_portrait,
@@ -459,7 +443,7 @@ class ImageResolver:
 
         # 2. Pexels — locale-cued for people-likely slots, plain-query fallback.
         # Full-bleed slots additionally screen out photographs OF text: the
-        # scraped pool is guarded by _reject_text_backgrounds above, and a hero
+        # scraped pool is guarded by _reject_hidden_legible above, and a hero
         # that falls through to stock must not lose that guarantee.
         if query and self._pexels.configured:
             photo = await self._search_pexels(
@@ -746,9 +730,9 @@ class ImageResolver:
             c for c in self._pool
             if c.url not in self._used_urls and _looks_like_image(c.url)
             and not _below_hero_bg_min(c, min_long_edge)
-            # Words already in the picture disqualify it from a slot that draws
-            # our headline over it — but only from that slot.
-            and not (slot_usage == "background" and _unfit_for_background(c))
+            # Checked here as well as in the ranker: the page-local size
+            # fallback below bypasses ranking.
+            and not hides_legible_content(c, slot_usage)
         ]
         if not candidates:
             return None
@@ -853,7 +837,7 @@ class ImageResolver:
                 return False
             if not _looks_like_image(c.url):
                 return False
-            if _unfit_for_background(c):
+            if hides_legible_content(c, "background"):
                 return False
             if c.role not in {"hero", "background", "unknown"} and c.intent != "hero":
                 return False

@@ -931,6 +931,35 @@ class PhotoSectionWeavingTest(unittest.TestCase):
         self.assertNotIn("blog/my-first-post", slugs)
         self.assertNotIn("events/annual-dinner", slugs)
 
+    def test_journal_posts_are_migrated_not_scaffolded(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Home page text.",
+            discovered_pages=[
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/journal",
+                    title="Journal",
+                    raw_text="Stories from the studio.",
+                    url_path="/journal",
+                ),
+                SourceContent(
+                    source_kind="url",
+                    source_ref="https://example.my/journal/the-power-of-art",
+                    title="The Power of Art",
+                    raw_text="Post body text.",
+                    url_path="/journal/the-power-of-art",
+                ),
+            ],
+        )
+
+        scaffolds = infer_page_scaffolds(source, industry="other")
+
+        journal = next(s for s in scaffolds if s.slug == "journal")
+        self.assertEqual(journal.page_type, "blog")
+        self.assertNotIn("journal/the-power-of-art", {s.slug for s in scaffolds})
+
     def test_prevention_page_is_not_misread_as_events(self):
         source = SourceContent(
             source_kind="url",

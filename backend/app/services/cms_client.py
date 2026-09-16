@@ -591,6 +591,29 @@ class CmsClient:
                 )
             return body
 
+    async def update_whatsapp_widget(
+        self, entity_token: str, widget: dict[str, Any]
+    ) -> dict[str, Any]:
+        """PUT /api/entities/{token}/whatsapp-widget — the site's chat button.
+
+        The admin (JWT) route rather than the builder-session one used by
+        update_builder_styles: this needs no builder session, so it does not
+        have to be sequenced after mint_builder_session.
+        """
+        async with self._wrap_request("update_whatsapp_widget"):
+            url = f"{self.base_url}/api/entities/{entity_token}/whatsapp-widget"
+            resp = await self._http_client().put(
+                url, json=widget, headers=self._jwt_headers()
+            )
+            body = _safe_json(resp)
+            if resp.status_code >= 400:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Update WhatsApp widget failed: {_extract_error(body) or resp.text[:300]}",
+                    response_body=body,
+                )
+            return body
+
     # --- internals -------------------------------------------------------------
 
     @asynccontextmanager

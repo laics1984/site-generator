@@ -39,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx  # noqa: E402
+from playwright.async_api import Error as PlaywrightError  # noqa: E402
 from playwright.async_api import async_playwright  # noqa: E402
 
 from app.config import settings  # noqa: E402
@@ -82,14 +83,34 @@ async def capture(
 ) -> tuple[dict, str | None]:
     profile_dir.mkdir(parents=True, exist_ok=True)
     async with async_playwright() as pw:
-        context = await pw.chromium.launch_persistent_context(
-            str(profile_dir),
-            headless=False,
-            user_agent=settings.http_user_agent,
-            viewport={"width": 1280, "height": 900},
-            locale="en-US",
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+        try:
+            context = await pw.chromium.launch_persistent_context(
+                str(profile_dir),
+                headless=False,
+                user_agent=settings.http_user_agent,
+                viewport={"width": 1280, "height": 900},
+                locale="en-US",
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+        except PlaywrightError as exc:
+            # The two ways the window never appears at all: the browser binary
+            # was never downloaded, and a profile still locked by another run.
+            # Neither is visible from the app — it only ever sees "no session
+            # yet" — so the remedy has to land here, and it is caught around the
+            # launch rather than around the whole capture: a later failure
+            # (a `goto` timeout, say) happens with the window already on screen
+            # and must not be reported as one that never opened.
+            #
+            # Playwright's own advice names a bare `playwright install`, which
+            # points at whichever Python is on PATH; this venv's Chromium is the
+            # one the backend renders with.
+            raise RuntimeError(
+                f"{str(exc).strip().splitlines()[0]}\n"
+                "  Chromium didn't start. Install it with:\n"
+                "    backend/.venv/bin/playwright install chromium\n"
+                "  If another fb-login window is still open, close it first "
+                f"(profile: {profile_dir})."
+            ) from exc
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
@@ -126,11 +147,22 @@ async def capture(
 
 
 def send(backend: str, state: dict, label: str | None) -> dict:
-    response = httpx.post(
-        f"{backend.rstrip('/')}/api/facebook/session",
-        json={"storage_state": state, "label": label},
-        timeout=30.0,
-    )
+    try:
+        response = httpx.post(
+            f"{backend.rstrip('/')}/api/facebook/session",
+            json={"storage_state": state, "label": label},
+            timeout=30.0,
+        )
+    except httpx.HTTPError as exc:
+        # The worst possible timing — they have already signed in — so say what
+        # to do rather than tracebacking. The sign-in itself is not lost: it
+        # lives in the persistent profile, so a re-run captures it without
+        # typing anything.
+        raise SystemExit(
+            f"  Couldn't reach the backend at {backend}: {exc}\n"
+            "  Start it (./dev.sh up) and run this again — you won't have to "
+            "sign in twice."
+        ) from exc
     if response.status_code >= 400:
         detail = response.text
         try:

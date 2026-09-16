@@ -50,6 +50,14 @@ export function SourcePanel({
   // Detected on every keystroke so the form reacts to what the user already
   // typed rather than asking them to classify their own link first.
   const isFb = isFacebookUrl(url)
+  // The Page extras are MOUNTED only while their disclosure is open, and this
+  // mirrors the `<details>` element's own state so the two cannot disagree
+  // across a remount (editing the URL unmounts the whole block). `<details>`
+  // keeps collapsed children in the DOM, so rendering the body unconditionally
+  // left FacebookConnect polling the backend every 2s behind a shut panel for
+  // the rest of the session. Nothing is lost by unmounting: the token lives in
+  // App's state above, and the session is server-side.
+  const [pageExtrasOpen, setPageExtrasOpen] = useState(false)
   const warning = facebookLinkWarning(url)
   const canSubmit = Boolean(url.trim() || file || pastedText.trim()) && !busy
 
@@ -108,53 +116,64 @@ export function SourcePanel({
         {url.trim() && (
           <div className="mt-3 rounded-xl border border-line bg-surface p-3">
             {isFb ? (
-              <details>
+              <details
+                open={pageExtrasOpen}
+                onToggle={(event) => setPageExtrasOpen(event.currentTarget.open)}
+              >
                 <summary className="cursor-pointer text-xs font-semibold text-ink-soft">
                   Reading more from this Page (optional)
                 </summary>
-                <p className="mt-2 text-xs text-ink-muted">
-                  We can read any public Page as-is. These two go further, and
-                  are worth it for a Page whose details live in its About tab.
-                </p>
+                {pageExtrasOpen && (
+                  <>
+                    <p className="mt-2 text-xs text-ink-muted">
+                      A public Page reads best as-is — logged out is the view
+                      Facebook serves in full. These help in the cases it
+                      doesn't.
+                    </p>
 
-                {/* Ranked, not listed. Signing in needs no Page admin rights and
-                 * covers the common gap (the About panel), so it leads. */}
-                <div className="mt-3 border-t border-line pt-3">
-                  <div className="text-xs font-semibold text-ink-soft">
-                    Sign in to Facebook{' '}
-                    <span className="font-normal text-ink-faint">
-                      · reads the About tab
-                    </span>
-                  </div>
-                  <FacebookConnect disabled={busy} />
-                </div>
+                    {/* Ranked, not listed, and the ranking is measured: a token
+                      * is the only thing that adds facts no render can reach,
+                      * so it leads. Signing in is a fallback for a Page that
+                      * won't show itself at all — it reads LESS of a Page that
+                      * will (see default_fetchers). */}
+                    <div className="mt-3 border-t border-line pt-3">
+                      <div className="text-xs font-semibold text-ink-soft">
+                        Page access token{' '}
+                        <span className="font-normal text-ink-faint">
+                          · adds posts &amp; recommendations
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-ink-muted">
+                        From a Page you administer. The only way to get emails,
+                        structured opening hours, posts and recommendations — no
+                        render sees those, signed in or not.
+                      </p>
+                      <Input
+                        type="password"
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder="Page access token"
+                        value={fbToken}
+                        onChange={(e) => onFbTokenChange(e.target.value)}
+                        disabled={busy}
+                        className="mt-2 w-full font-mono text-xs"
+                      />
+                      <p className="mt-1.5 text-[11px] text-ink-faint">
+                        Used for this read only — never saved, never logged.
+                      </p>
+                    </div>
 
-                <div className="mt-3 border-t border-line pt-3">
-                  <div className="text-xs font-semibold text-ink-soft">
-                    Page access token{' '}
-                    <span className="font-normal text-ink-faint">
-                      · adds posts &amp; recommendations
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-ink-muted">
-                    From a Page you administer. The only way to get emails,
-                    structured opening hours, posts and recommendations — no
-                    render sees those, signed in or not.
-                  </p>
-                  <Input
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="Page access token"
-                    value={fbToken}
-                    onChange={(e) => onFbTokenChange(e.target.value)}
-                    disabled={busy}
-                    className="mt-2 w-full font-mono text-xs"
-                  />
-                  <p className="mt-1.5 text-[11px] text-ink-faint">
-                    Used for this read only — never saved, never logged.
-                  </p>
-                </div>
+                    <div className="mt-3 border-t border-line pt-3">
+                      <div className="text-xs font-semibold text-ink-soft">
+                        Sign in to Facebook{' '}
+                        <span className="font-normal text-ink-faint">
+                          · only for a Page that won't load logged out
+                        </span>
+                      </div>
+                      <FacebookConnect disabled={busy} />
+                    </div>
+                  </>
+                )}
               </details>
             ) : (
               <Checkbox

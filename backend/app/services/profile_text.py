@@ -53,7 +53,99 @@ _BOILERPLATE_PHRASES = (
 _PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{5,}\d")
 
 _ROLE_MAX_LEN = 90
-_BIO_MAX_LEN = 480
+
+# Upper bound on a bio, and a SAFETY RAIL rather than an editorial choice: the
+# extractor keeps every qualifying line inside the card's container, so a
+# mis-detected container (a whole column, a whole section) would otherwise make
+# the page's body text somebody's biography.
+#
+# It was 480, which is a third of a real one. On watr.org.my three of four
+# people lost 58-65% of their story — "...coaching and training both young
+# medical and para-medical st" — and the fourth, at 316 chars, came through
+# whole, which is what pinned the cap as the cause. A "Show more" that expands
+# to a half-word is worse than no bio at all: the page states a fragment and
+# looks broken.
+#
+# 2400 is ~4 paragraphs of professional biography. The longest real bio measured
+# here is 1385, so it clears the observed cases with headroom while staying an
+# order of magnitude below the body text of a page.
+BIO_MAX_LEN = 2400
+
+# A sentence end this far into the budget still leaves a bio worth reading;
+# earlier than that, cutting there would throw away more than the cap asks for,
+# so a word boundary is the better cut.
+_SENTENCE_CUT_MIN_SHARE = 0.6
+
+# A sentence ends at ., ! or ? followed by whitespace — the terminator is kept.
+_SENTENCE_END_RE = re.compile(r"[.!?](?=\s)")
+
+
+def split_bio_segments(bio: str) -> list[tuple[int, str]]:
+    """A bio as ``(line index, sentence)`` pairs, in source order.
+
+    Newlines are hard boundaries. `_extract_profile_bio` newline-joins a
+    directory card's distinct facts (credentials, served populations, address)
+    and a page's paragraphs alike, and the team card renders them
+    `white-space: pre-line` — so anything that takes a bio apart has to be able
+    to put it back the same shape. `join_bio_segments` is that inverse.
+
+    The pair is what makes selection safe for both shapes at once: a fact list
+    and three paragraphs of prose are the same structure at this level, so
+    nothing has to guess which one it is holding.
+    """
+    segments: list[tuple[int, str]] = []
+    for line_no, line in enumerate(bio.splitlines()):
+        start = 0
+        for match in _SENTENCE_END_RE.finditer(line):
+            sentence = line[start : match.end()].strip()
+            if sentence:
+                segments.append((line_no, sentence))
+            start = match.end()
+        tail = line[start:].strip()
+        if tail:
+            segments.append((line_no, tail))
+    return segments
+
+
+def join_bio_segments(segments: list[tuple[int, str]]) -> str:
+    """The inverse of ``split_bio_segments``: sentences back into lines.
+
+    Sentences from one source line rejoin with a space, lines with a newline,
+    and a line every one of whose sentences was dropped simply disappears
+    rather than leaving a blank.
+    """
+    lines: dict[int, list[str]] = {}
+    for line_no, sentence in segments:
+        lines.setdefault(line_no, []).append(sentence)
+    return "\n".join(" ".join(lines[key]) for key in sorted(lines))
+
+
+def truncate_bio(text: str) -> str:
+    """Bound a bio's length WITHOUT cutting a word in half.
+
+    Under the cap this returns the text unchanged — the common case, and the
+    one that matters most: a bio the source published short arrives verbatim.
+
+    Over it, the cut lands on a sentence end where one is available late enough
+    to be worth taking, and on a word boundary otherwise. Only the word-boundary
+    cut is marked with an ellipsis: a sentence end already reads as a finished
+    thought, and punctuating it would state a truncation that isn't visible.
+
+    A trailing abbreviation ("...Dr.") is possible in principle and vanishingly
+    unlikely in practice — it needs the LAST terminator in a 2400-char window to
+    be an abbreviation — and it still cuts between words, which is the property
+    that actually matters.
+    """
+    if len(text) <= BIO_MAX_LEN:
+        return text
+    head = text[:BIO_MAX_LEN]
+    sentence_ends = [m.end() for m in _SENTENCE_END_RE.finditer(head)]
+    if sentence_ends and sentence_ends[-1] >= BIO_MAX_LEN * _SENTENCE_CUT_MIN_SHARE:
+        return head[: sentence_ends[-1]].rstrip()
+    word_end = head.rfind(" ")
+    # No space at all in 2400 characters is not prose; fall back to a hard cut
+    # rather than returning an empty bio.
+    return (head[:word_end].rstrip() if word_end > 0 else head.rstrip()) + "\u2026"
 
 # Roles that mean "this person started or owns the business", used to decide
 # whether the homepage shows a small founders band instead of the full roster.
@@ -172,7 +264,7 @@ def clean_team_bio(
         kept.append(line)
     if not kept:
         return None
-    return "\n".join(kept)[:_BIO_MAX_LEN]
+    return truncate_bio("\n".join(kept))
 
 
 # --- is this group of cards a roster of people? ---------------------------------

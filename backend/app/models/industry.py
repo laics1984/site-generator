@@ -61,6 +61,12 @@ class PageScaffold(BaseModel):
     # scratch — it clones its counterpart's design and swaps the text.
     locale: str | None = None
     translation_of: str | None = None
+    # One of a set of look-alike detail pages built from the same source
+    # template (a catalogue's /product/* pages): the slug of the set's
+    # exemplar, on every member. A record page is never planned by the content
+    # LLM — its layout is chosen once per set and each page is filled verbatim
+    # from its own source (services/record_pages.py).
+    record_set: str | None = None
 
 
 class IndustryTemplate(BaseModel):

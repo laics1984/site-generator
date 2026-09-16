@@ -122,20 +122,14 @@ export function FacebookFactsPanel({ facts }: Props) {
             ) : (
               <>Some of this Page's details weren't readable. </>
             )}
-            {/* Which remedy is worth offering depends on which already ran:
-              * suggesting a sign-in to someone who is signed in is noise. */}
-            {facts.fetched_via === 'render' ? (
-              <>
-                Signing in (<code>./dev.sh fb-login</code>) reads the About tab;
-                a Page access token, from a Page you administer, also fills in
-                posts and recommendations.{' '}
-              </>
-            ) : (
-              <>
-                A Page access token — from a Page you administer — fills those
-                in.{' '}
-              </>
-            )}
+            {/* One remedy, because only one works. Signing in was offered
+              * here and it reads LESS of a Page that loads logged out — the
+              * logged-out view is the one Facebook serves in full — so it is a
+              * fallback for a Page that won't load at all, never a way to fill
+              * a gap in a read that already succeeded. */}
+            <>
+              A Page access token — from a Page you administer — fills those in.{' '}
+            </>
             You can also carry on with what's here; the site just won't mention
             what's missing.
           </p>

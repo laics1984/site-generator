@@ -35,6 +35,7 @@ from app.models.content_blocks import (
 from app.services.browser import render_url
 from app.services.fast_fetch import FastFetchResult, try_fast_fetch
 from app.services.page_inference import _infer_page_type
+from app.services.site_url import crawl_key, is_same_site
 
 logger = logging.getLogger(__name__)
 
@@ -108,23 +109,16 @@ def _candidate_urls(
     extra_urls: list[str],
 ) -> list[str]:
     """Detail-page URLs behind one listing page, in first-seen order."""
-    listing_host = urlparse(listing.source_ref).netloc
     listing_path = _path_of(listing.source_ref)
 
     seen: set[str] = set()
     ordered: list[str] = []
 
     def consider(url: str) -> None:
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
+        key = crawl_key(url)
+        if not key or key in seen or not is_same_site(url, listing.source_ref):
             return
-        if parsed.netloc and parsed.netloc != listing_host:
-            return
-        path = _path_of(url)
-        if not _is_detail_path(path, listing_path):
-            return
-        key = f"{parsed.netloc}{path}"
-        if key in seen:
+        if not _is_detail_path(_path_of(url), listing_path):
             return
         seen.add(key)
         ordered.append(url.split("#", 1)[0])

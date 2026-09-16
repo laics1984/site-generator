@@ -78,6 +78,13 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
         severity=EFFICIENCY,
     ),
     ProcessLocal(
+        module="app.services.llm",
+        attribute="_UNCONSTRAINED_SCHEMAS",
+        holds="schemas the Claude API refused as structured output",
+        at_scale="Each worker spends one rejected (unbilled) request per such schema to relearn it.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
         module="app.services.planner",
         attribute="_DETECT_BRAND_CACHE",
         holds="brand detection results (TTL)",
@@ -125,7 +132,7 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
     ProcessLocal(
         module="app.services.text_detection",
         attribute="_TEXT_CACHE",
-        holds="url → has_text OCR results (bounded FIFO)",
+        holds="url → text/QR pixel readings (bounded FIFO)",
         at_scale="Cache miss on another worker — the image is re-OCR'd.",
         severity=EFFICIENCY,
     ),

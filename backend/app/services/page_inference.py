@@ -38,6 +38,7 @@ from app.services.locale import (
 from app.services.nav_extraction import find_repeated_cluster_keys
 from app.services.source_path import is_record_url, normalize_source_slug
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
+from app.services.record_pages import mark_record_sets
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,13 @@ _TYPE_HINTS: list[tuple[PageType, tuple[str, ...]]] = [
             "find-a",
         ),
     ),
-    ("blog", ("blog", "news", "insights", "articles", "press", "media-centre", "newsroom")),
+    # "journal" is how design, lifestyle and hospitality brands name their blog
+    # (feruni.com/journal/*); without it those posts were generated as static
+    # service pages instead of being migrated as articles.
+    (
+        "blog",
+        ("blog", "news", "insights", "articles", "press", "media-centre", "newsroom", "journal"),
+    ),
     # Bare "event" is deliberately absent — substring matching would catch
     # e.g. "prevention". Singular /event listings still match via "events" in
     # the page title or the calendar/whats-on tokens.
@@ -1454,6 +1461,11 @@ def infer_page_scaffolds(
         child.rationale = (
             child.rationale or f"Grouped under /{parent_slug} by the source navigation."
         )
+
+    # 2b-2. Look-alike detail pages (a catalogue's products) sharing a parent
+    #       and a template become a record set: laid out once, filled per page
+    #       (services/record_pages.py). After re-parenting, so the parent is final.
+    mark_record_sets(scaffolds, by_slug)
 
     # 2c. Source-nav order → nav_rank on top-level scaffolds. menu_builder uses
     #     this to order and cap the primary menu.

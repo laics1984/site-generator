@@ -30,7 +30,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
-from app.models.builder_schema import BuilderElement, BuilderElementContent
+from app.models.builder_schema import (
+    BuilderElement,
+    BuilderElementContent,
+    ResponsiveStyles,
+)
 from app.services.icons import icon_data_url
 from app.services.image_styling import HeroAnchor
 from app.services.media import monogram_avatar_url
@@ -82,17 +86,122 @@ def templates_for_type(section_type: str) -> list[dict[str, Any]]:
 # --- internals ------------------------------------------------------------------
 
 
-def _bento_spans(index: int, count: int) -> dict[str, str]:
-    """Grid spans for the i-th bento tile on a 6-column, auto-flow:dense grid.
+# Columns the catalog's "Bento Grid" node exposes at each breakpoint — its
+# base `gridTemplateColumns` and the two its `responsiveStyles` declare. A span
+# means nothing without the count it is measured in, so placement is decided
+# once per breakpoint.
+_BENTO_COLUMNS = 6
+_BENTO_TABLET_COLUMNS = 4
+_BENTO_MOBILE_COLUMNS = 2
 
-    A large lead tile, periodic wide tiles, and standard half-width tiles give a
-    modular "bento" rhythm; `dense` auto-flow packs any item count cleanly.
+# `ResponsiveStyles` layer -> the columns that layer's grid exposes. Adding a
+# breakpoint to the catalog's grid is an entry here and nothing else.
+_BENTO_BREAKPOINT_COLUMNS = {
+    "tablet": _BENTO_TABLET_COLUMNS,
+    "mobile": _BENTO_MOBILE_COLUMNS,
+}
+
+
+def _bento_last_tile_is_alone(count: int, columns: int) -> bool:
+    """True when the last of ``count`` tiles ends up alone in its row.
+
+    The lead tile is 4 columns wide and 2 rows tall, so at 6 columns it leaves a
+    2-column gutter that the next two tiles fill and everything from index 3 on
+    lays out 3 to a row; at 4 columns the lead is already the full width and
+    every tile after it pairs 2 to a row. Either way the tail is a plain
+    division, and its last tile is alone exactly when that division leaves a
+    remainder of one. Fewer than 3 tiles is too few for the lead, so those tile
+    from the first index.
+
+    Same rule, and the same deliberate omission, as the ``:last-child`` grid
+    rules in webtree-public's ``ContainerBlock.vue``: a partial row holding TWO
+    tiles reads as balanced and is left alone.
     """
+    if count <= 0:
+        return False
+    lead_block = (3 if columns >= _BENTO_COLUMNS else 1) if count >= 3 else 0
+    if count <= lead_block:
+        return False
+    per_row = max(1, columns // 2)
+    return (count - lead_block) % per_row == 1
+
+
+def _bento_tile_span(index: int, count: int, columns: int) -> str:
+    """The ``grid-column`` the i-th tile takes on a ``columns``-wide bento grid.
+
+    ``1 / -1`` rather than a span wherever the tile is the whole row: it means
+    that at every column count, so one value is right at every breakpoint.
+    """
+    if index == count - 1 and _bento_last_tile_is_alone(count, columns):
+        return "1 / -1"
+    span = 4 if (index == 0 and count >= 3) else 2  # a large lead, else standard
+    # A span WIDER than the grid creates implicit columns, and those steal space
+    # from the explicit `1fr` tracks: the 4-wide lead on the 2-column mobile
+    # grid squeezed its siblings to alternating 382px and *8px* slivers. Beyond
+    # the column count the tile is simply the row.
+    return "1 / -1" if span > columns else f"span {span}"
+
+
+def _bento_placement(
+    index: int, count: int
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """(base styles, {breakpoint: overrides}) placing the i-th bento tile.
+
+    A large lead tile plus half-width tiles give the modular "bento" rhythm, and
+    a tile that would otherwise sit alone in its row takes the whole row
+    instead. A breakpoint entry is emitted only where its column count disagrees
+    with the base one — which it does whenever a count strands a tile at one
+    width and not the other, and for the lead on the mobile grid.
+    """
+    base: dict[str, str] = {
+        "gridColumn": _bento_tile_span(index, count, _BENTO_COLUMNS)
+    }
     if index == 0 and count >= 3:
-        return {"gridColumn": "span 4", "gridRow": "span 2"}  # large lead
-    if index > 0 and index % 5 == 0:
-        return {"gridColumn": "span 4"}  # periodic wide
-    return {"gridColumn": "span 2"}  # standard (3 per row)
+        base["gridRow"] = "span 2"
+    overrides = {
+        breakpoint: {"gridColumn": span}
+        for breakpoint, columns in _BENTO_BREAKPOINT_COLUMNS.items()
+        if (span := _bento_tile_span(index, count, columns)) != base["gridColumn"]
+    }
+    return base, overrides
+
+
+def _with_responsive_styles(
+    responsive: ResponsiveStyles | None, patches: dict[str, dict[str, str]]
+) -> ResponsiveStyles:
+    """``responsive`` with each ``patches[breakpoint]`` merged into that layer.
+
+    ``model_copy`` rather than a fresh model so the template's own layers — and
+    any layer a future catalog entry declares — ride through untouched.
+    """
+    base = responsive or ResponsiveStyles()
+    merged = {
+        breakpoint: {**(getattr(base, breakpoint, None) or {}), **patch}
+        for breakpoint, patch in patches.items()
+    }
+    return base.model_copy(update=merged)
+
+
+def _apply_cycle_styles(patches: Any, children: list[BuilderElement]) -> None:
+    """Stamp a repeating style patch onto a `$repeat`'s children, by index.
+
+    The general form of what `_bento_placement` does for one layout: index-aware
+    styling decided at FILL time, so the three renderers cannot disagree about
+    it. `[{}, {"flexDirection": "row-reverse"}]` alternates the sides of a
+    two-column row; child *i* takes `patches[i % len(patches)]`.
+
+    It patches BASE styles only. A `responsiveStyles` entry the item template
+    declares still wins at its own breakpoint, which is what lets an alternating
+    row stack the same way on a phone in both phases.
+
+    Mirrored in builder/src/lib/section-catalog.ts — keep the two in lockstep.
+    """
+    if not isinstance(patches, list) or not patches:
+        return
+    for index, child in enumerate(children):
+        patch = patches[index % len(patches)]
+        if isinstance(patch, dict) and patch:
+            child.styles = {**(child.styles or {}), **patch}
 
 
 def _base_fields(node: dict[str, Any], styles: dict[str, Any]) -> dict[str, Any]:
@@ -267,6 +376,7 @@ async def _fill_node(
         if node.get("$gridFit"):
             n = len(children)
             base = {**base, "type": "2Col" if (n <= 2 or n % 3 == 1) else "3Col"}
+        _apply_cycle_styles(node.get("$cycleStyles"), children)
         return BuilderElement(id=str(uuid4()), content=children, **base)
 
     # $bento: like $repeat, but stamp each cloned tile with varied grid spans so a
@@ -284,7 +394,12 @@ async def _fill_node(
                 if el is not None:
                     tiles.append(el)
         for i, el in enumerate(tiles):
-            el.styles = {**(el.styles or {}), **_bento_spans(i, len(tiles))}
+            base_styles, overrides = _bento_placement(i, len(tiles))
+            el.styles = {**(el.styles or {}), **base_styles}
+            if overrides:
+                el.responsiveStyles = _with_responsive_styles(
+                    el.responsiveStyles, overrides
+                )
         return BuilderElement(id=str(uuid4()), content=tiles, **base)
 
     # $content: fill from a registered factory.

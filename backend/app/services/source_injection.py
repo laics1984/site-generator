@@ -9,7 +9,8 @@ invent, and an invented href is a dead link while an invented video id is a
 are placed, verbatim, from what the crawler read.
 
 ``routers.generate`` has four such passes — ``_inject_downloads``,
-``_inject_image_walls``, ``_inject_videos`` and ``_inject_maps``. They differ in
+``_inject_image_walls``, ``_inject_videos`` and ``_inject_maps`` — and
+``services.legible_images`` a fifth, for posters and QR codes. They differ in
 what they collect and how they gate it, but they share the same spine, and each
 step encodes a bug that was paid for once already:
 
@@ -31,7 +32,16 @@ from collections.abc import Callable, Container, Hashable, Iterable
 from math import ceil
 from typing import TypeVar
 
-from app.models.content_blocks import ContentBlock, PagePlan, SourceContent
+from pydantic import BaseModel
+
+from app.models.content_blocks import (
+    ContentBlock,
+    GalleryBlock,
+    GalleryItem,
+    PagePlan,
+    SectionCandidate,
+    SourceContent,
+)
 from app.services.source_path import normalize_source_slug
 
 T = TypeVar("T")
@@ -41,10 +51,80 @@ K = TypeVar("K", bound=Hashable)
 # content. Two is the floor at which "repeated" means anything at all.
 CHROME_MIN_SLUGS = 2
 
+# For media where a second appearance is ORDINARY, a key must be on most of the
+# site before it reads as template furniture. The flat two-slug rule that works
+# for photos is wrong for a video: an index re-shows what its topic pages show,
+# and the entry page is itself crawled twice (`/` and `/index.php`), so two slugs
+# is the normal count for real content. See `repeated_across_slugs` for what
+# that cost. The same holds for a QR code or a poster in a page's own body.
+SITEWIDE_MIN_SLUGS = 3
+SITEWIDE_MIN_SHARE = 0.5
+
+def max_items(block: type[BaseModel]) -> int:
+    """A block model's own ``items`` ceiling, read from its schema so a builder
+    that fills items verbatim never restates (and never drifts from) the bound."""
+    return next(
+        rule.max_length
+        for rule in block.model_fields["items"].metadata
+        if getattr(rule, "max_length", None) is not None
+    )
+
+
+# GalleryBlock.items ceiling; every unique image is one media upload at push.
+MAX_GALLERY_ITEMS = max_items(GalleryBlock)
+
+
+def gallery_block_from_section(
+    section: SectionCandidate, *, limit: int = MAX_GALLERY_ITEMS
+) -> GalleryBlock:
+    """One source picture rack → a gallery of exactly those pictures.
+
+    Shared by ``routers.generate._inject_image_walls`` and the record-page
+    filler (``services/record_pages.py``) — both place a section's own photos
+    verbatim, so there is one builder.
+
+    ``image_url`` is set directly, which is what makes this deterministic: the
+    slot is already filled, so nothing downstream resolves a stock photo for it
+    and ``image_refs.bind_image_refs`` never gets to reject a badge for being
+    the wrong shape. ``image_query`` still has to be a non-empty string for the
+    model's schema, but it is dead weight once ``image_url`` is set — see
+    ``section_content._gallery_content``, which prefers the URL.
+
+    The album name falls through to ``caption``, never ``title``:
+    ``_gallery_content`` reads either as alt text, but ``schema_builder._build_
+    gallery`` runs ``_match_child_by_title`` on ``title``, so putting one album
+    name on nine tiles would link all nine at a child page.
+    """
+    captions = {card.image_url: card.title for card in section.cards if card.image_url}
+    items: list[GalleryItem] = []
+    seen: set[str] = set()
+    for url in section.image_urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        caption = (captions.get(url) or "").strip()
+        items.append(
+            GalleryItem(
+                title=caption or None,
+                caption=caption or section.heading or None,
+                image_query=caption or section.heading,
+                image_url=url,
+            )
+        )
+        if len(items) >= limit:
+            break
+    return GalleryBlock(heading=section.heading, items=items)
+
 
 def source_pages(source: SourceContent) -> list[SourceContent]:
     """The entry page plus every page the crawl discovered, in one list."""
     return [source, *source.discovered_pages]
+
+
+def pages_by_slug(pages: list[PagePlan]) -> dict[str, PagePlan]:
+    """Each generated page under the key ``normalize_source_slug`` gives its
+    source page (surrounding slashes stripped, lowercased; "" = homepage)."""
+    return {p.slug.strip("/").lower(): p for p in pages}
 
 
 def accumulate_by_slug(
@@ -123,6 +203,15 @@ def repeated_across_slugs(
     return {key for key, n in seen.items() if n >= threshold}
 
 
+def sitewide_across_slugs(
+    source: SourceContent, extract: Callable[[SourceContent], Iterable[K]]
+) -> set[K]:
+    """Keys on most of the site — ``repeated_across_slugs`` at the sitewide bar."""
+    return repeated_across_slugs(
+        source, extract, min_slugs=SITEWIDE_MIN_SLUGS, min_share=SITEWIDE_MIN_SHARE
+    )
+
+
 def hero_insert_index(page: PagePlan) -> int:
     """Where a deterministic section goes: right after the hero, else the top.
 
@@ -139,20 +228,35 @@ def insert_after_hero(page: PagePlan, block: ContentBlock) -> None:
     page.blocks.insert(hero_insert_index(page), block)
 
 
-def companion_insert_index(page: PagePlan, kinds: Iterable[str]) -> int:
-    """Just after the last block of a companion kind, else ``hero_insert_index``.
+def closing_insert_index(page: PagePlan) -> int:
+    """Just before the page's closing CTA, else the end of the page.
+
+    For a section that is itself an ask — scan to give, scan to chat — which
+    belongs with the page's other asks, after the content that earns them.
+    """
+    end = len(page.blocks)
+    return end - 1 if end and page.blocks[-1].kind == "cta" else end
+
+
+def companion_insert_index(
+    page: PagePlan,
+    kinds: Iterable[str],
+    *,
+    fallback: Callable[[PagePlan], int] = hero_insert_index,
+) -> int:
+    """Just after the last block of a companion kind, else ``fallback``.
 
     Some deterministic sections are not top-of-page content in their own right —
     they ANNOTATE a section the model wrote. A map belongs beside the address
     that names the place, not stranded above it under the hero. When the page
-    has no such companion the hero rule applies unchanged.
+    has no such companion the fallback rule applies unchanged.
     """
     wanted = set(kinds)
     last = next(
         (i for i in range(len(page.blocks) - 1, -1, -1) if page.blocks[i].kind in wanted),
         None,
     )
-    return last + 1 if last is not None else hero_insert_index(page)
+    return last + 1 if last is not None else fallback(page)
 
 
 def group_by_heading(

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
@@ -25,7 +26,6 @@ from app.models.content_blocks import (
     DownloadLink,
     DownloadsBlock,
     GalleryBlock,
-    GalleryItem,
     ImageMetadata,
     IndustryCategoryLiteral,
     industry_locked_mood,
@@ -56,8 +56,10 @@ from app.services.facebook_authority import enforce_facebook_facts
 from app.services.facebook_source import to_contact_dict
 from app.services.industry_templates import get_template
 from app.services.design_brain import generate_design_language
+from app.services.record_pages import build_record_pages
+from app.services.source_router import pages_by_source_slug
 from app.services.translations import build_translated_pages
-from app.services.text_detection import prefetch_text_flags
+from app.services.text_detection import prefetch_text_flags, verify_many
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
 from app.services.planner import (
@@ -69,17 +71,25 @@ from app.services.planner import (
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
 from app.services.page_inference import DIRECTORY_MIN_PROFILES
 from app.services.source_injection import (
+    MAX_GALLERY_ITEMS,
     accumulate_by_slug,
     companion_insert_index,
+    gallery_block_from_section,
     group_by_heading,
     hero_insert_index,
     insert_after_hero,
+    pages_by_slug,
     repeated_across_slugs,
+    sitewide_across_slugs,
     source_pages,
 )
 from app.services.source_path import normalize_source_slug
+from app.services.whatsapp_discovery import build_whatsapp_widget, discover_whatsapp_number
 from app.services.image_graphics import screen_source_images_for_graphics
-from app.services.image_refs import bind_image_refs
+from app.services.bio_condense import condense_bios
+from app.services.llm import LlmClient
+from app.services.image_refs import bind_image_refs, referenced_images
+from app.services.legible_images import inject_legible_images
 from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
@@ -380,8 +390,9 @@ async def _screen_source_images_for_text(
     metadata: list[ImageMetadata],
     prefetched: dict[str, str] | None = None,
 ) -> None:
-    """Flag SOURCE images that carry their own headline, so none of them fills a
-    slot we draw ours over (services/text_detection.py).
+    """Flag SOURCE images that carry their own words or a QR code, so none of them
+    fills a slot that overprints or crops it, and each is placed whole instead
+    (services/text_detection.py, services/legible_images.py).
 
     Stock photography is never screened — Pexels ships photographs, not posters,
     and these are `ImageMetadata`, which stock results never become.
@@ -460,17 +471,67 @@ def _profile_photo_vision_ok(
     return annotation.kind == "photo" and annotation.people_count >= 1
 
 
-def _enrich_plan_profile_photos(
+def _backfill_member_bio(
+    member: TeamMember | ProfileBlock,
+    candidate: ProfileCandidate,
+    sibling_names: tuple[str, ...],
+) -> None:
+    """Give a matched person the story their own scraped card tells.
+
+    A card states a face, a name, a title AND a story, so a refill that hands
+    over only the face leaves the rest on the floor. Each field backfills
+    INDEPENDENTLY, and only into a gap — the same shape as the profile-page
+    refill below, whose comment records why: gating one field's refill on
+    another being absent left it almost never firing.
+
+    Grounding is deliberately skipped, exactly as in ``_roster_members``: a
+    ``ProfileCandidate`` bio is page text by construction, so re-checking it
+    against the page is guaranteed-true work. ``clean_team_bio`` still runs, so
+    a scraped bio reaching a card is cleaned identically on both paths.
+
+    ``sibling_names`` are the block's other members — a line naming one of them
+    belongs to that person's card, not this one. A profile block is one person
+    and has no siblings.
+    """
+    if getattr(member, "bio", None) or getattr(member, "description", None):
+        return
+    bio = clean_team_bio(
+        candidate.bio,
+        other_names=tuple(n for n in sibling_names if n and n != member.name),
+    )
+    if not bio:
+        return
+    member.bio = bio
+    # `description` is a deprecated alias kept in sync by
+    # TeamMember.sync_description_aliases, which only fires on CONSTRUCTION.
+    # Assigning `bio` alone would leave the two disagreeing, and _team_content
+    # reads `bio or description` — the same trap _sanitize_team_block documents.
+    # ProfileBlock carries no alias.
+    if isinstance(member, TeamMember):
+        member.description = bio
+
+
+def _enrich_plan_profile_cards(
     plan: SitePlan,
     source: SourceContent,
     annotations: dict[str, VisionAnnotation] | None = None,
     profiles: list[ProfileCandidate] | None = None,
 ) -> None:
-    """Attach confidently matched scraped portraits to generated team members.
+    """Fill generated people in from the scraped card that matches them.
 
-    Mutates the plan in place. Only concrete URLs from scraper-produced
+    Mutates the plan in place. Only concrete values from scraper-produced
     ProfileCandidate objects are applied, so older payloads and LLM-only plans
     keep using the existing photo_query fallback.
+
+    This is the ONE place that pairs an LLM-written person with their source
+    card, so it is where everything that card can vouch for is handed over —
+    portrait and bio. It used to pass the portrait alone, which is how
+    watr.org.my published four team cards with real faces, real names and no
+    biography: the four 480-char bios sat on the matched candidates, and
+    ``_ensure_scraped_team_blocks`` — the path that would have replaced the
+    block with the scraped roster wholesale — then short-circuited on
+    ``any(member.photo_url)``, reading a block this function had just given
+    photos to as already complete.
 
     "Already used" is scoped to ONE PAGE. The rule it enforces is that a grid
     must not show the same face twice — a page-level concern. Applied across the
@@ -478,6 +539,10 @@ def _enrich_plan_profile_photos(
     all nine portraits, and each member's own page, rendered later, found none
     left and fell back to a monogram. A person's portrait belongs on their card
     AND on their page.
+
+    The candidate pool is still photo-gated (below): a face is what the vision
+    screen and the one-face-per-page rule are written against. A bio therefore
+    rides along with a portrait rather than arriving on its own.
     """
     if profiles is None:
         profiles = _profile_pool_for(source)
@@ -494,9 +559,10 @@ def _enrich_plan_profile_photos(
             if block.kind not in ("team", "profile"):
                 continue
             # A profile block is one person; a team block is a list of them.
-            # Both want the same thing: this person's real portrait, matched by
-            # name, never a stock face.
+            # Both want the same thing: this person's real portrait and their
+            # own story, matched by name, never a stock face.
             people = [block] if block.kind == "profile" else block.members
+            sibling_names = tuple(person.name for person in people)
             for member in people:
                 scored = sorted(
                     (
@@ -514,6 +580,7 @@ def _enrich_plan_profile_photos(
                 member.photo_alt = matched.photo_alt or member.name
                 if matched.photo_url:
                     used_urls.add(matched.photo_url)
+                _backfill_member_bio(member, matched, sibling_names)
 
 
 def _detail_page_href(profile_url: str | None) -> str | None:
@@ -729,6 +796,61 @@ def _profile_contacts(candidate: ProfileCandidate | None) -> list[ProfileContact
     return contacts
 
 
+async def _condense_team_card_bios(
+    plan: SitePlan, *, llm: LlmClient | None = None
+) -> None:
+    """Fit each TEAM CARD's bio to a card, in the source's own sentences.
+
+    `team` blocks only, deliberately. A `ProfileBlock` is the page that is
+    *about* this person, and it keeps the complete biography — a grid
+    introduces people, a profile page tells the story. That split costs nothing
+    to maintain: the two blocks already carry separate `bio` fields, so nothing
+    has to be threaded and no member is condensed twice.
+
+    Runs AFTER `_ensure_scraped_team_blocks`, so it sees the final roster
+    whichever path filled it, and after `align_page_to_scaffold`'s grounding
+    net — which it does not need, since a condensed bio is a subsequence of the
+    text that net already accepted.
+
+    Every failure keeps the full bio (`bio_condense` returns an empty map), and
+    a bio already at or under the target never reaches the model at all — on a
+    directory of short cards this pass makes no calls whatsoever.
+    """
+    if not settings.team_bio_condense_enabled:
+        return
+    target = settings.team_bio_card_max_chars
+    for page in plan.pages:
+        for block in page.blocks:
+            if getattr(block, "kind", None) != "team":
+                continue
+            # Index against the block's own member list so a returned index
+            # cannot land on a different person.
+            oversized = [
+                (index, member)
+                for index, member in enumerate(block.members)
+                if member.bio and len(member.bio) > target
+            ]
+            if not oversized:
+                continue
+            condensed = await condense_bios(
+                [(member.name, member.bio or "") for _index, member in oversized],
+                target_chars=target,
+                client=llm,
+            )
+            for entry, bio in condensed.items():
+                member = oversized[entry][1]
+                member.bio = bio
+                # The deprecated alias is read by _team_content as
+                # `bio or description`; leaving it behind would resurrect the
+                # full text. Same trap _sanitize_team_block documents.
+                member.description = bio
+            if condensed:
+                logger.info(
+                    "Bio condense: shortened %d of %d card bios on /%s",
+                    len(condensed), len(oversized), page.slug,
+                )
+
+
 def _ensure_scraped_team_blocks(
     plan: SitePlan,
     source: SourceContent,
@@ -749,8 +871,8 @@ def _ensure_scraped_team_blocks(
     Pages in ``directory_slugs`` (detected profile directories, e.g. a "find a
     therapist" listing) get their team block replaced WHOLESALE with the source
     page's own full roster: the LLM keeps only a subset of a long listing, and
-    ``_enrich_plan_profile_photos`` can only attach photos to the members the
-    LLM kept, so a partially photo-bearing block must not short-circuit here.
+    ``_enrich_plan_profile_cards`` can only fill in the members the LLM kept,
+    so a partially enriched block must not short-circuit here.
 
     A page carrying a single profile card instead gets that one person's card
     (see ``_profile_page_member``) — the detail pages a directory links to.
@@ -828,10 +950,10 @@ def _ensure_scraped_team_blocks(
             if profile is not None and (profile.photo_url or profile.contacts):
                 # The LLM wrote the block itself; the page's own scraped card is
                 # the authority on this person's portrait AND contacts, so each
-                # backfills independently — `_enrich_plan_profile_photos` (run
-                # just before this) already fills photo_url on most matched
-                # profiles, and gating the contacts refill on a missing photo
-                # left it almost never firing.
+                # backfills independently — `_enrich_plan_profile_cards` (run
+                # just before this) already fills photo_url and bio on most
+                # matched profiles, and gating the contacts refill on a missing
+                # photo left it almost never firing.
                 for idx in profile_indexes:
                     existing = page.blocks[idx]
                     updates: dict[str, object] = {}
@@ -872,6 +994,15 @@ def _ensure_scraped_team_blocks(
         if team_indexes:
             for idx in team_indexes:
                 block = page.blocks[idx]
+                # A photo means `_enrich_plan_profile_cards` matched these
+                # members to their scraped cards a moment ago, so the block is
+                # already carrying everything those cards can vouch for —
+                # portrait AND bio — and replacing it wholesale would only
+                # discard the LLM's own headings and ordering. This test is a
+                # proxy for "was this block enriched", NOT for "does it have a
+                # photo": when it was only the latter, a block enriched with
+                # faces but no stories short-circuited here and shipped
+                # bio-less cards. Keep the two in step.
                 if any(getattr(member, "photo_url", None) for member in block.members):
                     continue
                 page.blocks[idx] = TeamBlock(
@@ -1105,7 +1236,7 @@ def _drop_person_photos(pages: list[PagePlan]) -> None:
 
     The stock-images-only counterpart to ``_drop_unbound_gallery_items``, and
     placed for the same reason: it runs on the FINISHED plan, after
-    ``_enrich_plan_profile_photos`` and ``_ensure_scraped_team_blocks`` have
+    ``_enrich_plan_profile_cards`` and ``_ensure_scraped_team_blocks`` have
     built the roster. Cutting the photo earlier — on the source — would delete
     the roster itself, because both roster passes skip a candidate that has no
     photo (``if not profile.photo_url: continue``); a photo-less candidate is
@@ -1264,8 +1395,9 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     await _screen_source_images_for_graphics(scraped_metadata)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
-    _enrich_plan_profile_photos(plan, payload.source, annotations)
+    _enrich_plan_profile_cards(plan, payload.source, annotations)
     _ensure_scraped_team_blocks(plan, payload.source, annotations)
+    await _condense_team_card_bios(plan)
     if payload.stock_images_only:
         _drop_person_photos(plan.pages)
 
@@ -1281,6 +1413,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         market_cue=market_cue,
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
+        whatsapp_widget=_whatsapp_widget_for(payload.source, plan.site_name),
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
         stock_only=payload.stock_images_only,
@@ -1331,6 +1464,38 @@ class GenerateWithPagesRequest(BaseModel):
     facebook_facts: FacebookPage | None = None
 
 
+class ScaffoldSplit(NamedTuple):
+    """How each selected page is built."""
+
+    content: list[PageScaffold]  # planned by the content LLM
+    records: list[PageScaffold]  # laid out once per set, filled verbatim (record_pages)
+    translations: list[PageScaffold]  # cloned from their counterpart's finished plan
+    legal: list[PageScaffold]  # boilerplate
+
+
+def split_scaffolds(selected: list[PageScaffold]) -> ScaffoldSplit:
+    """Route every selected page to the one pass that builds it.
+
+    Only ``content`` reaches the planner. Translated mirrors are cloned from
+    their counterpart's finished plan further down — paying the planner to write
+    them again would cost a full generation per language AND let the versions
+    drift apart visually. Record pages (a catalogue's products) are the same
+    idea at catalogue scale: one layout per template, each page filled from its
+    own source, instead of a content batch every few pages.
+    """
+    split = ScaffoldSplit([], [], [], [])
+    for scaffold in selected:
+        if scaffold.is_legal:
+            split.legal.append(scaffold)
+        elif scaffold.locale:
+            split.translations.append(scaffold)
+        elif scaffold.record_set:
+            split.records.append(scaffold)
+        else:
+            split.content.append(scaffold)
+    return split
+
+
 @router.post("/with-pages", response_model=GeneratedSite)
 async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
     # Locale detection reads image URLs as domain evidence
@@ -1343,18 +1508,9 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     if payload.stock_images_only:
         payload.source = without_source_imagery(payload.source)
 
-    # Split scaffolds: LLM-generated content pages vs. boilerplate legal pages.
-    # Translated mirrors are held out of the content pass entirely — they're
-    # cloned from their counterpart's finished plan further down, so paying the
-    # planner to write them again would cost a full generation per language AND
-    # let the two versions drift apart visually.
-    content_scaffolds = [
-        s for s in payload.selected_pages if not s.is_legal and not s.locale
-    ]
-    translation_scaffolds = [
-        s for s in payload.selected_pages if not s.is_legal and s.locale
-    ]
-    legal_scaffolds = [s for s in payload.selected_pages if s.is_legal]
+    content_scaffolds, record_scaffolds, translation_scaffolds, legal_scaffolds = (
+        split_scaffolds(payload.selected_pages)
+    )
 
     if not content_scaffolds:
         raise HTTPException(
@@ -1495,6 +1651,12 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     graphics_task = asyncio.create_task(
         _screen_source_images_for_graphics(scraped_metadata)
     )
+    # Record pages ride beside the content pass: one small layout call per
+    # template set, then deterministic filling — nothing here waits on the
+    # planner, and the planner never sees these pages.
+    record_pages_task = asyncio.create_task(
+        build_record_pages(record_scaffolds, _sources_by_slug(payload.source))
+    )
 
     # Scaffolded LLM call — produces PagePlans for content_scaffolds in lockstep order.
     # This is the heaviest LLM pass (it writes all page copy); time it so the
@@ -1510,6 +1672,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         prefetch_task.cancel()
         ocr_task.cancel()
         graphics_task.cancel()
+        record_pages_task.cancel()
         raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
 
     # Per-batch failures no longer abort the run (see planner._run_item_safe) —
@@ -1539,6 +1702,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
             source_map=source_map,
         ),
     )
+    # Record pages join before every deterministic pass below (hub links,
+    # downloads, walls, videos, maps), so those treat them like any other page.
+    # They skip alignment above: their content is already verbatim source.
+    plan.pages.extend(await record_pages_task)
     # FAQ items the model manufactured out of profile listings are dropped
     # before any rendering — the roster ships as a team grid, not as Q&As.
     _strip_profile_faq_items(plan, payload.source)
@@ -1590,7 +1757,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     annotations = await _annotate_source_images(
         payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
     )
-    _enrich_plan_profile_photos(plan, payload.source, annotations, profiles=profiles)
+    # Every pixel reading is in now. An image carrying words or a code can fill
+    # no slot that crops or overprints it, so it is placed whole instead.
+    inject_legible_images(plan.pages, payload.source, scraped_metadata)
+    _enrich_plan_profile_cards(plan, payload.source, annotations, profiles=profiles)
     team_section_slugs = {s.slug for s in content_scaffolds if "team" in s.sections}
     # Directory pages: scaffolds with a team section whose grounding source is
     # itself a profile roster. Intersecting with the team scaffolds guarantees
@@ -1611,6 +1781,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         directory_slugs=directory_slugs,
     )
     _drop_hollow_team_pages(plan)
+    await _condense_team_card_bios(plan)
     # After the last pass that can remove a page, so a member's link is checked
     # against the pages the site actually ships.
     _prune_dead_profile_links(plan)
@@ -1626,7 +1797,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         plan.pages = enforce_facebook_facts(plan.pages, payload.facebook_facts)
 
     # Resolve LLM-bound image refs (block.image_ref → block.image_url) against
-    # the same per-page photo lists the planner prompt showed the model.
+    # the same per-page photo lists the planner prompt showed the model. The
+    # photos the model chose are screened first, in one batch: a bound card
+    # photo never meets the resolver's on-demand screen.
+    await verify_many(referenced_images(plan.pages, source_map))
     bound_image_urls = bind_image_refs(plan.pages, source_map)
     # A gallery ref the binder rejected has nothing behind it — drop the tile
     # rather than let it resolve a stock photo at render time. Suspended under
@@ -1647,7 +1821,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
                 await build_translated_pages(
                     plan.pages,
                     translation_scaffolds,
-                    _translation_sources(payload.source),
+                    _sources_by_slug(payload.source),
                 )
             )
 
@@ -1685,6 +1859,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         market_cue=market_cue,
         place_cue=place_cue,
         social_links=_social_links_for(payload.source),
+        whatsapp_widget=_whatsapp_widget_for(payload.source, plan.site_name),
         reserved_image_urls=bound_image_urls,
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
@@ -1759,19 +1934,36 @@ def _align_pages_to_scaffolds(
     return aligned
 
 
-def _translation_sources(source: SourceContent) -> dict[str, SourceContent]:
-    """slug → crawled page, so a clone can be filled with the owner's own words
-    in that language rather than a re-translation of our copy."""
-    out: dict[str, SourceContent] = {}
-    for page in source.discovered_pages:
-        slug = normalize_source_slug(page.url_path)
-        if slug:
-            out[slug] = page
-    return out
+def _sources_by_slug(source: SourceContent) -> dict[str, SourceContent]:
+    """slug → crawled page, for the passes that build a page from its own
+    source rather than from the planner: a translation filled with the owner's
+    own words, a record page filled verbatim. Where several crawled URLs share a
+    slug the query-less page represents it, as in page inference."""
+    return {
+        slug: pages[0]
+        for slug, pages in pages_by_source_slug(source.discovered_pages).items()
+    }
 
 
 def _social_links_for(source: SourceContent) -> list[tuple[str, str]]:
     return [(link.label, link.href) for link in source.social_links]
+
+
+def _whatsapp_widget_for(
+    source: SourceContent, site_name: str | None
+) -> dict[str, Any] | None:
+    """The WhatsApp chat button the source site already offered, if any.
+
+    Fail-open: a site is not worth losing over a contact button, and every
+    branch of the discovery is already a "None unless certain" decision.
+    """
+    try:
+        return build_whatsapp_widget(
+            discover_whatsapp_number(source), site_name=site_name
+        )
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("WhatsApp discovery failed; continuing without a widget")
+        return None
 
 
 def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:
@@ -1804,13 +1996,6 @@ def _inject_linkbar(pages: list[PagePlan], cluster: LinkCluster) -> None:
     )
 
 
-def _page_by_url_path(pages: list[PagePlan]) -> dict[str, PagePlan]:
-    """Map each generated page's slug to its PagePlan, keyed the same way
-    ``site_relative_href``/``_path_to_slug`` normalize a source url_path
-    (strip surrounding slashes, lowercase; empty string = homepage)."""
-    return {p.slug.strip("/").lower(): p for p in pages}
-
-
 def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
     """Recreate each page's scraped document cards (e.g. a brochure offered in
     EN/ZH/MS, or a resource library) as ONE downloads section per page.
@@ -1829,7 +2014,7 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
     document_card_lines already kept the LLM from also narrating this content
     into its own services/about section, so there's nothing to duplicate).
     """
-    pages_by_path = _page_by_url_path(pages)
+    pages_by_path = pages_by_slug(pages)
     for slug, cards in accumulate_by_slug(
         source, lambda page: page.document_cards or []
     ).items():
@@ -1856,8 +2041,6 @@ def _inject_downloads(pages: list[PagePlan], source: SourceContent) -> None:
 # Card kinds whose section IS its pictures — mirrors page_inference's set, which
 # decides the scaffold these blocks fill.
 _WALL_CARD_KINDS = frozenset({"gallery"})
-# GalleryBlock.items ceiling; every unique image is one media upload at push.
-_MAX_GALLERY_ITEMS = 24
 # Photos under one heading before it counts as an album rather than an
 # illustrated paragraph — mirrors page_inference._WALL_MIN_IMAGES.
 _MIN_ALBUM_PHOTOS = 3
@@ -2019,7 +2202,7 @@ def _place_walls(page: PagePlan, walls: list[SectionCandidate], *, gated: bool) 
     for wall in walls[:_MAX_GALLERY_BLOCKS]:
         if budget <= 0:
             break
-        block = _wall_gallery_block(wall, limit=min(_MAX_GALLERY_ITEMS, budget))
+        block = gallery_block_from_section(wall, limit=min(MAX_GALLERY_ITEMS, budget))
         if not block.items:
             continue
         budget -= len(block.items)
@@ -2081,7 +2264,7 @@ def _inject_image_walls(
     page would grow a gallery nobody asked for.
     """
     gated_slugs = gallery_section_slugs or set()
-    pages_by_path = _page_by_url_path(pages)
+    pages_by_path = pages_by_slug(pages)
     chrome = _repeated_image_urls(source)
     # Kept as its own loop rather than routed through
     # source_injection.accumulate_by_slug: what counts as a wall here depends on
@@ -2114,13 +2297,6 @@ def _inject_image_walls(
 
 # VideoBlock.items ceiling (mirrors the model's max_length).
 _MAX_VIDEO_ITEMS = 24
-# A video must be on MOST of the site before it reads as template furniture.
-# The flat two-slug rule that works for photos is wrong for video: a video index
-# re-shows what its topic pages show, and the entry page is itself crawled twice
-# (`/` and `/index.php`), so two slugs is the NORMAL count for real content.
-# See source_injection.repeated_across_slugs for what this cost.
-_VIDEO_CHROME_MIN_SLUGS = 3
-_VIDEO_CHROME_MIN_SHARE = 0.5
 # Distinct video groups placed on one page. Roomier than the source usually
 # needs, because `_topic_regrouped` turns one flat index into several real
 # sections — and `group_by_heading` DROPS groups past the cap, so a tight cap
@@ -2197,12 +2373,11 @@ def _inject_videos(pages: list[PagePlan], source: SourceContent) -> None:
     slugs — a sidebar or footer promo reel is the template's, not this page's.
     Both rules, and the bugs behind them, live in ``services.source_injection``.
     """
-    pages_by_path = _page_by_url_path(pages)
-    chrome = repeated_across_slugs(
-        source,
-        lambda page: (v.embed_url for v in page.video_embeds or []),
-        min_slugs=_VIDEO_CHROME_MIN_SLUGS,
-        min_share=_VIDEO_CHROME_MIN_SHARE,
+    pages_by_path = pages_by_slug(pages)
+    # A video must be on MOST of the site before it reads as template furniture
+    # — see source_injection.SITEWIDE_MIN_SLUGS.
+    chrome = sitewide_across_slugs(
+        source, lambda page: (v.embed_url for v in page.video_embeds or [])
     )
     by_slug = accumulate_by_slug(source, lambda page: page.video_embeds or [])
     for slug, embeds in by_slug.items():
@@ -2284,7 +2459,7 @@ def _inject_maps(pages: list[PagePlan], source: SourceContent) -> None:
       Two maps of the same place, one pinned and one searched, reads as a bug.
       The authored section keeps the page; see MapBlock's docstring.
     """
-    pages_by_path = _page_by_url_path(pages)
+    pages_by_path = pages_by_slug(pages)
     by_slug = accumulate_by_slug(source, lambda page: page.map_embeds or [])
     for slug, embeds in by_slug.items():
         page = pages_by_path.get(slug)
@@ -2311,44 +2486,6 @@ def _inject_maps(pages: list[PagePlan], source: SourceContent) -> None:
             continue
         insert_at = companion_insert_index(page, _MAP_COMPANION_KINDS)
         page.blocks[insert_at:insert_at] = blocks
-
-
-def _wall_gallery_block(
-    wall: SectionCandidate, *, limit: int = _MAX_GALLERY_ITEMS
-) -> GalleryBlock:
-    """One source picture rack → a gallery of exactly those pictures.
-
-    ``image_url`` is set directly, which is what makes this deterministic: the
-    slot is already filled, so nothing downstream resolves a stock photo for it
-    and ``image_refs.bind_image_refs`` never gets to reject a badge for being
-    the wrong shape. ``image_query`` still has to be a non-empty string for the
-    model's schema, but it is dead weight once ``image_url`` is set — see
-    ``section_content._gallery_content``, which prefers the URL.
-
-    The album name falls through to ``caption``, never ``title``:
-    ``_gallery_content`` reads either as alt text, but ``schema_builder._build_
-    gallery`` runs ``_match_child_by_title`` on ``title``, so putting one album
-    name on nine tiles would link all nine at a child page.
-    """
-    captions = {card.image_url: card.title for card in wall.cards if card.image_url}
-    items: list[GalleryItem] = []
-    seen: set[str] = set()
-    for url in wall.image_urls:
-        if url in seen:
-            continue
-        seen.add(url)
-        caption = (captions.get(url) or "").strip()
-        items.append(
-            GalleryItem(
-                title=caption or None,
-                caption=caption or wall.heading or None,
-                image_query=caption or wall.heading,
-                image_url=url,
-            )
-        )
-        if len(items) >= limit:
-            break
-    return GalleryBlock(heading=wall.heading, items=items)
 
 
 def _ensure_hub_child_links(pages: list[PagePlan]) -> None:
@@ -2411,7 +2548,7 @@ async def plan_only(source: SourceContent) -> SitePlan:
     """Debug endpoint: returns the raw SitePlan without converting to BuilderElement trees."""
     try:
         plan = await plan_site(source)
-        _enrich_plan_profile_photos(plan, source)
+        _enrich_plan_profile_cards(plan, source)
         _ensure_scraped_team_blocks(plan, source)
         return plan
     except LlmError as exc:

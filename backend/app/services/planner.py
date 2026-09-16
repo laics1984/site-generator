@@ -47,6 +47,7 @@ from app.models.content_blocks import (
 )
 from app.config import settings
 from app.models.industry import PageScaffold
+from app.services import llm_choice
 from app.services.industry_personality import personality_prompt_lines
 from app.services.llm import (
     LlmClient,
@@ -202,8 +203,11 @@ def _source_fingerprint(source: SourceContent) -> str:
 async def detect_brand_cached(
     source: SourceContent, llm: LlmClient | None = None
 ) -> DetectedBrand:
-    """detect_brand with a 5-minute per-source in-process cache."""
-    key = _source_fingerprint(source)
+    """detect_brand with a 5-minute per-source in-process cache.
+
+    Keyed on the reasoning role's model choice as well as the source: picking a
+    different model in the UI must re-detect, not replay the last model's answer."""
+    key = f"{llm_choice.current().reasoning}:{_source_fingerprint(source)}"
     now = time.time()
     cached = _DETECT_BRAND_CACHE.get(key)
     if cached and (now - cached[0]) < _DETECT_BRAND_TTL:

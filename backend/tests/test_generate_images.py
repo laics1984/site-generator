@@ -81,7 +81,7 @@ class GenerateImagePoolTest(unittest.TestCase):
         self.assertEqual(metadata[1].alt, "Southeast Asian service team")
 
     def test_profile_portraits_are_enriched_by_member_name_match(self):
-        enrich = getattr(generate, "_enrich_plan_profile_photos", None)
+        enrich = getattr(generate, "_enrich_plan_profile_cards", None)
         self.assertIsNotNone(enrich)
         if enrich is None:
             return
@@ -183,7 +183,7 @@ class GenerateImagePoolTest(unittest.TestCase):
             )
         }
 
-        generate._enrich_plan_profile_photos(plan, source, annotations)
+        generate._enrich_plan_profile_cards(plan, source, annotations)
 
         member = plan.pages[0].blocks[0].members[0]
         self.assertIsNone(member.photo_url)

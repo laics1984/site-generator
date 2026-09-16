@@ -32,7 +32,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.models.content_blocks import ContentBlock, PagePlan, SourceContent
+from app.models.content_blocks import (
+    ContentBlock,
+    PagePlan,
+    SourceContent,
+    clamp_seo_description,
+    clamp_seo_title,
+)
 from app.models.industry import PageScaffold
 from app.services.llm import LlmClient, LlmError, get_llm
 from app.services.locale import locale_label
@@ -242,10 +248,13 @@ async def _translate_one(
     ]
     if result.title.strip():
         clone.title = result.title.strip()
+    # Direct assignment skips PagePlan's validators, so the SERP budgets are
+    # applied here too — a translation is as likely to overrun them as the
+    # canonical page was, and often likelier (German, Malay).
     if result.seo_title.strip():
-        clone.seo_title = result.seo_title.strip()
+        clone.seo_title = clamp_seo_title(result.seo_title)
     if result.seo_description.strip():
-        clone.seo_description = result.seo_description.strip()
+        clone.seo_description = clamp_seo_description(result.seo_description)
     return clone
 
 

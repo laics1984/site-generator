@@ -299,6 +299,9 @@ export interface PageScaffold {
   source_url?: string | null
   /** Position in the source site's header nav (0-based); null/absent ⇒ not in it. */
   nav_rank?: number | null
+  /** Exemplar slug of the look-alike page set this page belongs to (e.g. a
+   * catalogue's products) — laid out once, filled from its own content. */
+  record_set?: string | null
 }
 
 export interface IndustryTemplate {
@@ -448,6 +451,8 @@ export interface ScrapePreview {
   /** URLs the BFS frontier had queued but didn't process. Powers "Crawl N more". */
   unvisited_urls?: string[]
   unvisited_count?: number
+  /** Why the crawl ended; null when no crawl ran (document / Facebook / paste). */
+  crawl_stop_reason?: CrawlStopReason | null
   /** Present only when pasted content went into this source — standalone or merged. */
   paste?: PasteReport
   /** Present only on a Facebook read. Additive — the rest of the shape is identical. */
@@ -462,13 +467,24 @@ export interface SitemapProbeResult {
   total_urls: number
   urls: string[]
   sources: string[]
+  /** Largest crawl_max_pages the backend accepts (CRAWL_MAX_PAGES_CEILING). */
+  crawl_page_ceiling: number
 }
+
+/** Mirrors `scraper.CrawlStopReason` on the backend — change both together. */
+export type CrawlStopReason =
+  | 'exhausted'
+  | 'page_cap'
+  | 'cancelled'
+  | 'bot_challenge'
+  | 'host_failures'
 
 export interface ExtendCrawlResult {
   additional_pages: SourceContent[]
   added_count: number
   unvisited_urls: string[]
   unvisited_count: number
+  crawl_stop_reason: CrawlStopReason | null
 }
 
 export type CrawlJobStatus =
@@ -548,4 +564,30 @@ export interface CmsPushReport {
    * admin origin configured; the UI hides the CTA otherwise rather than
    * guessing a URL — or, worse, offering a localhost link after a remote push. */
   admin_url?: string | null
+}
+
+/** Which model an LLM role uses: `'local'` (the ai-server) or a Claude model id.
+ * Mirrors backend services/llm_choice.py — the backend refuses any id its
+ * catalogue doesn't list. */
+export interface LlmChoice {
+  /** Page copy, paste structure, bios, record pages, translations. */
+  content: string
+  /** Brand detection, design decisions, the image tie-break judge. */
+  reasoning: string
+}
+
+/** One entry in the model picker (GET /api/llm/models). */
+export interface LlmModelOption {
+  id: string
+  label: string
+  provider: 'local' | 'anthropic'
+  note: string
+  /** False for a Claude model while ANTHROPIC_API_KEY is unset. */
+  available: boolean
+  hint?: string
+}
+
+export interface LlmModelsResponse {
+  choices: LlmModelOption[]
+  default: LlmChoice
 }

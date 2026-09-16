@@ -36,6 +36,30 @@ def _offline_pexels():
 
 
 @pytest.fixture(autouse=True)
+def _offline_claude():
+    """Drop the Claude API key for every test.
+
+    Model choice is per request (services/llm_choice.py) and defaults to local
+    for both roles, so no test reaches Claude by accident. The key is the
+    second net: a developer's real ``ANTHROPIC_API_KEY`` in the root ``.env``
+    would otherwise let a test that selects a Claude model without injecting a
+    fake SDK client spend money. Without it, that test fails fast with an
+    LlmError. ``test_llm_anthropic.py`` injects a fake SDK client, which bypasses
+    the key check entirely.
+    """
+    from app.services import llm
+
+    saved = (settings.anthropic_api_key, settings.anthropic_fallbacks_enabled)
+    settings.anthropic_api_key = None
+    llm._UNCONSTRAINED_SCHEMAS.clear()
+    try:
+        yield
+    finally:
+        settings.anthropic_api_key, settings.anthropic_fallbacks_enabled = saved
+        llm._UNCONSTRAINED_SCHEMAS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _offline_photo_sampling():
     """Disable pixel sampling of photos for every test.
 
@@ -142,6 +166,42 @@ def _offline_paste_structure():
         yield
     finally:
         settings.paste_llm_structure_enabled = original
+
+
+@pytest.fixture(autouse=True)
+def _offline_record_template():
+    """Pin the LLM record-template pass off for every test.
+
+    Same reason as `_offline_paste_structure` above: the suite runs offline, and
+    a crawl fixture with a record set would otherwise reach a server, falling
+    back after a timeout. Off, `default_record_template` lays the pages out.
+    tests/test_record_pages.py turns it on itself and injects a fake client.
+    """
+    original = settings.record_template_llm_enabled
+    settings.record_template_llm_enabled = False
+    try:
+        yield
+    finally:
+        settings.record_template_llm_enabled = original
+
+
+@pytest.fixture(autouse=True)
+def _offline_bio_condense():
+    """Pin the LLM bio-condensing pass off for every test.
+
+    Same reason as `_offline_paste_structure` above: the suite runs offline, and
+    this would reach a server for every team block carrying a long bio, falling
+    back after a timeout — the tests would pass while quietly waiting out the
+    socket. Off, `truncate_bio`'s bound is the only shortener, which is what the
+    team and roster tests assert. tests/test_bio_condense.py turns it on itself
+    and injects a fake client.
+    """
+    original = settings.team_bio_condense_enabled
+    settings.team_bio_condense_enabled = False
+    try:
+        yield
+    finally:
+        settings.team_bio_condense_enabled = original
 
 
 @pytest.fixture(autouse=True)

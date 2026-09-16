@@ -2,8 +2,9 @@
 
 Turns a scraped URL or an uploaded PDF/DOCX into a multi-page site whose JSON
 matches the webtree **builder** `BuilderElement` schema 1:1, then pushes it to
-the webtree CMS. All LLM calls go to a **locally/self-hosted** OpenAI-compatible
-server — never a cloud LLM.
+the webtree CMS. LLM calls go to a **locally/self-hosted** OpenAI-compatible
+server by default; a Claude model can be picked per role in the UI's model menu
+(see "The Claude API provider").
 
 ## Where this repo sits
 
@@ -179,8 +180,8 @@ picked. New variants of an existing type need only the catalog entry.
 
 Catalog rules: no `display:grid` (use 2Col/3Col/flex) — the one sanctioned
 exception is a `$bento` fan-out container, which `check_catalog_contract.py`
-exempts by node name. `$bento` has full parity: `_bento_spans` in
-`template_filler.py` and `bentoSpans` in `builder/src/lib/section-catalog.ts`
+exempts by node name. `$bento` has full parity: `_bento_placement` in
+`template_filler.py` and `bentoPlacement` in `builder/src/lib/section-catalog.ts`
 are line-for-line mirrors — keep them in lockstep.
 
 Layout selection precedence is `explicit_id → content preference (_PREFERENCE) →
@@ -279,6 +280,276 @@ re-asking there is double jeopardy, and both had to be reverted once already.
 Tests: `test_scraper_images.CardRackIsNotARosterTest`,
 `test_directory_roster.PageScopedRosterTest`.
 
+## A scraped card vouches for a whole person
+
+`_enrich_plan_profile_cards` is the **one** place that pairs an LLM-written
+person with their source card, so it is where everything that card can vouch
+for is handed over. It used to pass the portrait alone (it was
+`_enrich_plan_profile_photos`), and the bio sitting on the matched
+`ProfileCandidate` was dropped on the floor.
+
+The damage is not that one field went missing — it is that **the missing field
+then looked like a complete card**. `_ensure_scraped_team_blocks` decides
+whether to replace a block wholesale with the scraped roster (which does carry
+bios) by asking `any(member.photo_url)`, and enrichment had just put photos
+there. So watr.org.my published four team cards with real faces, real names,
+invented roles and **no biography**, while four 480-char bios sat one object
+away. The tell was in the DOM: `alt="DR. WONG SUM KEONG portrait"` — the
+scraper's own uppercase alt — on a title-cased LLM name. `_bind_slot` drops a
+`$slot` node whose value is empty, so the card had no bio *node*, not an empty
+one, which is why it read as "the template has no bio".
+
+That photo test is a proxy for **"was this block enriched"**, never for "does
+it have a photo". Keep the two in step: any field enrichment learns to fill,
+it must fill *before* that branch runs, or the branch starts lying again.
+
+Every field backfills **independently, and only into a gap** — the shape the
+profile-page refill beside it already had, whose comment records why: *"gating
+the contacts refill on a missing photo left it almost never firing."*
+
+Two rules the backfill inherits rather than restates:
+
+- **Grounding is skipped, on purpose.** A `ProfileCandidate` bio is page text by
+  construction, so re-checking it against the page is guaranteed-true work — the
+  same exemption `_roster_members` documents. `clean_team_bio` still runs (with
+  the block's `other_names`, so one person's paragraph cannot bleed onto a
+  colleague's card), so a scraped bio is cleaned identically on both paths.
+  The LLM's own bio has *already* been through `_sanitize_team_block`'s verbatim
+  haystack, which is why a surviving one is never overwritten.
+- **`description` must be written with `bio`.** It is a deprecated alias kept in
+  sync by `TeamMember.sync_description_aliases`, which only fires on
+  **construction** — attribute assignment and `model_copy` both bypass it, and
+  `_team_content` reads `bio or description`.
+
+Tests: `test_directory_roster.ScrapedBioBackfillTest`.
+
+## `BIO_MAX_LEN` is a safety rail, not an editorial length
+
+`_extract_profile_bio` keeps every qualifying line inside a card's container, so
+a mis-detected container — a whole column, a whole section — would otherwise
+make the page's body text somebody's biography. That is the only job the cap
+has.
+
+At **480** it was doing a second job it was never meant to do: cutting real
+biographies down. On watr.org.my three of four people lost **58-65%** of their
+story, and the fourth — 316 characters — came through whole, which is what
+pinned the cap as the cause rather than the renderer. It is 2400 now: ~4
+paragraphs, comfortably past the longest measured real bio (1385).
+
+Two properties, both of which were absent:
+
+- **One home.** The bound was a bare `480` in `scraper._extract_profile_bio`
+  *and* `_BIO_MAX_LEN` in `profile_text.clean_team_bio` — one rule, two
+  spellings, so raising it in the obvious place would have changed nothing. It
+  is `profile_text.BIO_MAX_LEN`, applied through `truncate_bio`, at both sites.
+- **A cut lands on a boundary.** Both were bare character slices, so a bio ended
+  mid-word — *"coaching and training both young medical and para-medical st"*.
+  A card's **Show more** expands to the stored value, so a half-word is what the
+  reader gets *after* asking for the rest: the page states a fragment and looks
+  broken. `truncate_bio` cuts at a sentence end when one falls late enough to be
+  worth taking, and between words otherwise (`…` only in that second case — a
+  sentence end already reads as finished, and punctuating it would state a
+  truncation the reader cannot see).
+
+**Under the cap it returns the text unchanged**, which is the case that matters
+most and the one every real bio hits: nothing is rewritten, so a short bio is
+byte-identical to what the source published.
+
+Nothing in the renderers crops a bio — no `maxHeight`, and the only
+`overflow: hidden` on the node is the clamp's own, which expanding lifts. If a
+bio ends early, the cap is where to look.
+
+Tests: `test_profile_bio_length.py`,
+`test_scraper_images.test_a_runaway_container_is_still_bounded_and_never_cut_mid_word`.
+
+### Fitting a bio to a card — the model picks sentences, never writes them
+
+`truncate_bio` is a bound, not an edit: it keeps whatever comes first, so a bio
+opening with where someone grew up loses the qualification that made them worth
+introducing. Choosing WHICH sentences a card keeps is editorial judgement, so
+`services/bio_condense.py` asks — and **the model answers in sentence numbers**,
+the same contract `paste_structure` runs on. Three properties follow:
+
+1. **A condensed bio is a SUBSEQUENCE of the original**, so every word on the
+   card is verbatim source text and passes `clean_team_bio`'s verbatim haystack
+   and every other grounding gate **with no exemption anywhere**. Nothing
+   downstream learns this pass exists.
+2. **A credential cannot be invented.** This matters more here than anywhere
+   else in the pipeline: a bio is a claim about a named, identifiable person's
+   professional qualifications, published under their photograph. A free
+   rewrite could turn *"practising obstetrician and gynaecologist, then a
+   gynaecologic oncologist"* into *"senior cancer specialist"* — fluent,
+   plausible, false, and libellous. An index cannot do that.
+3. The reply is small however long the bios are, and **one call covers a whole
+   block** — which is also what lets the model drop a fact two cards both state.
+
+**The budget is arithmetic, so code enforces it.** Asked for ~400 characters
+with no other help the model returned **1110, 1120 and 727**: it dropped the
+hobbies and kept every professional sentence, which is the right ranking and the
+wrong length. Two fixes, both needed — each sentence is rendered with its
+character count so the model *can* budget, and `_apply` then trims trailing kept
+sentences until the total fits. Same division as the rest of the pipeline: the
+model supplies the judgement, deterministic code does the mapping. The first
+kept sentence is never trimmed away; **which** sentence that is stays the
+model's call, and it legitimately skips a scene-setting opener for the one that
+states the qualification.
+
+Two more rules, both of which the reply can get wrong:
+
+- **Indices are re-sorted into source order, and de-duplicated.** A reply that
+  reordered sentences would be rewriting the bio in the source's own words,
+  which is the one thing indices exist to prevent. Note `join_bio_segments`
+  orders *lines*, not sentences within one — so a cross-line pair looks correct
+  even without the sort, and only a same-line pair tests it.
+- **`split_bio_segments`/`join_bio_segments` are inverses**, and newlines are
+  hard boundaries: `_extract_profile_bio` newline-joins a directory card's
+  distinct facts and a page's paragraphs alike, and the card renders them
+  `white-space: pre-line`.
+
+Scope is **`team` blocks only**. A `ProfileBlock` is the page that is *about*
+this person and keeps the complete biography — a grid introduces people, a
+profile page tells the story. The two carry separate `bio` fields already, so
+nothing is threaded and no member is condensed twice. `description` must be
+written alongside `bio` (the `_team_content` alias trap again), and a bio
+already at or under `team_bio_card_max_chars` never reaches the model at all —
+on a directory of short cards this pass makes no calls whatsoever.
+
+Every failure keeps the full bio: flag off, no client, `LlmError`, indices out
+of range, an empty selection. A shortened card is an improvement; a missing one
+is a regression. `conftest._offline_bio_condense` pins it off for the suite
+(mirroring `_offline_paste_structure`), so the team and roster tests keep
+asserting `truncate_bio`'s deterministic bound; `test_bio_condense.py` turns it
+on and injects a fake client.
+
+Knobs: `TEAM_BIO_CONDENSE_ENABLED` (default on), `TEAM_BIO_CARD_MAX_CHARS`
+(400 — roughly what the 4-line clamp shows, so most cards read complete with no
+"Show more" at all).
+
+Tests: `test_bio_condense.py`.
+
+## The line-clamp is the whole clamp declaration
+
+A clamped text node (a team-member bio) is truncated inline and offered a
+**Show more** by every renderer. That behaviour used to be declared **twice** —
+a `wt-clamp` marker class beside the inline `WebkitLineClamp` — so one
+behaviour had two sources of truth, and **the half an editor could reach was
+not the half the renderers read**: the builder has no free-text `classes`
+editor, so the line count could never be changed by anyone.
+
+`getClampLines` reads the style and is the only signal. `wt-clamp` / `wt-clamp-4`
+are gone from the catalog (`wt-clamp-4` never had a CSS rule at all).
+**Already-published sites ship both**, so they keep their toggle through the
+next `webtree-public` deploy with no regeneration — which is exactly why the
+class check could be dropped rather than kept alongside.
+
+Four properties declare a clamp and **move as one unit** (`clampStylePatch`): a
+`WebkitLineClamp` without `display: -webkit-box` claims to clamp and doesn't.
+Expanding writes `WebkitLineClamp: unset`, which the predicate reads back as
+"no clamp" — so `unset`, `none` and anything unparseable must all mean null, or
+the toggle re-offers itself on text that is already fully shown.
+
+Three renderers, one predicate, none able to import the others':
+`webtree-public/lib/blockRuntime.ts`, vendored to
+`frontend/src/preview/lib/blockRuntime.ts`, mirrored as
+`builder/src/lib/text-clamp.ts` — the `adaptiveInk.ts` idiom.
+
+The builder canvas is the one that cannot just copy the renderer, for two
+reasons invisible from the other two:
+
+- **The element's styles land on the WRAPPER**
+  (`editor-component-wrapper.tsx`), whose child is a block — and a
+  `-webkit-box` wrapping a block does not clamp the way the published site
+  does, where the styles sit on the text element itself. The canvas applies the
+  clamp to the node that holds the words.
+- **The text is `contentEditable`.** Clamping while it is being edited hides the
+  copy the author is reaching for, so editing lifts the clamp.
+
+The **Max lines** control lives in the Typography accordion and writes ordinary
+inline styles through `updateElement`, the `applyFontFamily` pattern. **No
+`BuilderElement` field is added**, so none of the six whitelist places needs an
+edit. The canvas toggle is styled with Tailwind utilities rather than a fourth
+copy of `.wt-clamp-toggle` — the three-way CSS duplication the adaptive-ink and
+self-ink sections warn about.
+
+Tests: `test_text_clamp.py` (cross-repo drift),
+`test_section_content.test_no_section_declares_a_clamp_marker_class`;
+`webtree-public/lib/blockRuntime.test.ts` and
+`builder/src/lib/text-clamp.test.mjs` (`npm test`).
+
+## Semantic HTML is a convention, not a guarantee
+
+A visual page builder puts body copy in a bare `<div>` — Oxygen's
+`ct-text-block`, Elementor's `elementor-text-editor`, Divi's `et_pb_text_inner`,
+Webflow's rich text. `source_outline.is_text_block` is the **one** answer to
+"which tags carry content", and it admits a `div` **only as a leaf**: an element
+holding any `_NESTED_BOX_TAGS` is a layout box whose words belong to the boxes
+inside it, and emitting it too would restate a page's entire text once per level
+of its nesting. Measured: +0.5% on bbc.com and +1.5% on Wikipedia (semantic
+markup, so nothing changes), +27% on mykiddyland — the copy that was missing.
+
+`section_extraction` had **three** narrower spellings of that question and none
+of them knew about `div`, so mykiddyland.com/about reached the planner as five
+headings with `prose=""` under every one. Two consequences, which looked like
+two bugs:
+
+- **The page's content never arrived.** Vision, Mission, History, Goal and
+  Trainers are `<div class="ct-text-block">`; `emit`'s collector read
+  `("p","li","h2","h3","h4")`, so the section tree carried nothing but headings.
+  `raw_text` still had the words, because `_extract_body_text` merges
+  trafilatura in — but **appended**, so all six headings came first and every
+  paragraph after, which is exactly the heading↔prose association
+  `section_candidates` exists to preserve. The published page shipped a hero, a
+  one-tile gallery, an invented "Our Journey" timeline and a CTA.
+- **The ornament became the content.** `_image_only_cards` is gated on the
+  section having "no words of its own" — asked in the same wrong vocabulary, so
+  every section looked wordless, and the one thing left under each heading was
+  the 33x33 star bullet. Five one-tile galleries, `card_kind="gallery"`,
+  `_CARD_KIND_SECTIONS` → a `gallery` section, and "Our Vision" published as a
+  picture grid of a star.
+
+`_build_card` was the one place that already read `div` — which is why the cards
+worked and the sections did not.
+
+**A size the source published is evidence; ignoring it is not neutrality.**
+Three rules, one home each:
+
+1. **`sizes` is a declared width** (`image_urls.declared_display_width`).
+   WordPress writes `sizes` on essentially every image it renders and leaves
+   `width`/`height` off, so on the httpx fast path — where there is no render
+   evidence and `classify_role` never runs — the attributes said nothing and the
+   star entered the pool as an undeclared photograph, winning the About slot on
+   its `context_heading`. Only an absolute px **fallback entry** is read: `100vw`
+   and `calc()` describe a width that does not exist without a viewport.
+2. **The undersized screen has one home**, `section_extraction.is_decorative_image`,
+   asked by `scraper._extract_images` *and* `_build_card`. The pool screened the
+   size and the card builder did not, so the same file was furniture in one pass
+   and a photograph in the next. `size=`/`in_grid=` let the scraper substitute
+   its **measured** geometry without either side re-stating the rule.
+3. **A wall shows N different pictures; an ornament is ONE picture stamped N
+   times.** The grid exemption exists so a partner/award wall keeps its ~150x60
+   tiles, and without that distinction it rescued precisely what it excludes —
+   five identically-built sections carrying the same star are a repeating image
+   group by every structural test there is. `_shows_one_picture` is conservative
+   in the direction that matters: a group whose files cannot be read keeps the
+   exemption, because deleting a real badge wall costs the section everything.
+
+The pixel screen (`image_graphics`) measures this star as a flat graphic
+(43% clear / 3.2% distinct) and would have withdrawn it — but
+`graphic_max_images` is **12 per generation**, ordered by intent alone, and
+mykiddyland's pool is 200+. It is a last resort for sites that declare nothing,
+not a substitute for reading what the markup does declare.
+
+One more, found while verifying: `emit` asked "does a card already carry these
+words?" by substring over the card's finished `body`, which is capped at
+`_MAX_CARD_BODY_CHARS` and has its short lines split off into `meta` — so any
+long card failed the test and its paragraph leaked back into the section's prose
+whole. It reads the card's **span** by identity now, which is what the sibling
+child-section subtraction two lines below already did.
+
+Tests: `test_section_extraction.PageBuilderProseTest`,
+`test_scraper_images.DeclaredDisplaySizeTest`/`RepeatedOrnamentIsNotAWallTest`,
+`test_paste_source.LeafDivCopyTest`.
+
 ## The brand mark is not content
 
 A site's own logo must never fill a photo slot. `image_evidence.classify_role`
@@ -343,6 +614,89 @@ Tests: `test_image_graphics.py`, `test_logo_extraction.BrandMarkUrlsTest`,
 `test_scraper_images.LogoIsNotContentTest`. `conftest._offline_graphic_screen`
 pins the pixel pass off for the suite (it downloads bytes), mirroring
 `_offline_ocr`.
+
+## An image whose message is in its pixels is shown whole
+
+A poster, a flyer, a slide, a photo with its title burned in, a QR code. **Every
+inline image slot in the catalog crops** (`objectFit: cover`) and every
+background overprints, so such an image can fill none of them — and must still
+be shown. watr.org.my shipped all four failures at once: its footer DuitNow
+donation code stretched behind an About headline and cropped 4:3 into another
+About split, an Alpha course poster as a 3:4 editorial hero and og:image, and a
+volunteering slide as a split hero.
+
+**Two questions, nested, in `image_match`**:
+
+- `bears_text` — *any* readable words, so nothing may sit behind ours. Includes
+  the vision pass's legible shopfront sign (`vision_has_text`).
+- `must_show_whole` — the words ARE the content (`shows_words`: OCR's 6%
+  coverage flag, `vision_kind == "banner"`, poster/flyer filenames), or a QR
+  code. A shop sign loses nothing in a card; a poster does.
+
+`hides_legible_content(meta, slot_usage)` is the one gate — `bears_text` for a
+background, `must_show_whole` for everything else — asked by `rank_candidates`,
+the resolver's pin path, its page-local size fallback, `strongest_source_background`
+and `image_refs._unfit_for_kind`. **Inline slots used to be exempt** on the
+reasoning that nothing is drawn over them; it forgot that they crop.
+
+**The QR code is read, not guessed.** OCR measured watr's code at 3.6% — its
+caption line only — and `image_graphics` needs transparency, so it passed as a
+photograph. `text_detection.read_pixels` now decodes the frame once and returns
+both readings (`PixelReading`); OpenCV comes with rapidocr and adds ~10ms. A
+successful DECODE is the signal: detection alone produced corner points on a
+building facade. Stamped as `ImageMetadata.qr_payload`.
+
+**The caption is derived from the payload** (`qr_codes.purpose_of`), never
+written by a model — a guessed purpose on a bank account is a false claim about
+where a visitor's money goes. EMVCo merchant codes name their scheme (DuitNow,
+PayNow, PromptPay, QRIS, Pix, VietQR) and their ISO 18245 category (8398/8661 →
+"give", else "pay"); URLs name their host, with WhatsApp special-cased; `tel:`
+and `mailto:` become buttons; anything else gets a generic caption and **no
+button** — only http(s)/tel/mailto ever reach an `href`. EMVCo is recognised by
+**structure** (opens with tag 00, parses to the mandatory CRC tag 63), not by the
+Payload Format Indicator's value: the spec says `01`, watr's code says `02`.
+
+**Placement** (`services/legible_images.py`, called after every pixel pass,
+before image refs bind) replays, never narrates — `qr` and `poster` are
+`DETERMINISTIC_SECTION_KINDS`:
+
+- A code alone is an ask: one `qr` section after the page's contact section,
+  else just before its closing CTA (`closing_insert_index`). Heading = the
+  shared purpose title ("Give with DuitNow"), a lone card doesn't repeat it.
+- Words are content: `poster` sections after the hero, grouped by the heading
+  the source showed them under. A code INSIDE a poster (`_is_code` is false
+  when `shows_words`) lends it a tap-through — a phone can't scan its own screen.
+- Page = where the source showed it; on most of the site (`sitewide_across_slugs`,
+  the video rule, now shared in `source_injection`) = homepage only. watr's
+  code is on all six pages.
+- **Readings are looked up in the pool by URL**: each crawled page carries its
+  own unstamped `ImageMetadata` copies, and the pool de-duplicates by URL.
+- Not placed: portraits, decorations, gallery cells (their rack replays them),
+  brand marks (a logo-role image is placed only if it decodes as a code —
+  `image_graphics` rightly calls a transparent code a flat graphic), player
+  stills (`video_embed.is_player_thumbnail` — a YouTube thumbnail carries its
+  title and reads exactly like a poster), and anything already on the page.
+
+**Screening coverage.** The prefetch sample is what finds images to PLACE, so
+`OCR_MAX_IMAGES` is 48 (a small site's whole pool; watr's is 46, screened in
+18.3s in the container against a 60-270s content pass). Correctness never rests
+on the cap: whatever wins a slot is verified on demand, and the photos an LLM
+bound are verified in one batch (`verify_many(referenced_images(...))`) before
+`bind_image_refs`, because a bound card photo never meets the resolver.
+
+**Rendering.** `qr-cards` and `poster-cards` frame the image with `objectFit:
+contain` plus the `h-auto` class — the one height all three renderers resolve to
+the natural aspect ratio (webtree-public's safelist, the builder canvas's fluid
+frame) — so an editor who later sets a height still can't crop it. The code sits
+on a literal white mat: a scanner needs a light quiet zone whatever the band.
+`poster-cards` carries `lightbox: true` for the fine print. A code is never a
+page's og:image (`seo.scan_code_urls`); a poster may be.
+
+Not covered, deliberately: galleries still crop their tiles (the lightbox shows
+each whole), and `stock_images_only` strips a source's codes with its photos.
+
+Tests: `test_legible_images.py`, `test_qr_codes.py`,
+`test_text_detection.OnDemandVerificationTest`; builder `section-catalog.test.mjs`.
 
 ## Stock images only
 
@@ -416,6 +770,46 @@ never disagreed anywhere you could see it.
 
 Tests: `test_push_data_urls.py`.
 
+## A URL is rewritten whole, or it is corrupted
+
+`_apply_src_rewrites` swaps every collected source URL for the CDN URL the CMS
+minted. An `image` node's `content.src` was always an exact-key lookup; the
+`backgroundImage` / `background` branch was a `str.replace` **per rewrite key
+over the raw CSS value**, which is order-dependent and wrong the moment one
+collected URL is a **prefix of another**.
+
+A WordPress webp-conversion plugin serves `photo.jpeg` and `photo.jpeg.webp`
+side by side, so a crawl collects both and the push uploads both. Replacing the
+shorter key first turned
+
+    url('…/kindergarten-selangor.jpeg.webp')
+
+into `<cdn>/1788541037kindergarten-selangor.jpg` **plus the orphaned `.webp`** —
+a URL the CMS never minted (the coercer had already normalised `.jpeg`→`.jpg`),
+and the longer key then had no text left to match, so its own correct CDN URL
+never landed. Seven of mykiddyland's heroes published with a background that
+404s, and **a browser paints a dead background as nothing at all**: no broken-
+image icon, no fallback, just a blank band. That is why it reads as "the photo
+was never added" rather than as an error.
+
+It has a **second** harm that is worse than the first: `_strip_invalid_images`
+runs *after* the rewrite and finds a dead reference by looking for the source
+URL. The mangled value no longer contains it, so the one net that exists to
+delete a broken photo is defeated by the corruption it is there to catch.
+
+`_rewrite_bg_photo_urls` is the mirror of `_extract_bg_photo_urls` — same
+`_split_css_layers`, same `_bg_layer_photo` match — so **a URL is rewritten
+exactly when it was collected, and so exactly when it was uploaded**. Matching
+the layer's URL whole makes a prefix collision unrepresentable rather than
+merely unlikely, and it is one pass per value however large the rewrite map
+(the old loop scanned the whole string once per key — 241 scans per style value
+on this site). `_strip_invalid_images` already read layers this way; the rewrite
+was the outlier.
+
+Tests: `test_push_orchestrator.test_a_background_url_is_never_rewritten_by_prefix`
+and its siblings, including one that asserts collection and rewriting agree on
+what a photo layer is.
+
 ## Facebook Page ingest
 
 A third source, routed **automatically**: `POST /api/scrape/start` calls
@@ -429,7 +823,8 @@ decides. **Detection must run before the robots check** — facebook.com/robots.
 refuses unknown agents, so the URL would never reach the reader otherwise.
 
 Fetch chain (`facebook_source.fetch_facebook_page`, injectable for tests):
-Graph API when a token exists → public Playwright render. Graph fields are
+Graph API when a token exists → **logged-out** Playwright render → the same
+render signed in, only when a session exists. Graph fields are
 requested in **tolerant groups**, because Graph fails the *whole* request when
 one field is not permitted — a missing `pages_read_engagement` would otherwise
 turn a missing `emails` into total failure. A denied optional group records
@@ -526,11 +921,62 @@ Three more rules the live DOM taught, all pinned in `test_facebook_render.py`:
   the slot and blocks the real value further down the page. NASA's
   `public-inquiries@hq.nasa.gov` was being reported as missing while sitting in
   plain sight.
+- **A panel heading sits exactly where a value sits** — one line under the
+  label — so nothing but `_CHROME_VALUES` separates them. Three were caught in
+  the wild by reading real Pages: "Personal details" and "Details" became a
+  Page's **category** (which steers `IndustryCategory`, and so the whole visual
+  language), and "Basic info" became Vans's **website**. Adding them is the same
+  bet `_TEXT_LABELS` makes — a closed set of *Facebook's* vocabulary, never a
+  business one.
+- **`website` was the one scanned field with no shape gate**, unlike email and
+  phone right beside it. `to_source_content` turns it into
+  `NavLink(label="Website", href=…)`, which lands in the footer of **every page
+  of the site**, so a value that isn't dereferenceable ships a dead link
+  sitewide: "Basic info" (chrome) and `tadika_murni_1988` (a handle — an
+  underscore isn't legal in a hostname label) were both doing it. `_URL_RE`
+  wants a scheme or a dotted host with a TLD-shaped tail.
 
 ### Signing in once
 
-Logged out, Facebook serves og: tags and the tab strip. Signed in, the About
-panel renders. `./dev.sh fb-login` opens a real Chromium **on the operator's
+**A session is a rescue, not an upgrade — the logged-out render reads more.**
+This section used to open with the opposite claim ("logged out, Facebook serves
+og: tags and the tab strip; signed in, the About panel renders"), which is how
+the feature came to *replace* the anonymous read rather than sit behind it.
+Measured on three unrelated Pages, the signed-in render read **14-34 characters
+against the anonymous read's 146-355**, and shipped a 422 ("doesn't have enough
+public content") for a Page that built fine logged out:
+
+| Page | logged out | signed in |
+|---|---|---|
+| a Malaysian tadika | 355 chars — name, About, phone, email, address, picture, 761 fans | 34 — name = URL slug, category "Personal details" |
+| NASA | 332 — name, category, `public-inquiries@hq.nasa.gov`, website, 28.7M fans | 14 — name, category "Details" |
+| Vans | 146 — name, category, About, picture, 19.4M fans | 14 — name, category "Details" |
+
+Two mechanisms, both invisible from the code:
+
+- **Facebook blanks the og: tags for an authenticated request** — they are
+  served as `content=""`, not omitted. `parse_public_html` is built on
+  `og:title`/`og:description`/`og:image`, so a signed-in read has no identity,
+  no blurb and no profile picture, and `name` falls back to `ref.handle`: it
+  titled a kindergarten `tadikamurni1988`.
+- **The logged-out `/about` view is server-rendered; the signed-in one is the
+  React shell.** The Page's own phone and email were absent from the signed-in
+  HTML *entirely*, while the operator's **notification tray** ("You approved a
+  login.") was in the visible text the label scan reads — the visitor's private
+  chrome, one scan away from becoming site copy. NASA's
+  `public-inquiries@hq.nasa.gov`, the fact this feature was built to find, comes
+  from the anonymous read.
+
+So `default_fetchers` puts the logged-out render first and appends the signed-in
+one **only when a session exists** (a second anonymous render would cost a full
+Playwright pass to learn nothing), and the chain's existing first-success-wins
+loop does the rest — no merge, no new machinery. The session now answers the one
+question only it can: a Page that refuses a logged-out visitor outright, which
+is the case where the first render raises and the chain falls through. Same
+precedent as `mbasic.*` leaving `_candidate_urls`: Facebook changed, and a path
+that costs a render to learn nothing comes out.
+
+`./dev.sh fb-login` opens a real Chromium **on the operator's
 machine** — the backend runs in a container with no display and cannot — waits
 for the `c_user`+`xs` cookies, and POSTs the Playwright storage state to
 `POST /api/facebook/session`. `services/browser_session.py` holds it; a
@@ -557,9 +1003,39 @@ Chromium is configured, carries it to the render.
   the remedy that hasn't run yet.
 
 The UI is `FacebookConnect.tsx` inside the token expander `SourcePanel` already
-had. It owns all its own state and polls only until connected, so `App.tsx`
-gains no props and no state. Automating a personal Facebook account is against
-Facebook's terms — use a secondary one.
+had. It owns all its own state, so `App.tsx` gains no props and no state.
+Automating a personal Facebook account is against Facebook's terms — use a
+secondary one. Two rules it states, both of which it got wrong first:
+
+- **A spinner has to be backed by evidence.** The idle state rendered one over
+  *"Waiting — this updates on its own."* — asserting a login was under way
+  before the operator had run anything, with no window open and nothing pending.
+  Nothing on the web side can observe the script, so the claim was
+  indistinguishable from a hang, and the command sitting right under it never
+  got run. Idle is an instruction now ("your turn"), and the login is **not
+  narrated** here at all: the script prints its own progress to the terminal the
+  operator just typed into, and a second copy of that story would be a channel
+  with nothing behind it. That is also why there is no capture heartbeat.
+- **Mounting is the poll gate, so the caller owns it.** `<details>` keeps
+  collapsed children in the DOM, so "polls only while the expander is open" was
+  never what the code did — typing a Facebook Page link started a 2s poll that
+  ran behind a shut panel for the rest of the session. `SourcePanel` mirrors the
+  disclosure's `open` into state (so DOM and mount can't disagree across the
+  remount an URL edit causes) and renders the body only while it is open;
+  unmounting costs nothing, since the token lives in `App` and the session is
+  server-side. Polling is **derived** from the answer — unknown, or
+  enabled-and-not-connected — rather than managed with a flag, which is what
+  makes Disconnect resume watching for free; the imperative version cleared its
+  flag and never restarted. A hidden tab skips the fetch and keeps the schedule.
+
+`scripts/facebook_login.py` explains the two failures that produce **no window
+at all** — Chromium never downloaded, a profile still locked by another run —
+and does it around the `launch_persistent_context` call, not the whole capture:
+Playwright's `TimeoutError` is one of its `Error`s, so a later `goto` timeout
+caught at that width would be reported as a window that never opened when one is
+on screen. An unreachable backend is explained too, since it lands at the worst
+moment (already signed in) and the remedy is not obvious — the sign-in survives
+in the persistent profile, so a re-run needs no typing.
 
 Tests: `test_browser_session.py`, `test_facebook_render.py`.
 
@@ -784,7 +1260,7 @@ Tests: `test_floating_pill_heroes.BandMarkerTest`/`BandClassificationTest`,
 `test_header_footer.FloatingPillAdaptiveInkTest`, `test_preview_layout.py`;
 `webtree-public/lib/adaptiveInk.test.ts` (vitest);
 `builder/src/lib/adaptive-ink.test.mjs` + `section-catalog.test.mjs`
-(`node --test`).
+(`npm test`).
 
 ## A pass that repaints a section states its ink too
 
@@ -1011,7 +1487,201 @@ workflow on push to `master`; the local gate is `npm test`.
 
 Tests: `test_video_embeds.py`, `test_map_embeds.py` (deliberately parallel — they
 share a DOM walk and an injection spine); `builder/src/lib/{embed-kind,section-catalog}.test.mjs`
-(`node --test`); `webtree-public/lib/videoEmbed.test.ts` (`npm test`).
+(`npm test`); `webtree-public/lib/videoEmbed.test.ts` (`npm test`).
+
+## An embed states one sizing axis, and a lone card is a row
+
+Two renderer defects met in the locations section, which is why it looked like
+one bug. Both are fixed **upstream**, so already-published sites are repaired by
+the next `webtree-public` deploy — no regeneration, no re-push.
+
+**A node's styles never reach the frame that sizes the embed.**
+`VideoBlock`'s inner `.wt-video-block__frame` carried an unconditional
+`aspect-ratio: 16 / 9`; the node's own `styles` land on the **outer** box, so an
+authored `height` was ignored and the frame sized itself from its width alone.
+Wherever `width x 9/16` beat that height the frame overflowed downward and —
+being `position: relative` — painted *over* the next sibling.
+`locations-map-cards` was the only video node in the catalog with a fixed height
+and no ratio, so it was the only one that could diverge: at 1280px its map
+wanted ~307px against an authored 230px and **covered 77px of the branch
+address**, and it did the same on every current iPhone (390–430px) while just
+fitting at 375. That is why it read as "the address hides when I resize".
+The fix is `height: 100%` on the frame, which makes the ratio a **fallback**:
+a definite outer height wins, an `auto` one resolves to `auto` and the ratio
+still drives. Same shape as `ImageBlock`'s `.wt-image { width: 100%; height:
+100% }` — the inner element defers to the wrapper's authored box. It cannot live
+in `responsiveRuntime`: `buildCssRule` emits one flat `[data-wt-node-id]`
+selector per node, which can never reach `__frame`.
+**The builder canvas had the mirror-image bug** — it renders one box, honoured
+the height and ignored `aspectRatio`, falling back to a hard-coded 315px. Three
+renderers, three answers. It reads `aspectRatio` now.
+So: **a video node states a ratio OR a height, never both and never neither.**
+Both is ambiguous; neither leaves the size to whichever default each renderer
+happens to carry. Pinned from both sides — `test_renderer_video_sizing.py` and
+`section-catalog.test.mjs` walk the catalog and fail on either.
+
+**A lone item in the final row is the row, not a column.** `$gridFit` picks the
+column count that best fits the item count, but no count divides every grid: 4
+cards in a 3-wide grid, or any odd count in a 2-wide one, leaves the last item
+packed into column 1 with the rest of the row void beside it — on desktop *and*
+tablet. It reached the non-`$gridFit` grids too (`features-card-grid`,
+`services-offer-grid`, `testimonials-quote-grid`, `features/services-two-col`,
+`video-grid`, `map-grid`, and `schema_builder._build_gallery`), and `$gridFit`'s
+own `n % 3 == 1 → 2Col` branch strands 7 all over again, since 7 is odd too.
+
+The renderer had **two special cases** for this and no rule: a `:only-child`
+rule (a grid holding exactly one item) and a tablet-only `three-col` orphan
+rule. They are the same sentence written twice, for the two counts someone
+happened to hit. One rule replaces both, stated **per breakpoint**, because
+"alone in its row" is only answerable against that breakpoint's own column
+count — the last item is alone iff its 1-based index is congruent to 1 modulo
+the columns, which makes a one-item grid the `n = 0` case rather than a rule of
+its own:
+
+```css
+.wt-container-block--two-col   > :last-child:nth-child(odd)      /* 2 cols */
+.wt-container-block--three-col > :last-child:nth-child(3n + 1)   /* >=1024px */
+.wt-container-block--three-col > :last-child:nth-child(odd)      /* 768-1023.98px */
+```
+
+**The 3-column test must stay fenced above 1024px**: a three-col grid is *two*
+columns wide at tablet, so `3n + 1` would widen a 4th card that is not alone
+there. A partial row holding **two** items is deliberately left alone — it reads
+as balanced, and widening one of them would unbalance it.
+
+**`$gridFit` itself is still deliberately not touched**: one fix in one place,
+and the renderer-side one also reaches sites already published, with no
+regeneration and no re-push.
+
+The builder canvas cannot use a media query — it simulates a device by state,
+not by viewport width — so `builder/src/lib/column-layout.ts` is the hand-written
+mirror, and it owns the column table the canvas *already* needed to draw the
+grid (`currentColumnCount`), so there is one answer per device rather than two.
+
+**`$bento` needs its own answer**: its grid is an inline `display: grid` on a
+plain container, so no `.wt-container-block--*` class ever reaches it. Its lead
+tile is 4 of 6 columns and 2 rows tall, so the two tiles after it fill the
+gutter and everything from index 3 lays out 3 to a row; at the tablet grid's 4
+columns the lead is already full width and every later tile pairs 2 to a row.
+Either way the tail is a plain division and its last tile is alone exactly when
+that division leaves a remainder of 1 — `1 / -1` then, which is the whole row at
+every column count. **The widths strand different counts** (6 columns: 4, 7, 10;
+4 columns: every even count), which is why `_bento_placement` returns
+per-breakpoint layers as well as base styles, and emits one only where that
+width disagrees with the base. The old "every fifth tile is wide" accent is
+gone: it needs 4 free columns at a position where 2 remain, which is what
+punched the mid-grid holes that `dense` auto-flow only accidentally repaired at
+one count.
+
+**A span WIDER than its grid creates implicit columns**, and those steal space
+from the explicit `1fr` tracks. The 4-wide lead sat on a **2-column** mobile
+grid, so every bento ever published rendered its phone layout as alternating
+382px tiles and **8px slivers** — measured in Chromium, and invisible from the
+Python because a span is only wrong relative to a column count that lives in the
+catalog's `responsiveStyles`. Beyond the column count a tile is simply the row,
+so `_bento_tile_span` says `1 / -1` there. Note `1 / -1` counts **explicit** grid
+lines, so it cannot rescue a row implicit columns have already widened — the
+clamp has to prevent them, not compensate for them.
+
+Tests: `test_grid_orphan.py` (drift over all three renderers, plus an
+independent grid-packing simulation asserting that no bento row ever holds one
+tile beside a void); `builder/src/lib/column-layout.test.mjs` and
+`section-catalog.test.mjs` (`npm test`).
+
+### `$cycleStyles` — index-aware styling on a `$repeat`
+
+`[{}, {"flexDirection": "row-reverse"}]` on a repeat node stamps
+`patches[i % len]` onto child *i*. The general form of what `_bento_placement`
+already does for one layout, and applied at **fill** time in both engines
+(`template_filler._apply_cycle_styles` ↔ `section-catalog.ts applyCycleStyles`,
+line-for-line mirrors like `bentoPlacement`/`_bento_placement`), so the three renderers
+cannot disagree about which way a row faces. The alternative — a `classes`
+marker plus a `:nth-child(even)` rule — would hand-duplicate CSS across
+`PublicSiteShell.vue`, `builder/src/index.css` and generated `preview.css`, the
+same three-way duplication the adaptive-ink and self-ink sections warn about.
+**It patches BASE styles only**, so the item's own
+`responsiveStyles.mobile.flexDirection: "column"` still wins at its breakpoint —
+which is what lets a reversed row still stack map-first on a phone.
+
+### `locations-map-split`
+
+The default locations layout (`_PREFERENCE["locations"]`), added **alongside**
+`locations-map-cards`, which stays in the catalog and stays reachable via
+`explicit_id`, the design brain's `selectable_templates`, and the builder's
+section browser. A flex column of full-width rows, each a map/details split with
+the map alternating sides.
+
+It removes the *class* of defect rather than one instance: it is not a grid, so
+no count can strand a card in a column; its map is sized by ratio, so it cannot
+outgrow its box; and it has no card, so there is no `overflow: hidden` left to
+clip copy with. Measured: 620/460 at desktop, an even 338/338 at tablet (a
+`responsiveStyles.tablet` `flex` reset, since 1.35:1 is too tight there), and
+stacked map-above-details on a phone.
+
+**Its slot list is byte-identical to the card grid's**, which is what keeps the
+generator side to one preference function — `_locations_content`, `is_feasible`
+and `facebook_authority._locations`' single-item rewrite are all untouched.
+
+**Its copy states its ink in tokens, and must.** The card could hard-code
+`rgba(15,23,42,0.72)` only because it painted its own white fill underneath.
+With the card gone the copy sits straight on the section band, which the
+luminance pass may resolve **dark** — a literal near-black address would ship
+black on black. `var(--builder-color-secondary)` / `var(--builder-color-text)`
+are what let `enforce_text_contrast` measure and flip them. Same rule as
+"a pass that repaints a section states its ink too", one layer down.
+
+Tests: `test_locations_split.py`, `test_renderer_video_sizing.py` (cross-repo
+drift, skipped when a sibling repo is absent — the `test_self_ink.py` idiom);
+`builder/src/lib/section-catalog.test.mjs` (`npm test`).
+
+## Article and event listings
+
+The `articlesList` / `eventsList` element (`_cms_list_element` here, the
+builder's own seed and palette item) is rendered by `CmsListBlock.vue` in
+webtree-public, a hand-written copy in the builder canvas (`cms-list.tsx`), and a
+heading-only port in the preview. Three rules, each paid for on a real site:
+
+- **The list is the section.** It pads itself to the site's column at every
+  breakpoint (80 → 32 → 20px), so nothing may wrap it in a padded container.
+  The builder's listing template once did: 100px a side on a phone (175px
+  cards), 112px on a tablet, a 960px column where the site's is 1280. It seeds
+  the list alone now, and webtree-cms-api's
+  `unwrap_seeded_article_listing_template_lists` migration unwrapped every
+  stored draft and revision still exactly as seeded.
+- **It lays out by its own width, never the window's.** The builder canvas
+  simulates a device by width, not by viewport, so a media query there answers
+  for the wrong device — its Mobile preview drew the desktop grid. Columns are a
+  self-sizing grid (`repeat(auto-fill, …)`: cards ≥16rem, capped at 3, or 4 once
+  there are four), which also stopped a 1024px tablet getting four 201px cards;
+  card direction, type steps and compact pagination ("Previous [5] Next" under
+  30rem) are container queries on `wt-cms-list` / `wt-cms-column`. The canvas
+  uses the grid declaration verbatim (`cms-list-layout.ts`) and the same
+  container widths as Tailwind `@min-[…]/wt-cms-*` variants. Only the section's
+  own gutter stays on the viewport, where every other section's is.
+- **Headings ink with `--builder-color-heading`, never raw `secondary`.** On a
+  dark palette `secondary` is the darkest band colour — Feruni's card titles
+  measured **1.04:1**. The token is `secondary` where it reads (4.5:1) and
+  `text` where it doesn't, which is this repo's own `ink = text if dark else
+  secondary` (`style_tokens`) answered from the colours, because
+  `color_scheme` never reaches the wire. **Derived, never stored** — like
+  `primaryInk` in the builder, it follows a live palette edit — in
+  `webtree-public/lib/styles.ts` (vendored verbatim to the preview) and
+  `builder/src/lib/builder-styles.ts`. The same pass moved the category pill to
+  `--builder-color-primary-ink` (4.0 → 14.7:1 dark) and the current page number
+  to the button pair, and `--wt-color-muted` — which no palette states, so it
+  was always light-theme `#6b7280` (4.09:1 dark) under archive descriptions,
+  form labels and blockquotes — is now held to 4.5:1 against the background
+  (`ensureContrast`, the `primaryInk` idiom): byte-identical on light palettes.
+
+`eventListing` is a template type in all four repos: the public `/events` route
+renders from it and 404s without one, so the push creates it whenever the site
+has events (`_TEMPLATE_PAGE_DEFAULTS`), as the builder's `ensureTemplatePages`
+does.
+
+Tests: `test_cms_list_layout.py` (cross-repo drift: grid formula, container
+questions, preview vendoring, heading ink), `test_content_push.py`;
+`webtree-public/lib/styles.test.ts`; `builder/src/lib/{builder-styles,cms-detail-templates,page-management}.test.ts`;
+`webtree-cms-api` `ArticleListingUnwrapMigrationTest`.
 
 ## SEO
 
@@ -1025,8 +1695,51 @@ markup here.
 - `extract_og_image` walks hero background → split-hero image → first image, and
   skips data URIs.
 - **Exactly one `h1` per page.** Legal pages build theirs via `legal_pages._h1`
-  (sets `htmlTag="h1"`); heroes carry it elsewhere. Zero or multiple is an audit
-  failure.
+  (sets `htmlTag="h1"`); everywhere else `schema_builder.apply_heading_levels`
+  stamps the page's first section title `h1` and every later one `h2`, over the
+  assembled page so catalog templates and programmatic trees are covered alike.
+  Text nodes render as `<div>` otherwise, so an untagged title is invisible to a
+  crawler.
+  **It finds that title by NODE NAME** (`_TITLE_NAMES`), which is a vocabulary
+  and therefore a silent off switch when a section names its title something
+  else: `profile-*` ("Name") and `clients-logo-strip` ("Strip Heading") were
+  missing, so a person's page shipped its CTA slogan as the `h1` and the
+  person's name as a `<div>`. `test_seo.HeadingVocabularyTest` now walks the
+  catalog and fails on any body section whose first match isn't the node the
+  section declares as its title (`$slot` heading/headline/title/name, outside a
+  `$repeat`) — `testimonials-editorial` is the one allowlisted section with no
+  title at all.
+- **A split headline is ONE heading made of two text nodes**, so the tag goes on
+  the group that holds them (`_TITLE_GROUP_NAMES`, derived from `_TITLE_NAMES`)
+  and the whole title sits inside the `<h1>`. Tagging the lead line alone
+  published a truncated heading — `"Bread baked"` for "Bread baked the slow
+  way" — which is the string a crawler reads as the page's subject; inline
+  markup inside one node is not the alternative, since the builder editor
+  rewrites content to `{innerText}` on blur and would drop it. The lines become
+  `<span>`s (a heading takes phrasing content) and each states `display: block`:
+  the catalog path's group stacks plain blocks, its `flexDirection`/`gap` inert
+  without a `display: flex`, so inline spans would run the two lines together.
+  `_HEADING_BOX_RESET` states the box's own `margin`/`fontSize`/`fontWeight`, or
+  the UA sheet's `h1` metrics would move a layout that only changed semantics.
+  Renderer side, `blockRuntime.getHeadingTag` lets a **container** present
+  itself as h1-h6 (`ContainerBlock` in `webtree-public` + the preview mirror);
+  anything else keeps the structural `section`/`div`.
+- **The builder re-levels as the user edits** — `builder/src/lib/heading-levels.ts`
+  is a hand-written mirror of the pass, run from `addToHistory` (the one seam
+  every body mutation passes through) and from `LOAD_DATA`. It has to exist
+  because a section inserted there comes from the catalog, which declares no
+  `htmlTag` in either `baseFields` — so swapping the hero in the editor used to
+  drop the page's `<h1>` and duplicating it shipped two. `HeadingMirrorTest`
+  fails when the two vocabularies drift (skipped when the sibling repo is
+  absent); `heading-levels.test.mjs` covers the behaviour (`npm test` — the
+  builder had no runner at all until this landed; vitest now runs all 16 of its
+  test files, and the one that was silently red is fixed).
+  The builder canvas renders the tag too, now that it means something —
+  Tailwind's preflight makes a heading box visually identical to the div it
+  replaces, so that is semantics only.
+  Zero or multiple is an audit failure — read off `htmlTag`. The check used to
+  count elements *named* `"H1"`, which nothing emits, so it reported "no H1
+  found" on every page ever generated and could not have caught a real miss.
 - Titles must be unique across the site and within the length bounds in
   `ux_audit.py` — duplicate titles/descriptions and missing `ogImage` are flagged
   there. `detect_duplicate_seo` / `detect_orphan_pages` back it.
@@ -1085,10 +1798,11 @@ Generator side, three rules:
 
 **`GeneratedSite.brand` is typed `Any`**, so it is a `BrandIdentity` in-process
 and a plain **dict** once the frontend posts the site back to `/api/cms/push` —
-which is every real push. `_brand_field` reads either. A bare `getattr` returns
-None for the dict form; `_upload_media`'s brand-logo block still has that bug at
-lines ~711-717, harmless only because the logo is also reached through the header
-schema.
+which is every real push. `_brand_field` reads either, and a bare `getattr`
+returns None for the dict form. `_upload_media`'s brand-logo block **had** that
+bug; it was fixed in `65e1bc5` and reads `_brand_field` now. (It left one
+artefact: `_brand_field` is defined **twice**, byte-identically, at ~690 and
+~1050. Python keeps the last, so the first is dead code.)
 
 `webtree-public` needed **no change**:
 `usePublicSeo.ts` already emits `<link rel="icon">` from `entity.favicon`, and
@@ -1204,6 +1918,188 @@ makes forgetting it impossible rather than papering over it.
 
 Tests: `test_deployment_boundary.py`.
 
+## Same site, one spelling
+
+`services/site_url.py` is the only answer to "is this the same site" (`www.` is
+an alias) and "is this the same page" (`crawl_key`: alias, trailing slash and
+fragment insensitive). The crawler compared hosts exactly while
+`nav_extraction` ignored `www.`, so feruni.com's header named pages — Contact
+Us, a whole menu item — that the crawl dropped as "another site". Identity and
+address are separate: a page is deduped by `crawl_key` but **requested** by
+`rebase_to_origin`, with its path exactly as linked. The old normalizer stripped
+the trailing slash from the request too, which un-disallowed
+`Disallow: /private/` for `/private` and cost every WordPress page a 301.
+
+`_extract_links` orders crawlable links shallow-first: a homepage lists product
+teasers above its footer, and a bounded frontier used to spend its budget on
+`/product/x` before `/contact-us`. `CRAWL_MAX_PAGES_CEILING` is the one crawl
+ceiling — the API validates against it and `/api/scrape/probe` hands it to the
+scope picker (`frontend/src/lib/crawlScope.ts`). Sitemaps read only
+`<url>/<loc>`: `<image:loc>` counted a catalogue's photos as pages.
+
+Tests: `test_site_url.py`, `test_crawl_pool.SiteIdentityTest`/`FrontierOrderTest`, `test_sitemap.py`.
+
+## A menu is what the markup declares
+
+`extract_nav_links` reads `<nav>` / `role="navigation"` first. Only when those
+yield nothing does it read **declared** menus — containers of
+`_DECLARED_MENU_ITEM_CLASSES` (`menu-item`, stamped by WordPress/Drupal menu
+walkers). Page-builder kits (feruni.com's Elementor/LaStudio header) emit no
+`<nav>`, `<ul>` or role, so the site used to read as having no navigation. A
+hidden hamburger panel changes nothing: its links are in the HTML. One parser
+covers both markups (`_is_menu_item` + `_menu_list_in`) — no second copy.
+
+Menus built by client-side JS: `scraper._entry_with_navigation` renders **the
+entry page only**, and only when its static HTML yields no menu. Advisory — a
+failed render keeps the fast parse. Menus fetched only on click are not covered.
+
+Tests: `test_nav_extraction.DeclaredMenuTest`, `test_entry_navigation.py`.
+
+## A bot challenge is a stop, not a missing page
+
+`polite.is_bot_challenge` recognizes a challenge by its vendor's documented
+header (`cf-mitigated: challenge`), never by page text — on both fetch paths
+(`fast_fetch` → `CHALLENGED`; `browser.rendered_page` → `RenderError.challenged`).
+A page httpx saw challenged is **not** retried through Playwright — measured on
+feruni.com, headless is challenged too, so the render only burns 3-5s and the
+client's bot score. Either way it is
+recorded as a retriable failure (the politeness circuit still trips), kept at the
+front of `unvisited`, and `CrawlOutcome.stop_reason` becomes `"bot_challenge"`,
+which the preview states instead of "stopped at the page cap". **Detection
+only**: no stealth, solvers or cookie replay — the fix is the site owner
+allowlisting the crawler.
+
+Two consequences, both paid for on feruni.com once Cloudflare blocked the
+crawler outright: a crawl stopped by `bot_challenge` / `host_failures` is never
+served by `find_reusable` (an allowlist added within the 30-minute window used to
+get the same empty crawl back), and `ScrapePreview` refuses "Choose pages" when
+such a crawl found no pages — otherwise the generator silently builds the
+industry template under the brand's name, which reads as "the pages weren't
+scraped".
+
+`stop_reason` is mirrored as `CrawlStopReason` in `frontend/src/lib/types.ts` —
+change both. Tests: `test_bot_challenge.py`, `test_crawl_pool.CrawlStopReasonTest`,
+`test_crawl_job_reuse.test_a_crawl_the_host_refused_is_never_reused`.
+
+## Record pages: plan once, fill many
+
+A catalogue gives every item its own page from one template (feruni.com: 170
+`/product/*`). `record_pages.mark_record_sets` (called from page inference)
+groups sub-pages sharing a parent **and** a `template_signature` (each
+section's level / has-images / has-cards, in order); `RECORD_SET_MIN_PAGES`+
+members get `record_set` (the exemplar slug) and `menu_hidden`. Roster-linked
+profile pages, translations and top-level pages are never records.
+
+`routers.generate.split_scaffolds` keeps them away from the content planner.
+`build_record_pages` makes **one** `chat_json_cached` call per set — the model
+answers in section NUMBERS (the `paste_structure` / `bio_condense` contract)
+— then `fill_record_page` fills every page from **its own** section at that
+position, so every word and photo is that page's source and nothing moves
+between items. `_SLOT_KINDS` is the single registry of block kinds (prompt,
+validation and dispatch). Any failure falls back to `default_record_template`.
+Record pages join `plan.pages` before the deterministic injectors and skip
+alignment. The gallery builder is `source_injection.gallery_block_from_section`,
+shared with `_inject_image_walls`.
+
+Two rules verbatim filling needs that paraphrase never did:
+
+- **A shared tail is template chrome.** A heading-less page-builder footer lands
+  in the last section's prose (feruni: ~400 chars of share buttons + copyright
+  on every product). `without_shared_tails` cuts the words EVERY page of the set
+  ends a section with (≥ `_SHARED_TAIL_MIN_WORDS`), before planning and filling.
+- **Text appears once.** The hero shows its section's text only as a tagline
+  (≤ `_TAGLINE_MAX_CHARS`); longer text goes to that section's content block,
+  which the hero's section may also have. Nothing is truncated, nothing repeats.
+  A slot this page's section can't fill (cards without text) falls back to the
+  section's text rather than dropping it.
+
+One upstream rule catalogues exposed: **a template heading is not chrome.**
+`nav_extraction.strip_chrome_sections` used to drop any section whose HEADING
+appeared on 2+ pages, so every product lost "Product Specification", "2
+Collections"… — feruni's modular pages kept only their title, in the LLM path
+too. `_section_identity` keys on heading AND content (prose, images, card
+titles): a footer widget repeats both; a catalogue label repeats only the first.
+Test: `test_image_walls.ChromeSectionsTest`.
+
+Tests: `test_record_pages.py`; `conftest._offline_record_template` pins the call off.
+
+## The Claude API provider
+
+`services/llm.AnthropicClient` is a second implementation of the `LlmClient`
+Protocol. **Which client a role gets is picked in the UI, per request**: the
+header's model menu (`frontend/src/components/LlmStatus.tsx`) chooses the local
+server or a Claude model separately for *content* and *reasoning*.
+
+**The choice is a ContextVar, not a parameter.** `lib/llmChoice.ts` holds the
+selection. `jsonRequest` in `lib/api.ts` — the one request helper — sends it as
+`X-Webtree-Llm-Content` / `X-Webtree-Llm-Reasoning` on every call, and
+`llm_choice.LlmChoiceMiddleware` (pure ASGI) puts it in a ContextVar for the
+life of the request. `get_llm` / `get_reasoning_llm` read it. So the nine
+services that call an LLM, and every endpoint that reaches one (paste preview,
+page recipe, generation), follow the menu with no edit and no threaded argument.
+A task spawned in the request (`asyncio.create_task` copies the context)
+inherits it, and that includes a crawl job. **No headers = both roles local**,
+which is what tests, curl and scripts get.
+
+Rules the choice needs:
+
+- **The wire carries a NAME** — `local` or an id from `llm_choice.CLAUDE_MODELS`
+  — and anything else is a 400, never a silent fallback. The key stays in
+  `.env`; `/api/llm/models` lists what may be picked, marked unavailable while
+  `ANTHROPIC_API_KEY` is unset. The frontend sends **no headers until it has
+  read that menu** and checked the remembered choice (`localStorage`) against
+  it, so a stale id cannot turn the first requests into 400s.
+- **A per-process cache of an LLM result must key on the choice.**
+  `chat_json_cached` already does (class, base_url, resolved model).
+  `planner.detect_brand_cached` did not, and replayed the previous model's brand
+  for 5 minutes after a switch — it keys on `current().reasoning` now.
+- **A local-sized knob must not size a Claude call.** Batching
+  (`LLM_CONTEXT_TOKENS` etc.) is global and stays sized for the local model
+  whichever model is picked; that is safe in both directions, just more calls on
+  Claude. Output budget is per client: `ANTHROPIC_MAX_TOKENS`, never
+  `LLM_MAX_TOKENS`.
+- **`get_llm(model=…)` is the local vision pass** (`LLM_VISION_MODEL`) and ignores
+  the menu.
+- `/health/llm` answers for the request's own choice, and always reports both
+  roles (top level = content, `reasoning`), one probe per distinct endpoint.
+
+`AnthropicClient` reuses `_validated` rather than growing a second retry loop.
+That works because the loop only touches `messages` and `max_tokens`, and both
+keys mean the same thing on the Messages API. Four differences are forced by
+the API:
+
+- **The schema is structured output** (`output_config.format` via
+  `anthropic.transform_schema`), and Pydantic still validates — the SDK strips
+  min/max constraints. A schema the API refuses falls back to a written JSON
+  instruction, and is remembered **only if the retry without the format
+  succeeds**. A 400 is also what a data-retention refusal looks like, so one
+  failure proves nothing about the schema.
+- **No `temperature`, no `thinking`.** Current models reject sampling knobs and
+  think adaptively. `think=True` selects `ANTHROPIC_REASONING_EFFORT` instead.
+  Don't add `thinking: disabled`: it trades tokens for tag leakage in the JSON.
+- **The repair turn is a user turn quoting the reply** (`repair=` hook on
+  `_validated`), never a replayed assistant turn. The response carries thinking
+  blocks, and an assistant turn stripped of them is edited history to
+  `claude-fable-5-1`.
+- **`stop_reason == "max_tokens"` is checked before emptiness.** Thinking can
+  spend the whole budget before any text, which needs a bigger budget, not a
+  retry at the same one. Growth stops at 128K (`max_tokens_cap`), the API's hard
+  ceiling.
+
+Refusal fallbacks (`fallbacks="default"`) are sent only for catalogue entries
+with `fallbacks=True`.
+
+`ANTHROPIC_API_KEY` is required and read only from settings. The SDK's own
+lookup would read the environment behind `config.py`'s back, and when it finds
+nothing it raises a bare `TypeError` mid-generation. A missing key or package is
+an `LlmError` at **call** time (`_sdk`), so the `llm or get_llm()` idiom never
+raises. `conftest._offline_claude` drops the key, so a developer `.env` cannot
+bill the suite.
+
+Tests: `test_llm_anthropic.py` (fake SDK client injected; middleware, menu,
+health and brand-cache key included). The local path stays covered by
+`test_llm_backend.py` / `test_llm_cache.py`, unchanged.
+
 ## Gotchas
 
 - **Docker dependency skew.** Compose mounts only `./backend/app`, so code edits
@@ -1230,7 +2126,23 @@ Tests: `test_deployment_boundary.py`.
   id is discovered from `/v1/models` at runtime. Two roles exist: default (content,
   Qwen3-30B-A3B) and reasoning (`REASONING_*` — brand detection, design brain,
   image judge, GLM-Z1-9B). Kill switches: unset `REASONING_MODEL`,
-  `REASONING_THINK=false`, `DESIGN_LANGUAGE_ENABLED=false`.
+  `REASONING_THINK=false`, `DESIGN_LANGUAGE_ENABLED=false`. A Claude model is
+  picked in the UI's model menu, per request — only `ANTHROPIC_API_KEY` and its
+  tuning knobs live in `.env`.
+- **"AI server unreachable" states WHICH failure.** `llm.endpoint_failure_hint`
+  is the one home for the remedy — model discovery, the completion stream and
+  `/health/llm` all read it, so the badge and a failed generation say the same
+  thing. It classifies by exception **type** (`socket.gaierror` /
+  `ConnectionRefusedError` in the `__cause__` chain, then timeout, then status),
+  never by message text: the identical DNS failure reads "Name or service not
+  known" under glibc and "nodename nor servname provided" under macOS, so a
+  string match would be a silent off switch on one of the two. A name that does
+  not resolve is the common one and is almost never the AI server's fault — a
+  Tailscale/VPN host resolves only while the tunnel is up, and **a container does
+  not inherit the host's VPN DNS**, so `LLM_BASE_URL` must name something the
+  *container* can resolve. Claude API failures take the same route by **SDK
+  exception type** (`_anthropic_failure_hint`), and the badge says "Claude API
+  unavailable" instead.
 - **Truncation on content-rich sites** needs `LLM_CTX` (ai-server) *and*
   `LLM_CONTEXT_TOKENS` (here) raised together.
 - **`.gitignore` `/lib/` must stay anchored.** An unanchored `lib/` once silently

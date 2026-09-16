@@ -666,22 +666,82 @@ def _left_align_header_group(group: BuilderElement) -> None:
 
 # Section-title node names, covering both builders: catalog templates
 # (template_filler) name a section's title "Heading", schema_builder's own
-# trees name it "Headline". The " accent" halves are deliberately excluded —
-# they are the trailing phrase of a split headline and stay plain text.
-_TITLE_NAMES = frozenset({"Heading", "Headline"})
+# trees name it "Headline", and two families title themselves after their
+# SUBJECT rather than with a heading — a profile's "Name" (catalog `profile-*`
+# and the programmatic `_build_profile`) and `clients-logo-strip`'s "Strip
+# Heading". Those two were missing, and a section that cannot present a title
+# cannot host the page's <h1>: a profile page's h1 was the CTA slogan below the
+# person ("Ready to get started?") while their name shipped as a <div>.
+#
+# This is a vocabulary, so it is drift-tested rather than trusted —
+# `test_seo.HeadingVocabularyTest` walks the vendored catalog and fails on any
+# body section whose first node from this set is not the one the section itself
+# declares as its title ($slot heading/headline/title/name, outside a $repeat),
+# and on any new section that names its title something else again. The
+# " accent" halves stay out of the set on purpose: a split headline's heading is
+# the GROUP holding both lines (`_TITLE_GROUP_NAMES`), never one of them.
+_TITLE_NAMES = frozenset({"Heading", "Headline", "Name", "Strip Heading"})
 
 
-def _first_title_text(el: BuilderElement) -> BuilderElement | None:
-    """The first descendant section-title text node, in document order."""
-    if el.type == "text" and (el.name or "") in _TITLE_NAMES:
+# Where a SPLIT headline lands: both `_headline_lines` (programmatic heroes) and
+# `_apply_hero_typography` (catalog heroes) wrap the lead line and the
+# accent-coloured tail in a container named "<title name> group". Derived from
+# the names above, so a title name added to one set cannot half-register here.
+_TITLE_GROUP_NAMES = frozenset(f"{name} group" for name in _TITLE_NAMES)
+
+# What the UA stylesheet would impose on a container that is a heading only
+# semantically (h1: `font-size: 2em; margin: .67em 0; font-weight: bold`). The
+# lines inside carry the design's own type scale, so the box states that it
+# contributes none of its own and the tag is invisible to the layout.
+_HEADING_BOX_RESET: dict[str, Any] = {
+    "margin": "0",
+    "fontSize": "inherit",
+    "fontWeight": "inherit",
+}
+
+
+def _first_heading(el: BuilderElement) -> BuilderElement | None:
+    """The element that IS this section's heading, in document order: the
+    split-headline group when the title was broken into two lines, else the
+    title text node itself. The group is met before its own children, so a
+    split headline can never resolve to half of itself."""
+    name = el.name or ""
+    if el.type == "container" and name in _TITLE_GROUP_NAMES:
+        return el
+    if el.type == "text" and name in _TITLE_NAMES:
         return el
     content = el.content
     if isinstance(content, list):
         for child in content:
-            found = _first_title_text(child)
+            found = _first_heading(child)
             if found is not None:
                 return found
     return None
+
+
+def _tag_heading(el: BuilderElement, tag: str) -> None:
+    """Stamp `tag` on a section heading, group or single line.
+
+    A split headline is ONE heading spread over two text elements — the lead
+    line and its accent-coloured tail — so the tag goes on the group that holds
+    both and the whole title sits inside the <h1>. Tagging the lead line alone
+    published a truncated heading ("Bread baked" for "Bread baked the slow
+    way"), which is the string a crawler reads as the page's subject.
+
+    The lines then become <span>s, since a heading takes phrasing content and a
+    <div> inside an <h1> is invalid. Each states `display: block` rather than
+    trusting the parent's layout mode: the catalog path's group stacks plain
+    blocks (its `flexDirection`/`gap` are inert without a `display: flex`), and
+    inline spans there would run the two lines together."""
+    el.htmlTag = tag
+    if el.type != "container":
+        return
+    el.styles = {**(el.styles or {}), **_HEADING_BOX_RESET}
+    for line in el.content if isinstance(el.content, list) else []:
+        if line.type != "text":
+            continue
+        line.htmlTag = "span"
+        line.styles = {"display": "block", **(line.styles or {})}
 
 
 def apply_heading_levels(sections: list[BuilderElement]) -> None:
@@ -694,10 +754,10 @@ def apply_heading_levels(sections: list[BuilderElement]) -> None:
     trees alike). Mutates in place."""
     seen_h1 = False
     for section in sections:
-        title = _first_title_text(section)
-        if title is None:
+        heading = _first_heading(section)
+        if heading is None:
             continue
-        title.htmlTag = "h2" if seen_h1 else "h1"
+        _tag_heading(heading, "h2" if seen_h1 else "h1")
         seen_h1 = True
 
 
@@ -1536,11 +1596,14 @@ def _stamp_band_markers(elements: list[BuilderElement], theme: ThemeTokens) -> N
         el.classes = " ".join(filter(None, [el.classes, cls]))
 
 
-def _extract_og_image_safe(elements: list[BuilderElement]) -> str | None:
+def _extract_og_image_safe(
+    elements: list[BuilderElement], blocks: list[Any] | None = None
+) -> str | None:
+    """og:image for a page, never one of its QR codes (``blocks`` names them)."""
     try:
-        from app.services.seo import extract_og_image
+        from app.services.seo import extract_og_image, scan_code_urls
 
-        return extract_og_image(elements)
+        return extract_og_image(elements, exclude=scan_code_urls(blocks or []))
     except Exception:  # noqa: BLE001
         return None
 
@@ -4637,6 +4700,7 @@ async def plan_to_site(
     market_cue: str | None = None,
     place_cue: str | None = None,
     social_links: list[tuple[str, str]] | None = None,
+    whatsapp_widget: dict[str, Any] | None = None,
     reserved_image_urls: set[str] | None = None,
     header_override: HeaderArchetype | None = None,
     footer_override: FooterArchetype | None = None,
@@ -5126,7 +5190,9 @@ async def plan_to_site(
             elements.append(_cms_list_element("articles"))
         elif page_plan.page_type == "events":
             elements.append(_cms_list_element("events"))
-        og_image = _extract_og_image_safe(elements) if settings.seo_enabled else None
+        og_image = (
+            _extract_og_image_safe(elements, page_plan.blocks) if settings.seo_enabled else None
+        )
         if settings.seo_enabled and not og_image:
             # A video page can legitimately carry no photography at all — its
             # content is players. The first video's poster is a real image OF
@@ -5329,6 +5395,10 @@ async def plan_to_site(
         page_tree=page_tree,
         media_credits=resolver.attributions,
         social_links=social_links or [],
+        # Discovered on the source site, not derived from the theme — carried
+        # through so the push can hand it to the CMS's widget endpoint. None
+        # when the source published no WhatsApp number.
+        whatsapp_widget=whatsapp_widget,
         theme=theme,
         builder_styles=builder_styles,
         google_fonts=theme.typography.google_fonts,

@@ -70,9 +70,11 @@ class LocationsBlockTest(unittest.TestCase):
             ],
         )
 
-    def test_selects_map_cards_template(self):
+    def test_selects_the_map_split_template(self):
+        # The map-led split rows are the default at every branch count — see
+        # test_locations_split.py. The card grid stays in the catalog behind it.
         template, content = block_to_section(self._block(), mood="friendly")
-        self.assertEqual(template["id"], "locations-map-cards")
+        self.assertEqual(template["id"], "locations-map-split")
         self.assertEqual(len(content["items"]), 2)
 
     def test_map_src_and_ctas(self):

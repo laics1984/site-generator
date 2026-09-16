@@ -20,6 +20,26 @@ localhost / a trusted LAN. **Do not expose port 8001 to the public internet.**
 If you ever need to, put an authenticating reverse proxy in front of it and
 review the CMS-credential endpoints below first.
 
+### When a Claude model is picked
+
+By default no source content leaves the machine: every LLM call goes to the
+local AI server. Picking a Claude model in the header's model menu changes that
+for the role it is picked for, from the next request on:
+
+- **Source content goes to Anthropic.** For *page content*: scraped page text,
+  uploaded PDF/DOCX text, pasted copy, Facebook Page facts, and the names, roles
+  and biographies of real people on those pages. For *brand & design decisions*
+  only: the smaller brand-detection, design and image-judge prompts. Decide
+  whether that is acceptable for the sites you generate before picking one.
+- **The menu carries a model NAME, never a key or a URL.** The backend refuses
+  any id outside its catalogue (`services/llm_choice.py`) with a 400.
+  `ANTHROPIC_API_KEY` stays in the root `.env`, is passed to the SDK from
+  `config.py`, and is never returned by `/health/llm` or `/api/llm/models`.
+- **Every generate call on a Claude model spends money.** The endpoints are
+  unauthenticated, and so is the choice — anyone who can reach the backend can
+  pick Claude and run up the bill. One more reason the authentication blocker
+  below exists.
+
 ## Risks found & fixes applied
 
 ### 1. Live API key tracked in git — FIXED (rotation required)

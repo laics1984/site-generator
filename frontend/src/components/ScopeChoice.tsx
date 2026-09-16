@@ -1,3 +1,4 @@
+import { fullCrawlCap } from '@/lib/crawlScope'
 import type { SitemapProbeResult } from '@/lib/types'
 
 interface ScopeChoiceProps {
@@ -29,10 +30,10 @@ export function ScopeChoice({
   onCancel,
 }: ScopeChoiceProps) {
   const total = probe.total_urls
-  // Cap the "full" scope at our ceiling (40) to avoid unbounded crawls. If the
-  // sitemap shows more than that, the user can still keep going via the inline
-  // "Crawl more" banner after the first pass completes.
-  const fullCap = Math.min(total, 40)
+  // Cap the "full" scope at the backend's ceiling to avoid unbounded crawls. If
+  // the sitemap shows more than that, the user can still keep going via the
+  // inline "Crawl more" banner after the first pass completes.
+  const fullCap = fullCrawlCap(probe)
   const fullTimeEst = `~${Math.max(1, Math.round((fullCap * 4) / 60))}–${Math.round((fullCap * 6) / 60)} min`
   const quickTimeEst = `~${Math.max(1, Math.round((quickCap * 3) / 60))}–${Math.round((quickCap * 5) / 60)} min`
 
@@ -83,9 +84,9 @@ export function ScopeChoice({
               <div className="flex items-baseline justify-between">
                 <div className="text-sm font-semibold text-slate-900">
                   Full crawl
-                  {total > 40 && (
+                  {total > fullCap && (
                     <span className="ml-2 text-xs font-normal text-slate-500">
-                      (capped at 40, rest available after)
+                      (capped at {fullCap}, rest available after)
                     </span>
                   )}
                 </div>

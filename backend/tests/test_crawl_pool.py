@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from app.services import scraper
-from app.services.fast_fetch import FastFetchResult
+from app.services.fast_fetch import FastFetchResult, FastFetchSkipped, FastFetchSkipReason
 
 
 class _FakeSlot:
@@ -65,7 +65,7 @@ class CrawlWorkerPoolTest(unittest.IsolatedAsyncioTestCase):
 
         _patch_crawl(self, fetch)
         started = time.monotonic()
-        pages, unvisited = await scraper._crawl_extra_pages(
+        pages, unvisited, _reason = await scraper._crawl_extra_pages(
             None,
             "https://site.test/",
             _seeds(6),
@@ -93,7 +93,7 @@ class CrawlWorkerPoolTest(unittest.IsolatedAsyncioTestCase):
             return FastFetchResult(html="<html></html>", final_url=url, http_status=200)
 
         _patch_crawl(self, fetch)
-        pages, unvisited = await scraper._crawl_extra_pages(
+        pages, unvisited, _reason = await scraper._crawl_extra_pages(
             None,
             "https://site.test/",
             _seeds(10),
@@ -150,7 +150,7 @@ class CrawlWorkerPoolTest(unittest.IsolatedAsyncioTestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        pages, unvisited = await scraper._crawl_extra_pages(
+        pages, unvisited, _reason = await scraper._crawl_extra_pages(
             None,
             "https://site.test/",
             [committee_url, *distractor_urls],
@@ -190,7 +190,7 @@ class CrawlWorkerPoolTest(unittest.IsolatedAsyncioTestCase):
             cancelled = True
 
         task = asyncio.create_task(cancel_soon())
-        pages, _ = await scraper._crawl_extra_pages(
+        pages, _unvisited, _reason = await scraper._crawl_extra_pages(
             None,
             "https://site.test/",
             _seeds(30),
@@ -204,6 +204,140 @@ class CrawlWorkerPoolTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertLess(len(fetched), 30)
         self.assertLess(len(pages), 30)
+
+
+class SiteIdentityTest(unittest.IsolatedAsyncioTestCase):
+    """The crawl treats the ``www.`` alias as the same site, fetches each page
+    once, and requests it on the entry's origin with its path as linked.
+
+    feruni.com serves from ``www`` and links 22 of its own pages at the bare
+    domain — Contact Us and a whole header menu item among them — and the crawl
+    used to drop every one as another site."""
+
+    def setUp(self):
+        self.fetched: list[str] = []
+
+        async def fetch(url):
+            self.fetched.append(url)
+            return FastFetchResult(html="<html></html>", final_url=url, http_status=200)
+
+        _patch_crawl(self, fetch)
+
+    async def _crawl(self, seeds):
+        return await scraper._crawl_extra_pages(
+            None,
+            "https://www.site.test/",
+            seeds,
+            max_pages=10,
+            max_depth=1,
+            timeout_ms=1000,
+            respect_robots=False,
+        )
+
+    async def test_apex_links_are_crawled_on_the_entry_origin(self):
+        await self._crawl(["https://site.test/contact-us/"])
+        self.assertEqual(self.fetched, ["https://www.site.test/contact-us/"])
+
+    async def test_a_page_linked_both_ways_is_fetched_once(self):
+        await self._crawl(
+            ["https://www.site.test/about-us/", "https://site.test/about-us", "https://site.test/#top"]
+        )
+        self.assertEqual(self.fetched, ["https://www.site.test/about-us/"])
+
+    async def test_the_trailing_slash_reaches_the_request(self):
+        # robots.txt rules are prefixes: ``Disallow: /private/`` never matches
+        # ``/private``, so a stripped slash silently un-disallows a page.
+        await self._crawl(["https://www.site.test/private/"])
+        self.assertEqual(self.fetched, ["https://www.site.test/private/"])
+
+
+class CrawlStopReasonTest(unittest.IsolatedAsyncioTestCase):
+    """A crawl says why it ended — a budget the user can raise, or a site that
+    is refusing us — instead of every short crawl looking like a small site."""
+
+    async def _crawl(self, seeds, *, max_pages=10):
+        return await scraper._crawl_extra_pages(
+            None,
+            "https://site.test/",
+            seeds,
+            max_pages=max_pages,
+            max_depth=1,
+            timeout_ms=1000,
+            respect_robots=False,
+        )
+
+    async def test_exhausted_and_page_cap(self):
+        async def fetch(url):
+            return FastFetchResult(html="<html></html>", final_url=url, http_status=200)
+
+        _patch_crawl(self, fetch)
+        self.assertEqual((await self._crawl(_seeds(2))).stop_reason, "exhausted")
+        self.assertEqual((await self._crawl(_seeds(5), max_pages=2)).stop_reason, "page_cap")
+
+    async def test_a_challenged_page_is_not_rendered_and_stays_resumable(self):
+        challenged_url = "https://site.test/page-1"
+
+        async def fetch(url):
+            if url == challenged_url:
+                return FastFetchSkipped(reason=FastFetchSkipReason.CHALLENGED, http_status=403)
+            return FastFetchResult(html="<html></html>", final_url=url, http_status=200)
+
+        _patch_crawl(self, fetch)
+        render = mock.AsyncMock(side_effect=AssertionError("a challenged page must not be rendered"))
+        patcher = mock.patch.object(scraper, "_goto_and_render", render)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        outcome = await self._crawl(_seeds(3))
+
+        render.assert_not_called()
+        self.assertEqual(
+            [p.final_url for p in outcome.pages],
+            ["https://site.test/page-0", "https://site.test/page-2"],
+        )
+        self.assertEqual(outcome.unvisited, [challenged_url])
+        self.assertEqual(outcome.stop_reason, "bot_challenge")
+
+    async def test_a_challenge_answered_to_the_browser_counts_the_same(self):
+        # Measured on feruni.com: httpx read a thin page, then the headless
+        # render of the same URL was challenged.
+        async def fetch(url):
+            return FastFetchSkipped(reason=FastFetchSkipReason.JS_SHELL, http_status=200)
+
+        _patch_crawl(self, fetch)
+        render = mock.AsyncMock(side_effect=scraper.ScrapeError("blocked (403)", status=403, challenged=True))
+        patcher = mock.patch.object(scraper, "_goto_and_render", render)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        outcome = await self._crawl(["https://site.test/page-0"])
+
+        self.assertEqual(outcome.unvisited, ["https://site.test/page-0"])
+        self.assertEqual(outcome.stop_reason, "bot_challenge")
+
+
+class FrontierOrderTest(unittest.TestCase):
+    def test_structure_pages_lead_item_pages(self):
+        from bs4 import BeautifulSoup
+
+        html = """
+        <a href="/product/relievo/">Relievo</a>
+        <a href="https://elsewhere.test/">Partner</a>
+        <a href="/journal/a-post/">Post</a>
+        <a href="https://site.test/contact-us/">Contact</a>
+        <a href="/retail-stores/">Stores</a>
+        """
+        links = scraper._extract_links(BeautifulSoup(html, "lxml"), "https://www.site.test/")
+        self.assertEqual(
+            links,
+            [
+                "https://site.test/contact-us/",
+                "https://www.site.test/retail-stores/",
+                "https://www.site.test/product/relievo/",
+                "https://www.site.test/journal/a-post/",
+                "https://elsewhere.test/",
+            ],
+        )
 
 
 class SitemapFallbackSeedTest(unittest.IsolatedAsyncioTestCase):
@@ -224,7 +358,7 @@ class SitemapFallbackSeedTest(unittest.IsolatedAsyncioTestCase):
         _patch_crawl(self, fetch)
 
     async def test_sitemap_urls_are_crawled_when_budget_allows(self):
-        pages, _ = await scraper._crawl_extra_pages(
+        pages, _unvisited, _reason = await scraper._crawl_extra_pages(
             None,
             "https://site.test/",
             ["https://site.test/about"],
@@ -237,7 +371,7 @@ class SitemapFallbackSeedTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("https://site.test/hidden", [p.final_url for p in pages])
 
     async def test_entry_links_keep_priority_over_the_sitemap(self):
-        pages, _unvisited = await scraper._crawl_extra_pages(
+        pages, _unvisited, _reason = await scraper._crawl_extra_pages(
             None,
             "https://site.test/",
             ["https://site.test/about", "https://site.test/services"],
@@ -258,7 +392,7 @@ class SitemapFallbackSeedTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_sitemap_duplicates_of_known_links_are_not_refetched(self):
-        pages, _ = await scraper._crawl_extra_pages(
+        pages, _unvisited, _reason = await scraper._crawl_extra_pages(
             None,
             "https://site.test/",
             ["https://site.test/about"],

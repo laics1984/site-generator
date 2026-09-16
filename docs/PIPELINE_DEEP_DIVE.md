@@ -555,7 +555,7 @@ Back in `generate.py`, further deterministic passes run in a deliberate order:
 - `_strip_profile_faq_items` — FAQ items manufactured out of profile listings
 - `_ensure_hub_child_links` — every child page reachable from its parent's *body*, not just the footer
 - `_inject_linkbar`, `_inject_downloads`
-- `_enrich_plan_profile_photos` → `_ensure_scraped_team_blocks` → `_drop_hollow_team_pages` →
+- `_enrich_plan_profile_cards` → `_ensure_scraped_team_blocks` → `_drop_hollow_team_pages` →
   `_prune_dead_profile_links` (last, so a member's link is checked against pages the site actually ships)
 - `bind_image_refs` — `image_ref` integers → real URLs, recomputed against the same `promptable_images` list
 - translations cloned **here**, after image binding, so a mirror inherits the exact photos its counterpart

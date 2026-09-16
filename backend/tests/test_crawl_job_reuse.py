@@ -91,6 +91,22 @@ class CrawlJobReuseTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(found)
             self.assertEqual(found.id, job.id)
 
+    async def test_a_crawl_the_host_refused_is_never_reused(self):
+        # feruni.com: Cloudflare challenged every page, the crawl found nothing,
+        # and after the owner allowlisted the crawler the retry was handed that
+        # same empty result from the cache.
+        with _TempDb():
+            mgr = CrawlJobManager()
+            for reason in ("bot_challenge", "host_failures"):
+                job = await mgr.create("https://acme.example", _OPTIONS)
+                await mgr.mark_done(job.id, {"crawl_stop_reason": reason})
+                with self.subTest(reason=reason):
+                    self.assertIsNone(
+                        await mgr.find_reusable(
+                            "https://acme.example", _OPTIONS, max_age_seconds=1800
+                        )
+                    )
+
     async def test_unfinished_or_failed_jobs_are_never_reused(self):
         with _TempDb():
             mgr = CrawlJobManager()

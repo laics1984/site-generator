@@ -38,7 +38,9 @@ _USER_AGENT = "WebtreeSiteGenerator/0.2 (+sitemap-probe)"
 _HTTP_TIMEOUT = settings.robots_fetch_timeout_seconds
 _SITEMAP_MAX_BYTES = 5 * 1024 * 1024  # 5 MB — biggest reasonable sitemap
 _MAX_SUB_SITEMAPS = 8  # cap depth-2 sitemap_index recursion
-_MAX_URLS_RETURNED = 500  # we don't need to ship 50k URLs to the frontend
+# No crawl can use more URLs than its page ceiling, so reading further only
+# costs parse time (and the frontend payload) for URLs nothing will fetch.
+_MAX_URLS_RETURNED = settings.crawl_max_pages_ceiling
 
 
 @dataclass
@@ -224,14 +226,9 @@ async def _read_sitemap_recursive(
     sources: list[str] = [sitemap_url]
 
     if tag == "urlset":
-        for url_el in root.iter():
-            if _strip_ns(url_el.tag).lower() == "loc" and url_el.text:
-                urls.append(url_el.text.strip())
+        urls = _entry_locs(root, "url")
     elif tag == "sitemapindex":
-        sub_urls: list[str] = []
-        for sm_el in root.iter():
-            if _strip_ns(sm_el.tag).lower() == "loc" and sm_el.text:
-                sub_urls.append(sm_el.text.strip())
+        sub_urls = _entry_locs(root, "sitemap")
         # Cap recursion to avoid massive index-of-indexes
         for sub in sub_urls[:_MAX_SUB_SITEMAPS]:
             sub_found, sub_sources = await _read_sitemap_recursive(
@@ -242,6 +239,27 @@ async def _read_sitemap_recursive(
             if len(urls) >= _MAX_URLS_RETURNED:
                 break
     return urls, sources
+
+
+def _entry_locs(root: ET.Element, entry_tag: str) -> list[str]:
+    """The ``<loc>`` of each ``<url>`` (or ``<sitemap>``) entry — and nothing
+    nested deeper.
+
+    Image and video extensions put their own ``<image:loc>`` / ``<video:loc>``
+    inside each entry, and once namespaces are stripped they read as ``loc``
+    too. Walking every descendant counted a WordPress catalogue's product photos
+    as pages — feruni.com reported 1,638 "pages" for ~295 — and filled the URL
+    cap with JPGs before the journal and news sitemaps were ever read.
+    """
+    locs: list[str] = []
+    for entry in root:
+        if _strip_ns(entry.tag).lower() != entry_tag:
+            continue
+        for child in entry:
+            if _strip_ns(child.tag).lower() == "loc" and child.text and child.text.strip():
+                locs.append(child.text.strip())
+                break
+    return locs
 
 
 def _strip_ns(tag: str) -> str:
