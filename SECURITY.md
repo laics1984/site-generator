@@ -125,8 +125,8 @@ setting exists, deliberately — a live production password sitting in a plainte
 ## Remaining recommendations (not done — future, if the deployment model changes)
 
 - **Authentication** on all endpoints (or enforced localhost binding) before any
-  non-local exposure — the CMS `test-connection` / `push` routes accept
-  email+password in the request body and proxy them to the CMS. Since those
+  non-local exposure — the CMS `test-connection` / `plan` / `push` routes
+  accept email+password in the request body and proxy them to the CMS. Since those
   credentials may now be **production** ones (see below), this matters more than
   it did. **This is now a startup blocker rather than a note**: `DEPLOYMENT=hosted`
   with `DEPLOYMENT_AUTH=none` refuses to start. `proxy` is an explicit

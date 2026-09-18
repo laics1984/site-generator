@@ -752,24 +752,30 @@ forced band instead of colliding with it unannounced.
 
 ## Phase 10 — Push (`services/push_orchestrator.py`)
 
-Ten ordered steps, each recorded as a `PushStep` in a `PushReport` the UI renders as a progress table:
+A push is a **sync** of the entity's pages and design with the generated site (`services/cms_sync.py`
+plans it; see CLAUDE.md "Updating a site that already has pages"). Ordered steps, each recorded as a
+`PushStep` in a `PushReport` the UI renders as a progress table:
 
 1. `auth` — JWT
 2. `create_entity` (optional) — captures `entity_api_token`
-3. `guard` — greenfield-only unless `force_overwrite`
-4. `normalize_slugs` — **greenfield keeps hierarchical paths** (`/profile/ashley`) so a migrated site
-   publishes at the URLs it already ranks for; a non-empty entity is a re-push over a live site, so slugs
-   flatten (renaming published pages is exactly the SEO damage this prevents). This runs *after* the guard,
-   because only the guard's page list can tell the two apart.
-5. `media` — collect unique srcs, upload, build a rewrite map. Individual failures are non-fatal: the image
+3. `inspect` — list every page the entity has (archived too, paginated), settle the site's slugs against
+   them (`normalize_slugs` when any changed: a page keeps its hierarchical path unless the live site
+   publishes it flattened), and plan which pages are updated in place, created, or archived. The same
+   function backs `POST /api/cms/plan`, which the drawer shows before the push.
+4. `media` — collect unique srcs, upload, build a rewrite map. Individual failures are non-fatal: the image
    is **stripped** so the published site never renders a broken reference pointing back at the source.
-6. `create_pages` — homepage **first and alone** (so `isHomepage=true` is deterministic), rest concurrently
-   under a semaphore
-7. `read_layout_version` → `save_layout` — menus + header/footer in one PUT on the homepage
-8. `save_drafts` — `bodySchema` per page, concurrent
-9. `builder_styles` via the launch-code bridge — **non-fatal**, but it mints a new layout version, so
-   `layout_version_id` must be refreshed or publish fails with `LAYOUT_VERSION_CONFLICT`
-10. `publish` (optional), then `_push_content_types` for article/event collections
+5. `pages` — homepage **first and alone** (so `isHomepage=true` is deterministic), rest concurrently under
+   a semaphore. A create is a POST; an update is a metadata PATCH on the matched page, after a restore when
+   it was archived (an archived page still owns its slug)
+6. `read_layout_version` → `save_layout` — menus + header/footer in one PUT on the homepage. The layout has
+   no draft state, so on an update this goes live immediately
+7. `save_drafts` — `bodySchema` per page, concurrent
+8. `builder_styles` via the launch-code bridge — **non-fatal**, but it mints a new layout version, so
+   `layout_version_id` must be refreshed or publish fails with `LAYOUT_VERSION_CONFLICT`; `favicon`;
+   `whatsapp_widget` on a first push only
+9. `publish` (optional), then `archive_pages` — the pages the new site lacks, only when publishing
+10. `template_pages` the list elements need, then `content_entries` (migrated articles/events) on a first
+    push only — an update keeps the owner's articles, events, categories and tags as they are
 
 ---
 

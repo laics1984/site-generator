@@ -106,7 +106,9 @@ and the Facebook reader imported `scraper._fetch_rendered_html`.
   steers consecutive sites apart), `header_footer.py` (5 header + 4 footer
   archetypes). See [docs/DESIGN_ENGINE.md](docs/DESIGN_ENGINE.md).
 - **CMS push:** `push_orchestrator.py`, `cms_client.py`, `content_collections.py`,
-  `cms_targets.py` (which CMS a push lands in — chosen per request by name).
+  `cms_sync.py` (how the generated pages map onto the pages an entity already
+  has: update in place / create / archive), `cms_targets.py` (which CMS a push
+  lands in — chosen per request by name).
 
 ## Configuration flow
 

@@ -550,6 +550,121 @@ Tests: `test_section_extraction.PageBuilderProseTest`,
 `test_scraper_images.DeclaredDisplaySizeTest`/`RepeatedOrnamentIsNotAWallTest`,
 `test_paste_source.LeafDivCopyTest`.
 
+## One picture is one picture
+
+A site this tool generated shows the same photo at two URLs — its og:image on
+`images.pexels.com` and the copy the push re-hosted on the asset host — and so
+does any site whose CDN mirrors its uploads. Crawled back (the update flow's
+normal input), the pool held both, and webtree.my's regenerated home page
+used one photo as hero AND About image while its About page showed one laptop
+photo twice as two poster sections. Every "already shown" test keys on
+`image_urls.image_identity`, never on the URL: the Pexels photo id when the
+filename carries one (the CMS keeps the original filename when it re-hosts),
+else the sha256 the pixel pass stamps as `ImageMetadata.content_hash` (it
+already had the bytes), else the URL. `media.ImageResolver` reserves identities
+(`_reserve`/`_is_used`), and `legible_images` groups posters by them. Both
+rules were URL-keyed before, which is the same bug twice.
+
+**The id outranks the bytes**, which looks backwards and is not: bytes prove
+sameness but never difference. The CMS re-encodes a photo when the push
+re-hosts it, so the two copies of webtree.my's og:image hash differently — with
+the hash ranked first the hash actively DEFEATED the id, and the regenerated
+home page used that photo as hero *and* About image all over again. A
+publisher's id is a claim about the picture; a hash is a claim about one
+encoding of it.
+
+That About page had a second cause. The laptop photo became a poster because
+OCR boxed the code on its screen — 9% coverage, over the 6% threshold — and
+`_MIN_BOX_CONFIDENCE` was 0.5. The recognizer's confidence is what says
+whether glyphs READ as words: measured, every box on that photo scored
+0.53–0.79 (transcribed as "prpladod,st -parentlode…"), every box on a real
+poster, banner or flyer 0.93–1.00. The floor is 0.8. And a poster group with
+no source heading now has none: `PosterBlock.heading` defaulted to
+"Announcements", a claim the source never made.
+
+Tests: `test_image_identity.py`.
+
+## The platform's routes are not a site's pages
+
+A CMS-hosted site serves its article/event template pages at their slugs
+(`/article-template`, …), with `robots: index`, and lists them in its
+sitemap. Crawled, webtree.my yielded an "Article template" page typed
+`services`, the model wrote copy for a blank, and pushed back that page
+collides with the real template's slug. `services/platform_routes.py` is the
+one home for the template contract: `TEMPLATE_PAGE_DEFAULTS` is what the push
+creates, `is_template_page_path` is what `scraper._is_crawlable_link`
+refuses, and `/category/` joins `/tag/`, `/author/`, `/page/` in
+`_SKIP_PATH_HINTS` — the CMS's `/articles/category/*` and WordPress's
+archives alike are views over content that already has its own pages. The
+CMS side (excluding `template_for` pages from `PublishedPageQuery::find` and
+the routes manifest) is still open.
+
+**A slug is owned by ANY page holding it, archived ones included** —
+`PageSlugService::slugExists` has no status filter. So a site pushed before
+that crawler fix carries a stale content page at exactly `article-template`,
+and creating the REAL template there then failed `SLUG_ALREADY_EXISTS` on
+every later push. It reproduced on production and never locally, because only
+production had the history.
+
+**That page is not content in the way, it IS the template**, so
+`_adopt_as_template` takes it over rather than parking a suffixed twin beside
+it: restore it when archived (`ensurePageIsEditable` refuses an archived
+page), PATCH `templateFor` onto it, and reset its body. The reset is the part
+that is easy to miss and not optional — an article renders from its
+template's `bodySchema` (webtree-public `ContentDetail.vue`), so adopting a
+page still carrying a hero and a CTA publishes every article as a hero and a
+CTA. `BLANK_TEMPLATE_BODY` mirrors `PageBuilderDefaults::bodySchema()` so an
+adopted page ends up exactly as a freshly created one;
+`BlankTemplateBodyTest` parses the PHP and fails on drift.
+
+**"Replace article & event templates" resets, it does not generate.** The
+layout of a template is the BUILDER's to build: opening a template whose body
+is blank lays one out from the site's own homepage hero
+(`SET_UP_CMS_TEMPLATE` → `createCmsTemplateSections(templateFor,
+siteHeroStyleFrom(home))`), which is exactly "the new design", and a blank body
+is what `isEditorBodyBlank` recognises. So the option (`replace_templates`,
+update mode only, off by default) writes `BLANK_TEMPLATE_BODY` over every
+**live** template and lets the builder do the rest — porting the builder's
+template and hero-style code to reproduce it here would be ~600 lines of
+duplicated TypeScript. Every template this step writes stays a **draft**, on
+purpose: a published blank template puts an empty page on every article, so
+the live site keeps whatever template it already serves until the owner opens
+the rebuilt one and publishes it. The step's `warning` says so. Archived
+templates are the owner's "off" and are left alone; a live template is reset
+whether or not the new site needs its kind, since its articles and events are
+kept and should wear the new design too.
+
+Only a page the generated site has **dropped** is adoptable — one it still
+claims is content, and content is never silently turned into a template. For
+that case `_free_template_slug` suffixes until the slug is free, which costs
+the site nothing because a template is found by its `templateFor` and never by
+its slug (`PublishedTemplateResolver`). `plan_sync` leaves template slugs out
+of the archive list for the same reason: archiving one only to restore it
+minutes later is churn the report has to explain.
+
+Tests: `test_platform_routes.py`.
+
+## The footer shows the logo or the wordmark, never both
+
+`_is_light_logo` needs 60% near-white pixels, so WebTree's white-and-green
+wordmark read as dark, the footer judged it invisible on its dark band and
+printed "WebTree" under a logo that was perfectly legible. `_mark_reads_on`
+judges the mark by its own colours — the extracted palette, the mark's opaque
+pixels clustered — against the band, at the graphics contrast floor (3:1),
+and the light/dark reading stands only when there is no palette to measure.
+When the mark would vanish, the wordmark takes its place rather than joining
+it. And the mega grid is columns of grouped pages beside the brand column: a
+flat site gives it a single row of links stranded beside the logo, so
+`build_footer` degrades **both** `mega` and `cta-banner` to `minimal-centered`
+for a site with no grouped page (`menu_builder.has_menu_groups`), the way
+`cta-banner` already degrades without a CTA. Both carry the same
+`Footer grid`, so fixing only `mega` would have missed every site the design
+brain closes with a CTA — which is the one the complaint came from. The banner
+survives: `chrome-footer-minimal-centered` gained an optional, centred one
+gated on a `has_cta` flag (edited in the builder catalog, then synced), so the
+degrade costs the site nothing. Tests: `test_header_footer.FooterMarkTest` /
+`FlatSiteFooterTest`.
+
 ## The brand mark is not content
 
 A site's own logo must never fill a photo slot. `image_evidence.classify_role`
@@ -1868,6 +1983,79 @@ origin must *not* get the `host.docker.internal` rewrite.
 
 Tests: `test_cms_targets.py`, `test_push_orchestrator.py`.
 
+## Updating a site that already has pages
+
+A push is a **sync**, never an append (`services/cms_sync.py`). Every generated
+page lands on the entity page with the same slug — a metadata PATCH plus a
+draft save on the *existing* page, so its id, URL, revision history and
+per-path insights survive — a page with no counterpart is created, and every
+other content page the entity had is **archived, never deleted** (one click to
+restore in the admin). Nothing else is touched: articles, events, categories,
+tags, contacts, subscribers, insights, the WhatsApp settings and the
+article/event template pages are the owner's. The greenfield guard and its
+`force_overwrite` escape hatch are gone — "push anyway" appended pages beside
+a live homepage and died on `HOMEPAGE_ALREADY_EXISTS` for any real site.
+
+Rules the CMS API makes easy to get wrong, each pinned in `test_cms_sync.py`:
+
+- **An archived page still owns its slug.** `PageSlugService::slugExists` has
+  no status filter, so creating "about" beside an archived "about" is a 422
+  and editing the archived one is a 409. A match on an archived page is a
+  **restore, then update**. `CmsClient.list_pages` therefore asks for
+  `status=all` — and walks the pagination, which the old one-call version
+  never did (20 rows, so a 25-page site's template pages were invisible to
+  the template step and got created twice).
+- **Slugs follow the live spelling.** A site published before nested slugs
+  existed has `profile-ashley` live; the generator writes `profile/ashley`;
+  `slug_spelling` lands on the live one, while a page the site never had keeps
+  its path — the same choice a new site gets. `keep_paths=False` is gone: it
+  flattened *every* re-push, renaming exactly the pages an update exists not
+  to rename.
+- **The layout has no draft state.** `saveLayout` and `PUT /builder/styles`
+  each mint a layout version and re-pin every published page to it, so on an
+  update the header, footer, menus and theme go live at the save-layout step
+  whether or not the bodies are published. The drawer says so when "Publish
+  immediately" is off, and it is why `_archive_pages` runs **only when
+  publishing**: a draft push leaves the visitor's site as it was, and taking
+  pages off it while the replacements are drafts would break it in the
+  meantime. The report then lists what is left to archive.
+- **First push = no content pages.** `SyncPlan.first_push` (template pages do
+  not count — the builder creates those on first open) gates the migration
+  extras: the WhatsApp button and the article/event entries go in on a first
+  push exactly as before and are skipped on an update, since re-creating the
+  entries would file every post the owner already has as `post-2`. Template
+  pages the site's list elements need are still created when missing, and
+  never rewritten when present.
+
+**Media is deduplicated by content hash.** Every push re-sends the site's
+photography (the generated tree never carries a CMS URL), and the CMS names
+each upload with a fresh timestamp, so an update used to file a second copy
+of every photo — and there is no route to delete a media file. cms-api now
+records `media.media_hash` (sha256 of the bytes **as uploaded**) and answers
+`GET /api/file/lookup?e=…&hash=…`; `push_orchestrator._store_bytes` asks
+before sending and uploads only on a miss, counting the rest as "already in
+the library" in the report. `MediaController::store` dedups on the same hash
+by itself, so the builder's own uploads are covered too. Hash the **coerced**
+bytes — what goes on the wire — or the two sides disagree. A 204 is a miss; a
+bare 404 is an older API without the route, remembered per client so a push
+pays one probe, not one per image. Rows from before the column are hashed by
+`php artisan media:backfill-hashes`; an SVG is stored sanitized, so it may
+upload once more before it dedups. Tests: `test_media_dedup.py` here,
+`MediaUploadDedupTest` in cms-api.
+
+The plan is drawn once, in `push_orchestrator.inspect_entity`, and shown
+before it runs: `POST /api/cms/plan` calls the same function, so the list the
+operator confirms in the drawer (`PushPlanCard`) is the list the push
+executes. `POST /api/cms/test-connection` lists the account's sites
+(`GET /api/entities`, owner + manager) so the drawer offers a picker; a token
+field is the fallback for a CMS that cannot list. Local vs production is the
+existing target picker, labelled `Local`/`Production` from `is_remote` with the
+host kept beside the word so the label cannot go stale.
+
+Tests: `test_cms_sync.py`, `test_cms_client_pages.py`,
+`test_push_orchestrator.py` (the "updating a site" block), `test_cms_targets.py`
+(`ConnectTest`, `PlanEndpointTest`).
+
 ## The local↔production boundary
 
 `app/deployment/` holds **everything that exists solely to answer "is this safe
@@ -2107,6 +2295,12 @@ health and brand-cache key included). The local path stays covered by
   `docker compose build backend`. This burned a whole OCR feature once (silent
   no-op, one INFO line at startup). If a feature acts absent, check the container:
   `docker exec webtree-sitegen-backend python -c "import importlib.util as u; print(u.find_spec('<pkg>'))"`.
+- **A catalog edit needs a container RESTART, not a reload.** `uvicorn --reload`
+  watches `*.py` only, and `template_filler.load_catalog` is `@lru_cache`d, so a
+  synced `section_catalog.json` sits in the mounted volume unread: the running
+  process keeps serving the catalog it parsed at import. Same silent shape as
+  the dependency skew above — the generator happily produces the OLD layout and
+  nothing says why. `docker compose restart backend` after `sync_catalog.py`.
 - **A ccTLD is matched against the hostname, never the URL string.**
   `locale._bounded` guards its left edge with `(?<![a-z])`, which is right for
   word-shaped needles (`india` must not match `indiana`) and impossible for a

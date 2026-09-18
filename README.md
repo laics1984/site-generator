@@ -145,7 +145,7 @@ All five original phases are implemented.
 | **1** | ✅ done | Backend + frontend scaffold, Pydantic schema mirroring `BuilderElement`, Ollama/MLX client, semantic-blocks → BuilderElement mapper, paste-input pipeline, Docker compose |
 | **2** | ✅ done | Playwright URL scraping (httpx fast-path + fallback), same-domain crawl, extracted-content preview |
 | **3** | ✅ done | PDF/DOCX upload + parser (`doc_parser.py`, PyMuPDF) |
-| **4** | ✅ done | CMS API push (create page → media → menus → header/footer → styles → publish) |
+| **4** | ✅ done | CMS API push (sync: update pages in place / create / archive → media → menus → header/footer → styles → publish), into a local or a production CMS |
 | **5** | ✅ done | Iframe visual preview + per-page layout |
 
 ## Project docs

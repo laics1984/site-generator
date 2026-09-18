@@ -41,6 +41,7 @@ from app.models.content_blocks import (
 )
 from app.services.image_match import must_show_whole, shows_words
 from app.services.qr_codes import QrPurpose, purpose_of
+from app.services.image_urls import image_identity
 from app.services.source_injection import (
     accumulate_by_slug,
     closing_insert_index,
@@ -93,7 +94,7 @@ def inject_legible_images(
         if page is None:
             continue
         exclude = _placed_urls(page) | (set() if page.is_homepage else sitewide)
-        _place(page, metas, exclude)
+        _place(page, metas, _identities(metas, exclude))
 
 
 def _placeable(meta: ImageMetadata) -> bool:
@@ -122,12 +123,18 @@ def _placed_urls(page: PagePlan) -> set[str]:
     return {url for holder in holders if (url := getattr(holder, "image_url", None))}
 
 
+def _identities(metas: list[ImageMetadata], urls: set[str]) -> set[str]:
+    """`urls` as grouping keys: a URL already on the page excludes the picture
+    behind it under every URL it is served from, not just that spelling."""
+    return urls | {image_identity(meta) for meta in metas if meta.url in urls}
+
+
 def _place(page: PagePlan, metas: list[ImageMetadata], exclude: set[str]) -> None:
     posters = [
         PosterBlock(heading=heading, items=[_poster_item(meta, heading) for meta in group])
         for heading, group in group_by_heading(
             (meta for meta in metas if not _is_code(meta)),
-            key_of=lambda meta: meta.url,
+            key_of=image_identity,
             heading_of=lambda meta: meta.context_heading,
             exclude=exclude,
             max_groups=_MAX_POSTER_BLOCKS,
@@ -143,7 +150,7 @@ def _place(page: PagePlan, metas: list[ImageMetadata], exclude: set[str]) -> Non
         _qr_item(meta)
         for _heading, group in group_by_heading(
             (meta for meta in metas if _is_code(meta)),
-            key_of=lambda meta: meta.url,
+            key_of=image_identity,
             heading_of=lambda _meta: "",
             exclude=exclude,
             max_groups=1,

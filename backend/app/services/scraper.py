@@ -102,6 +102,7 @@ from app.services.section_extraction import (
     in_repeated_image_group as _in_repeated_image_group,
     is_decorative_image as _is_decorative_image,
 )
+from app.services.platform_routes import is_template_page_path
 from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
 
 logger = logging.getLogger(__name__)
@@ -2418,7 +2419,9 @@ _NON_PAGE_EXTENSIONS = (
 _SKIP_PATH_HINTS = (
     "/wp-admin", "/wp-login", "/cart", "/checkout", "/login", "/signin",
     "/signup", "/register", "/account", "/cdn-cgi", "/feed", "/api/",
-    "/search", "/tag/", "/author/", "/page/", "/?", "/print",
+    # Archive listings, the CMS's own /articles/category/* included: a
+    # category page is a view over content that already has its own pages.
+    "/search", "/tag/", "/category/", "/author/", "/page/", "/?", "/print",
 )
 
 
@@ -2469,6 +2472,10 @@ def _is_crawlable_link(url: str, entry_url: str) -> bool:
     if path_low.endswith(_NON_PAGE_EXTENSIONS):
         return False
     if any(h in path_low for h in _SKIP_PATH_HINTS):
+        return False
+    # The platform's own article/event template pages, which a CMS-hosted site
+    # serves and lists in its sitemap (services/platform_routes.py).
+    if is_template_page_path(path_low):
         return False
     return True
 

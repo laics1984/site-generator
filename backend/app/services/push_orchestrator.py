@@ -1,25 +1,33 @@
 """
 Push a GeneratedSite into a webtree CMS entity.
 
-Greenfield-only contract (per agreed scope): refuses to push when the entity
-already has pages, unless caller passes ``force_overwrite=True``.
+A push is a SYNC of the entity's pages and design with the generated site
+(services/cms_sync.py owns the rules). A fresh entity gets everything; a site
+that already has pages gets its pages and design replaced and keeps what its
+owner has built up in the CMS since — articles, events, categories, tags,
+contacts, subscribers, insights and the WhatsApp settings.
 
 Steps (in order):
   1. Auth — JWT login on the CMS API
-  2. Empty-entity guard — list pages, refuse if non-empty
+  2. Inspect — list every page the entity has (archived too), settle the site's
+     slugs against them, and plan: which pages are updated in place, which are
+     created, which are archived
   3. Media upload — walk every page's BuilderElement tree, find image srcs
      that are data:image/... or external URLs (and document-link hrefs, e.g.
      scraped PDFs), upload to /api/file/add and rewrite to CDN URLs in-place
-  4. Create pages — POST /pages for each generated page, capture pageId +
-     draftVersion. Homepage goes first.
-  5. Read first page's builder payload — captures layout.versionId for the
+  4. Land pages — POST /pages for each page the entity lacks, PATCH the
+     metadata of each page it has (restoring an archived match first). Capture
+     pageId + draftVersion. Homepage goes first.
+  5. Read the homepage's builder payload — captures layout.versionId for the
      save-layout step (layout is entity-scoped — write it once).
   6. Save layout — wrap header/footer + emit menus + PUT once on the homepage
-  7. Save drafts — for every created page, PUT /draft with its bodySchema
-  8. Builder styles — mint launch-code session + PUT /builder/styles
-  9. (Optional) Publish — POST /publish for each page
- 10. Content types — article/event/articleListing template pages (templateFor)
-     + migrated article/event entries from the source site (non-fatal)
+  7. Save drafts — for every page, PUT /draft with its bodySchema
+  8. Builder styles — mint launch-code session + PUT /builder/styles;
+     site icon; WhatsApp button (first push only)
+  9. (Optional) Publish — POST /publish for each page, then archive the pages
+     the new site does not have
+ 10. Content types — article/event template pages (templateFor) the site lacks
+     + on a first push, migrated article/event entries from the source site
 
 Each step's outcome is appended to PushReport so the UI can show a per-step
 status table. Failures abort the push but the report carries everything done
@@ -30,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -44,11 +53,22 @@ from app.models.builder_schema import (
     BuilderElementContent,
     GeneratedPage,
     GeneratedSite,
+    PageSeo,
 )
 from app.models.content_blocks import ContentCollections
 from app.services.cms_client import CmsApiError, CmsClient
+from app.services.cms_sync import (
+    ExistingPage,
+    PageChange,
+    SyncPlan,
+    describe_plan,
+    existing_pages,
+    normalize_site_slugs,
+    plan_sync,
+)
 from app.services.cms_targets import CmsTarget, default_target
 from app.services.menu_builder import build_layout_payload
+from app.services.platform_routes import BLANK_TEMPLATE_BODY, TEMPLATE_PAGE_DEFAULTS
 from app.services.timing import stage
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 
@@ -103,15 +123,17 @@ class PushRequest:
     cms_password: str
     entity_token: str
     publish: bool = False
-    force_overwrite: bool = False
     push_builder_styles: bool = True
+    # Reset the site's existing article/event template pages to the new design
+    # (see _ensure_template_pages). Opt-in: a template is the owner's article
+    # and event design, often customised, and an update keeps it by default.
+    replace_templates: bool = False
     # The site icon captured from the source. Optional for the same reason
     # push_builder_styles is: re-pushing to an entity whose owner has since
     # chosen their own icon must not silently replace it.
     push_favicon: bool = True
     # When True, create a brand-new entity (owned by the logged-in user) before
-    # pushing, and ignore `entity_token`. The created entity is empty so the
-    # greenfield guard always passes.
+    # pushing, and ignore `entity_token`.
     create_entity: bool = False
     new_entity_name: str | None = None
     new_entity_url: str | None = None
@@ -123,126 +145,6 @@ class PushRequest:
     # existed. Resolved at the HTTP boundary (routers/cms.py) so an unknown name
     # is a 400 rather than something buried in a PushReport.
     target: CmsTarget = field(default_factory=default_target)
-
-
-# --- slug normalization ---------------------------------------------------------
-
-
-_SLUG_SEP_RE = re.compile(r"[^a-z0-9]+")
-
-
-def _cms_safe_slug(raw: str, *, keep_path: bool = False) -> str:
-    """Coerce any string into a CMS-safe slug.
-
-    Lowercase, collapse every run of non-alphanumerics to a single hyphen, trim
-    hyphens, cap at the CMS's 160-char limit. "" / junk → "".
-
-    ``keep_path`` preserves ``/`` as a segment separator and sanitizes each
-    segment on its own, so "services/web-design" survives as itself instead of
-    becoming "services-web-design" — see ``_normalize_site_slugs``.
-    """
-    if keep_path and "/" in (raw or ""):
-        segments = [_cms_safe_slug(part) for part in raw.split("/")]
-        return "/".join(part for part in segments if part)[:160].strip("-/")
-    s = _SLUG_SEP_RE.sub("-", (raw or "").strip().lower()).strip("-")
-    return s[:160].strip("-")
-
-
-def _normalize_site_slugs(site: GeneratedSite, *, keep_paths: bool = False) -> dict[str, str]:
-    """Normalize every slug to a CMS-safe format, keeping parent_slug,
-    page_tree, and all baked nav hrefs consistent.
-
-    Returns the {old_slug: new_slug} map of slugs that actually changed.
-    Mutates `site` in place.
-
-    ``keep_paths`` preserves hierarchical slugs (``profile/ashley``) instead of
-    flattening them to ``profile-ashley``. This is what lets a migrated site
-    keep the URLs it already ranks for: the generator's slugs come from the
-    source's own paths, so preserving them means mmta.org.my/profile/ashley
-    still resolves after the switchover. The resolver has always supported it —
-    ``PublishedPageQuery::find`` matches ``ltrim(path,'/')`` against the slug
-    with no segment-count check — so only this flattening stood in the way.
-
-    Callers pass it only for a greenfield push. Re-pushing into a site that is
-    already live would otherwise rename its published pages, which is the very
-    breakage this exists to avoid.
-    """
-    slug_map: dict[str, str] = {}
-    used: set[str] = set()
-    for page in site.pages:
-        old = page.slug or ""
-        if page.is_homepage:
-            new = ""
-        else:
-            new = (
-                _cms_safe_slug(old, keep_path=keep_paths)
-                or _cms_safe_slug(page.title)
-                or "page"
-            )
-            base, n = new, 2
-            while new in used:
-                new = f"{base}-{n}"
-                n += 1
-            used.add(new)
-        slug_map[old] = new
-        page.slug = new
-
-    # parent_slug references point at a parent's (old) slug — remap them.
-    for page in site.pages:
-        if page.parent_slug:
-            page.parent_slug = (
-                slug_map.get(page.parent_slug)
-                or _cms_safe_slug(page.parent_slug, keep_path=keep_paths)
-                or None
-            )
-
-    # page_tree mirrors `pages` — keep node slugs in lock-step.
-    def _fix_node(node) -> None:
-        node.slug = (
-            ""
-            if node.is_homepage
-            else (
-                slug_map.get(node.slug)
-                or _cms_safe_slug(node.slug, keep_path=keep_paths)
-            )
-        )
-        for child in node.children:
-            _fix_node(child)
-
-    for node in site.page_tree or []:
-        _fix_node(node)
-
-    # Rewrite baked anchor hrefs (header/footer/body) that target an old slug.
-    href_map = {
-        f"/{old}": f"/{new}"
-        for old, new in slug_map.items()
-        if old and f"/{old}" != f"/{new}"
-    }
-    if href_map:
-        for page in site.pages:
-            for el in page.body_schema.elements:
-                _rewrite_hrefs(el, href_map)
-        if site.header_schema:
-            _rewrite_hrefs(site.header_schema, href_map)
-        if site.footer_schema:
-            _rewrite_hrefs(site.footer_schema, href_map)
-
-    # Report only the slugs that actually changed.
-    return {old: new for old, new in slug_map.items() if old != new}
-
-
-def _rewrite_hrefs(node: BuilderElement, href_map: dict[str, str]) -> None:
-    """Walk a BuilderElement tree, rewriting internal anchor hrefs in place."""
-    content = node.content
-    if isinstance(content, BuilderElementContent):
-        href = content.href
-        if isinstance(href, str) and href:
-            key = "/" + href.strip("/") if href != "/" else "/"
-            if key in href_map:
-                content.href = href_map[key]
-    if isinstance(content, list):
-        for child in content:
-            _rewrite_hrefs(child, href_map)
 
 
 # --- the orchestrator -----------------------------------------------------------
@@ -364,51 +266,25 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
             report.error = str(exc)
             return report
 
-    # 2. Empty-entity guard
+    # 2. Inspect the entity and plan the sync. The site's slugs are settled
+    #    against the pages already there in the same call, so every match is on
+    #    the spelling the page is published at (services/cms_sync.py).
     try:
-        existing = await client.list_pages(req.entity_token)
+        existing, renamed, plan = await inspect_entity(client, req)
     except CmsApiError as exc:
-        report.record(PushStep(name="guard", ok=False, error=str(exc)))
+        report.record(PushStep(name="inspect", ok=False, error=str(exc)))
         report.error = str(exc)
         return report
-    if existing and not req.force_overwrite:
-        msg = (
-            f"Entity already has {len(existing)} page(s). "
-            "This generator currently supports greenfield push only. "
-            "Pass force_overwrite=True to push anyway, or use a fresh entity."
-        )
-        report.record(
-            PushStep(name="guard", ok=False, error=msg, data={"existing_count": len(existing)})
-        )
-        report.error = msg
-        return report
     report.record(
-        PushStep(name="guard", ok=True, detail=f"Entity has {len(existing)} existing pages")
+        PushStep(name="inspect", ok=True, detail=describe_plan(plan), data=plan.as_dict())
     )
-
-    # 2b. Normalize slugs to a CMS-safe format, rewriting parent_slug, page_tree
-    #     and baked nav hrefs to match.
-    #
-    #     A greenfield entity keeps hierarchical slugs, so a migrated site is
-    #     published at the URLs the source already ranks for (/profile/ashley,
-    #     not /profile-ashley). An entity that already holds pages is being
-    #     re-pushed over a live site: flattening stays, because renaming
-    #     published pages is exactly the SEO damage this is meant to prevent.
-    #     It runs here, after the guard, because only the guard's page list can
-    #     tell the two apart.
-    greenfield = req.create_entity or not existing
-    changed = _normalize_site_slugs(req.site, keep_paths=greenfield)
-    if changed:
+    if renamed:
         report.record(
             PushStep(
                 name="normalize_slugs",
                 ok=True,
-                detail=(
-                    f"Normalized {len(changed)} slug(s), keeping source paths"
-                    if greenfield
-                    else f"Flattened {len(changed)} slug(s) to CMS format"
-                ),
-                data={"renamed": changed, "greenfield": greenfield},
+                detail=f"Normalized {len(renamed)} slug(s)",
+                data={"renamed": renamed},
             )
         )
 
@@ -417,25 +293,16 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     #    so the published site never has a broken reference.
     try:
         with stage("push_media_upload"):
-            rewrites, failed_srcs = await _upload_media(client, req)
-        if failed_srcs:
-            report.record(
-                PushStep(
-                    name="media",
-                    ok=True,
-                    detail=f"{len(rewrites)} uploaded, {len(failed_srcs)} skipped",
-                    data={"uploaded": len(rewrites), "failed": len(failed_srcs)},
-                )
+            media = await _upload_media(client, req)
+        report.record(
+            PushStep(
+                name="media",
+                ok=True,
+                detail=_describe_media(media),
+                data=media.counts(),
+                warning=_media_warning(media),
             )
-        else:
-            report.record(
-                PushStep(
-                    name="media",
-                    ok=True,
-                    detail=f"{len(rewrites)} image(s) uploaded",
-                    data={"uploaded": len(rewrites)},
-                )
-            )
+        )
     except CmsApiError as exc:
         report.record(PushStep(name="media", ok=False, error=str(exc)))
         report.error = str(exc)
@@ -443,74 +310,33 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
 
     # Apply rewrites BEFORE we ship schemas — saves us a second pass and
     # ensures every src on the CMS side is a permanent URL.
-    _apply_src_rewrites(req.site, rewrites)
+    _apply_src_rewrites(req.site, media.rewrites)
     # Drop any image that couldn't be re-hosted (dead/404 source URL) so the
     # published site never renders a broken image pointing back at the source.
-    stripped = _strip_invalid_images(req.site, failed_srcs)
+    stripped = _strip_invalid_images(req.site, media.failed)
     if stripped:
         logger.info("Stripped %d unresolvable image reference(s)", stripped)
 
-    # 4. Create pages — homepage first so isHomepage=true is set deterministically,
-    #    then the rest concurrently (each create is independent on the CMS side).
-    pages_sorted = sorted(req.site.pages, key=lambda p: (not p.is_homepage, p.slug))
-    created: list[tuple[GeneratedPage, str, int]] = []
+    # 4. Land the pages — create the ones the entity lacks, refresh the metadata
+    #    of the ones it has (restoring an archived match first). Homepage first.
     try:
-        async def _create_one(page: GeneratedPage) -> tuple[GeneratedPage, str, int]:
-            seo = {}
-            if page.seo:
-                for _fld in ("title", "description", "keywords",
-                             "canonical", "ogTitle", "ogDescription",
-                             "ogImage", "twitterCard", "structuredData"):
-                    _val = getattr(page.seo, _fld, None)
-                    if _val is not None:
-                        seo[_fld] = _val
-                if page.seo.noindex:
-                    seo["noindex"] = True
-            created_meta = await client.create_page(
-                req.entity_token,
-                title=page.title,
-                description=page.description,
-                slug=page.slug or None,
-                is_homepage=page.is_homepage,
-                seo=seo or None,
-            )
-            page_id = created_meta.get("id")
-            draft_version = int(created_meta.get("draftVersion") or 1)
-            if not page_id:
-                raise CmsApiError(500, f"Create-page response missing id: {created_meta}")
-            return (page, str(page_id), draft_version)
-
-        with stage("push_create_pages"):
-            if pages_sorted:
-                created.append(await _create_one(pages_sorted[0]))
-            rest = pages_sorted[1:]
-            if rest:
-                sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
-
-                async def _create_bounded(page: GeneratedPage):
-                    async with sem:
-                        return await _create_one(page)
-
-                results = await asyncio.gather(
-                    *(_create_bounded(p) for p in rest), return_exceptions=True
-                )
-                _raise_first_error(results)
-                created.extend(results)  # gather preserves pages_sorted order
+        with stage("push_land_pages"):
+            landed = await _land_pages(client, req, plan)
         report.record(
             PushStep(
-                name="create_pages",
+                name="pages",
                 ok=True,
-                detail=f"{len(created)} page(s) created",
-                data={"page_ids": [pid for _, pid, _ in created]},
+                detail=_describe_landing(plan),
+                data={"page_ids": [item.page_id for item in landed]},
             )
         )
     except CmsApiError as exc:
-        report.record(PushStep(name="create_pages", ok=False, error=str(exc)))
+        report.record(PushStep(name="pages", ok=False, error=str(exc)))
         report.error = str(exc)
         return report
 
-    # 5. Read first page's builder payload to capture layout.versionId
-    homepage_id = created[0][1]
+    # 5. Read the homepage's builder payload to capture layout.versionId
+    homepage_id = landed[0].page_id
     try:
         builder_payload = await client.get_builder_payload(req.entity_token, homepage_id)
         layout = builder_payload.get("layout") or {}
@@ -533,7 +359,10 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         report.error = str(exc)
         return report
 
-    # 6. Save layout — wrap + emit menus + PUT once on the homepage
+    # 6. Save layout — wrap + emit menus + PUT once on the homepage. The layout
+    #    is entity-scoped and has no draft state: the CMS re-pins every published
+    #    page to the new version at once, so on an update the header, footer and
+    #    menus go live here whether or not the pages are published below.
     try:
         try:
             menus, header_payload, footer_payload = build_layout_payload(req.site)
@@ -569,27 +398,25 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     try:
         draft_sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
 
-        async def _save_one(
-            page: GeneratedPage, page_id: str, draft_version: int
-        ) -> tuple[str, int]:
+        async def _save_one(item: _LandedPage) -> tuple[str, int]:
             body_schema = {
                 "elements": [
                     el.model_dump(mode="json") if isinstance(el, BuilderElement) else el
-                    for el in page.body_schema.elements
+                    for el in item.page.body_schema.elements
                 ],
             }
             async with draft_sem:
                 result = await client.save_page_draft(
                     req.entity_token,
-                    page_id,
-                    base_draft_version=draft_version,
+                    item.page_id,
+                    base_draft_version=item.draft_version,
                     body_schema=body_schema,
                 )
-            return page_id, int(result.get("draftVersion") or draft_version + 1)
+            return item.page_id, int(result.get("draftVersion") or item.draft_version + 1)
 
         with stage("push_save_drafts"):
             draft_results = await asyncio.gather(
-                *(_save_one(*item) for item in created), return_exceptions=True
+                *(_save_one(item) for item in landed), return_exceptions=True
             )
         _raise_first_error(draft_results)
         saved_drafts = dict(draft_results)
@@ -639,7 +466,8 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     # 8c. WhatsApp chat button, when the source site published a number
     #     (services/whatsapp_discovery.py). Non-fatal for the same reason as the
     #     icon: the site is already in, and this is one switch in Site settings.
-    await _push_whatsapp_widget(client, req, report)
+    #     First push only — an update keeps the owner's settings.
+    await _push_whatsapp_widget(client, req, report, first_push=plan.first_push)
 
     # 9. Publish (optional) — concurrent; every publish uses its own page's saved
     #    draft version plus the shared (post-builder-styles) layout_version_id.
@@ -658,7 +486,7 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
 
             with stage("push_publish"):
                 publish_results = await asyncio.gather(
-                    *(_publish_one(page_id) for _page, page_id, _dv in created),
+                    *(_publish_one(item.page_id) for item in landed),
                     return_exceptions=True,
                 )
             _raise_first_error(publish_results)
@@ -666,7 +494,7 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                 PushStep(
                     name="publish",
                     ok=True,
-                    detail=f"{len(created)} page(s) published",
+                    detail=f"{len(landed)} page(s) published",
                 )
             )
         except CmsApiError as exc:
@@ -676,17 +504,231 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     else:
         report.record(PushStep(name="publish", ok=True, detail="Skipped — pushed as drafts"))
 
-    # 10. CMS content types — template pages (article/event detail rendering)
-    #     and the migrated article/event entries. Both are non-fatal: the site
-    #     is already pushed, so a failure here degrades to "add content later".
-    await _push_content_types(client, req, report)
+    # 9b. Pages the new site does not have come off the live site — only when
+    #     the new pages went live with them (see _archive_pages).
+    await _archive_pages(client, req, plan, report, publishing=req.publish)
+
+    # 10. CMS content types — the template pages the site's list elements need
+    #     and, on a first push only, the migrated article/event entries. Both
+    #     are non-fatal: the site is already pushed, so a failure here degrades
+    #     to "add content later".
+    await _ensure_template_pages(client, req, report, existing)
+    await _push_content_entries(client, req, report, first_push=plan.first_push)
 
     # Record page IDs for the UI's "Open in builder" links
-    for page, page_id, _ in created:
-        report.page_urls[page_id] = page.slug or "/"
+    for item in landed:
+        report.page_urls[item.page_id] = item.page.slug or "/"
 
     report.success = True
     return report
+
+
+# --- the sync: inspect, land, archive -------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _LandedPage:
+    """A generated page and the CMS page it now lives in."""
+
+    page: GeneratedPage
+    page_id: str
+    draft_version: int
+
+
+async def inspect_entity(
+    client: CmsClient, req: PushRequest
+) -> tuple[list[ExistingPage], dict[str, str], SyncPlan]:
+    """List the entity's pages, settle the site's slugs against them, and plan.
+
+    The one path to a plan: the push runs it and `POST /api/cms/plan` shows it,
+    so what the operator confirms in the drawer is what the push does. Archived
+    pages are listed too — they still own their slugs, so a generated page
+    matching one is restored rather than recreated (services/cms_sync.py).
+    Mutates ``req.site``: its slugs become the ones it will be published under.
+    """
+    rows = await client.list_pages(req.entity_token, status="all")
+    existing = existing_pages(rows)
+    renamed = normalize_site_slugs(
+        req.site,
+        existing_slugs={page.slug for page in existing if not page.is_template},
+    )
+    return existing, renamed, plan_sync(req.site, existing)
+
+
+_SEO_FIELDS = (
+    "title",
+    "description",
+    "keywords",
+    "canonical",
+    "ogTitle",
+    "ogDescription",
+    "ogImage",
+    "twitterCard",
+    "structuredData",
+)
+
+
+def _seo_payload(seo: PageSeo | None) -> dict[str, Any]:
+    """Every SEO field the page states, the unset ones as explicit nulls.
+
+    An update has to say "no canonical" as clearly as "this canonical": a key
+    left out of the PATCH keeps whatever the page had, and a stale ogImage
+    under a rewritten page is a lie in every share card. Create reads a null
+    as absence, so one payload serves both.
+    """
+    seo = seo or PageSeo()
+    payload: dict[str, Any] = {name: getattr(seo, name) for name in _SEO_FIELDS}
+    payload["noindex"] = bool(seo.noindex)
+    return payload
+
+
+def _describe_landing(plan: SyncPlan) -> str:
+    created, updates = len(plan.of("create")), plan.of("update")
+    restored = sum(1 for change in updates if change.restore)
+    parts = [f"{created} created", f"{len(updates)} updated"]
+    if restored:
+        parts.append(f"{restored} restored from the archive")
+    return ", ".join(parts)
+
+
+async def _land_pages(
+    client: CmsClient, req: PushRequest, plan: SyncPlan
+) -> list[_LandedPage]:
+    """Give every generated page a CMS page to live in, in plan order.
+
+    A create is the POST a fresh entity has always had. An update is a
+    metadata PATCH on the matched page (title, description, SEO), after a
+    restore when it was archived — the body follows in the draft-save step,
+    which is the same for both. The first change is the homepage and lands
+    alone, so ``isHomepage`` is settled before anything else is created; the
+    rest are independent and run concurrently under the push bound.
+    """
+    token = req.entity_token
+    by_slug = {page.slug: page for page in req.site.pages}
+
+    async def _create(change: PageChange) -> _LandedPage:
+        page = by_slug[change.slug]
+        meta = await client.create_page(
+            token,
+            title=page.title,
+            description=page.description,
+            slug=page.slug or None,
+            is_homepage=page.is_homepage,
+            seo=_seo_payload(page.seo),
+        )
+        page_id = meta.get("id")
+        if not page_id:
+            raise CmsApiError(500, f"Create-page response missing id: {meta}")
+        return _LandedPage(page, str(page_id), int(meta.get("draftVersion") or 1))
+
+    async def _update(change: PageChange) -> _LandedPage:
+        page = by_slug[change.slug]
+        page_id = change.page_id or ""
+        if change.restore:
+            await client.restore_page(token, page_id)
+        current = await client.get_page(token, page_id)
+        base = int(current.get("draftVersion") or 1)
+        result = await client.update_page(
+            token,
+            page_id,
+            base_draft_version=base,
+            title=page.title,
+            description=page.description,
+            seo=_seo_payload(page.seo),
+        )
+        return _LandedPage(page, page_id, int(result.get("draftVersion") or base + 1))
+
+    async def _land(change: PageChange) -> _LandedPage:
+        return await (_create(change) if change.action == "create" else _update(change))
+
+    changes = plan.landing
+    if not changes:
+        return []
+    landed = [await _land(changes[0])]
+    rest = changes[1:]
+    if rest:
+        sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+        async def _bounded(change: PageChange) -> _LandedPage:
+            async with sem:
+                return await _land(change)
+
+        results = await asyncio.gather(
+            *(_bounded(change) for change in rest), return_exceptions=True
+        )
+        _raise_first_error(results)
+        landed.extend(results)  # gather preserves plan order
+    return landed
+
+
+async def _archive_pages(
+    client: CmsClient,
+    req: PushRequest,
+    plan: SyncPlan,
+    report: PushReport,
+    *,
+    publishing: bool,
+) -> None:
+    """Take the pages the new site does not have off the live site.
+
+    Only when the new pages went live in the same push: a push that lands as
+    drafts leaves the visitor's site as it was, and removing pages while their
+    replacements are still drafts would break it in the meantime — so those
+    are listed for the operator to archive after publishing. Archived, never
+    deleted: the page keeps its revisions and the admin can restore it. Never
+    fatal — the site is in, and an archive left to finish by hand is in the
+    report.
+    """
+    extras = plan.of("archive")
+    if not extras:
+        return
+    paths = ", ".join(f"/{change.slug}" for change in extras)
+    if not publishing:
+        report.record(
+            PushStep(
+                name="archive_pages",
+                ok=True,
+                detail=(
+                    f"Skipped — pushed as drafts, so {len(extras)} page(s) not in "
+                    "the new site stay live"
+                ),
+                warning=f"Archive after publishing: {paths}",
+            )
+        )
+        return
+
+    sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+    async def _one(change: PageChange) -> None:
+        async with sem:
+            await client.archive_page(req.entity_token, change.page_id or "")
+
+    results = await asyncio.gather(
+        *(_one(change) for change in extras), return_exceptions=True
+    )
+    failures = [
+        (change, result)
+        for change, result in zip(extras, results)
+        if isinstance(result, BaseException)
+    ]
+    if failures:
+        left = ", ".join(f"/{change.slug}" for change, _ in failures)
+        report.record(
+            PushStep(
+                name="archive_pages",
+                ok=False,
+                error=f"{len(failures)} page(s) could not be archived ({failures[0][1]})",
+                detail=f"The new pages are live; archive these in the admin: {left}",
+            )
+        )
+        return
+    report.record(
+        PushStep(
+            name="archive_pages",
+            ok=True,
+            detail=f"{len(extras)} page(s) archived: {paths}",
+        )
+    )
 
 
 # --- media upload helpers -------------------------------------------------------
@@ -714,16 +756,110 @@ def _brand_field(brand: Any, name: str) -> Any:
     return getattr(brand, name, None)
 
 
-async def _upload_media(
-    client: CmsClient, req: PushRequest
-) -> tuple[dict[str, str], set[str]]:
+@dataclass(frozen=True, slots=True)
+class MediaUpload:
+    """What the media step did.
+
+    `rewrites` maps every src/href now hosted on the CMS to its URL; `failed`
+    is the IMAGE srcs that resolved to nothing (stripped by the caller);
+    `reused` counts the rewrites that were files the library already held.
+    """
+
+    rewrites: dict[str, str]
+    failed: set[str]
+    reused: int = 0
+
+    @property
+    def uploaded(self) -> int:
+        return len(self.rewrites) - self.reused
+
+    def counts(self) -> dict[str, int]:
+        return {"uploaded": self.uploaded, "reused": self.reused, "failed": len(self.failed)}
+
+
+def _describe_media(media: MediaUpload) -> str:
+    parts = [f"{media.uploaded} uploaded"]
+    if media.reused:
+        parts.append(f"{media.reused} already in the library")
+    if media.failed:
+        parts.append(f"{len(media.failed)} skipped")
+    return ", ".join(parts)
+
+
+def _media_warning(media: MediaUpload) -> str | None:
+    """Every image failing is a broken pipeline, not a few dead URLs.
+
+    One unreachable image is ordinary and the detail line mentions it in
+    passing. NONE landing means the CMS refused every upload — a migration it
+    has not run, a bad token, a full disk — and because a src that cannot be
+    re-hosted is stripped rather than left broken, the pages simply arrive with
+    no photography and nothing else in the report says why. That happened: a
+    CMS missing the `media_hash` column answered 500 to all 132 uploads of a
+    push, and the step still read "ok".
+    """
+    if media.failed and media.uploaded == 0 and media.reused == 0:
+        return (
+            f"The CMS accepted none of the {len(media.failed)} image(s), so these "
+            "pages land with no photos. Check the CMS log — a migration it has "
+            "not run is the usual cause — then push again."
+        )
+    return None
+
+
+async def _store_bytes(
+    client: CmsClient,
+    entity_token: str,
+    *,
+    file_bytes: bytes,
+    filename: str,
+    content_type: str,
+) -> tuple[str, bool] | None:
+    """Put these bytes in the entity's library, or find them already there.
+
+    Returns (url, reused). `reused` is a file the library already held with
+    exactly these bytes — on an update re-sending a site's photography, nearly
+    every image — found by asking the CMS for the sha256 before sending
+    anything. The hash is of the bytes as they go on the wire, after coercion,
+    which is what keeps this lookup and the CMS's own dedup in
+    `MediaController::store` keyed on the same thing. A lookup that fails is
+    not an upload that fails: the upload proceeds, and the CMS dedups on its
+    side anyway. The upload retries once on a gateway hiccup; None when the
+    CMS refused the file.
+    """
+    digest = hashlib.sha256(file_bytes).hexdigest()
+    try:
+        existing = await client.lookup_media(entity_token, digest)
+    except CmsApiError as exc:
+        logger.info("Media lookup failed for %s (%s); uploading", filename, exc)
+        existing = None
+    if existing:
+        return existing, True
+    for attempt in range(2):
+        try:
+            url = await client.upload_media(
+                entity_token,
+                file_bytes=file_bytes,
+                filename=filename,
+                content_type=content_type,
+            )
+            return url, False
+        except CmsApiError as exc:
+            if attempt == 0 and exc.status in (502, 503, 504):
+                logger.warning("Upload retry for %s (%s)", filename, exc)
+                continue
+            logger.warning("Upload failed for %s: %s", filename, exc)
+            return None
+    return None
+
+
+async def _upload_media(client: CmsClient, req: PushRequest) -> MediaUpload:
     """
     Walk every page's BuilderElement tree, find image srcs and document hrefs
-    that aren't permanent webtree URLs, upload them, and return
-    ({old_src_or_href: new_url} rewrite map, {IMAGE srcs that failed to
-    resolve}). Document upload failures are not included in the failed set —
-    unlike a broken <img>, a link whose upload failed simply stays hotlinked
-    to its original source, which still works.
+    that aren't permanent webtree URLs, and get each hosted on the CMS — by
+    upload, or by finding the same bytes already in the library
+    (`_store_bytes`). Document upload failures are not included in the failed
+    set — unlike a broken <img>, a link whose upload failed simply stays
+    hotlinked to its original source, which still works.
     """
     rewrites: dict[str, str] = {}
     # Collect unique sources first to avoid uploading the same image twice
@@ -763,7 +899,7 @@ async def _upload_media(
         href for href in documents if _needs_upload_document(href, req.target)
     ]
     if not uploadable and not uploadable_docs:
-        return rewrites, set()
+        return MediaUpload(rewrites, set())
 
     # Resolve + upload concurrently: each image/document is independent, and
     # the wait is dominated by network (download + POST). One shared download
@@ -771,7 +907,7 @@ async def _upload_media(
     sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
     async with httpx.AsyncClient(timeout=20, follow_redirects=True) as download_client:
 
-        async def _upload_one(src: str) -> tuple[str, str] | None:
+        async def _upload_one(src: str) -> tuple[str, str, bool] | None:
             async with sem:
                 try:
                     file_bytes, content_type, filename = await _resolve_to_bytes(
@@ -794,29 +930,16 @@ async def _upload_media(
                     )
                     return None
                 file_bytes, content_type, filename = coerced
-                # Retry once on transient failures (timeout, connection drop).
-                for attempt in range(2):
-                    try:
-                        cdn_url = await client.upload_media(
-                            req.entity_token,
-                            file_bytes=file_bytes,
-                            filename=filename,
-                            content_type=content_type,
-                        )
-                        return src, cdn_url
-                    except CmsApiError as exc:
-                        if attempt == 0 and exc.status in (502, 503, 504):
-                            logger.warning(
-                                "Upload retry for %s (%s)", filename, exc
-                            )
-                            continue
-                        logger.warning(
-                            "Upload failed for %s: %s", src[:80], exc
-                        )
-                        return None
-            return None
+                stored = await _store_bytes(
+                    client,
+                    req.entity_token,
+                    file_bytes=file_bytes,
+                    filename=filename,
+                    content_type=content_type,
+                )
+                return (src, *stored) if stored else None
 
-        async def _upload_one_document(href: str) -> tuple[str, str] | None:
+        async def _upload_one_document(href: str) -> tuple[str, str, bool] | None:
             async with sem:
                 try:
                     file_bytes, content_type, filename = await _resolve_document_to_bytes(
@@ -825,26 +948,14 @@ async def _upload_media(
                 except _ResolveSkip as exc:
                     logger.info("Skipping unresolvable document %s: %s", href[:80], exc)
                     return None
-                for attempt in range(2):
-                    try:
-                        cdn_url = await client.upload_media(
-                            req.entity_token,
-                            file_bytes=file_bytes,
-                            filename=filename,
-                            content_type=content_type,
-                        )
-                        return href, cdn_url
-                    except CmsApiError as exc:
-                        if attempt == 0 and exc.status in (502, 503, 504):
-                            logger.warning(
-                                "Upload retry for %s (%s)", filename, exc
-                            )
-                            continue
-                        logger.warning(
-                            "Upload failed for %s: %s", href[:80], exc
-                        )
-                        return None
-            return None
+                stored = await _store_bytes(
+                    client,
+                    req.entity_token,
+                    file_bytes=file_bytes,
+                    filename=filename,
+                    content_type=content_type,
+                )
+                return (href, *stored) if stored else None
 
         results = await asyncio.gather(
             *(_upload_one(src) for src in uploadable),
@@ -856,16 +967,19 @@ async def _upload_media(
     for res in results:
         if isinstance(res, BaseException):
             logger.warning("Unexpected error in media upload: %s", res)
+    reused = 0
     for res in results:
         if res is not None:
-            rewrites[res[0]] = res[1]
+            src, url, was_reused = res
+            rewrites[src] = url
+            reused += was_reused
     # Uploadable IMAGE srcs with no rewrite couldn't be fetched/stored (404,
     # hotlink block, un-decodable) — they're dead references the caller strips
     # so the published site never renders a broken image. Documents are
     # deliberately excluded: an un-rehosted document link still works (it
     # points at the original source), so it's left as-is, not stripped.
     failed = {src for src in uploadable if src not in rewrites}
-    return rewrites, failed
+    return MediaUpload(rewrites, failed, reused)
 
 
 def _split_css_layers(value: str) -> list[str]:
@@ -1124,14 +1238,28 @@ def _brand_field(brand: Any, name: str) -> Any:
 
 
 async def _push_whatsapp_widget(
-    client: CmsClient, req: PushRequest, report: PushReport
+    client: CmsClient, req: PushRequest, report: PushReport, *, first_push: bool
 ) -> None:
     """Push the discovered WhatsApp click-to-chat config, if there is one.
+
+    First push only. A site that already has pages has an owner who may have
+    set the button up — or switched it off — in the admin since, and an update
+    is pages and design; their settings are kept as they are.
 
     Nothing to push is a success, not a skip with an excuse: most sources do not
     publish a WhatsApp number, and the country code is never inferred from a
     plain phone number.
     """
+    if not first_push:
+        report.record(
+            PushStep(
+                name="whatsapp_widget",
+                ok=True,
+                detail="Skipped — the site's WhatsApp settings are kept as they are",
+            )
+        )
+        return
+
     widget = req.site.whatsapp_widget
 
     if not widget:
@@ -1583,31 +1711,6 @@ def _rewrite_srcs(node: BuilderElement, rewrites: dict[str, str]) -> None:
 # --- CMS content types: template pages + migrated article/event entries ----------
 
 
-# Mirrors the builder's TEMPLATE_DEFAULTS (builder/src/lib/page-management.ts) so
-# templates created here are indistinguishable from ones the builder auto-creates.
-_TEMPLATE_PAGE_DEFAULTS: dict[str, tuple[str, str, str]] = {
-    "article": (
-        "Article Template",
-        "Default layout used to render every published article.",
-        "article-template",
-    ),
-    "event": (
-        "Event Template",
-        "Default layout used to render every published event.",
-        "event-template",
-    ),
-    "articleListing": (
-        "Article Listing Template",
-        "Default layout used to render article index, category, and tag listing pages.",
-        "article-listing-template",
-    ),
-    "eventListing": (
-        "Event Listing Template",
-        "Default layout used to render the event index page.",
-        "event-listing-template",
-    ),
-}
-
 _DEFAULT_ARTICLE_CATEGORY = "News"
 
 # Events with a start but no end get this duration so publishing (which
@@ -1720,36 +1823,74 @@ def _fallback_image_srcs(site: GeneratedSite, limit: int = 3) -> list[str]:
     ][:limit]
 
 
-async def _push_content_types(
-    client: CmsClient, req: PushRequest, report: PushReport
-) -> None:
-    """Create article/event template pages + migrated entries. Never raises;
-    every failure is recorded as a non-fatal step (the site itself is pushed)."""
-    sources = _site_list_sources(req.site)
-    cols = req.collections or ContentCollections()
-    need_articles = "articles" in sources or cols.has_articles
-    need_events = "events" in sources or cols.has_events
-    if not need_articles and not need_events:
-        return
-
-    # Template pages: same contract as the builder's ensureTemplatePages — a
-    # page whose templateFor marks it as the detail/listing layout for that
-    # content type. Created blank; the builder renders its default layout.
+def _wanted_templates(site: GeneratedSite, cols: ContentCollections) -> list[str]:
+    """The templateFor pages the site's list elements and migrated entries need."""
+    sources = _site_list_sources(site)
     wanted: list[str] = []
-    if need_articles:
+    if "articles" in sources or cols.has_articles:
         wanted += ["article", "articleListing"]
-    if need_events:
+    if "events" in sources or cols.has_events:
         # The public /events route renders from the eventListing template and
         # 404s without one.
         wanted += ["event", "eventListing"]
+    return wanted
+
+
+async def _ensure_template_pages(
+    client: CmsClient,
+    req: PushRequest,
+    report: PushReport,
+    existing: list[ExistingPage],
+) -> None:
+    """Create the article/event template pages the site needs and lacks.
+
+    Same contract as the builder's ensureTemplatePages — a page whose
+    templateFor marks it as the detail/listing layout for that content type.
+    Created blank; the builder renders its default layout. One the entity
+    already has is kept as it is, however it has been edited since: it is the
+    owner's article/event design, not this site's. Never raises.
+    """
+    wanted = _wanted_templates(req.site, req.collections or ContentCollections())
+    # Archived templates are the owner's explicit "off", so a reset leaves them
+    # be; every live one is reset, whether or not the new site needs its kind —
+    # the articles and events it renders are kept, so its design follows too.
+    replaceable = (
+        [page for page in existing if page.is_template and not page.archived]
+        if req.replace_templates
+        else []
+    )
+    if not wanted and not replaceable:
+        return
+    have = {page.template_for for page in existing if page.template_for}
+    taken = {page.slug for page in existing}
+    # A page the generated site does not claim, sitting on a template's own
+    # slug, IS that template — read back off the live site's template route
+    # before the crawler learned to skip it. Adopt it rather than leave it
+    # beside a suffixed twin.
+    claimed = {page.slug for page in req.site.pages}
+    adoptable = {
+        page.slug: page
+        for page in existing
+        if not page.is_template and page.slug not in claimed
+    }
     try:
-        existing_pages = await client.list_pages(req.entity_token)
-        have = {p.get("templateFor") for p in existing_pages if p.get("templateFor")}
-        created_templates = 0
+        created = adopted = reset = 0
+        for page in replaceable:
+            await _reset_template(client, req.entity_token, page)
+            reset += 1
         for kind in wanted:
             if kind in have:
                 continue
-            title, description, slug = _TEMPLATE_PAGE_DEFAULTS[kind]
+            title, description, slug = TEMPLATE_PAGE_DEFAULTS[kind]
+            stale = adoptable.get(slug)
+            if stale is not None:
+                await _adopt_as_template(
+                    client, req.entity_token, stale,
+                    kind=kind, title=title, description=description,
+                )
+                adopted += 1
+                continue
+            slug = _free_template_slug(slug, taken)
             await client.create_page(
                 req.entity_token,
                 title=title,
@@ -1757,13 +1898,20 @@ async def _push_content_types(
                 slug=slug,
                 template_for=kind,
             )
-            created_templates += 1
+            taken.add(slug)
+            created += 1
         report.record(
             PushStep(
                 name="template_pages",
                 ok=True,
-                detail=f"{created_templates} template page(s) created",
-                data={"templates": wanted},
+                detail=_describe_templates(created, adopted, reset),
+                data={
+                    "templates": wanted,
+                    "created": created,
+                    "adopted": adopted,
+                    "reset": reset,
+                },
+                warning=_template_draft_warning(created + adopted + reset),
             )
         )
     except CmsApiError as exc:
@@ -1776,7 +1924,155 @@ async def _push_content_types(
             )
         )
 
+
+def _describe_templates(created: int, adopted: int, reset: int = 0) -> str:
+    parts = [f"{created} template page(s) created"]
+    if adopted:
+        parts.append(f"{adopted} adopted from a page already on that slug")
+    if reset:
+        parts.append(f"{reset} reset to the new design")
+    return ", ".join(parts)
+
+
+def _template_draft_warning(touched: int) -> str | None:
+    """What the operator still has to do for a template the push wrote.
+
+    Every template this step writes is left as a BLANK DRAFT, deliberately.
+    The layout is the builder's to build: on opening a blank template it lays
+    one out from the site's own homepage hero (SET_UP_CMS_TEMPLATE →
+    createCmsTemplateSections), which is exactly "the new design", and
+    reproducing that here would mean porting the builder's template and
+    hero-style code. Publishing the blank draft instead would put an empty
+    page on every article, so the live site keeps whatever template it was
+    already serving until the owner publishes the rebuilt one.
+    """
+    if not touched:
+        return None
+    return (
+        f"{touched} article/event template(s) are blank drafts. Open each in the "
+        "builder, which lays it out in the new design, then publish it — the live "
+        "site keeps its current template until you do."
+    )
+
+
+async def _adopt_as_template(
+    client: CmsClient,
+    entity_token: str,
+    page: ExistingPage,
+    *,
+    kind: str,
+    title: str,
+    description: str,
+) -> None:
+    """Make the page already sitting on a template's slug BE that template.
+
+    Cheaper and tidier than creating a suffixed twin beside it: one page, at
+    the slug it belongs on, and nothing stale left for the operator to find.
+
+    Its body is reset to the one the CMS gives a page it has just created,
+    because an article renders from its template's `bodySchema`
+    (webtree-public ContentDetail.vue) — adopting a page that still carries a
+    hero and a CTA would publish every article as a hero and a CTA. What is
+    lost is the generated copy of a page that was never real; its published
+    revisions are untouched, so the CMS can still show what was there.
+
+    A restore first when it is archived: `ensurePageIsEditable` refuses to
+    touch an archived page, and it is the caller's job to know that the page
+    might be one.
+    """
+    base = await _editable_draft_version(client, entity_token, page)
+    result = await client.update_page(
+        entity_token,
+        page.id,
+        base_draft_version=base,
+        title=title,
+        description=description,
+        seo={},
+        template_for=kind,
+    )
+    await _save_blank_body(
+        client, entity_token, page.id, int(result.get("draftVersion") or base + 1)
+    )
+
+
+async def _reset_template(client: CmsClient, entity_token: str, page: ExistingPage) -> None:
+    """Put an existing template back to a blank draft, for the builder to lay
+    out again in the new design (see _template_draft_warning)."""
+    base = await _editable_draft_version(client, entity_token, page)
+    await _save_blank_body(client, entity_token, page.id, base)
+
+
+async def _editable_draft_version(
+    client: CmsClient, entity_token: str, page: ExistingPage
+) -> int:
+    """The page's current draft version, restoring it first when archived.
+
+    `ensurePageIsEditable` refuses an archived page, and every write that
+    follows is a compare-and-swap on the draft version the list endpoint does
+    not carry.
+    """
+    if page.archived:
+        await client.restore_page(entity_token, page.id)
+    current = await client.get_page(entity_token, page.id)
+    return int(current.get("draftVersion") or 1)
+
+
+async def _save_blank_body(
+    client: CmsClient, entity_token: str, page_id: str, base_draft_version: int
+) -> None:
+    await client.save_page_draft(
+        entity_token,
+        page_id,
+        base_draft_version=base_draft_version,
+        body_schema=BLANK_TEMPLATE_BODY,
+    )
+
+
+def _free_template_slug(slug: str, taken: set[str]) -> str:
+    """`slug`, suffixed until no page on this entity holds it.
+
+    A template page is found by its `templateFor`, never by its slug — the CMS
+    routes article and event rendering through PublishedTemplateResolver — so a
+    suffix costs the site nothing.
+
+    It has to exist because a slug is owned by ANY page holding it, archived
+    ones included (`PageSlugService::slugExists` has no status filter). A site
+    pushed before the crawler learned to skip the platform's own routes carries
+    a stale content page at exactly `article-template`, read back off its own
+    live site. Creating the real template then fails SLUG_ALREADY_EXISTS every
+    time — on production only, because only production has that history.
+    """
+    if slug not in taken:
+        return slug
+    # Bounded by construction: one of `len(taken) + 2` candidates is free.
+    return next(
+        candidate
+        for n in range(2, len(taken) + 3)
+        if (candidate := f"{slug}-{n}") not in taken
+    )
+
+
+async def _push_content_entries(
+    client: CmsClient, req: PushRequest, report: PushReport, *, first_push: bool
+) -> None:
+    """Create the migrated article/event entries. Never raises; every failure
+    is recorded as a non-fatal step (the site itself is pushed).
+
+    First push only. An update keeps the site's articles and events exactly as
+    they are — re-creating the migrated ones would duplicate every post the
+    owner already has (the slug retry would file them as `post-2`).
+    """
+    cols = req.collections or ContentCollections()
     if not cols.has_articles and not cols.has_events:
+        return
+    if not first_push:
+        report.record(
+            PushStep(
+                name="content_entries",
+                ok=True,
+                detail="Skipped — the site's articles and events are kept as they are",
+            )
+        )
         return
 
     # Published articles must reference an existing category.

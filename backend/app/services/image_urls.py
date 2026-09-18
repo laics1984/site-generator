@@ -15,6 +15,7 @@ imports `logo_extraction`, so the dependency has to point this way.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 from urllib.parse import unquote, urljoin, urlparse
 
 from bs4 import Tag
@@ -376,3 +377,39 @@ def tag_classes(tag: Tag) -> str:
     return " ".join(
         tag.get("class") if isinstance(tag.get("class"), list) else []
     ).lower()
+
+
+if TYPE_CHECKING:  # pragma: no cover — annotation only
+    from app.models.content_blocks import ImageMetadata
+
+
+# --- identity --------------------------------------------------------------------
+
+# Pexels serves every photo under a stable numeric id, and the CMS keeps the
+# original filename (timestamp-prefixed) when the push re-hosts one, so a site
+# that was itself generated here shows the same photo at two URLs — its
+# og:image on images.pexels.com and the copy on the asset host.
+_PEXELS_PHOTO_RE = re.compile(r"pexels-photo-(\d+)", re.IGNORECASE)
+
+
+def photo_identity(url: str) -> str | None:
+    """A URL-level identity for a photo whose file naming carries one, else None."""
+    match = _PEXELS_PHOTO_RE.search(url or "")
+    return f"pexels:{match.group(1)}" if match else None
+
+
+def image_identity(meta: "ImageMetadata") -> str:
+    """The one key that says "this picture": the photo id when the URL names
+    one, the bytes when the pixel pass read them, the URL otherwise.
+
+    Every consumer that must not show a picture twice — the resolver's used
+    set, the poster placer's grouping — keys on this rather than on the URL.
+
+    The id outranks the bytes, which is the opposite of what it looks like it
+    should be. Bytes are proof of sameness but not of difference: the CMS
+    re-encodes a photo when the push re-hosts it, so webtree.my's og:image and
+    its own copy of that same Pexels photo hash differently and the hash
+    actively DEFEATS the id. A publisher's id is a claim about the picture, a
+    hash is a claim about one encoding of it.
+    """
+    return photo_identity(meta.url) or meta.content_hash or meta.url

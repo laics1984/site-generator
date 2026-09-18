@@ -530,15 +530,53 @@ export interface CmsTarget {
   is_remote: boolean
 }
 
+/** One site the signed-in CMS account owns or manages. */
+export interface CmsSite {
+  /** What a push is keyed on — the same token the admin shows under settings. */
+  entity_api_token: string
+  entity_name: string
+  entity_url: string | null
+  public_url: string | null
+  favicon_url: string | null
+  role: 'owner' | 'manager'
+}
+
 export interface CmsConnectionTest {
   ok: boolean
+  /** Empty when the CMS could not list them — `sites_error` then says why and
+   * the drawer asks for a token instead. */
+  sites: CmsSite[]
+  sites_error?: string | null
+}
+
+/** What a push does to one of the entity's pages. Mirrors backend
+ * services/cms_sync.py: `update` lands on the page with the same slug,
+ * `create` adds one, `archive` takes a page the new site lacks off the live
+ * site (restorable in the admin, never deleted). */
+export type CmsPageAction = 'update' | 'create' | 'archive'
+
+export interface CmsPageChange {
+  action: CmsPageAction
+  slug: string
+  title: string
+  /** An archived page brought back before it is updated. */
+  restore: boolean
+}
+
+/** POST /api/cms/plan — the sync a push into an existing site would run. */
+export interface CmsSyncPlan {
+  /** No content pages yet: the migration extras (articles, events, the
+   * WhatsApp button) go in too, as they always have for a fresh entity. */
+  first_push: boolean
   existing_page_count: number
-  existing_pages: Array<{
-    id: string
-    title: string
-    slug: string
-    isHomepage: boolean
-  }>
+  changes: CmsPageChange[]
+  /** templateFor values the site already has — kept as they are, unless the
+   * push resets them (PushPayload.replaceTemplates). */
+  template_pages: string[]
+  /** Generated pages a template page already renders — left to it, not created. */
+  template_routes: string[]
+  /** Generated slug → the slug it will be published at, where they differ. */
+  renamed_slugs: Record<string, string>
 }
 
 export interface CmsPushStep {

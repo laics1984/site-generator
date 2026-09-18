@@ -40,6 +40,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = settings.cms_timeout_seconds
 _MEDIA_UPLOAD_TIMEOUT = settings.cms_media_upload_timeout_seconds  # large uploads are slow
 
+# The most pages one GET /pages answers with (ListPagesRequest caps perPage at 100).
+_PAGE_LIST_SIZE = 100
+
 
 class CmsApiError(Exception):
     """Raised when a CMS API call returns a non-2xx response."""
@@ -62,6 +65,10 @@ class CmsClient:
     _builder_cookies: dict[str, str] = field(default_factory=dict, repr=False)
     # long-lived connection pool shared by every JWT call + media upload
     _http: httpx.AsyncClient | None = field(default=None, repr=False)
+    # False once GET /api/file/lookup answered a bare 404 — an API deployed
+    # before the route existed. Remembered so a push against it pays one probe,
+    # not one per image, and uploads as it always did.
+    _media_lookup_supported: bool = field(default=True, repr=False)
 
     # --- factory ---------------------------------------------------------------
 
@@ -152,16 +159,164 @@ class CmsClient:
                 )
             return data
 
-    # --- pages -----------------------------------------------------------------
+    async def list_entities(self) -> list[dict[str, Any]]:
+        """GET /api/entities — the sites the signed-in user owns or manages.
 
-    async def list_pages(self, entity_token: str) -> list[dict[str, Any]]:
-        async with self._wrap_request("list_pages"):
-            url = f"{self.base_url}/api/entities/{entity_token}/pages"
+        Each row carries the `entity_api_token` a push is keyed on, which is
+        what lets the publish drawer offer a site picker instead of asking the
+        operator to go and find the token in the admin.
+        """
+        async with self._wrap_request("list_entities"):
+            url = f"{self.base_url}/api/entities"
             resp = await self._http_client().get(url, headers=self._jwt_headers())
             body = _safe_json(resp)
             if resp.status_code != 200:
-                raise CmsApiError(resp.status_code, f"List pages failed: {resp.text[:200]}", response_body=body)
-            return body.get("data") or []
+                raise CmsApiError(
+                    resp.status_code,
+                    f"List sites failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:200]}",
+                    response_body=body,
+                )
+            data = body.get("data")
+            return data if isinstance(data, list) else []
+
+    # --- pages -----------------------------------------------------------------
+
+    async def list_pages(
+        self, entity_token: str, *, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """GET /pages — every page of the entity, walking the CMS's pagination.
+
+        The endpoint pages at 20 by default and never more than 100 at a time,
+        so one call only ever saw a site's first 20 pages. Its default status
+        filter also hides archived pages; ``status="all"`` lists those too,
+        which a sync needs — an archived page still owns its slug.
+        """
+        rows: list[dict[str, Any]] = []
+        page_number = 1
+        async with self._wrap_request("list_pages"):
+            url = f"{self.base_url}/api/entities/{entity_token}/pages"
+            while True:
+                params: dict[str, Any] = {"perPage": _PAGE_LIST_SIZE, "page": page_number}
+                if status:
+                    params["status"] = status
+                resp = await self._http_client().get(
+                    url, params=params, headers=self._jwt_headers()
+                )
+                body = _safe_json(resp)
+                if resp.status_code != 200:
+                    raise CmsApiError(
+                        resp.status_code,
+                        f"List pages failed: {resp.text[:200]}",
+                        response_body=body,
+                    )
+                batch = body.get("data") or []
+                rows.extend(batch)
+                total = (body.get("meta") or {}).get("total")
+                if not batch or total is None or len(rows) >= int(total):
+                    return rows
+                page_number += 1
+
+    async def get_page(self, entity_token: str, page_id: str) -> dict[str, Any]:
+        """GET /pages/{id} — one page's metadata, including its ``draftVersion``.
+
+        The list endpoint omits the draft version, and every write to an
+        existing page (PATCH metadata, PUT draft) is a compare-and-swap on it.
+        """
+        async with self._wrap_request("get_page"):
+            url = f"{self.base_url}/api/entities/{entity_token}/pages/{page_id}"
+            resp = await self._http_client().get(url, headers=self._jwt_headers())
+            body = _safe_json(resp)
+            if resp.status_code != 200:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Get page failed: {_extract_error(body) or resp.text[:200]}",
+                    response_body=body,
+                )
+            return body.get("data") or body
+
+    async def update_page(
+        self,
+        entity_token: str,
+        page_id: str,
+        *,
+        base_draft_version: int,
+        title: str,
+        description: str | None,
+        seo: dict[str, Any],
+        template_for: str | None = None,
+    ) -> dict[str, Any]:
+        """PATCH /pages/{id} — title, description and SEO of an existing page.
+
+        ``template_for`` marks the page as an article/event template, which is
+        how a page already sitting on a template's slug is adopted rather than
+        left beside a suffixed twin (push_orchestrator._adopt_as_template).
+
+        Bumps the draft version the way a draft save does, so the returned
+        ``draftVersion`` is what the PUT /draft that follows must send. The slug
+        is deliberately not sent: the page was matched on it.
+        """
+        async with self._wrap_request("update_page"):
+            url = f"{self.base_url}/api/entities/{entity_token}/pages/{page_id}"
+            payload: dict[str, Any] = {
+                "baseDraftVersion": base_draft_version,
+                "title": title,
+                "description": description,
+                "seo": seo,
+            }
+            if template_for is not None:
+                payload["templateFor"] = template_for
+            resp = await self._http_client().patch(
+                url, json=payload, headers=self._jwt_headers()
+            )
+            body = _safe_json(resp)
+            if resp.status_code >= 400:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Update page failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:300]}",
+                    response_body=body,
+                )
+            return body.get("data") or body
+
+    async def restore_page(self, entity_token: str, page_id: str) -> dict[str, Any]:
+        """POST /pages/{id}/restore — bring an archived page back.
+
+        It returns as published when it has a published revision, as a draft
+        otherwise; either way it is editable again, which an archived page is
+        not, and it still owns the slug it always had.
+        """
+        async with self._wrap_request("restore_page"):
+            url = f"{self.base_url}/api/entities/{entity_token}/pages/{page_id}/restore"
+            resp = await self._http_client().post(url, headers=self._jwt_headers())
+            body = _safe_json(resp)
+            if resp.status_code >= 400:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Restore page failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:300]}",
+                    response_body=body,
+                )
+            return body.get("data") or body
+
+    async def archive_page(self, entity_token: str, page_id: str) -> None:
+        """DELETE /pages/{id} — archive, not delete.
+
+        The page keeps its revisions and its slug, drops off the live site, and
+        the admin's archive can restore it. Permanent deletion is a separate
+        route this client deliberately does not call.
+        """
+        async with self._wrap_request("archive_page"):
+            url = f"{self.base_url}/api/entities/{entity_token}/pages/{page_id}"
+            resp = await self._http_client().delete(url, headers=self._jwt_headers())
+            if resp.status_code >= 400:
+                body = _safe_json(resp)
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Archive page failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:300]}",
+                    response_body=body,
+                )
 
     async def create_page(
         self,
@@ -325,6 +480,40 @@ class CmsClient:
             if not isinstance(cdn_url, str) or not cdn_url:
                 raise CmsApiError(500, f"Media upload response missing URL: {body}", response_body=body)
             return cdn_url
+
+    async def lookup_media(self, entity_token: str, sha256: str) -> str | None:
+        """GET /api/file/lookup — the URL of a file this site already holds with
+        exactly these bytes, or None.
+
+        Asked before every upload, so an update that re-sends a site's
+        photography files nothing it already has. A 204 is a miss. A bare 404
+        is an API without the route, remembered for the life of the client (see
+        `_media_lookup_supported`); a 404 that carries the CMS's own error
+        shape is the API answering about the entity, and is raised like any
+        other refusal.
+        """
+        if not self._media_lookup_supported:
+            return None
+        async with self._wrap_request("lookup_media"):
+            url = f"{self.base_url}/api/file/lookup"
+            resp = await self._http_client().get(
+                url, params={"e": entity_token, "hash": sha256}, headers=self._jwt_headers()
+            )
+            if resp.status_code == 204:
+                return None
+            body = _safe_json(resp)
+            if resp.status_code == 404 and not isinstance(body.get("error"), dict):
+                self._media_lookup_supported = False
+                return None
+            if resp.status_code >= 400:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Media lookup failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:200]}",
+                    response_body=body,
+                )
+            found = body.get("i")
+            return found if isinstance(found, str) and found else None
 
     async def set_entity_favicon(
         self,

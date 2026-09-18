@@ -33,6 +33,7 @@ import httpx
 
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
+from app.services.image_urls import image_identity, photo_identity
 from app.services.image_match import (
     _UNPINNABLE_VISION_KINDS,
     SlotUsage,
@@ -205,7 +206,11 @@ class ImageResolver:
         else:
             self._pool = []
 
-        self._used_urls: set[str] = set()
+        self._pool_by_url = {meta.url: meta for meta in self._pool}
+        # URLs and content identities (image_urls.image_identity) of scraped
+        # images already placed on the site: one picture is one picture,
+        # whichever URL a page happens to reach it by.
+        self._used: set[str] = set()
         self._pexels = pexels or get_pexels_client()
         self._attributions: list[str] = []
         self._seen_pexels_urls: set[str] = set()
@@ -300,7 +305,29 @@ class ImageResolver:
         """Reserve scraped URLs already placed by the ref-binding pass
         (services/image_refs.py), so slot resolution won't re-pick them and
         render the same photo twice on a page."""
-        self._used_urls.update(urls)
+        for url in urls:
+            self._reserve(url)
+
+    def _reserve(self, url: str, meta: ImageMetadata | None = None) -> None:
+        """Reserve a placed photo under its URL AND its content identity.
+
+        The identity has to survive a URL the pool has never seen. A ref the
+        LLM bound arrives here as the URL written into the tree, which is not
+        always the pool's spelling of it — Pexels serves the same photo at
+        `…&h=650` and `…&h=650&w=940`, so the pool lookup missed, only the raw
+        URL was reserved, and webtree.my's home page used that photo as its
+        hero background AND a feature card. `photo_identity` reads the id out
+        of the URL itself, so a spelling the pool lacks still reserves the
+        picture.
+        """
+        self._used.add(url)
+        meta = meta or self._pool_by_url.get(url)
+        identity = image_identity(meta) if meta is not None else photo_identity(url)
+        if identity:
+            self._used.add(identity)
+
+    def _is_used(self, meta: ImageMetadata) -> bool:
+        return meta.url in self._used or image_identity(meta) in self._used
 
     @property
     def attributions(self) -> list[str]:
@@ -387,7 +414,7 @@ class ImageResolver:
                     meta, slot_usage, allow_portrait=allow_portrait
                 )
             ):
-                self._used_urls.add(pinned_url)
+                self._reserve(pinned_url, meta)
                 lum, band, focal_y = await self._sampled_fields(
                     pinned_url, meta.dominant_color if meta else None, slot_usage
                 )
@@ -423,7 +450,7 @@ class ImageResolver:
                 min_long_edge=min_long_edge, allow_portrait=allow_portrait,
             )
             if picked is not None:
-                self._used_urls.add(picked.url)
+                self._reserve(picked.url, picked)
                 # Carry the band from the scraper's colour hint when it has one,
                 # else read it off the pixels for a full-bleed slot; None for
                 # everything else → luminance pass applies the §8.4 light default.
@@ -728,7 +755,7 @@ class ImageResolver:
         """
         candidates = [
             c for c in self._pool
-            if c.url not in self._used_urls and _looks_like_image(c.url)
+            if not self._is_used(c) and _looks_like_image(c.url)
             and not _below_hero_bg_min(c, min_long_edge)
             # Checked here as well as in the ranker: the page-local size
             # fallback below bypasses ranking.
@@ -833,7 +860,7 @@ class ImageResolver:
         is exactly what a CSS background scrape returns.
         """
         def _qualifies(c: ImageMetadata) -> bool:
-            if c.source_usage != "css_background" or c.url in self._used_urls:
+            if c.source_usage != "css_background" or self._is_used(c):
                 return False
             if not _looks_like_image(c.url):
                 return False

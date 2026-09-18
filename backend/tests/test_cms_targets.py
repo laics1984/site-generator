@@ -215,6 +215,16 @@ class TargetsEndpointTest(_TargetSettings):
                 {"email": "a@b.c", "password": "x", "target": "staging"},
             ),
             (
+                "/api/cms/plan",
+                {
+                    "site": _MINIMAL_SITE,
+                    "email": "a@b.c",
+                    "password": "x",
+                    "entity_token": "tok",
+                    "target": "staging",
+                },
+            ),
+            (
                 "/api/cms/push",
                 {"site": _MINIMAL_SITE, "email": "a@b.c", "password": "x", "target": "staging"},
             ),
@@ -232,13 +242,138 @@ class TargetsEndpointTest(_TargetSettings):
             seen.append(self_.base_url)
             return "jwt"
 
-        with patch.object(CmsClient, "login", new=_login):
+        with (
+            patch.object(CmsClient, "login", new=_login),
+            patch.object(CmsClient, "list_entities", new=AsyncMock(return_value=[])),
+        ):
             resp = self.client.post(
                 "/api/cms/test-connection",
                 json={"email": "a@b.c", "password": "x", "target": "remote"},
             )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(seen, ["https://app-api.example.com"])
+
+
+class ConnectTest(_TargetSettings):
+    """Connecting verifies the login and lists the account's sites, so the
+    drawer can offer a picker instead of asking for an entity API token."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.client = TestClient(app)
+
+    def _connect(self) -> dict:
+        return self.client.post(
+            "/api/cms/test-connection", json={"email": "a@b.c", "password": "x"}
+        ).json()
+
+    def test_lists_the_sites_the_account_can_push_into(self) -> None:
+        rows = [
+            {
+                "entity_id": "1",
+                "entity_name": "Acme",
+                "entity_url": "https://acme.example",
+                "entity_api_token": "tok-acme",
+                "public_url": "https://acme.sites.example",
+                "favicon_url": None,
+                "role": "owner",
+                "site_key": "ignored",
+            },
+            # A row with no token cannot be pushed into, so it is not offered.
+            {"entity_id": "2", "entity_name": "Broken", "entity_api_token": None},
+        ]
+        with (
+            patch.object(CmsClient, "login", new=AsyncMock(return_value="jwt")),
+            patch.object(CmsClient, "list_entities", new=AsyncMock(return_value=rows)),
+        ):
+            body = self._connect()
+        self.assertTrue(body["ok"])
+        self.assertIsNone(body["sites_error"])
+        self.assertEqual(
+            body["sites"],
+            [
+                {
+                    "entity_api_token": "tok-acme",
+                    "entity_name": "Acme",
+                    "entity_url": "https://acme.example",
+                    "public_url": "https://acme.sites.example",
+                    "favicon_url": None,
+                    "role": "owner",
+                }
+            ],
+        )
+
+    def test_a_cms_that_cannot_list_sites_still_connects(self) -> None:
+        """The list is advisory: the drawer falls back to a token field."""
+        with (
+            patch.object(CmsClient, "login", new=AsyncMock(return_value="jwt")),
+            patch.object(
+                CmsClient,
+                "list_entities",
+                new=AsyncMock(side_effect=CmsApiError(404, "no such route")),
+            ),
+        ):
+            body = self._connect()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["sites"], [])
+        self.assertIn("no such route", body["sites_error"])
+
+    def test_a_failed_login_is_the_cms_status(self) -> None:
+        with patch.object(
+            CmsClient,
+            "login",
+            new=AsyncMock(side_effect=CmsApiError(401, "Login failed: bad password")),
+        ):
+            resp = self.client.post(
+                "/api/cms/test-connection", json={"email": "a@b.c", "password": "x"}
+            )
+        self.assertEqual(resp.status_code, 401)
+
+
+class PlanEndpointTest(_TargetSettings):
+    """The plan the drawer shows is the plan the push runs — one function."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.client = TestClient(app)
+
+    def test_reports_the_sync_for_the_named_site(self) -> None:
+        existing = [
+            {"id": "h", "slug": "", "title": "Home", "status": "published", "isHomepage": True},
+            {"id": "c", "slug": "careers", "title": "Careers", "status": "published"},
+        ]
+        with (
+            patch.object(CmsClient, "login", new=AsyncMock(return_value="jwt")),
+            patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=existing)),
+        ):
+            resp = self.client.post(
+                "/api/cms/plan",
+                json={
+                    "site": _MINIMAL_SITE,
+                    "email": "a@b.c",
+                    "password": "x",
+                    "entity_token": "tok",
+                },
+            )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertFalse(body["first_push"])
+        self.assertEqual(body["existing_page_count"], 2)
+        self.assertEqual(
+            [(c["action"], c["slug"]) for c in body["changes"]],
+            [("update", ""), ("archive", "careers")],
+        )
+        self.assertEqual(body["renamed_slugs"], {})
+
+    def test_a_blank_token_is_refused_before_any_login(self) -> None:
+        login = AsyncMock(return_value="jwt")
+        with patch.object(CmsClient, "login", new=login):
+            resp = self.client.post(
+                "/api/cms/plan",
+                json={"site": _MINIMAL_SITE, "email": "a@b.c", "password": "x", "entity_token": ""},
+            )
+        self.assertEqual(resp.status_code, 422)
+        login.assert_not_called()
 
 
 class AdminLinkTest(_TargetSettings):

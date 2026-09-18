@@ -189,9 +189,12 @@ class MonogramSurvivesUploadTest(unittest.TestCase):
             entity_token="entity-token",
         )
         client = AsyncMock()
+        client.lookup_media.return_value = None
         client.upload_media.return_value = "https://cms.example.com/storage/mono.svg"
 
-        rewrites, failed = asyncio.run(_upload_media(client, req))
+        media = asyncio.run(_upload_media(client, req))
+
+        rewrites, failed = media.rewrites, media.failed
 
         self.assertEqual(failed, set())
         self.assertEqual(rewrites.get(src), "https://cms.example.com/storage/mono.svg")

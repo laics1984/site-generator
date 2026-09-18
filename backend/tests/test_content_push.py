@@ -23,6 +23,7 @@ from app.models.builder_schema import (
     PageSeo,
 )
 from app.services.cms_client import CmsClient
+from app.services.cms_sync import existing_pages
 from app.services.content_collections import (
     ArticleEntry,
     ContentCollections,
@@ -31,7 +32,8 @@ from app.services.content_collections import (
 from app.services.push_orchestrator import (
     PushReport,
     PushRequest,
-    _push_content_types,
+    _ensure_template_pages,
+    _push_content_entries,
     _site_list_sources,
 )
 
@@ -226,13 +228,10 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_template_pages_created_for_detected_lists(self):
         create_page = AsyncMock(return_value={"id": "p"})
-        with (
-            patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=[])),
-            patch.object(CmsClient, "create_page", new=create_page),
-        ):
+        with patch.object(CmsClient, "create_page", new=create_page):
             client = CmsClient(base_url="http://cms.test")
             report = PushReport()
-            await _push_content_types(client, self._request(), report)
+            await _ensure_template_pages(client, self._request(), report, [])
 
         kinds = {call.kwargs["template_for"] for call in create_page.call_args_list}
         self.assertEqual(kinds, {"article", "articleListing", "event", "eventListing"})
@@ -247,13 +246,44 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
             {"id": "3", "templateFor": "event"},
             {"id": "4", "templateFor": "eventListing"},
         ]
+        with patch.object(CmsClient, "create_page", new=create_page):
+            client = CmsClient(base_url="http://cms.test")
+            await _ensure_template_pages(
+                client, self._request(), PushReport(), existing_pages(existing)
+            )
+        create_page.assert_not_called()
+
+    async def test_an_update_keeps_the_sites_articles_and_events(self):
+        """Re-creating the migrated entries on a site that already has pages
+        would duplicate every post its owner already has."""
+        collections = ContentCollections(
+            articles=[
+                ArticleEntry(
+                    title="Post",
+                    slug="post",
+                    excerpt="x",
+                    body_html="<p>x</p>",
+                    source_url="https://src.example/blog/post",
+                )
+            ]
+        )
+        create_category = AsyncMock(return_value="news")
+        create_article = AsyncMock(return_value="a-1")
         with (
-            patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=existing)),
-            patch.object(CmsClient, "create_page", new=create_page),
+            patch.object(CmsClient, "create_category", new=create_category),
+            patch.object(CmsClient, "create_article", new=create_article),
         ):
             client = CmsClient(base_url="http://cms.test")
-            await _push_content_types(client, self._request(), PushReport())
-        create_page.assert_not_called()
+            report = PushReport()
+            await _push_content_entries(
+                client, self._request(collections), report, first_push=False
+            )
+
+        create_category.assert_not_called()
+        create_article.assert_not_called()
+        step = next(s for s in report.steps if s.name == "content_entries")
+        self.assertTrue(step.ok)
+        self.assertIn("kept", step.detail)
 
     async def test_entries_pushed_published_and_draft(self):
         collections = ContentCollections(
@@ -294,8 +324,6 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
             return (_PNG, "image/png", "cover.png")
 
         with (
-            patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=[])),
-            patch.object(CmsClient, "create_page", new=AsyncMock(return_value={"id": "p"})),
             patch.object(CmsClient, "create_category", new=AsyncMock(return_value="news")),
             patch.object(CmsClient, "create_article", new=create_article),
             patch.object(CmsClient, "create_event", new=create_event),
@@ -306,7 +334,9 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
         ):
             client = CmsClient(base_url="http://cms.test")
             report = PushReport()
-            await _push_content_types(client, self._request(collections), report)
+            await _push_content_entries(
+                client, self._request(collections), report, first_push=True
+            )
 
         # Article: published with category + image.
         art_kwargs = create_article.call_args.kwargs
@@ -371,8 +401,6 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
                 in_flight["now"] -= 1
 
         with (
-            patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=[])),
-            patch.object(CmsClient, "create_page", new=AsyncMock(return_value={"id": "p"})),
             patch.object(CmsClient, "create_category", new=AsyncMock(return_value="news")),
             patch.object(CmsClient, "create_article", new=AsyncMock(return_value="a-1")),
             patch(
@@ -382,7 +410,9 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
         ):
             client = CmsClient(base_url="http://cms.test")
             report = PushReport()
-            await _push_content_types(client, self._request(collections), report)
+            await _push_content_entries(
+                client, self._request(collections), report, first_push=True
+            )
 
         self.assertGreater(in_flight["max"], 1)
         self.assertLessEqual(in_flight["max"], po._PUSH_CONCURRENCY)
@@ -426,8 +456,6 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
             return (_PNG, "image/png", "cover.png")
 
         with (
-            patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=[])),
-            patch.object(CmsClient, "create_page", new=AsyncMock(return_value={"id": "p"})),
             patch.object(CmsClient, "create_category", new=AsyncMock(return_value="news")),
             patch.object(CmsClient, "create_article", new=flaky_create_article),
             patch(
@@ -437,7 +465,9 @@ class ContentTypesPushTest(unittest.IsolatedAsyncioTestCase):
         ):
             client = CmsClient(base_url="http://cms.test")
             report = PushReport()
-            await _push_content_types(client, self._request(collections), report)
+            await _push_content_entries(
+                client, self._request(collections), report, first_push=True
+            )
 
         self.assertEqual(calls, ["bad", "good"])
         step = next(s for s in report.steps if s.name == "content_entries")

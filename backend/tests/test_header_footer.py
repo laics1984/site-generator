@@ -767,3 +767,113 @@ class CompactHeaderContractTest(unittest.TestCase):
                     # place it eats the free space `space-between` needs.
                     self.assertEqual(override.get("marginLeft"), "0")
                     self.assertEqual(override.get("marginRight"), "0")
+
+
+class FooterMarkTest(unittest.TestCase):
+    """The footer shows the logo OR the wordmark, never both, and judges the
+    logo by its own colours against the band rather than by a light/dark
+    majority vote. WebTree's white-and-green wordmark is under 60% near-white,
+    so `logo_is_light` called it dark and the footer printed "WebTree" under a
+    logo that read perfectly well on its dark band."""
+
+    def _brand(self, palette, *, logo_is_light=False):
+        return BrandIdentity(
+            name="WebTree",
+            logo_url="https://example.com/logo.png",
+            extracted_palette=palette,
+            logo_source="logo",
+            logo_render_ok=True,
+            logo_is_light=logo_is_light,
+        )
+
+    def _dark_footer(self, brand, theme):
+        """The mega grid on the dark secondary band — grouped pages keep it mega."""
+        from app.models.builder_schema import PageNode
+        grouped = [PageNode(slug="services", title="Services",
+                            children=[PageNode(slug="services/web", title="Web")])]
+        return build_footer(brand, theme, nav_items=[], page_tree=grouped, archetype="mega")
+
+    def test_a_mark_that_reads_on_the_band_stands_alone(self):
+        theme = build_theme("#62a812")
+        footer = self._dark_footer(self._brand(["#62a812", "#ffffff"]), theme)
+        self.assertIsNotNone(_find(footer, "Brand Logo"))
+        self.assertIsNone(_find(footer, "Brand"))
+
+    def test_a_mark_that_would_vanish_gives_way_to_the_wordmark(self):
+        theme = build_theme("#62a812")
+        near_band = theme.palette.secondary  # the band's own colour: invisible on it
+        footer = self._dark_footer(self._brand([near_band]), theme)
+        self.assertIsNone(_find(footer, "Brand Logo"))
+        self.assertIsNotNone(_find(footer, "Brand"))
+
+    def test_without_a_palette_the_light_dark_reading_still_decides(self):
+        theme = build_theme("#62a812")
+        # A light mark on the dark band reads; a dark one does not.
+        light = self._dark_footer(self._brand([], logo_is_light=True), theme)
+        dark = self._dark_footer(self._brand([], logo_is_light=False), theme)
+        self.assertIsNotNone(_find(light, "Brand Logo"))
+        self.assertIsNone(_find(dark, "Brand Logo"))
+        self.assertIsNotNone(_find(dark, "Brand"))
+
+
+class FlatSiteFooterTest(unittest.TestCase):
+    """The mega grid is columns of grouped pages; a flat site gives it one row
+    pushed to the right edge. It degrades to the centred stack, the way the
+    CTA banner degrades without a CTA."""
+
+    def _brand(self):
+        return BrandIdentity(name="WebTree", extracted_palette=["#62a812"], mood="technical")
+
+    def test_a_flat_site_gets_the_centred_stack(self):
+        from app.models.builder_schema import PageNode
+        theme = build_theme("#62a812")
+        flat = [PageNode(slug="services", title="Services"), PageNode(slug="about", title="About")]
+        footer = build_footer(self._brand(), theme, nav_items=[], page_tree=flat, archetype="mega")
+        self.assertIsNotNone(_find(footer, "Footer stack"))
+        self.assertIsNone(_find(footer, "Footer grid"))
+
+    def test_a_flat_site_keeps_its_closing_cta_while_centring(self):
+        """The degrade must not cost the site its footer CTA — the centred
+        footer carries an optional banner of its own."""
+        from app.models.builder_schema import PageNode
+        theme = build_theme("#62a812")
+        flat = [PageNode(slug="services", title="Services")]
+        footer = build_footer(
+            self._brand(), theme, nav_items=[], page_tree=flat,
+            archetype="cta-banner", primary_cta=("Start a Project", "/contact"),
+        )
+        self.assertIsNotNone(_find(footer, "Footer stack"))
+        self.assertIsNone(_find(footer, "Footer grid"))
+        banner = _find(footer, "Footer CTA banner")
+        self.assertIsNotNone(banner)
+        self.assertEqual(banner.styles["alignItems"], "center")
+        self.assertEqual(_find(footer, "Footer CTA").content.innerText, "Start a Project")
+
+    def test_a_centred_footer_chosen_outright_has_no_banner(self):
+        """`has_cta` gates it: a site the design brain gave minimal-centered
+        was never promised a CTA."""
+        theme = build_theme("#62a812")
+        footer = build_footer(self._brand(), theme, nav_items=[], archetype="minimal-centered")
+        self.assertIsNone(_find(footer, "Footer CTA banner"))
+
+    def test_the_flat_menu_is_actually_centred(self):
+        """`text-align: center` cannot centre it: a flat footer menu renders as
+        `.wt-menu`, a flex row, so the main axis is what positions the links —
+        and they sat flush left under a centred logo."""
+        from app.models.builder_schema import PageNode
+        theme = build_theme("#62a812")
+        footer = build_footer(
+            self._brand(), theme, nav_items=[],
+            page_tree=[PageNode(slug="services", title="Services")], archetype="mega",
+        )
+        menu = _find_type(_find(footer, "Footer stack"), "menu")
+        self.assertEqual(menu.styles["justifyContent"], "center")
+        self.assertEqual(menu.styles["textAlign"], "center")
+
+    def test_grouped_pages_keep_the_grid(self):
+        from app.models.builder_schema import PageNode
+        theme = build_theme("#62a812")
+        grouped = [PageNode(slug="services", title="Services",
+                            children=[PageNode(slug="services/web", title="Web")])]
+        footer = build_footer(self._brand(), theme, nav_items=[], page_tree=grouped, archetype="mega")
+        self.assertIsNotNone(_find(footer, "Footer grid"))

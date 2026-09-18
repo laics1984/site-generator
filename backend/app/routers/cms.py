@@ -2,7 +2,8 @@
 CMS push endpoints — kicks off / inspects a push into the webtree CMS.
 
 `GET  /api/cms/targets`         — which CMS installs this generator can push to
-`POST /api/cms/test-connection` — verify creds + entity access without writing
+`POST /api/cms/test-connection` — verify creds and list the account's sites
+`POST /api/cms/plan`            — what a push into an existing site would do
 `POST /api/cms/push`            — run the orchestrator and return a PushReport
 
 A request picks its destination by NAME, never by URL — see
@@ -27,7 +28,7 @@ from app.services.cms_targets import (
     available_targets,
     resolve_target,
 )
-from app.services.push_orchestrator import PushRequest, push_site
+from app.services.push_orchestrator import PushRequest, inspect_entity, push_site
 
 router = APIRouter(prefix="/api/cms", tags=["cms"])
 
@@ -78,12 +79,9 @@ async def list_targets() -> list[dict[str, Any]]:
     ]
 
 
-class TestConnectionRequest(BaseModel):
+class ConnectRequest(BaseModel):
     email: str
     password: str
-    # Empty when the user intends to create a brand-new entity — we then only
-    # verify the login.
-    entity_token: str = ""
     # Which CMS to test against. A NAME from GET /targets, never a URL: this
     # endpoint forwards the caller's credentials, so accepting a URL would make
     # an unauthenticated local endpoint a credential-forwarding proxy to any
@@ -91,14 +89,32 @@ class TestConnectionRequest(BaseModel):
     target: str | None = None
 
 
-@router.post("/test-connection")
-async def test_connection(payload: TestConnectionRequest) -> dict[str, Any]:
-    """
-    Verify CMS creds + (when given) that the user has access to the entity.
-    Returns the entity's existing page count so the UI can warn if not empty.
+def _site_summary(entity: dict[str, Any]) -> dict[str, Any]:
+    """What the drawer needs to pick a site: identity, address, role.
 
-    With no entity_token (create-new-entity mode) we just confirm the login
-    succeeds — there's no entity to inspect yet.
+    The token rides along because it is what a push is keyed on. It reveals
+    nothing the signed-in user cannot already read: the admin shows it to a
+    site's owner under settings, and the CMS lists only sites this account
+    owns or manages.
+    """
+    return {
+        "entity_api_token": entity.get("entity_api_token"),
+        "entity_name": entity.get("entity_name"),
+        "entity_url": entity.get("entity_url"),
+        "public_url": entity.get("public_url"),
+        "favicon_url": entity.get("favicon_url"),
+        "role": entity.get("role"),
+    }
+
+
+@router.post("/test-connection")
+async def test_connection(payload: ConnectRequest) -> dict[str, Any]:
+    """Verify the CMS login and list the sites the account can push into.
+
+    The site list is advisory: it is what lets the drawer offer a picker
+    instead of a token field, so a CMS that cannot produce one (an older build
+    without the route, a transient failure) still answers `ok` — with
+    `sites_error` set — and the drawer falls back to asking for the token.
     """
     client = CmsClient.for_target(_resolve(payload.target))
     try:
@@ -107,29 +123,58 @@ async def test_connection(payload: TestConnectionRequest) -> dict[str, Any]:
         except CmsApiError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
-        if not payload.entity_token.strip():
-            return {"ok": True, "existing_page_count": 0, "existing_pages": []}
-
+        sites: list[dict[str, Any]] = []
+        sites_error: str | None = None
         try:
-            pages = await client.list_pages(payload.entity_token)
+            sites = [
+                _site_summary(entity)
+                for entity in await client.list_entities()
+                if entity.get("entity_api_token")
+            ]
+        except CmsApiError as exc:
+            sites_error = str(exc)
+    finally:
+        await client.aclose()
+
+    return {"ok": True, "sites": sites, "sites_error": sites_error}
+
+
+class PlanRequestBody(BaseModel):
+    """What `POST /push` would do to an existing site, without doing it."""
+
+    site: GeneratedSite
+    email: str
+    password: str
+    entity_token: str = Field(min_length=1)
+    target: str | None = None
+
+
+@router.post("/plan")
+async def plan(payload: PlanRequestBody) -> dict[str, Any]:
+    """Compare the generated site with the entity's pages and report the sync.
+
+    Runs the same `inspect_entity` the push runs first, so the plan the
+    operator confirms in the drawer is the plan the push executes — the two
+    cannot drift.
+    """
+    target = _resolve(payload.target)
+    req = PushRequest(
+        site=payload.site,
+        target=target,
+        cms_email=payload.email,
+        cms_password=payload.password,
+        entity_token=payload.entity_token,
+    )
+    client = CmsClient.for_target(target)
+    try:
+        try:
+            await client.login(payload.email, payload.password)
+            _existing, renamed, sync = await inspect_entity(client, req)
         except CmsApiError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     finally:
         await client.aclose()
-
-    return {
-        "ok": True,
-        "existing_page_count": len(pages),
-        "existing_pages": [
-            {
-                "id": p.get("id"),
-                "title": p.get("title"),
-                "slug": p.get("slug"),
-                "isHomepage": p.get("isHomepage"),
-            }
-            for p in pages[:20]
-        ],
-    }
+    return {**sync.as_dict(), "renamed_slugs": renamed}
 
 
 class PushRequestBody(BaseModel):
@@ -138,9 +183,9 @@ class PushRequestBody(BaseModel):
     site: GeneratedSite
     email: str
     password: str
+    # The site to update. Ignored when create_entity is set.
     entity_token: str = ""
     publish: bool = False
-    force_overwrite: bool = False
     push_builder_styles: bool = Field(
         default=True,
         description="Apply the generated theme via the launch-code → /builder/styles bridge.",
@@ -148,6 +193,11 @@ class PushRequestBody(BaseModel):
     push_favicon: bool = Field(
         default=True,
         description="Set the entity's site icon from the source site's favicon.",
+    )
+    replace_templates: bool = Field(
+        default=False,
+        description="Reset the site's existing article/event template pages to "
+        "blank drafts, for the builder to lay out in the new design.",
     )
     create_entity: bool = Field(
         default=False,
@@ -180,9 +230,9 @@ async def push(payload: PushRequestBody) -> dict[str, Any]:
         cms_password=payload.password,
         entity_token=payload.entity_token,
         publish=payload.publish,
-        force_overwrite=payload.force_overwrite,
         push_builder_styles=payload.push_builder_styles,
         push_favicon=payload.push_favicon,
+        replace_templates=payload.replace_templates,
         create_entity=payload.create_entity,
         new_entity_name=payload.new_entity_name,
         new_entity_url=payload.new_entity_url,

@@ -336,6 +336,16 @@ class FooterArchetypeTest(unittest.TestCase):
         self.theme = build_theme("#2563eb")
 
     def _footer(self, archetype, **kwargs):
+        from app.models.builder_schema import PageNode
+
+        # A grouped page: the mega grid exists for grouped columns, and a flat
+        # site degrades it to the centred stack (header_footer.build_footer),
+        # which is not what this class is about.
+        kwargs.setdefault(
+            "page_tree",
+            [PageNode(slug="services", title="Services",
+                      children=[PageNode(slug="services/web", title="Web")])],
+        )
         return build_footer(
             self.brand,
             self.theme,

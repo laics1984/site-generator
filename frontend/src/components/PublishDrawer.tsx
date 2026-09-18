@@ -2,12 +2,18 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   listCmsTargets,
+  planCmsPush,
   pushToCms,
   testCmsConnection,
-  type CmsCredentials,
+  type CmsLogin,
 } from '@/lib/api'
-import { pagePath } from '@/lib/previewNav'
-import type { CmsPushReport, CmsTarget, GeneratedSite } from '@/lib/types'
+import type {
+  CmsPushReport,
+  CmsSite,
+  CmsSyncPlan,
+  CmsTarget,
+  GeneratedSite,
+} from '@/lib/types'
 import {
   Banner,
   Button,
@@ -16,9 +22,12 @@ import {
   Drawer,
   Field,
   Input,
-  SectionLabel,
   Segmented,
+  Select,
 } from '@/ui'
+
+import { PushPlanCard } from './PushPlanCard'
+import { PushReportView } from './PushReportView'
 
 interface PublishDrawerProps {
   open: boolean
@@ -26,50 +35,86 @@ interface PublishDrawerProps {
   site: GeneratedSite
 }
 
+/** Update a site the account already has, or create a new one. */
+type Mode = 'update' | 'create'
+
+/** "Local" / "Production" is derived from where the bytes go, never configured:
+ * `is_remote` is read off the target's host (backend services/cms_targets.py),
+ * and the host itself stays visible beside it so the word can't go stale. */
+function targetKind(target: CmsTarget): string {
+  return target.is_remote ? 'Production' : 'Local'
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return url
+  }
+}
+
+function siteLabel(site: CmsSite): string {
+  const address = site.entity_url || site.public_url
+  return address ? `${site.entity_name} — ${hostOf(address)}` : site.entity_name
+}
+
 /**
  * "Publish to webtree" — the handoff out of the generator and into the webtree
  * CMS / admin suite.
  *
- * Flow: credentials → Test connection → pick or create the destination entity →
- * Push. The push runs synchronously on the backend and never throws: the
- * returned PushReport carries per-step state, which is what the step list at the
- * bottom renders.
+ * Flow: pick the CMS (local or production, when both are configured) → connect
+ * with the account → choose a site to update, or name a new one → push. For an
+ * update the backend first plans the sync (which pages are updated in place,
+ * added, archived) and the plan is shown before the button is enabled, so the
+ * operator confirms a concrete list rather than a mode. The push itself runs
+ * synchronously on the backend and never throws: the returned PushReport
+ * carries per-step state, which is what PushReportView renders.
  *
- * Lives in a drawer rather than the old 240px sidebar because it is a five-field
- * credential form with a destination choice — it needs the width, and it should
- * not push the preview off screen to get it.
+ * Lives in a drawer rather than the old 240px sidebar because it is a
+ * credential form with a destination choice and a plan — it needs the width,
+ * and it should not push the preview off screen to get it.
  */
 export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
-  const [creds, setCreds] = useState<CmsCredentials>({
-    email: '',
-    password: '',
-    entityToken: '',
-  })
   // Which CMS this lands in. The backend owns the list; an install that never
   // configured a second one gets exactly one and no picker is rendered.
   const [targets, setTargets] = useState<CmsTarget[]>([])
   const [targetName, setTargetName] = useState<string | null>(null)
-  // Mirrors targetName for the async guard in handleTest — reading state inside
-  // a settled promise would read the value captured when it was created.
-  const targetRef = useRef<string | null>(null)
-  // 'existing' → push into the entity named by the token; 'new' → create one.
-  const [entityMode, setEntityMode] = useState<'existing' | 'new'>('existing')
+  const [login, setLogin] = useState<CmsLogin>({ email: '', password: '' })
+  // The account's sites once Connect succeeds; null = not connected.
+  const [sites, setSites] = useState<CmsSite[] | null>(null)
+  const [sitesError, setSitesError] = useState<string | null>(null)
+  const [mode, setMode] = useState<Mode>('update')
+  // The site to update — picked from the list, or typed when there is no list.
+  const [siteToken, setSiteToken] = useState('')
   const [newEntity, setNewEntity] = useState({
     name: site.site_name ?? '',
     url: '',
   })
-  const [publish, setPublish] = useState(false)
+  const [plan, setPlan] = useState<CmsSyncPlan | null>(null)
+  const [planBusy, setPlanBusy] = useState(false)
+  const [planError, setPlanError] = useState<string | null>(null)
+  // An update replaces a live site, so it goes live; see switchMode.
+  const [publish, setPublish] = useState(true)
   const [pushBuilderStyles, setPushBuilderStyles] = useState(true)
   const [pushFavicon, setPushFavicon] = useState(true)
-  const [forceOverwrite, setForceOverwrite] = useState(false)
+  // Opt-in and per destination: a template is the owner's article and event
+  // design, so a choice made for one site must not carry over to the next.
+  const [replaceTemplates, setReplaceTemplates] = useState(false)
 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [testResult, setTestResult] = useState<{
-    ok: boolean
-    existingCount: number
-  } | null>(null)
   const [report, setReport] = useState<CmsPushReport | null>(null)
+
+  // Every imperative answer (connect, push) is checked against the destination
+  // it was asked for: switching CMS, mode or site mid-flight must not let a
+  // stale result land against the new one. One counter, bumped on every change
+  // of destination, instead of a ref per field. The plan is an effect and
+  // cancels itself.
+  const epoch = useRef(0)
+  function invalidate(): number {
+    epoch.current += 1
+    return epoch.current
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -78,7 +123,6 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
         if (cancelled || list.length === 0) return
         setTargets(list)
         setTargetName(list[0].name)
-        targetRef.current = list[0].name
       })
       // Degrade to today's behaviour: no picker, no `target` on the wire, and
       // the backend uses its default. Not worth an error banner — the push
@@ -90,126 +134,188 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
   }, [])
 
   const target = targets.find((t) => t.name === targetName) ?? null
+  const connected = sites !== null
+  const chosenSite = sites?.find((s) => s.entity_api_token === siteToken) ?? null
 
-  // In create-new mode there is no token to validate against — send an empty
-  // one so the backend's test-connection just verifies the login.
-  const effectiveCreds: CmsCredentials =
-    entityMode === 'new' ? { ...creds, entityToken: '' } : creds
-
-  /** A prior test/report no longer describes where this push is going. */
-  function resetDestination() {
-    setTestResult(null)
+  /** A prior connection no longer describes where this push is going. */
+  function disconnect() {
+    invalidate()
+    setSites(null)
+    setSitesError(null)
+    setSiteToken('')
     setReport(null)
     setError(null)
   }
 
-  function switchMode(mode: 'existing' | 'new') {
-    setEntityMode(mode)
-    resetDestination()
-  }
-
   function switchTarget(name: string) {
     setTargetName(name)
-    targetRef.current = name
-    resetDestination()
-    // An entity API token identifies a tenant on ONE CMS — it means nothing on
-    // another. Credentials are left alone: a wrong login announces itself on the
-    // re-test that switching targets forces anyway.
-    setCreds((prev) => ({ ...prev, entityToken: '' }))
+    // An account and its sites belong to ONE CMS — they mean nothing on another.
+    disconnect()
   }
 
-  async function handleTest() {
-    const requested = targetName
+  function editLogin(next: CmsLogin) {
+    setLogin(next)
+    // Changed credentials are a different account until proven otherwise.
+    if (connected) disconnect()
+  }
+
+  function switchMode(next: Mode) {
+    setMode(next)
+    invalidate()
+    setReport(null)
+    setError(null)
+    setReplaceTemplates(false)
+    // An update replaces a live site, so it goes live; a new site lands as
+    // drafts to review first. A preset, not a lock — the checkbox stays.
+    setPublish(next === 'update')
+  }
+
+  function chooseSite(token: string) {
+    setSiteToken(token)
+    invalidate()
+    setReport(null)
+    setError(null)
+    setReplaceTemplates(false)
+  }
+
+  // The plan follows the destination: whenever a connected account has a site
+  // chosen in update mode, ask the backend what the push would do to it.
+  useEffect(() => {
+    if (!connected || mode !== 'update' || !siteToken) {
+      setPlan(null)
+      setPlanError(null)
+      setPlanBusy(false)
+      return
+    }
+    let cancelled = false
+    setPlan(null)
+    setPlanError(null)
+    setPlanBusy(true)
+    planCmsPush({ site, login, entityToken: siteToken, target: targetName ?? undefined })
+      .then((res) => {
+        if (!cancelled) setPlan(res)
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setPlanError(err instanceof Error ? err.message : 'Could not compare pages')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPlanBusy(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [connected, mode, siteToken, targetName, site, login])
+
+  async function handleConnect() {
+    const requested = invalidate()
     setBusy(true)
     setError(null)
-    setTestResult(null)
+    setSites(null)
+    setSiteToken('')
     try {
-      const res = await testCmsConnection(effectiveCreds, requested ?? undefined)
-      // Flipping the target mid-flight must not let a stale "Connected" badge
-      // land against the new one — resetting on change alone doesn't cover this.
-      if (targetRef.current !== requested) return
-      setTestResult({ ok: res.ok, existingCount: res.existing_page_count })
+      const res = await testCmsConnection(login, targetName ?? undefined)
+      if (epoch.current !== requested) return
+      setSites(res.sites)
+      setSitesError(res.sites_error ?? null)
+      if (res.sites.length === 1) {
+        // One site: nothing to choose, so don't ask.
+        setSiteToken(res.sites[0].entity_api_token)
+      } else if (res.sites.length === 0 && !res.sites_error) {
+        // Nothing to update yet — the only thing this account can do is create.
+        switchMode('create')
+      }
     } catch (err) {
-      if (targetRef.current !== requested) return
-      setError(err instanceof Error ? err.message : 'Connection test failed')
+      if (epoch.current !== requested) return
+      setError(err instanceof Error ? err.message : 'Connection failed')
     } finally {
       setBusy(false)
     }
   }
 
   async function handlePush() {
-    const requested = targetName
+    const requested = epoch.current
     setBusy(true)
     setError(null)
     setReport(null)
     try {
       const res = await pushToCms({
         site,
-        creds: effectiveCreds,
+        login,
+        entityToken: mode === 'update' ? siteToken : undefined,
         publish,
-        forceOverwrite,
         pushBuilderStyles,
         pushFavicon,
-        createEntity: entityMode === 'new',
-        newEntityName:
-          entityMode === 'new' ? newEntity.name.trim() : undefined,
+        replaceTemplates: mode === 'update' && replaceTemplates,
+        createEntity: mode === 'create',
+        newEntityName: mode === 'create' ? newEntity.name.trim() : undefined,
         newEntityUrl:
-          entityMode === 'new' && newEntity.url.trim()
-            ? newEntity.url.trim()
-            : undefined,
-        target: requested ?? undefined,
+          mode === 'create' && newEntity.url.trim() ? newEntity.url.trim() : undefined,
+        target: targetName ?? undefined,
       })
-      // Same stale guard as handleTest: a report that landed after the operator
-      // switched CMS would read as a report about the new one.
-      if (targetRef.current !== requested) return
+      // A report that landed after the operator changed destination would read
+      // as a report about the new one.
+      if (epoch.current !== requested) return
       setReport(res)
       if (!res.success) {
         setError(res.error || 'Push failed; see step results below.')
       }
     } catch (err) {
-      if (targetRef.current !== requested) return
+      if (epoch.current !== requested) return
       setError(err instanceof Error ? err.message : 'Push failed')
     } finally {
       setBusy(false)
     }
   }
 
-  const baseCredsComplete = Boolean(creds.email.trim() && creds.password.trim())
-  const credsComplete =
-    entityMode === 'new'
-      ? baseCredsComplete && Boolean(newEntity.name.trim())
-      : baseCredsComplete && Boolean(creds.entityToken.trim())
+  const loginComplete = Boolean(login.email.trim() && login.password.trim())
   const canPush =
-    entityMode === 'new'
-      ? Boolean(credsComplete && testResult?.ok)
-      : Boolean(
-          credsComplete &&
-            testResult?.ok &&
-            (testResult.existingCount === 0 || forceOverwrite),
-        )
+    connected &&
+    !busy &&
+    (mode === 'create'
+      ? newEntity.name.trim().length > 0
+      : Boolean(siteToken && plan))
+
+  const pageCount = site.pages.length
+  const pagesWord = `${pageCount} page${pageCount === 1 ? '' : 's'}`
+  const whereWord = targets.length > 1 && target ? ` to ${targetKind(target)}` : ''
+  const pushLabel =
+    mode === 'create'
+      ? `Create site & push ${pagesWord}${whereWord}`
+      : `Update ${chosenSite?.entity_name ?? 'site'} · ${pagesWord}${whereWord}`
 
   return (
     <Drawer
       open={open}
       onClose={onClose}
       title="Publish to webtree"
-      description="Sends pages, header, footer, theme and images to a webtree entity."
+      description="Sends pages, header, footer, theme and images to a webtree site."
       widthClassName="max-w-xl"
     >
       <div className="space-y-4">
-        <Card title="1 · Connect" description="Your webtree account credentials.">
+        <Card title="1 · Destination" description="Which CMS, and whose account.">
           <div className="space-y-3">
             {targets.length > 1 && (
               <Field
                 label="CMS"
-                hint="Credentials are per-CMS — switching clears the test result and entity token."
+                // The hosts stay in view beside the words, so "Local" and
+                // "Production" can never quietly stop meaning where bytes go.
+                hint={
+                  targets.map((t) => `${targetKind(t)} is ${t.label}`).join(' · ') +
+                  '. Accounts are per-CMS — switching disconnects.'
+                }
               >
                 <Segmented
                   ariaLabel="CMS to push into"
                   className="w-full"
                   value={targetName ?? targets[0].name}
                   onChange={switchTarget}
-                  options={targets.map((t) => ({ value: t.name, label: t.label }))}
+                  options={targets.map((t) => ({
+                    value: t.name,
+                    label: targetKind(t),
+                    title: t.api_base_url,
+                  }))}
                 />
               </Field>
             )}
@@ -223,75 +329,136 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
               <Input
                 type="email"
                 autoComplete="username"
-                value={creds.email}
-                onChange={(e) => setCreds({ ...creds, email: e.target.value })}
+                value={login.email}
+                onChange={(e) => editLogin({ ...login, email: e.target.value })}
               />
             </Field>
             <Field label="Password">
               <Input
                 type="password"
                 autoComplete="current-password"
-                value={creds.password}
-                onChange={(e) => setCreds({ ...creds, password: e.target.value })}
+                value={login.password}
+                onChange={(e) => editLogin({ ...login, password: e.target.value })}
               />
             </Field>
             <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={handleTest} disabled={!credsComplete} busy={busy && !report}>
-                Test connection
+              <Button
+                onClick={handleConnect}
+                disabled={!loginComplete || busy}
+                busy={busy && !connected}
+              >
+                {connected ? 'Reconnect' : 'Connect'}
               </Button>
-              {testResult && (
-                <span
-                  className={
-                    'inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ' +
-                    (testResult.ok
-                      ? 'bg-emerald-50 text-emerald-800'
-                      : 'bg-rose-50 text-rose-800')
-                  }
-                >
-                  {testResult.ok
-                    ? entityMode === 'new'
-                      ? 'Signed in · ready to create entity'
-                      : `Connected · ${testResult.existingCount} existing page(s)`
-                    : 'Failed'}
+              {connected && (
+                <span className="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-800">
+                  Connected · {sites.length} site{sites.length === 1 ? '' : 's'}
                 </span>
               )}
             </div>
+            {sitesError && (
+              <Banner tone="warn" title="Couldn't list your sites">
+                {sitesError} You can still update a site by pasting its entity API token
+                below.
+              </Banner>
+            )}
           </div>
         </Card>
 
-        <Card title="2 · Destination" description="Where this site should land.">
+        <Card
+          title="2 · Site"
+          description={
+            connected
+              ? 'Update one of your sites, or create a new one.'
+              : 'Connect first to choose a site.'
+          }
+        >
           <div className="space-y-3">
             <Segmented
-              ariaLabel="Destination entity"
+              ariaLabel="Update or create"
               className="w-full"
-              value={entityMode}
+              value={mode}
               onChange={switchMode}
               options={[
-                { value: 'existing', label: 'Existing entity' },
-                { value: 'new', label: 'Create new entity' },
+                { value: 'update', label: 'Update existing site' },
+                { value: 'create', label: 'Create new site' },
               ]}
             />
 
-            {entityMode === 'existing' ? (
-              <Field
-                label="Entity API token"
-                hint="Found in the webtree admin suite under the site's settings."
-              >
-                <Input
-                  type="text"
-                  value={creds.entityToken}
-                  onChange={(e) => setCreds({ ...creds, entityToken: e.target.value })}
-                  placeholder="e.g. abcd1234ef56…"
-                  className="font-mono"
-                />
-              </Field>
+            {mode === 'update' ? (
+              <>
+                {sites && sites.length > 0 ? (
+                  <Field label="Site">
+                    <Select
+                      value={siteToken}
+                      onChange={(e) => chooseSite(e.target.value)}
+                      disabled={!connected || busy}
+                    >
+                      <option value="">Choose a site…</option>
+                      {sites.map((s) => (
+                        <option key={s.entity_api_token} value={s.entity_api_token}>
+                          {siteLabel(s)}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                ) : (
+                  <Field
+                    label="Entity API token"
+                    hint="Found in the webtree admin suite under the site's settings."
+                  >
+                    <Input
+                      type="text"
+                      value={siteToken}
+                      onChange={(e) => chooseSite(e.target.value.trim())}
+                      placeholder="e.g. abcd1234ef56…"
+                      className="font-mono"
+                      disabled={!connected || busy}
+                    />
+                  </Field>
+                )}
+
+                {chosenSite && (
+                  <div className="flex items-center gap-2.5 text-xs text-ink-muted">
+                    {chosenSite.favicon_url && (
+                      <img
+                        src={chosenSite.favicon_url}
+                        alt=""
+                        className="h-5 w-5 rounded border border-line bg-surface object-contain"
+                      />
+                    )}
+                    {(chosenSite.public_url || chosenSite.entity_url) && (
+                      <a
+                        href={chosenSite.public_url || chosenSite.entity_url || undefined}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="truncate underline decoration-line-strong underline-offset-2 hover:text-ink"
+                      >
+                        {hostOf(chosenSite.public_url || chosenSite.entity_url || '')}
+                      </a>
+                    )}
+                    <span className="rounded-full bg-surface-sunken px-2 py-0.5 capitalize">
+                      {chosenSite.role}
+                    </span>
+                  </div>
+                )}
+
+                {connected && siteToken && (
+                  <PushPlanCard
+                    plan={plan}
+                    busy={planBusy}
+                    error={planError}
+                    publish={publish}
+                    replaceTemplates={replaceTemplates}
+                  />
+                )}
+              </>
             ) : (
               <div className="space-y-3 rounded-xl border border-brand-100 bg-brand-50/60 p-3">
                 <p className="text-xs text-brand-900">
-                  A new entity is created under your account and the site pushed into it.
-                  The token is generated for you and shown after the push.
+                  A new site is created under your account and everything is pushed into
+                  it — pages, theme, and any migrated articles and events.
                 </p>
-                <Field label="Entity name">
+                <Field label="Site name">
                   <Input
                     type="text"
                     value={newEntity.name}
@@ -313,20 +480,6 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
                 </Field>
               </div>
             )}
-
-            {testResult?.ok && testResult.existingCount > 0 && entityMode === 'existing' && (
-              <Banner tone="warn" title="Entity is not empty">
-                This entity has {testResult.existingCount} page(s). A greenfield push is the
-                default. Tick the override to push anyway — existing pages are kept and
-                yours are added alongside.
-                <Checkbox
-                  className="mt-2"
-                  checked={forceOverwrite}
-                  onChange={(e) => setForceOverwrite(e.target.checked)}
-                  label="I know what I'm doing — push anyway"
-                />
-              </Banner>
-            )}
           </div>
         </Card>
 
@@ -336,7 +489,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
               checked={pushBuilderStyles}
               onChange={(e) => setPushBuilderStyles(e.target.checked)}
               label="Apply theme"
-              description="Colours, fonts and button radius, written to the entity's builder styles."
+              description="Colours, fonts and button radius, written to the site's builder styles."
             />
             <Checkbox
               checked={pushFavicon}
@@ -348,8 +501,29 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
               checked={publish}
               onChange={(e) => setPublish(e.target.checked)}
               label="Publish immediately"
-              description="Otherwise the pages land as drafts you can review in the admin suite first."
+              description={
+                mode === 'update'
+                  ? 'The updated pages replace the live ones now. Otherwise they land as drafts you review in the admin suite first.'
+                  : 'Otherwise the pages land as drafts you can review in the admin suite first.'
+              }
             />
+            {/* Only when the chosen site has templates: with none there is
+                nothing to replace, and a control that does nothing is noise. */}
+            {mode === 'update' && (plan?.template_pages.length ?? 0) > 0 && (
+              <Checkbox
+                checked={replaceTemplates}
+                onChange={(e) => setReplaceTemplates(e.target.checked)}
+                label="Replace article & event templates"
+                description="Reset the site's article and event page layouts to the new design. They land as drafts: open each in the builder, which lays it out afresh, then publish it. Until then the live site keeps its current templates."
+              />
+            )}
+            {mode === 'update' && !publish && (
+              <Banner tone="info" title="Drafts still change part of the live site">
+                The header, footer, menus and theme go live as soon as they are saved — the
+                CMS keeps no draft of the site-wide layout. Page bodies land as drafts, and
+                pages not in the new site stay live until you publish.
+              </Banner>
+            )}
           </div>
         </Card>
 
@@ -359,11 +533,9 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
           fullWidth
           onClick={handlePush}
           disabled={!canPush}
-          busy={busy && report === null && testResult !== null}
+          busy={busy && connected}
         >
-          {entityMode === 'new' ? 'Create entity & push' : 'Push'} {site.pages.length} page
-          {site.pages.length === 1 ? '' : 's'}
-          {targets.length > 1 && target ? ` to ${target.label}` : ''}
+          {pushLabel}
         </Button>
 
         {error && (
@@ -372,117 +544,8 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
           </Banner>
         )}
 
-        {report && <PushReportView report={report} site={site} />}
+        {report && <PushReportView report={report} site={site} mode={mode} />}
       </div>
     </Drawer>
-  )
-}
-
-function PushReportView({ report, site }: { report: CmsPushReport; site: GeneratedSite }) {
-  // The backend hands the generated token back on the create_entity step — this
-  // is the only place the user can ever learn it.
-  const createdToken = report.steps.find(
-    (step) => step.name === 'create_entity' && step.ok,
-  )?.data?.entity_token
-  const pushedSlugs = Object.values(report.page_urls ?? {})
-
-  return (
-    <div className="space-y-3">
-      {report.success && (
-        <Banner tone="success" title="Push complete">
-          {pushedSlugs.length} page{pushedSlugs.length === 1 ? '' : 's'} written to the
-          builder{report.admin_url ? '.' : ' — open the admin suite to review them.'}
-          {report.admin_url && (
-            <a
-              href={report.admin_url}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-2.5 inline-flex h-9 items-center gap-2 rounded-xl bg-emerald-700 px-3.5 text-sm font-semibold text-white transition hover:bg-emerald-800"
-            >
-              Open in webtree admin
-              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                <path d="M6 3h7v7M13 3L6.5 9.5" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M11 11.5V13H3V5h1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </a>
-          )}
-        </Banner>
-      )}
-
-      {typeof createdToken === 'string' && createdToken.length > 0 && (
-        <Card title="Your new entity token" padding="sm">
-          <p className="text-xs text-ink-muted">
-            Save this — it identifies the new site and is what you paste into "Existing
-            entity" next time.
-          </p>
-          <div className="mt-2 flex items-center gap-2">
-            <code className="min-w-0 flex-1 truncate rounded-lg bg-surface-sunken px-2.5 py-2 font-mono text-xs text-ink">
-              {createdToken}
-            </code>
-            <Button
-              size="sm"
-              onClick={() => navigator.clipboard?.writeText(createdToken)}
-            >
-              Copy
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      <Card title="Push report" padding="sm">
-        <ul className="space-y-1.5">
-          {report.steps.map((step, i) => (
-            <li
-              key={i}
-              className={
-                'flex items-start gap-2 rounded-lg border p-2 text-xs ' +
-                (!step.ok
-                  ? 'border-rose-200 bg-rose-50'
-                  : step.warning
-                    ? 'border-amber-200 bg-amber-50'
-                    : 'border-emerald-200 bg-emerald-50')
-              }
-            >
-              <span
-                className={
-                  'mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white ' +
-                  (!step.ok ? 'bg-rose-600' : step.warning ? 'bg-amber-600' : 'bg-emerald-600')
-                }
-              >
-                {step.ok ? (step.warning ? '!' : '✓') : '!'}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="font-medium text-ink">{step.name}</div>
-                <div className="text-ink-muted">
-                  {step.ok ? step.detail || 'OK' : step.error || step.detail || 'Failed'}
-                </div>
-                {/* Succeeded, but not as asked — the push carried on and there is
-                    something left to fix in the CMS. */}
-                {step.warning && (
-                  <div className="mt-1 font-medium text-amber-800">{step.warning}</div>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-
-        {pushedSlugs.length > 0 && (
-          <div className="mt-3">
-            <SectionLabel>Pages written</SectionLabel>
-            {/* page_urls maps pageId → slug, not a URL — so render paths, not links. */}
-            <ul className="mt-1.5 flex flex-wrap gap-1.5">
-              {site.pages.map((page) => (
-                <li
-                  key={page.slug || 'home'}
-                  className="rounded-md bg-surface-sunken px-2 py-1 font-mono text-[11px] text-ink-soft"
-                >
-                  {pagePath(page)}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </Card>
-    </div>
   )
 }

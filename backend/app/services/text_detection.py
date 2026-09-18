@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import binascii
 import logging
 from dataclasses import dataclass
@@ -53,14 +54,28 @@ logger = logging.getLogger(__name__)
 # Fraction of the frame covered by detected text boxes, above which the image
 # counts as carrying its own wording. Benchmarked at 512px input: clean
 # photographs top out around 3%, text-bearing images start around 10%. 6% sits
-# between the two with ~2x margin on each side — deliberately nearer the clean
-# ceiling, because a missed banner is a bad hero while a false positive only
-# costs one photo its cropped slots (it is still shown, whole).
+# between the two with ~2x margin on each side.
+#
+# The bias this threshold was originally set with — "nearer the clean ceiling,
+# because a missed banner is a bad hero while a false positive only costs one
+# photo its cropped slots" — no longer describes what a false positive costs.
+# Since services/legible_images.py, `has_text` also PLACES a poster section, so
+# a wrong yes writes a section the source never had. Coverage stayed where it
+# is and the per-box floor below carries the correction, because the two
+# failures are different shapes: coverage answers "how much of the frame",
+# confidence answers "is this writing at all".
 _COVERAGE_THRESHOLD = 0.06
 
 # Per-box confidence and length floors. A single stray glyph read out of leaf
-# litter is noise, not wording.
-_MIN_BOX_CONFIDENCE = 0.5
+# litter is noise, not wording — and so is a screenful of code photographed on
+# a laptop, which the detector boxes just as densely. The recognizer's
+# confidence is what tells the two apart: it says whether the glyphs READ as
+# text. Measured on the poster set and the false positive that reached a
+# generated About page: every box on the laptop photo scored 0.53–0.79 (its
+# transcription was "prpladod,st -parentlode…"), every box on a real poster,
+# banner or flyer 0.93–1.00. The floor sits in the gap; at 0.5 the laptop
+# cleared the coverage threshold and shipped as a poster, twice.
+_MIN_BOX_CONFIDENCE = 0.8
 _MIN_BOX_CHARS = 2
 
 # Roles the PREFETCH spends nothing on. A portrait or decoration can reach no
@@ -76,6 +91,10 @@ class PixelReading:
 
     has_text: bool
     qr_payload: str | None
+    # sha256 of the payload as read, so the same picture behind two URLs is
+    # recognised as one (image_urls.image_identity). None only for a reading
+    # built without bytes.
+    content_hash: str | None = None
 
 
 # Process-lifetime cache: {url: reading}. Regenerations commonly reuse the same
@@ -160,10 +179,11 @@ def _decode(payload: bytes | str) -> Any:
 def _coverage(boxes: Any, width: int, height: int) -> float:
     """Fraction of the frame the confident detected text boxes cover.
 
-    Detection only — what the words SAY is irrelevant, so a misread is
-    harmless; all that matters is that glyphs are there and how much room they
-    take. That is also the robust half of OCR, which is why a wrong
-    transcription never becomes a wrong decision here.
+    What the words say is still irrelevant — a misread headline is as much a
+    headline as a correctly read one — but HOW WELL they read is not. The
+    recognizer's confidence is the one signal that separates writing from
+    texture that merely boxes like writing (see `_MIN_BOX_CONFIDENCE`), so a
+    box it could not resolve into characters contributes no coverage.
     """
     covered = 0.0
     for box, text, confidence in boxes or []:
@@ -193,7 +213,22 @@ def read_pixels(payload: bytes | str) -> PixelReading | None:
     return PixelReading(
         has_text=_coverage(boxes, width, height) >= _COVERAGE_THRESHOLD,
         qr_payload=qr_codes.decode(pixels),
+        content_hash=_content_hash(payload),
     )
+
+
+def _content_hash(payload: bytes | str) -> str | None:
+    """sha256 of the image bytes — of the decoded bytes for a base64 payload,
+    so a prefetched image and a freshly downloaded one hash the same."""
+    raw: bytes
+    if isinstance(payload, str):
+        try:
+            raw = base64.b64decode(payload, validate=False)
+        except (ValueError, binascii.Error):
+            return None
+    else:
+        raw = payload
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _candidates(metadata: list[ImageMetadata], max_images: int) -> list[ImageMetadata]:
@@ -227,6 +262,7 @@ def _stamp(metadata: list[ImageMetadata], readings: dict[str, PixelReading]) -> 
         if reading is not None:
             item.ocr_has_text = reading.has_text
             item.qr_payload = reading.qr_payload
+            item.content_hash = reading.content_hash
 
 
 async def prefetch_text_flags(

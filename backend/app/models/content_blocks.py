@@ -1023,13 +1023,17 @@ class PosterBlock(BaseModel):
     """
 
     kind: Literal["poster"] = "poster"
-    heading: str = "Announcements"
+    # The heading the source showed the posters under, or nothing. Never a
+    # default: a heading the source never wrote ("Announcements") is an
+    # invented claim about what the pictures are, and the template renders a
+    # poster row without one just as well.
+    heading: str = ""
     items: list[PosterItem] = Field(min_length=1, max_length=6)
 
     @field_validator("heading", mode="before")
     @classmethod
     def heal_heading(cls, v: object) -> object:
-        return _default_if_blank(v, "Announcements")
+        return _default_if_blank(v, "")
 
 
 class TimelineItem(BaseModel):
@@ -1716,6 +1720,10 @@ class ImageMetadata(BaseModel):
     # the same frame (services/qr_codes.py). None when there is no readable code
     # or the pass has not run — `ocr_has_text is None` says which.
     qr_payload: str | None = None
+    # sha256 of the bytes the pixel pass read (services/text_detection.py), so
+    # one picture served from two URLs — a site's og:image and the CMS-hosted
+    # copy of the same photo — is one picture (image_urls.image_identity).
+    content_hash: str | None = None
     # Luminance-band inputs for the schema_builder pass (SECTION_VISUAL_POLICY_SPEC.md
     # §4.3). Dominant colour comes free from Pexels avg_color or a generated base —
     # NO pixel download. luminance/band stay None until set by media.py.

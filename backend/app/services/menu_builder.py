@@ -104,6 +104,13 @@ def _uid() -> str:
     return str(uuid4())
 
 
+def has_menu_groups(page_tree: list[PageNode] | None) -> bool:
+    """Whether the footer menu will carry any grouped column — a top-level page
+    with menu-visible children. The mega footer's grid exists for those; a
+    flat site gives it nothing to fill (see header_footer.build_footer)."""
+    return any(_menu_children(node) for node in page_tree or [])
+
+
 def build_menus(
     page_tree: list[PageNode] | None,
     *,

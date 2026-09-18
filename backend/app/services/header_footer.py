@@ -26,6 +26,7 @@ from app.models.design_manifest import (
     FooterArchetype,
     HeaderArchetype,
 )
+from app.services.menu_builder import has_menu_groups
 from app.services.template_filler import (
     fill_chrome_template,
     get_template,
@@ -537,7 +538,8 @@ def build_footer(
         byte-identical to pre-archetype output)
       * ``cta-banner`` — a conversion banner (headline + primary CTA) above the
         mega grid; degrades to ``mega`` when no ``primary_cta`` is given
-      * ``minimal-centered`` — calm centered column on the theme's light band
+      * ``minimal-centered`` — calm centered column on the theme's light band,
+        carrying a centered CTA banner when a flat site degraded into it
       * ``editorial`` — oversized ghost wordmark on the light band, slim nav row
 
     Layout of the nav grid depends on what's in the page_tree:
@@ -552,6 +554,18 @@ def build_footer(
     """
     if archetype == "cta-banner" and not primary_cta:
         archetype = "mega"
+    # The grid is columns of grouped pages beside the brand column, and BOTH
+    # `mega` and `cta-banner` carry it. A flat site — no page with children —
+    # gives it a single row of links stranded beside the logo, which is what a
+    # generated agency site shipped: five footer links pushed off to one side
+    # of an otherwise empty band. It degrades to the centred stack, the same
+    # way cta-banner degrades without a CTA — the layout follows what there is
+    # to lay out. The banner survives that degrade (chrome-footer-minimal-
+    # centered carries an optional, centred one), so a flat site keeps the
+    # closing CTA the design brain chose for it.
+    shows_cta = archetype == "cta-banner"
+    if archetype in ("mega", "cta-banner") and not has_menu_groups(page_tree):
+        archetype = "minimal-centered"
 
     # Chrome per archetype: the dark archetypes sit on `secondary` (the dark,
     # primary-hued neutral) with white ink; the light archetypes sit on
@@ -571,15 +585,15 @@ def build_footer(
     # ---- content composition ---------------------------------------------------
     # Structure lives in the shared catalog (chrome-footer-*); this function
     # decides WHAT appears (the conditional content contract) and resolves the
-    # theme tokens. When a usable logo exists we show it alone (mirroring the
-    # header); the text wordmark appears only when there is no logo, or the
-    # logo would vanish into the footer band (dark on dark / light on light).
-    # Same gate as the header (_logo_mark): a mark the header declined is not
-    # good enough for the footer either.
+    # theme tokens. The footer shows the logo OR the text wordmark, never both:
+    # the logo when it reads against the band, the wordmark when there is no
+    # logo or the logo would vanish into the band (dark on dark, light on
+    # light). Same gate as the header (_logo_mark): a mark the header declined
+    # is not good enough for the footer either.
     logo_src = (brand.logo_url or brand.logo_data_url) if brand.logo_render_ok else None
-    show_wordmark = (not logo_src) or (
-        brand.logo_is_light is (False if footer_is_dark else True)
-    )
+    if logo_src and not _mark_reads_on(brand, footer_bg):
+        logo_src = None
+    show_wordmark = not logo_src
     logo_el: BuilderElement | None = None
     if logo_src:
         # In the footer this is a plain content image — the builder's dedicated
@@ -631,7 +645,7 @@ def build_footer(
         "has_legal": has_legal,
         "has_social": bool(social_links),
     }
-    if archetype == "cta-banner":
+    if shows_cta:
         # Headline prefers the brand's own tagline; the button is the same
         # primary CTA the header carries, so the site closes on the action it
         # opened with. (No-CTA callers were already degraded to mega above.)
@@ -642,6 +656,9 @@ def build_footer(
             else "Ready when you are."
         )
         content["cta"] = {"innerText": cta_label, "href": cta_href}
+        # Gates the centred banner in chrome-footer-minimal-centered; the
+        # cta-banner tree carries its own unconditionally.
+        content["has_cta"] = True
 
     # --- materialize from the shared catalog ---------------------------------
     # Layout (grid vs centered stack vs CTA banner vs ghost wordmark, hairline
@@ -654,6 +671,32 @@ def build_footer(
     return resolve_chrome_tokens(
         footer, _footer_tokens(theme, footer_bg, ink, footer_is_dark)
     )
+
+
+# The graphics contrast floor (WCAG 1.4.11): a mark, unlike body text, only
+# has to be recognisable.
+_MARK_MIN_CONTRAST = 3.0
+
+
+def _mark_reads_on(brand: BrandIdentity, band_hex: str) -> bool:
+    """Whether the logo's own colours read against a band.
+
+    Judged from the extracted palette — the mark's opaque pixels, clustered —
+    because a two-tone mark defeats a light/dark reading: a white-and-green
+    wordmark is under 60% near-white, so `logo_is_light` called it dark and the
+    footer printed the site's name under a logo that was perfectly legible on
+    its dark band. A mark reads when its strongest colour clears the graphics
+    contrast floor. With no palette to measure, the light/dark reading stands.
+    """
+    colours = [c for c in (brand.extracted_palette or [])[:3] if _is_hex_colour(c)]
+    if not colours:
+        band_is_dark = _text_for_background(band_hex) == "#ffffff"
+        return brand.logo_is_light is band_is_dark
+    return max(_contrast(c, band_hex) for c in colours) >= _MARK_MIN_CONTRAST
+
+
+def _is_hex_colour(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 7 and value.startswith("#")
 
 
 def _footer_tokens(

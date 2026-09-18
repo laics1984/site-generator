@@ -18692,6 +18692,21 @@
           "id": "has_social",
           "kind": "flag",
           "optional": true
+        },
+        {
+          "id": "cta_headline",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "cta",
+          "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_cta",
+          "kind": "flag",
+          "optional": true
         }
       ],
       "sampleContent": {
@@ -18726,6 +18741,60 @@
               "gap": "0"
             },
             "content": [
+              {
+                "name": "Footer CTA banner",
+                "type": "container",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "width": "100%",
+                  "justifyContent": "center",
+                  "alignItems": "center",
+                  "textAlign": "center",
+                  "gap": "20px",
+                  "paddingBottom": "40px",
+                  "marginBottom": "40px",
+                  "borderBottom": "{{footer.hairline}}"
+                },
+                "$if": "has_cta",
+                "content": [
+                  {
+                    "name": "Footer CTA headline",
+                    "type": "text",
+                    "styles": {
+                      "width": "auto",
+                      "fontFamily": "{{font.heading}}",
+                      "fontSize": "clamp(26px, 3.5vw, 38px)",
+                      "fontWeight": 700,
+                      "lineHeight": "1.15",
+                      "letterSpacing": "-0.015em",
+                      "color": "{{footer.ink}}",
+                      "maxWidth": "620px"
+                    },
+                    "$slot": "cta_headline"
+                  },
+                  {
+                    "name": "Footer CTA",
+                    "type": "link",
+                    "styles": {
+                      "backgroundColor": "{{buttons.bg}}",
+                      "color": "{{buttons.fg}}",
+                      "paddingTop": "13px",
+                      "paddingBottom": "13px",
+                      "paddingLeft": "26px",
+                      "paddingRight": "26px",
+                      "borderRadius": "{{buttons.radiusPx}}",
+                      "fontWeight": 600,
+                      "fontSize": "15px",
+                      "textDecoration": "none",
+                      "display": "inline-flex",
+                      "alignItems": "center",
+                      "flexShrink": "0"
+                    },
+                    "$slot": "cta"
+                  }
+                ]
+              },
               {
                 "name": "Footer stack",
                 "type": "container",
@@ -18814,7 +18883,8 @@
                       "width": "100%",
                       "flex": "0 1 auto",
                       "minWidth": "0",
-                      "textAlign": "center"
+                      "textAlign": "center",
+                      "justifyContent": "center"
                     },
                     "content": {
                       "slot": "footer",

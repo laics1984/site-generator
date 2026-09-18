@@ -154,6 +154,10 @@ def _base_patches(create_page_mock):
     return (
         patch.object(CmsClient, "login", new=AsyncMock(return_value="jwt")),
         patch.object(CmsClient, "list_pages", new=AsyncMock(return_value=[])),
+        # Nothing in the library yet, so every image is uploaded. Stubbed
+        # explicitly: unpatched, the lookup would only "miss" because these
+        # clients hold no JWT, which is not the contract under test.
+        patch.object(CmsClient, "lookup_media", new=AsyncMock(return_value=None)),
         patch.object(CmsClient, "create_page", new=create_page_mock),
         patch.object(
             CmsClient,
@@ -541,71 +545,6 @@ def test_wrap_request_passes_cms_api_error_through():
     assert exc_info.value.status == 422  # not re-wrapped to 502
 
 
-# --- slug normalization ---------------------------------------------------------
-
-from app.models.builder_schema import PageNode  # noqa: E402
-from app.services.push_orchestrator import _normalize_site_slugs  # noqa: E402
-
-
-def _hierarchical_site() -> GeneratedSite:
-    """A migrated site whose slugs are the source's own paths."""
-    def _page(slug: str, *, parent: str | None = None, home: bool = False) -> GeneratedPage:
-        return GeneratedPage(
-            slug=slug,
-            title=slug or "Home",
-            is_homepage=home,
-            body_schema=BodySchema(elements=[]),
-            seo=PageSeo(),
-            parent_slug=parent,
-        )
-
-    return GeneratedSite(
-        site_name="MMTA",
-        pages=[
-            _page("", home=True),
-            _page("committee"),
-            _page("profile/ashley", parent="committee"),
-        ],
-        page_tree=[
-            PageNode(
-                slug="committee",
-                title="Committee",
-                children=[PageNode(slug="profile/ashley", title="Ashley Jinivon")],
-            )
-        ],
-    )
-
-
-def test_greenfield_push_keeps_the_source_url():
-    # The whole point of the migration: mmta.org.my/profile/ashley still
-    # resolves after the switchover, so its search ranking survives.
-    site = _hierarchical_site()
-
-    _normalize_site_slugs(site, keep_paths=True)
-
-    assert [p.slug for p in site.pages] == ["", "committee", "profile/ashley"]
-    assert site.pages[2].parent_slug == "committee"
-    assert site.page_tree[0].children[0].slug == "profile/ashley"
-
-
-def test_repush_over_a_live_site_still_flattens():
-    # Renaming pages that are already published is the breakage this avoids.
-    site = _hierarchical_site()
-
-    _normalize_site_slugs(site, keep_paths=False)
-
-    assert [p.slug for p in site.pages] == ["", "committee", "profile-ashley"]
-
-
-def test_segments_are_still_sanitized_inside_a_kept_path():
-    site = _hierarchical_site()
-    site.pages[2].slug = "Profile/Kuek Ser Sheen Tse"
-
-    _normalize_site_slugs(site, keep_paths=True)
-
-    assert site.pages[2].slug == "profile/kuek-ser-sheen-tse"
-
-
 # --- document (PDF/DOC/...) rehosting -------------------------------------------
 
 from app.services.push_orchestrator import (  # noqa: E402
@@ -858,7 +797,8 @@ def test_upload_media_rehosts_document_links_alongside_images():
         ),
     ):
         client = CmsClient(base_url="http://localhost:8000")
-        rewrites, failed = asyncio.run(_upload_media(client, req))
+        media = asyncio.run(_upload_media(client, req))
+        rewrites, failed = media.rewrites, media.failed
 
     assert rewrites == {pdf_href: "https://cms.example/storage/brochure-en.pdf"}
     assert failed == set()
@@ -927,7 +867,8 @@ def _upload_with_brand(site: GeneratedSite):
         patch("app.services.push_orchestrator.assert_public_url", new=AsyncMock()),
     ):
         client = CmsClient(base_url="http://localhost:8000")
-        rewrites, failed = asyncio.run(_upload_media(client, req))
+        media = asyncio.run(_upload_media(client, req))
+        rewrites, failed = media.rewrites, media.failed
     return rewrites, failed, upload
 
 
@@ -1162,3 +1103,238 @@ def test_other_create_entity_failures_still_abort_the_push():
     assert not report.success
     assert not _step(report, "create_entity").ok
     assert create_entity.await_count == 1
+
+
+# --- updating a site that already has pages -------------------------------------
+#
+# A push is a sync (services/cms_sync.py): every generated page lands on the
+# entity page with the same slug, updated in place; a page the entity lacks is
+# created; the rest are archived — never deleted. What the owner built up in
+# the CMS since (articles, events, WhatsApp settings) is not touched.
+
+
+def _existing_rows() -> list[dict]:
+    """A live site: a homepage, two published pages, an archived one, a template."""
+    return [
+        {"id": "home-id", "slug": "", "title": "Home", "status": "published", "isHomepage": True},
+        {"id": "about-id", "slug": "about", "title": "About us", "status": "published"},
+        {"id": "careers-id", "slug": "careers", "title": "Careers", "status": "published"},
+        {"id": "team-id", "slug": "team", "title": "Team", "status": "archived"},
+        {
+            "id": "tpl-id",
+            "slug": "article-template",
+            "title": "Article Template",
+            "status": "draft",
+            "templateFor": "article",
+        },
+    ]
+
+
+def _update_site() -> GeneratedSite:
+    def page(slug: str, title: str, home: bool = False) -> GeneratedPage:
+        return GeneratedPage(
+            slug=slug,
+            title=title,
+            is_homepage=home,
+            body_schema=BodySchema(elements=[]),
+            seo=PageSeo(),
+        )
+
+    return GeneratedSite(
+        site_name="Acme",
+        pages=[
+            page("", "Home", True),
+            page("about", "About"),
+            page("team", "Team"),
+            page("contact", "Contact"),
+        ],
+        page_tree=[],
+        builder_styles=None,
+        header_schema=BuilderElement(name="Header", type="__header", content=[]),
+        footer_schema=BuilderElement(name="Footer", type="__footer", content=[]),
+        whatsapp_widget={"enabled": True, "phone": "60123456789"},
+    )
+
+
+class _SyncStubs:
+    """Every CmsClient call a sync makes, stubbed, plus the order they ran in."""
+
+    def __init__(self, existing: list[dict], *, archive_error: Exception | None = None):
+        self.calls: list[tuple[str, str]] = []  # (method, page_id)
+
+        async def get_page(_self, token, page_id):
+            self.calls.append(("get_page", page_id))
+            return {"id": page_id, "draftVersion": 4}
+
+        async def restore_page(_self, token, page_id):
+            self.calls.append(("restore_page", page_id))
+            return {}
+
+        async def archive_page(_self, token, page_id):
+            self.calls.append(("archive_page", page_id))
+            if archive_error is not None:
+                raise archive_error
+
+        self.mocks = {
+            "login": AsyncMock(return_value="jwt"),
+            "list_pages": AsyncMock(return_value=existing),
+            "create_page": AsyncMock(
+                side_effect=lambda token, **kw: {
+                    "id": f"new-{kw.get('slug') or 'home'}",
+                    "draftVersion": 1,
+                }
+            ),
+            "update_page": AsyncMock(return_value={"draftVersion": 5}),
+            "get_builder_payload": AsyncMock(return_value={"layout": {"versionId": "V0"}}),
+            "save_page_layout": AsyncMock(return_value={"versionId": "V1"}),
+            "save_page_draft": AsyncMock(return_value={"draftVersion": 6}),
+            "publish_page": AsyncMock(return_value={}),
+            "update_whatsapp_widget": AsyncMock(return_value={}),
+            "get_page": get_page,
+            "restore_page": restore_page,
+            "archive_page": archive_page,
+        }
+
+    def __enter__(self) -> "_SyncStubs":
+        self._stack = ExitStack()
+        for name, mock in self.mocks.items():
+            self._stack.enter_context(patch.object(CmsClient, name, new=mock))
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stack.close()
+
+    def archived(self) -> list[str]:
+        return [page_id for name, page_id in self.calls if name == "archive_page"]
+
+
+def _sync(site: GeneratedSite, existing: list[dict], **kwargs) -> tuple[PushReport, _SyncStubs]:
+    req = PushRequest(
+        site=site, cms_email="u@e.com", cms_password="s", entity_token="tok", **kwargs
+    )
+    with _SyncStubs(existing) as stubs:
+        report = asyncio.run(push_site(req))
+    return report, stubs
+
+
+def test_an_update_lands_on_the_pages_the_site_already_has():
+    report, stubs = _sync(_update_site(), _existing_rows(), publish=True)
+
+    assert report.success, report.error
+    mocks = stubs.mocks
+    # Matched pages are updated in place — same id, same URL — not recreated.
+    assert {c.args[1] for c in mocks["update_page"].call_args_list} == {
+        "home-id", "about-id", "team-id"
+    }
+    # The archived match is restored before it is read and patched.
+    assert stubs.calls.index(("restore_page", "team-id")) < stubs.calls.index(
+        ("get_page", "team-id")
+    )
+    # Only the page the site lacks is created.
+    assert [c.kwargs["slug"] for c in mocks["create_page"].call_args_list] == ["contact"]
+    # Every body is saved against the draft version its metadata write returned…
+    drafts = {
+        c.args[1]: c.kwargs["base_draft_version"]
+        for c in mocks["save_page_draft"].call_args_list
+    }
+    assert drafts == {"home-id": 5, "about-id": 5, "team-id": 5, "new-contact": 1}
+    # …and published against the version the draft save returned.
+    assert {
+        c.args[1]: c.kwargs["expected_draft_version"]
+        for c in mocks["publish_page"].call_args_list
+    } == {page_id: 6 for page_id in drafts}
+    # The page the new site lacks comes off the live site; the template never does.
+    assert stubs.archived() == ["careers-id"]
+    # What the owner configured stays theirs.
+    mocks["update_whatsapp_widget"].assert_not_awaited()
+
+    steps = {step.name: step for step in report.steps}
+    assert steps["inspect"].detail == "Site has 3 pages · 3 to update, 1 to create, 1 to archive"
+    assert steps["pages"].detail == "1 created, 3 updated, 1 restored from the archive"
+    assert steps["archive_pages"].ok and "/careers" in steps["archive_pages"].detail
+    assert "kept" in steps["whatsapp_widget"].detail
+    assert report.page_urls == {
+        "home-id": "/", "about-id": "about", "team-id": "team", "new-contact": "contact"
+    }
+
+
+def test_pushed_as_drafts_an_update_leaves_the_live_site_alone():
+    report, stubs = _sync(_update_site(), _existing_rows(), publish=False)
+
+    assert report.success, report.error
+    assert stubs.archived() == []
+    step = next(s for s in report.steps if s.name == "archive_pages")
+    assert step.ok
+    assert step.warning and "/careers" in step.warning
+
+
+def test_a_first_push_into_an_empty_site_brings_everything():
+    report, stubs = _sync(_update_site(), [], publish=False)
+
+    assert report.success, report.error
+    created = sorted(c.kwargs["slug"] or "" for c in stubs.mocks["create_page"].call_args_list)
+    assert created == ["", "about", "contact", "team"]
+    stubs.mocks["update_whatsapp_widget"].assert_awaited_once()
+    assert "first push" in next(s for s in report.steps if s.name == "inspect").detail
+
+
+def test_a_site_with_only_template_pages_is_still_a_first_push():
+    """The builder creates the template pages on first open, so an entity can
+    hold them without ever having had a content page."""
+    report, stubs = _sync(_update_site(), [_existing_rows()[-1]], publish=False)
+
+    assert report.success, report.error
+    assert stubs.mocks["update_page"].await_count == 0
+    stubs.mocks["update_whatsapp_widget"].assert_awaited_once()
+
+
+def test_an_update_follows_the_live_sites_slug_spelling():
+    site = _update_site()
+    site.pages[2].slug = "people/team"  # the generator writes the nested path…
+    existing = _existing_rows()
+    existing[3] = {  # …but the live site has it flat, so that is where it lands.
+        "id": "team-id", "slug": "people-team", "title": "Team", "status": "published"
+    }
+
+    report, stubs = _sync(site, existing, publish=True)
+
+    assert report.success, report.error
+    assert site.pages[2].slug == "people-team"
+    assert "team-id" in {c.args[1] for c in stubs.mocks["update_page"].call_args_list}
+    renamed = next(s for s in report.steps if s.name == "normalize_slugs")
+    assert renamed.data["renamed"] == {"people/team": "people-team"}
+
+
+def test_an_inspection_failure_aborts_before_anything_is_written():
+    req = PushRequest(
+        site=_update_site(), cms_email="u@e.com", cms_password="s", entity_token="tok"
+    )
+    with _SyncStubs(_existing_rows()) as stubs:
+        stubs.mocks["list_pages"].side_effect = CmsApiError(403, "not your site")
+        report = asyncio.run(push_site(req))
+
+    assert not report.success
+    assert "not your site" in (report.error or "")
+    stubs.mocks["create_page"].assert_not_awaited()
+    stubs.mocks["update_page"].assert_not_awaited()
+    stubs.mocks["save_page_layout"].assert_not_awaited()
+
+
+def test_an_archive_failure_does_not_fail_the_push():
+    """The new pages are live by then; a page left to archive by hand is a
+    warning in the report, not a failed push."""
+    req = PushRequest(
+        site=_update_site(),
+        cms_email="u@e.com",
+        cms_password="s",
+        entity_token="tok",
+        publish=True,
+    )
+    with _SyncStubs(_existing_rows(), archive_error=CmsApiError(500, "boom")) as stubs:
+        report = asyncio.run(push_site(req))
+
+    assert report.success, report.error
+    assert stubs.archived() == ["careers-id"]
+    step = next(s for s in report.steps if s.name == "archive_pages")
+    assert not step.ok
+    assert "/careers" in step.detail

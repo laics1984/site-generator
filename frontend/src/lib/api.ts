@@ -4,6 +4,7 @@ import type {
   BrandMood,
   ColorScheme,
   CmsConnectionTest,
+  CmsSyncPlan,
   CmsPushReport,
   CmsTarget,
   CrawlJob,
@@ -351,10 +352,10 @@ export async function extractBrandFromLogo(
 
 // --- CMS push --------------------------------------------------------------
 
-export interface CmsCredentials {
+/** The operator's CMS account. Typed per push and never stored (SECURITY.md). */
+export interface CmsLogin {
   email: string
   password: string
-  entityToken: string
 }
 
 /** Which CMS installs this generator can push into, default target first.
@@ -363,28 +364,54 @@ export async function listCmsTargets(): Promise<CmsTarget[]> {
   return jsonRequest('/api/cms/targets')
 }
 
+/** Verify the login and list the sites the account can push into. */
 export async function testCmsConnection(
-  creds: CmsCredentials,
+  login: CmsLogin,
   target?: string,
 ): Promise<CmsConnectionTest> {
   return jsonRequest('/api/cms/test-connection', {
     method: 'POST',
     body: JSON.stringify({
-      email: creds.email,
-      password: creds.password,
-      entity_token: creds.entityToken,
+      email: login.email,
+      password: login.password,
       target: target ?? null,
+    }),
+  })
+}
+
+export interface PlanPayload {
+  site: GeneratedSite
+  login: CmsLogin
+  entityToken: string
+  target?: string
+}
+
+/** What pushing into an existing site would do — the backend runs the same
+ * inspection the push starts with, so this is the plan the push executes. */
+export async function planCmsPush(payload: PlanPayload): Promise<CmsSyncPlan> {
+  return jsonRequest('/api/cms/plan', {
+    method: 'POST',
+    body: JSON.stringify({
+      site: payload.site,
+      email: payload.login.email,
+      password: payload.login.password,
+      entity_token: payload.entityToken,
+      target: payload.target ?? null,
     }),
   })
 }
 
 export interface PushPayload {
   site: GeneratedSite
-  creds: CmsCredentials
+  login: CmsLogin
+  /** The site to update. Ignored when createEntity is set. */
+  entityToken?: string
   publish?: boolean
-  forceOverwrite?: boolean
   pushBuilderStyles?: boolean
   pushFavicon?: boolean
+  /** Reset the site's existing article/event templates to blank drafts, which
+   * the builder lays out again in the new design. Update mode only. */
+  replaceTemplates?: boolean
   /** When true, create a fresh entity and push into it (entityToken ignored). */
   createEntity?: boolean
   newEntityName?: string
@@ -399,13 +426,13 @@ export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
     method: 'POST',
     body: JSON.stringify({
       site: payload.site,
-      email: payload.creds.email,
-      password: payload.creds.password,
-      entity_token: payload.creds.entityToken,
+      email: payload.login.email,
+      password: payload.login.password,
+      entity_token: payload.entityToken ?? '',
       publish: payload.publish ?? false,
-      force_overwrite: payload.forceOverwrite ?? false,
       push_builder_styles: payload.pushBuilderStyles ?? true,
       push_favicon: payload.pushFavicon ?? true,
+      replace_templates: payload.replaceTemplates ?? false,
       create_entity: payload.createEntity ?? false,
       new_entity_name: payload.newEntityName ?? null,
       new_entity_url: payload.newEntityUrl ?? null,
