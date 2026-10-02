@@ -1,7 +1,8 @@
 """
 How a generated site maps onto the pages an entity already has.
 
-A push is a SYNC, never an append. Every generated page lands on the entity
+A standard push is a SYNC. Preview and extension pushes use an additive plan.
+In a standard sync, every generated page lands on the entity
 page that carries the same slug — updated in place, so the page keeps its id,
 its URL, its revision history and its per-path insights — a page with no
 counterpart is created, and every other page the entity had is archived. Never
@@ -286,13 +287,24 @@ class SyncPlan:
         }
 
 
-def plan_sync(site: GeneratedSite, existing: Iterable[ExistingPage]) -> SyncPlan:
+def plan_sync(
+    site: GeneratedSite,
+    existing: Iterable[ExistingPage],
+    *,
+    operation: Literal["sync", "preview", "extend"] = "sync",
+    known_page_ids: Mapping[str, str] | None = None,
+) -> SyncPlan:
     """Match the site's pages against the entity's by slug.
 
     Call after ``normalize_site_slugs`` — the match is on the slug a page will
     be published at, not the slug the generator first wrote.
     """
     existing = list(existing)
+    if operation == "preview" and any(
+        not page.archived and (known_page_ids or {}).get(page.slug) != page.id
+        for page in existing
+    ):
+        raise ValueError("A two-page preview needs a new or empty CMS site.")
     content = {page.slug: page for page in existing if not page.is_template}
     templates = {page.slug: page for page in existing if page.is_template}
 
@@ -300,6 +312,8 @@ def plan_sync(site: GeneratedSite, existing: Iterable[ExistingPage]) -> SyncPlan
     template_routes: list[str] = []
     for page in sorted(site.pages, key=lambda p: (not p.is_homepage, p.slug)):
         match = content.get(page.slug)
+        if operation in ("preview", "extend") and match is not None and (known_page_ids or {}).get(page.slug) != match.id:
+            raise ValueError(f"/{page.slug} already belongs to a page outside this generation project.")
         if match is not None:
             changes.append(
                 PageChange(
@@ -319,7 +333,7 @@ def plan_sync(site: GeneratedSite, existing: Iterable[ExistingPage]) -> SyncPlan
             changes.append(PageChange("create", page.slug, page.title))
 
     wanted = {page.slug for page in site.pages}
-    for page in existing:
+    for page in existing if operation == "sync" else []:
         if (
             page.is_template
             or page.archived

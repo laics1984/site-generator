@@ -18,6 +18,10 @@ interface PagePickerProps {
   setIndustryOverride: (value: IndustryCategory | null) => void
   selectedPages: PageScaffold[]
   setSelectedPages: (pages: PageScaffold[]) => void
+  generationMode: 'full' | 'two_page_preview'
+  setGenerationMode: (mode: 'full' | 'two_page_preview') => void
+  previewSecondSlug: string | null
+  setPreviewSecondSlug: (slug: string | null) => void
   setDetectedBrand: (b: DetectedBrand | null) => void
   onConfirm: () => void
   onBack: () => void
@@ -118,6 +122,10 @@ export function PagePicker({
   setIndustryOverride,
   selectedPages,
   setSelectedPages,
+  generationMode,
+  setGenerationMode,
+  previewSecondSlug,
+  setPreviewSecondSlug,
   setDetectedBrand,
   onConfirm,
   onBack,
@@ -275,6 +283,9 @@ export function PagePicker({
 
   const subPageCount = inferred.filter((p) => p.parent_slug).length
   const topLevelCount = inferred.filter((p) => !p.parent_slug && !p.is_homepage).length
+  const secondPageChoices = selectedPages.filter((p) => !p.is_homepage && !p.is_legal)
+  const effectiveSecondSlug = secondPageChoices.some((p) => p.slug === previewSecondSlug)
+    ? previewSecondSlug ?? '' : secondPageChoices[0]?.slug ?? ''
 
   return (
     <div className="space-y-4">
@@ -325,6 +336,36 @@ export function PagePicker({
           )}
         </div>
       </label>
+
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm">
+        <div className="font-semibold text-slate-900">Generation scope</div>
+        <div className="mt-2 flex flex-wrap gap-4">
+          <label className="flex items-center gap-2">
+            <input type="radio" checked={generationMode === 'full'} onChange={() => setGenerationMode('full')} />
+            Full site
+          </label>
+          <label className="flex items-center gap-2">
+            <input type="radio" checked={generationMode === 'two_page_preview'} disabled={!secondPageChoices.length} onChange={() => setGenerationMode('two_page_preview')} />
+            Two-page lead preview
+          </label>
+        </div>
+        {generationMode === 'two_page_preview' && (
+          <div className="mt-3">
+            <label htmlFor="preview-second-page" className="block font-medium text-slate-700">Second page</label>
+            <select
+              id="preview-second-page"
+              value={effectiveSecondSlug}
+              onChange={(event) => setPreviewSecondSlug(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+            >
+              {secondPageChoices.map((page) => <option key={page.slug} value={page.slug}>{page.title} · /{page.slug}</option>)}
+            </select>
+            <p className="mt-2 text-xs text-slate-600">
+              Generate Home and this page now. The complete source menu stays visible; finish the other planned pages later on the same CMS site.
+            </p>
+          </div>
+        )}
+      </div>
 
       {template.core_pages.length > 0 && (
         <PageGroup
@@ -406,13 +447,15 @@ export function PagePicker({
           variant="primary"
           size="lg"
           fullWidth
-          disabled={selectedPages.length === 0}
+          disabled={selectedPages.length === 0 || (generationMode === 'two_page_preview' && !effectiveSecondSlug)}
           busy={busy}
           onClick={onConfirm}
         >
           {busy
             ? 'Generating…'
-            : `Generate ${selectedPages.length} page${selectedPages.length === 1 ? '' : 's'}`}
+            : generationMode === 'two_page_preview'
+              ? 'Generate two-page preview'
+              : `Generate ${selectedPages.length} page${selectedPages.length === 1 ? '' : 's'}`}
         </Button>
         <Button size="lg" onClick={onBack} disabled={busy}>
           Back

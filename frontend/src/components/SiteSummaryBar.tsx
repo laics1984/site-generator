@@ -10,6 +10,7 @@ interface SiteSummaryBarProps {
   onRegenerate: () => void
   onAdjust: () => void
   onPublish: () => void
+  onGenerateRemaining?: () => void
   onStartOver: () => void
   onExport: () => void
   exportBusy?: boolean
@@ -32,6 +33,7 @@ export function SiteSummaryBar({
   onRegenerate,
   onAdjust,
   onPublish,
+  onGenerateRemaining,
   onStartOver,
   onExport,
   exportBusy = false,
@@ -68,7 +70,9 @@ export function SiteSummaryBar({
                 </>
               )}
               <span>
-                {site.pages.length} page{site.pages.length === 1 ? '' : 's'}
+                {site.generation_mode === 'two_page_preview'
+                  ? `${site.pages.length} of ${site.planned_page_count ?? site.pages.length} planned pages`
+                  : `${site.pages.length} page${site.pages.length === 1 ? '' : 's'}`}
               </span>
               {site.brand?.mood && (
                 <>
@@ -94,6 +98,11 @@ export function SiteSummaryBar({
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          {onGenerateRemaining && (
+            <Button size="sm" variant="primary" onClick={onGenerateRemaining} busy={busy}>
+              Generate remaining pages
+            </Button>
+          )}
           {canRegenerate && (
             <Button size="sm" onClick={onRegenerate} busy={busy}>
               Regenerate

@@ -1,5 +1,5 @@
 """
-SQLite-backed durable state for long-running crawls.
+SQLite-backed durable state for crawls and staged generation projects.
 
 We pick SQLite over Postgres because:
 - Site-generator is single-tenant, single-host today
@@ -75,6 +75,30 @@ CREATE INDEX IF NOT EXISTS idx_pages_job_status
     ON crawl_pages(job_id, status);
 CREATE INDEX IF NOT EXISTS idx_pages_job_hash
     ON crawl_pages(job_id, content_hash);
+
+CREATE TABLE IF NOT EXISTS generation_projects (
+    id               TEXT PRIMARY KEY,
+    request_json     TEXT NOT NULL,
+    preview_site_json TEXT NOT NULL,
+    cms_target       TEXT,
+    entity_id        TEXT,
+    public_url       TEXT,
+    status           TEXT NOT NULL DEFAULT 'generated',
+    created_at       REAL NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at       REAL NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_generation_projects_entity
+    ON generation_projects(cms_target, entity_id);
+
+CREATE TABLE IF NOT EXISTS generation_project_pages (
+    project_id TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    page_id TEXT NOT NULL,
+    published INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (project_id, slug),
+    FOREIGN KEY (project_id) REFERENCES generation_projects(id) ON DELETE CASCADE
+);
 """
 
 
@@ -96,6 +120,11 @@ async def init_db() -> None:
             # synchronous=NORMAL is safe with WAL and a lot faster than FULL.
             await conn.execute("PRAGMA synchronous=NORMAL")
             await conn.executescript(_SCHEMA)
+            columns = {row[1] for row in await (await conn.execute("PRAGMA table_info(generation_project_pages) ")).fetchall()}
+            if "published" not in columns:
+                await conn.execute(
+                    "ALTER TABLE generation_project_pages ADD COLUMN published INTEGER NOT NULL DEFAULT 0"
+                )
             await conn.commit()
         _BOOTSTRAPPED = True
         logger.info("SQLite ready at %s", DB_PATH)

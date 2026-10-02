@@ -12,6 +12,7 @@ interface PushPlanCardProps {
   publish: boolean
   /** Whether the push resets the site's templates to the new design. */
   replaceTemplates: boolean
+  operation?: 'sync' | 'preview' | 'extend'
 }
 
 /** Everything an update leaves exactly as the site's owner has it. Stated
@@ -46,6 +47,7 @@ export function PushPlanCard({
   error,
   publish,
   replaceTemplates,
+  operation = 'sync',
 }: PushPlanCardProps) {
   if (busy) {
     return (
@@ -72,7 +74,13 @@ export function PushPlanCard({
 
   return (
     <div className="space-y-3 rounded-xl border border-line bg-surface-sunken/60 p-3">
-      {plan.first_push ? (
+      {operation !== 'sync' ? (
+        <p className="text-xs text-ink-soft">
+          {operation === 'preview'
+            ? 'Publishes the two preview pages and the complete source menu. Other planned pages remain unpublished.'
+            : 'Adds these pages to the existing preview site. Existing pages and the site layout stay in place.'}
+        </p>
+      ) : plan.first_push ? (
         <p className="text-xs text-ink-soft">
           This site has no pages yet, so this is a first push: every page, the theme, and
           any migrated articles, events and WhatsApp button all go in.

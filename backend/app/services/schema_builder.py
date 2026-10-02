@@ -62,6 +62,7 @@ from app.models.content_blocks import (
     ImageMetadata,
     LinkBarBlock,
     MenuBlock,
+    NavLink,
     PagePlan,
     PricingBlock,
     ProcessBlock,
@@ -80,6 +81,7 @@ from app.models.design_manifest import (
     FooterArchetype,
     HeaderArchetype,
 )
+from app.models.industry import PageScaffold
 from app.services.design_brain import DesignRecipe, generate_site_design_recipe
 from app.services.design_director import (
     compose_design_manifest,
@@ -4364,6 +4366,19 @@ def _nav_items_from_pages(pages: list[GeneratedPage]) -> list[tuple[str, str]]:
     return items
 
 
+def _nav_tree_from_source(items: list[NavLink]) -> list[PageNode]:
+    """Give chrome templates the full source hierarchy without adding pages."""
+    return [
+        PageNode(
+            slug=item.href.lstrip("/").split("#", 1)[0],
+            title=item.label,
+            is_homepage=item.href == "/",
+            children=_nav_tree_from_source(item.children),
+        )
+        for item in items
+    ]
+
+
 def _harvest_image_slots(plan: SitePlan) -> list[tuple[str | None, ImageIntent]]:
     """Best-effort (query, intent) slots the render will request from Pexels.
 
@@ -4495,7 +4510,7 @@ def _href_token(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
 
 
-def _page_href_index(pages: list[PagePlan]) -> dict[str, str]:
+def _page_href_index(pages: list[PagePlan] | list[PageScaffold]) -> dict[str, str]:
     """token → "/slug" for every generated page.
 
     An LLM naming a real page by a near-miss spelling (`/our-services`,
@@ -4700,6 +4715,8 @@ async def plan_to_site(
     market_cue: str | None = None,
     place_cue: str | None = None,
     social_links: list[tuple[str, str]] | None = None,
+    source_navigation: list[NavLink] | None = None,
+    available_pages: list[PageScaffold] | None = None,
     whatsapp_widget: dict[str, Any] | None = None,
     reserved_image_urls: set[str] | None = None,
     header_override: HeaderArchetype | None = None,
@@ -4997,13 +5014,18 @@ async def plan_to_site(
         for loc in {p.locale for p in plan.pages}
     }
     base_contact_href = contact_href_by_locale.get(None)
-    _base_href_index = _page_href_index(
-        [p for p in plan.pages if p.locale is None]
-    )
+    route_pages = available_pages if available_pages is not None else plan.pages
+    _base_href_index = _page_href_index([p for p in route_pages if p.locale is None])
+    if base_contact_href is None and available_pages is not None:
+        contact_page = next(
+            (p for p in available_pages if p.page_type == "contact" and p.locale is None), None
+        )
+        if contact_page is not None:
+            base_contact_href = f"/{contact_page.slug}"
     href_index_by_locale = {
         loc: {
             **_base_href_index,
-            **_page_href_index([p for p in plan.pages if p.locale == loc]),
+            **_page_href_index([p for p in route_pages if p.locale == loc]),
         }
         for loc in {p.locale for p in plan.pages}
     }
@@ -5292,7 +5314,11 @@ async def plan_to_site(
         _stamp_band_markers(_page.body_schema.elements, theme)
 
     page_tree = _build_page_tree(pages)
-    nav_items = _nav_items_from_pages(pages)
+    nav_items = (
+        [(item.label, item.href) for item in source_navigation]
+        if source_navigation else _nav_items_from_pages(pages)
+    )
+    chrome_tree = _nav_tree_from_source(source_navigation) if source_navigation else page_tree
     footer_nav = list(nav_items)
     if extra_footer_nav:
         footer_nav.extend(extra_footer_nav)
@@ -5341,7 +5367,7 @@ async def plan_to_site(
         theme,
         nav_items=nav_items,
         primary_cta=primary_cta,
-        page_tree=page_tree,
+        page_tree=chrome_tree,
         overlay=header_overlay,
         industry=plan.industry_category,
         archetype=manifest.header_archetype,
@@ -5353,7 +5379,7 @@ async def plan_to_site(
         nav_items=footer_nav,
         contact=contact,
         media_credits=resolver.attributions,
-        page_tree=page_tree,
+        page_tree=chrome_tree,
         extra_legal_nav=extra_footer_nav,
         social_links=social_links,
         archetype=manifest.footer_archetype,
@@ -5393,6 +5419,7 @@ async def plan_to_site(
         # reach the footer through `extra_footer_nav`, as they always have.
         pages=[*pages, *outside_pages],
         page_tree=page_tree,
+        source_navigation=source_navigation,
         media_credits=resolver.attributions,
         social_links=social_links or [],
         # Discovered on the source site, not derived from the theme — carried

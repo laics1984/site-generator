@@ -31,10 +31,17 @@ export interface SourceContent {
   image_metadata?: ImageMetadata[]
   profile_candidates?: ProfileCandidate[]
   links?: string[]
+  nav_links?: SourceNavLink[]
   /** Set on entries inside `discovered_pages`; null on the primary page. */
   url_path?: string | null
   /** Additional same-domain pages found by the bounded crawler. */
   discovered_pages?: SourceContent[]
+}
+
+export interface SourceNavLink {
+  label: string
+  href: string
+  children: SourceNavLink[]
 }
 
 export interface PageSeo {
@@ -203,6 +210,13 @@ export interface GeneratedSite {
   pages: GeneratedPage[]
   /** Tree of top-level pages with nested children; mirrors `pages`. */
   page_tree?: PageNode[]
+  source_navigation?: SourceNavLink[] | null
+  generation_project_id?: string | null
+  generation_mode?: 'full' | 'two_page_preview' | 'remaining'
+  planned_page_count?: number | null
+  cms_entity_id?: string | null
+  cms_target_name?: string | null
+  public_url?: string | null
   media_credits?: string[]
   theme?: unknown
   builder_styles?: BuilderStylesShape | null
@@ -532,6 +546,7 @@ export interface CmsTarget {
 
 /** One site the signed-in CMS account owns or manages. */
 export interface CmsSite {
+  entity_id?: string | null
   /** What a push is keyed on — the same token the admin shows under settings. */
   entity_api_token: string
   entity_name: string
@@ -539,6 +554,16 @@ export interface CmsSite {
   public_url: string | null
   favicon_url: string | null
   role: 'owner' | 'manager'
+}
+
+export interface GenerationProjectSummary {
+  id: string
+  cms_target: string | null
+  entity_id: string | null
+  public_url: string | null
+  status: 'generated' | 'preview_targeted' | 'preview_published' | 'complete'
+  created_at: number
+  updated_at: number
 }
 
 export interface CmsConnectionTest {

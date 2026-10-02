@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.content_blocks import ContentCollections
+from app.models.content_blocks import ContentCollections, NavLink
 
 
 EditorBtns = Literal[
@@ -295,6 +295,15 @@ class GeneratedSite(BaseModel):
             "but preserves parent/child structure for the builder's navigation."
         ),
     )
+    # The source site's navigation is independent of the pages generated so far.
+    # A two-page preview can therefore retain links to the planned pages.
+    source_navigation: list[NavLink] | None = None
+    generation_project_id: str | None = None
+    generation_mode: Literal["full", "two_page_preview", "remaining"] = "full"
+    planned_page_count: int | None = None
+    cms_entity_id: str | None = None
+    cms_target_name: str | None = None
+    public_url: str | None = None
     media_credits: list[str] = Field(
         default_factory=list,
         description=(

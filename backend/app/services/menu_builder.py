@@ -14,7 +14,8 @@ Slots are STRING IDs that match the canonical menu IDs in
     menu-primary, menu-utility, menu-footer, menu-legal, menu-social
 
 This module:
-  1. Builds `menus[]` from the GeneratedSite's `page_tree`
+  1. Builds `menus[]` from the source navigation when available, otherwise
+     from the GeneratedSite's `page_tree`
   2. Wraps the existing header/footer BuilderElements into the layout payload
 """
 
@@ -26,6 +27,7 @@ from uuid import uuid4
 
 from app.config import settings
 from app.models.builder_schema import BuilderElement, GeneratedSite, PageNode
+from app.models.content_blocks import NavLink
 from app.models.design_manifest import SELF_CHROME_HEADERS
 from app.services.locale import locale_label
 
@@ -116,6 +118,7 @@ def build_menus(
     *,
     legal_pages: list[tuple[str, str]] | None = None,
     social_links: list[tuple[str, str]] | None = None,
+    source_navigation: list[NavLink] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build the SiteMenu list webtree expects in PUT /layout.
@@ -192,6 +195,11 @@ def build_menus(
                 _menu_item(node.title, f"/{node.slug}", children=dropdown or None)
             )
 
+    if source_navigation:
+        # Keep the source's labels, order, depth and links. In particular, do
+        # not apply the generated-page menu's Contact omission or item caps.
+        primary_items = [_source_menu_item(item) for item in source_navigation]
+
     menus: list[dict[str, Any]] = [
         _menu(PRIMARY_MENU_ID, "Primary", "primary", primary_items),
     ]
@@ -226,6 +234,8 @@ def build_menus(
                 # pages spread across the footer width instead of stacking into
                 # one tall vertical list.
                 footer_items.append(_menu_item(node.title, href))
+    if source_navigation:
+        footer_items = [_source_menu_item(item) for item in source_navigation]
     if footer_items:
         menus.append(_menu(FOOTER_MENU_ID, "Footer", "footer", footer_items))
 
@@ -392,6 +402,7 @@ def build_layout_payload(site: GeneratedSite) -> LayoutPayload:
         site.page_tree,
         legal_pages=legal_pages,
         social_links=site.social_links,
+        source_navigation=site.source_navigation,
     )
     if site.header_schema is None or site.footer_schema is None:
         raise ValueError(
@@ -456,3 +467,11 @@ def _menu_item(
     if children:
         item["children"] = children
     return item
+
+
+def _source_menu_item(item: NavLink) -> dict[str, Any]:
+    return _menu_item(
+        item.label,
+        item.href,
+        children=[_source_menu_item(child) for child in item.children] or None,
+    )

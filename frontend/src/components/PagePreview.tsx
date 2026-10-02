@@ -52,6 +52,20 @@ export function PagePreview({
   const [layoutAttempt, setLayoutAttempt] = useState(0)
   const [fullscreen, setFullscreen] = useState(false)
   const [showDetails, setShowDetails] = useState(false)
+  const [unfinishedPath, setUnfinishedPath] = useState<string | null>(null)
+  const plannedMenuPaths = useMemo(() => {
+    const paths = new Set<string>()
+    const visit = (items: typeof site.source_navigation) => {
+      for (const item of items ?? []) {
+        if (item.href.startsWith('/') && !item.href.startsWith('//')) {
+          paths.add(item.href.split(/[?#]/, 1)[0].replace(/\/+$/, '') || '/')
+        }
+        visit(item.children)
+      }
+    }
+    visit(site.source_navigation)
+    return paths
+  }, [site.source_navigation])
 
   // The header/footer the visitor sees are the *wrapped* ones the push builds:
   // they carry the menus a `menu` element resolves its items from, plus the
@@ -138,15 +152,25 @@ export function PagePreview({
       const target = event.target as Element | null
       const anchor = target?.closest?.('a[href]') as HTMLAnchorElement | null
       if (!anchor) return
-      const slug = resolveInternalSlug(anchor.getAttribute('href'), pages)
-      if (slug == null) return
+      const href = anchor.getAttribute('href') || ''
+      const slug = resolveInternalSlug(href, pages)
+      if (slug == null) {
+        const path = href.split(/[?#]/, 1)[0].replace(/\/+$/, '') || '/'
+        if (site.generation_mode === 'two_page_preview' && plannedMenuPaths.has(path)) {
+          event.preventDefault()
+          event.stopPropagation()
+          setUnfinishedPath(path)
+        }
+        return
+      }
       event.preventDefault()
       event.stopPropagation()
+      setUnfinishedPath(null)
       onNavigateRef.current(slug)
     }
     doc.addEventListener('click', handleClick, true)
     return () => doc.removeEventListener('click', handleClick, true)
-  }, [scrollRoot, pages])
+  }, [scrollRoot, pages, plannedMenuPaths, site.generation_mode])
 
   // Escape leaves fullscreen — the toolbar button scrolls out of reach otherwise.
   useEffect(() => {
@@ -228,6 +252,12 @@ export function PagePreview({
           }
         >
           The page body below still renders, but without the real navigation. ({layoutError})
+        </Banner>
+      )}
+
+      {unfinishedPath && (
+        <Banner tone="info" className="rounded-none border-x border-b-0 border-line" title="Page not ready in this preview">
+          {unfinishedPath} is part of the source menu. Generate the remaining pages to make it available.
         </Banner>
       )}
 

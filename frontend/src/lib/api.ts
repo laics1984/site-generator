@@ -13,6 +13,7 @@ import type {
   FacebookFacts,
   FacebookSession,
   GeneratedSite,
+  GenerationProjectSummary,
   HeroHeight,
   IndustryCategory,
   LlmModelsResponse,
@@ -98,6 +99,8 @@ export async function generateFromSource(payload: GeneratePayload): Promise<Gene
 export interface GenerateWithPagesPayload {
   source: SourceContent
   selected_pages: PageScaffold[]
+  generation_mode?: 'full' | 'two_page_preview'
+  preview_second_slug?: string | null
   industry: IndustryCategory
   brand?: BrandIdentity | null
   mood_override?: BrandMood | null
@@ -124,6 +127,14 @@ export async function generateWithPages(
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export async function listGenerationProjects(): Promise<GenerationProjectSummary[]> {
+  return jsonRequest('/api/generate/projects')
+}
+
+export async function generateRemaining(projectId: string): Promise<GeneratedSite> {
+  return jsonRequest(`/api/generate/remaining/${encodeURIComponent(projectId)}`, { method: 'POST' })
 }
 
 export interface PageRecipeOptions {
@@ -384,6 +395,8 @@ export interface PlanPayload {
   login: CmsLogin
   entityToken: string
   target?: string
+  operation?: 'sync' | 'preview' | 'extend'
+  generationProjectId?: string
 }
 
 /** What pushing into an existing site would do — the backend runs the same
@@ -397,6 +410,8 @@ export async function planCmsPush(payload: PlanPayload): Promise<CmsSyncPlan> {
       password: payload.login.password,
       entity_token: payload.entityToken,
       target: payload.target ?? null,
+      operation: payload.operation ?? 'sync',
+      generation_project_id: payload.generationProjectId ?? null,
     }),
   })
 }
@@ -419,6 +434,8 @@ export interface PushPayload {
   /** Which CMS to land in — a `name` from listCmsTargets(), never a URL.
    * Omitted ⇒ the backend's default target. */
   target?: string
+  operation?: 'sync' | 'preview' | 'extend'
+  generationProjectId?: string
 }
 
 export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
@@ -437,6 +454,8 @@ export async function pushToCms(payload: PushPayload): Promise<CmsPushReport> {
       new_entity_name: payload.newEntityName ?? null,
       new_entity_url: payload.newEntityUrl ?? null,
       target: payload.target ?? null,
+      operation: payload.operation ?? 'sync',
+      generation_project_id: payload.generationProjectId ?? null,
     }),
   })
 }

@@ -15,7 +15,7 @@ The frontend renders PushReport.steps as a progress table.
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -98,6 +98,7 @@ def _site_summary(entity: dict[str, Any]) -> dict[str, Any]:
     owns or manages.
     """
     return {
+        "entity_id": entity.get("entity_id"),
         "entity_api_token": entity.get("entity_api_token"),
         "entity_name": entity.get("entity_name"),
         "entity_url": entity.get("entity_url"),
@@ -147,6 +148,8 @@ class PlanRequestBody(BaseModel):
     password: str
     entity_token: str = Field(min_length=1)
     target: str | None = None
+    operation: Literal["sync", "preview", "extend"] = "sync"
+    generation_project_id: str | None = None
 
 
 @router.post("/plan")
@@ -164,14 +167,16 @@ async def plan(payload: PlanRequestBody) -> dict[str, Any]:
         cms_email=payload.email,
         cms_password=payload.password,
         entity_token=payload.entity_token,
+        operation=payload.operation,
+        generation_project_id=payload.generation_project_id,
     )
     client = CmsClient.for_target(target)
     try:
         try:
             await client.login(payload.email, payload.password)
             _existing, renamed, sync = await inspect_entity(client, req)
-        except CmsApiError as exc:
-            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        except (CmsApiError, ValueError) as exc:
+            raise HTTPException(status_code=exc.status if isinstance(exc, CmsApiError) else 409, detail=str(exc)) from exc
     finally:
         await client.aclose()
     return {**sync.as_dict(), "renamed_slugs": renamed}
@@ -210,6 +215,8 @@ class PushRequestBody(BaseModel):
         description="Which CMS to push into — a name from GET /api/cms/targets, "
         "never a URL. None means the default target.",
     )
+    operation: Literal["sync", "preview", "extend"] = "sync"
+    generation_project_id: str | None = None
 
 
 @router.post("/push")
@@ -237,6 +244,8 @@ async def push(payload: PushRequestBody) -> dict[str, Any]:
         new_entity_name=payload.new_entity_name,
         new_entity_url=payload.new_entity_url,
         collections=payload.site.collections,
+        operation=payload.operation,
+        generation_project_id=payload.generation_project_id,
     )
     report = await push_site(req)
     return {

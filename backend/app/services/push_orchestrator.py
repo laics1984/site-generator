@@ -1,7 +1,7 @@
 """
 Push a GeneratedSite into a webtree CMS entity.
 
-A push is a SYNC of the entity's pages and design with the generated site
+A standard push is a SYNC of the entity's pages and design with the generated site
 (services/cms_sync.py owns the rules). A fresh entity gets everything; a site
 that already has pages gets its pages and design replaced and keeps what its
 owner has built up in the CMS since — articles, events, categories, tags,
@@ -30,7 +30,9 @@ Steps (in order):
      + on a first push, migrated article/event entries from the source site
 
 Each step's outcome is appended to PushReport so the UI can show a per-step
-status table. Failures abort the push but the report carries everything done
+status table. Preview pushes publish two pages with the source menu; extension
+pushes publish only pending pages and reuse the existing layout. Failures abort
+the push but the report carries everything done
 up to the failure point (useful for diagnostics + future resume support).
 """
 
@@ -43,7 +45,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -67,6 +69,10 @@ from app.services.cms_sync import (
     plan_sync,
 )
 from app.services.cms_targets import CmsTarget, default_target
+from app.services.generation_projects import (
+    bind_project, get_project, mark_complete, mark_page_published,
+    mark_preview_published, record_page,
+)
 from app.services.menu_builder import build_layout_payload
 from app.services.platform_routes import BLANK_TEMPLATE_BODY, TEMPLATE_PAGE_DEFAULTS
 from app.services.timing import stage
@@ -145,6 +151,11 @@ class PushRequest:
     # existed. Resolved at the HTTP boundary (routers/cms.py) so an unknown name
     # is a 400 rather than something buried in a PushReport.
     target: CmsTarget = field(default_factory=default_target)
+    operation: Literal["sync", "preview", "extend"] = "sync"
+    generation_project_id: str | None = None
+    entity_id: str | None = None
+    public_url: str | None = None
+    project_page_ids: dict[str, str] = field(default_factory=dict)
 
 
 # --- the orchestrator -----------------------------------------------------------
@@ -231,6 +242,21 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         report.error = str(exc)
         return report
 
+    if req.operation != "sync":
+        project = await get_project(req.generation_project_id or "")
+        if project is None or not req.publish:
+            report.error = "Preview and extension pushes need a saved project and immediate publication."
+            return report
+        if req.operation == "preview" and req.create_entity and project["entity_id"]:
+            report.error = "This preview is already linked to a CMS site; select that site to retry."
+            return report
+        if req.operation == "extend" and req.create_entity:
+            report.error = "Extend the existing CMS site; do not create another one."
+            return report
+        if req.operation == "preview" and req.new_entity_url:
+            report.error = "Publish a lead preview on the platform preview host, without a custom domain."
+            return report
+
     # 1b. (Optional) Create a fresh entity and push into it.
     if req.create_entity:
         try:
@@ -242,6 +268,13 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                 builder_styles=req.site.builder_styles or None,
             )
             req.entity_token = str(entity.get("entity_api_token") or "")
+            req.entity_id = str(entity.get("entity_id") or "")
+            req.public_url = entity.get("public_url")
+            if req.operation == "preview" and req.generation_project_id and req.entity_id:
+                await bind_project(
+                    req.generation_project_id, target=req.target.name,
+                    entity_id=req.entity_id, public_url=req.public_url,
+                )
             report.record(
                 PushStep(
                     name="create_entity",
@@ -271,10 +304,15 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     #    the spelling the page is published at (services/cms_sync.py).
     try:
         existing, renamed, plan = await inspect_entity(client, req)
-    except CmsApiError as exc:
+    except (CmsApiError, ValueError) as exc:
         report.record(PushStep(name="inspect", ok=False, error=str(exc)))
         report.error = str(exc)
         return report
+    if req.operation == "preview" and req.generation_project_id and req.entity_id:
+        await bind_project(
+            req.generation_project_id, target=req.target.name,
+            entity_id=req.entity_id, public_url=req.public_url,
+        )
     report.record(
         PushStep(name="inspect", ok=True, detail=describe_plan(plan), data=plan.as_dict())
     )
@@ -336,7 +374,14 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         return report
 
     # 5. Read the homepage's builder payload to capture layout.versionId
-    homepage_id = landed[0].page_id
+    existing_home = next((page for page in existing if page.is_homepage or page.slug == ""), None)
+    homepage_id = (
+        existing_home.id if req.operation == "extend" and existing_home
+        else landed[0].page_id if landed else ""
+    )
+    if not homepage_id:
+        report.error = "The CMS site has no homepage to supply its layout."
+        return report
     try:
         builder_payload = await client.get_builder_payload(req.entity_token, homepage_id)
         layout = builder_payload.get("layout") or {}
@@ -364,29 +409,27 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     #    page to the new version at once, so on an update the header, footer and
     #    menus go live here whether or not the pages are published below.
     try:
-        try:
-            menus, header_payload, footer_payload = build_layout_payload(req.site)
-        except ValueError as exc:
-            raise CmsApiError(500, str(exc)) from exc
-        result = await client.save_page_layout(
-            req.entity_token,
-            homepage_id,
-            expected_layout_version_id=layout_version_id,
-            header_schema=header_payload,
-            footer_schema=footer_payload,
-            menus=menus,
-        )
-        # Capture refreshed layout.versionId for the publish step.
-        new_layout_version_id = result.get("versionId") or layout_version_id
-        report.record(
-            PushStep(
-                name="save_layout",
-                ok=True,
-                detail=f"{len(menus)} menu(s) + header/footer saved",
-                data={"layout_version_id": new_layout_version_id},
+        if req.operation == "extend":
+            report.record(PushStep(name="save_layout", ok=True, detail="Reused the existing site layout"))
+        else:
+            try:
+                menus, header_payload, footer_payload = build_layout_payload(req.site)
+            except ValueError as exc:
+                raise CmsApiError(500, str(exc)) from exc
+            result = await client.save_page_layout(
+                req.entity_token,
+                homepage_id,
+                expected_layout_version_id=layout_version_id,
+                header_schema=header_payload,
+                footer_schema=footer_payload,
+                menus=menus,
             )
-        )
-        layout_version_id = new_layout_version_id
+            layout_version_id = result.get("versionId") or layout_version_id
+            report.record(PushStep(
+                name="save_layout", ok=True,
+                detail=f"{len(menus)} menu(s) + header/footer saved",
+                data={"layout_version_id": layout_version_id},
+            ))
     except CmsApiError as exc:
         report.record(PushStep(name="save_layout", ok=False, error=str(exc)))
         report.error = str(exc)
@@ -433,7 +476,7 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         return report
 
     # 8. Builder styles via launch-code bridge (optional)
-    if req.push_builder_styles and req.site.builder_styles:
+    if req.operation != "extend" and req.push_builder_styles and req.site.builder_styles:
         try:
             await client.mint_builder_session(req.entity_token)
             styles_result = await client.update_builder_styles(req.site.builder_styles)
@@ -461,13 +504,15 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
 
     # 8b. Site icon (optional). Non-fatal: the pages are already in, and an icon
     #     is something the owner can set in the admin afterwards.
-    await _push_favicon(client, req, report)
+    if req.operation != "extend":
+        await _push_favicon(client, req, report)
 
     # 8c. WhatsApp chat button, when the source site published a number
     #     (services/whatsapp_discovery.py). Non-fatal for the same reason as the
     #     icon: the site is already in, and this is one switch in Site settings.
     #     First push only — an update keeps the owner's settings.
-    await _push_whatsapp_widget(client, req, report, first_push=plan.first_push)
+    if req.operation != "extend":
+        await _push_whatsapp_widget(client, req, report, first_push=plan.first_push)
 
     # 9. Publish (optional) — concurrent; every publish uses its own page's saved
     #    draft version plus the shared (post-builder-styles) layout_version_id.
@@ -483,6 +528,9 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                         expected_draft_version=saved_drafts.get(page_id, 1),
                         expected_layout_version_id=layout_version_id,
                     )
+                    if req.operation != "sync" and req.generation_project_id:
+                        slug = next(item.page.slug for item in landed if item.page_id == page_id)
+                        await mark_page_published(req.generation_project_id, slug)
 
             with stage("push_publish"):
                 publish_results = await asyncio.gather(
@@ -512,12 +560,18 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     #     and, on a first push only, the migrated article/event entries. Both
     #     are non-fatal: the site is already pushed, so a failure here degrades
     #     to "add content later".
-    await _ensure_template_pages(client, req, report, existing)
-    await _push_content_entries(client, req, report, first_push=plan.first_push)
+    if req.operation == "sync":
+        await _ensure_template_pages(client, req, report, existing)
+        await _push_content_entries(client, req, report, first_push=plan.first_push)
 
     # Record page IDs for the UI's "Open in builder" links
     for item in landed:
         report.page_urls[item.page_id] = item.page.slug or "/"
+
+    if req.operation == "preview" and req.generation_project_id:
+        await mark_preview_published(req.generation_project_id)
+    elif req.operation == "extend" and req.generation_project_id:
+        await mark_complete(req.generation_project_id)
 
     report.success = True
     return report
@@ -546,13 +600,54 @@ async def inspect_entity(
     matching one is restored rather than recreated (services/cms_sync.py).
     Mutates ``req.site``: its slugs become the ones it will be published under.
     """
+    if req.operation != "sync":
+        if not req.generation_project_id:
+            raise ValueError("This push needs a generation project ID.")
+        project = await get_project(req.generation_project_id)
+        if project is None:
+            raise ValueError("Unknown generation project.")
+        if req.operation == "preview":
+            if project["status"] not in ("generated", "preview_targeted"):
+                raise ValueError("This preview project is already complete.")
+            req.site = GeneratedSite.model_validate(project["preview_site"])
+        elif project["status"] not in ("preview_published", "complete"):
+            raise ValueError("Publish the two-page preview before extending it.")
+        if not req.entity_id:
+            entities = await client.list_entities()
+            entity = next((item for item in entities if item.get("entity_api_token") == req.entity_token), None)
+            if entity is None:
+                raise ValueError("The selected CMS site is not available to this account.")
+            if req.operation == "preview" and entity.get("entity_url"):
+                raise ValueError("Use a CMS site without a custom domain for the lead preview.")
+            req.entity_id = str(entity.get("entity_id") or "")
+            req.public_url = entity.get("public_url")
+        if not req.entity_id:
+            raise ValueError("The CMS did not provide an entity ID for this site.")
+        if project["cms_target"] and (project["cms_target"] != req.target.name or project["entity_id"] != req.entity_id):
+            raise ValueError("This generation project is bound to a different CMS site.")
+        if req.operation == "extend" and not project["entity_id"]:
+            raise ValueError("The two-page preview has not been linked to a CMS site.")
+        req.project_page_ids = project["page_ids"]
+        if req.operation == "extend":
+            planned = {page["slug"] for page in project["request"]["selected_pages"]}
+            preview_slugs = {page["slug"] for page in project["preview_site"]["pages"]}
+            pending = planned - preview_slugs - set(project["published_slugs"])
+            if any(page.slug not in pending or page.is_homepage for page in req.site.pages):
+                raise ValueError("The extension contains a page that is not pending in the saved site plan.")
+            if {page.slug for page in req.site.pages} != pending:
+                raise ValueError("Generate the current remaining pages before publishing this extension.")
+
     rows = await client.list_pages(req.entity_token, status="all")
     existing = existing_pages(rows)
     renamed = normalize_site_slugs(
         req.site,
         existing_slugs={page.slug for page in existing if not page.is_template},
     )
-    return existing, renamed, plan_sync(req.site, existing)
+    if req.operation != "sync" and renamed:
+        raise ValueError("A planned page path conflicts with the existing CMS site.")
+    return existing, renamed, plan_sync(
+        req.site, existing, operation=req.operation, known_page_ids=req.project_page_ids,
+    )
 
 
 _SEO_FIELDS = (
@@ -619,6 +714,8 @@ async def _land_pages(
         page_id = meta.get("id")
         if not page_id:
             raise CmsApiError(500, f"Create-page response missing id: {meta}")
+        if req.generation_project_id and req.operation != "sync":
+            await record_page(req.generation_project_id, page.slug, str(page_id))
         return _LandedPage(page, str(page_id), int(meta.get("draftVersion") or 1))
 
     async def _update(change: PageChange) -> _LandedPage:

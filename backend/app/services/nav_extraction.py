@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # above the ceiling it's a sitemap/footer dump we don't want as nav evidence.
 _MIN_CLUSTER_LINKS = 3
 _MAX_CLUSTER_LINKS = 15
-_MAX_NAV_ITEMS = 12
+_MAX_NAV_ITEMS = 64
 _MAX_LABEL_LEN = 60
 
 # How text-dominated by links a body block must be to count as a menu strip
@@ -125,6 +125,8 @@ def extract_nav_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
     for find_candidates in (_semantic_nav_candidates, _declared_menu_roots):
         items = _best_menu(find_candidates(soup), base_url)
         if items:
+            if len(items) > _MAX_NAV_ITEMS:
+                logger.warning("Source navigation has %d items; retaining the first %d", len(items), _MAX_NAV_ITEMS)
             return items[:_MAX_NAV_ITEMS]
     return []
 

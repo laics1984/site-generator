@@ -1,8 +1,8 @@
 import asyncio
 import logging
 import re
-from typing import Any, NamedTuple
-from urllib.parse import urlparse
+from typing import Any, Literal, NamedTuple
+from urllib.parse import urljoin, urlparse
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -12,6 +12,7 @@ from app.models.brand import (
     BrandIdentity,
     BrandMood,
     HeroBackgroundHeight,
+    ThemeTokens,
     default_hero_height,
 )
 from app.models.builder_schema import (
@@ -44,6 +45,7 @@ from app.models.content_blocks import (
     SitePlan,
     SourceCard,
     SourceContent,
+    NavLink,
     TeamBlock,
     TeamMember,
     VideoBlock,
@@ -64,6 +66,7 @@ from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
 from app.services.planner import (
     DetectedBrand,
+    ScaffoldedSitePlan,
     detect_brand_cached,
     plan_site,
     plan_site_with_scaffolds,
@@ -113,6 +116,8 @@ from app.services.diversity import recent_choices
 from app.services.schema_builder import plan_to_site
 from app.services.theme import build_theme, resolve_color_scheme
 from app.services.timing import stage
+from app.services.generation_projects import create_project, get_project, list_projects
+from app.services.scraper import ScrapeError, extend_crawl
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +182,9 @@ def _market_cues_for(source: SourceContent) -> tuple[str, str]:
         return "", ""
 
 
-def _image_pool_for(source: SourceContent) -> tuple[list[str], list[ImageMetadata]]:
+def _image_pool_for(
+    source: SourceContent, allowed_slugs: set[str] | None = None,
+) -> tuple[list[str], list[ImageMetadata]]:
     """Flatten entry + crawled page imagery into one de-duped resolver pool."""
     images: list[str] = []
     metadata: list[ImageMetadata] = []
@@ -185,6 +192,8 @@ def _image_pool_for(source: SourceContent) -> tuple[list[str], list[ImageMetadat
     seen_metadata: set[str] = set()
 
     def add_page(page: SourceContent) -> None:
+        if allowed_slugs is not None and normalize_source_slug(page.url_path) not in allowed_slugs:
+            return
         for url in page.images:
             if url and url not in seen_images:
                 seen_images.add(url)
@@ -204,7 +213,9 @@ def _image_pool_for(source: SourceContent) -> tuple[list[str], list[ImageMetadat
     return images, metadata
 
 
-def _page_images_by_slug(source: SourceContent) -> dict[str, list[ImageMetadata]]:
+def _page_images_by_slug(
+    source: SourceContent, allowed_slugs: set[str] | None = None,
+) -> dict[str, list[ImageMetadata]]:
     """Map each page's slug to the images the source placed on THAT page.
 
     Keyed by the same slug the planner/scaffolds use — ``_path_to_slug`` of the
@@ -215,6 +226,8 @@ def _page_images_by_slug(source: SourceContent) -> dict[str, list[ImageMetadata]
     out: dict[str, list[ImageMetadata]] = {}
 
     def add_page(page: SourceContent) -> None:
+        if allowed_slugs is not None and normalize_source_slug(page.url_path) not in allowed_slugs:
+            return
         if not page.image_metadata:
             return
         slug = normalize_source_slug(page.url_path)
@@ -1427,8 +1440,8 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
 
 class GenerateWithPagesRequest(BaseModel):
     """Scaffolded generate. The user has chosen the page set; we ask the LLM
-    to write copy for the chosen pages' sections, then bolt on legal pages
-    (boilerplate, no LLM) and build the themed site.
+    to write copy for the chosen pages' sections, then bolt on selected legal
+    pages (boilerplate, no LLM) and build the themed site.
 
     If `detected_brand` is passed (from the /pages/recipe response), we skip
     the brand-detection LLM call entirely — saves ~10-30s per generation.
@@ -1436,6 +1449,10 @@ class GenerateWithPagesRequest(BaseModel):
 
     source: SourceContent
     selected_pages: list[PageScaffold] = Field(min_length=1)
+    generation_mode: Literal["full", "two_page_preview", "remaining"] = "full"
+    preview_second_slug: str | None = None
+    frozen_site: GeneratedSite | None = Field(default=None, exclude=True)
+    available_scaffolds: list[PageScaffold] | None = Field(default=None, exclude=True)
     industry: IndustryCategoryLiteral = "other"
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
@@ -1496,8 +1513,73 @@ def split_scaffolds(selected: list[PageScaffold]) -> ScaffoldSplit:
     return split
 
 
+def _navigation_for(source: SourceContent, planned: list[PageScaffold]) -> list[NavLink]:
+    if source.nav_links:
+        return source.nav_links
+    # A document or source without readable navigation still needs a stable
+    # route plan across the preview and later extension.
+    visible = [s for s in planned if not s.is_legal and not s.menu_hidden and not s.locale]
+    by_parent: dict[str | None, list[PageScaffold]] = {}
+    slugs = {s.slug for s in visible}
+    for scaffold in visible:
+        parent = scaffold.parent_slug if scaffold.parent_slug in slugs else None
+        by_parent.setdefault(parent, []).append(scaffold)
+
+    def make(items: list[PageScaffold]) -> list[NavLink]:
+        return [
+            NavLink(label=s.title, href="/" + s.slug if s.slug else "/", children=make(by_parent.get(s.slug, [])))
+            for s in sorted(items, key=lambda s: (s.nav_rank is None, s.nav_rank or 0, s.slug))
+        ]
+
+    return make(by_parent.get(None, []))
+
+
+async def _ensure_source_pages(source: SourceContent, scaffolds: list[PageScaffold]) -> None:
+    if source.source_kind != "url":
+        return
+    known = {normalize_source_slug(page.url_path) for page in source.discovered_pages}
+    missing = [s for s in scaffolds if not s.is_homepage and s.slug not in known and s.source_url]
+    if not missing:
+        return
+    seeds = list(dict.fromkeys(urljoin(source.source_ref, s.source_url or "") for s in missing))
+    seen = [source.source_ref, *(p.source_ref for p in source.discovered_pages)]
+    for offset in range(0, len(seeds), settings.crawl_max_pages_ceiling):
+        batch = seeds[offset : offset + settings.crawl_max_pages_ceiling]
+        try:
+            result = await extend_crawl(source.source_ref, batch, already_seen=seen, max_more=len(batch))
+        except ScrapeError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        source.discovered_pages.extend(result.additional_pages)
+        seen.extend(page.source_ref for page in result.additional_pages)
+    found = {normalize_source_slug(page.url_path) for page in source.discovered_pages}
+    unavailable = [s.slug for s in missing if s.slug not in found]
+    if unavailable:
+        raise HTTPException(status_code=422, detail=f"Could not read source content for: {', '.join(unavailable[:5])}")
+
+
 @router.post("/with-pages", response_model=GeneratedSite)
 async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
+    if payload.generation_mode == "remaining" or payload.frozen_site is not None or payload.available_scaffolds is not None:
+        raise HTTPException(status_code=422, detail="Generate remaining pages through the saved project endpoint.")
+    return await _generate_with_pages(payload)
+
+
+async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
+    planned_scaffolds = list(payload.selected_pages)
+    if payload.generation_mode == "two_page_preview":
+        home = next((s for s in planned_scaffolds if s.is_homepage and not s.is_legal), None)
+        second = next((s for s in planned_scaffolds if s.slug == payload.preview_second_slug and not s.is_homepage and not s.is_legal), None)
+        if home is None or second is None:
+            raise HTTPException(status_code=422, detail="Choose Home and one other planned page for the preview.")
+        payload.selected_pages = [home, second]
+    if payload.generation_mode != "full":
+        await _ensure_source_pages(payload.source, payload.selected_pages)
+    if payload.frozen_site is not None:
+        source_navigation = payload.frozen_site.source_navigation
+    elif payload.generation_mode == "two_page_preview":
+        source_navigation = _navigation_for(payload.source, planned_scaffolds)
+    else:
+        source_navigation = None
     # Locale detection reads image URLs as domain evidence
     # (_market_cues_for → detect_market), and the cues it produces steer every
     # Pexels query toward the right market. Under stock_images_only those cues
@@ -1512,7 +1594,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         split_scaffolds(payload.selected_pages)
     )
 
-    if not content_scaffolds:
+    if not content_scaffolds and not record_scaffolds and payload.generation_mode != "remaining":
         raise HTTPException(
             status_code=400,
             detail="At least one non-legal page (e.g. Home) must be selected.",
@@ -1591,34 +1673,24 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # Design-language pass: the reasoning model picks a curated palette + font
     # pairing before theme construction. Empty/invalid picks change nothing —
     # build_theme falls back to its deterministic selection.
-    with stage("design_language"):
-        language = await generate_design_language(
-            brand_name=brand.name,
-            mood=mood,
-            industry=industry,
-            seed_hex=seed_hex,
-            color_scheme=color_scheme,
+    if payload.frozen_site is None:
+        with stage("design_language"):
+            language = await generate_design_language(
+                brand_name=brand.name, mood=mood, industry=industry,
+                seed_hex=seed_hex, color_scheme=color_scheme,
+            )
+        theme = build_theme(
+            seed_hex, mood=mood, font_seed=brand.name, industry=industry,
+            palette_mode="auto", color_scheme=color_scheme,
+            palette_choice=language.palette, font_choice=language.font_pairing,
+            avoid_palettes=await recent_choices("palette", site_key=brand.name),
+            avoid_schemes=await recent_choices("scheme", site_key=brand.name),
         )
-    theme = build_theme(
-        seed_hex,
-        mood=mood,
-        font_seed=brand.name,
-        industry=industry,
-        palette_mode="auto",
-        color_scheme=color_scheme,
-        palette_choice=language.palette,
-        font_choice=language.font_pairing,
-        # Diversity: steer the curated pick off palettes recent sites used
-        # (rotates within the fit group only; fail-open empty set).
-        avoid_palettes=await recent_choices("palette", site_key=brand.name),
-        avoid_schemes=await recent_choices("scheme", site_key=brand.name),
-    )
-    theme.hero_background_height = resolve_hero_height(
-        payload.hero_height,
-        language.hero_height,
-        mood=mood,
-        industry=industry,
-    )
+        theme.hero_background_height = resolve_hero_height(
+            payload.hero_height, language.hero_height, mood=mood, industry=industry,
+        )
+    else:
+        theme = ThemeTokens.model_validate(payload.frozen_site.theme)
 
     # Announcement/quick-links strap: claim it BEFORE planning so its text is
     # out of raw_text (the LLM must not also narrate it into a paragraph);
@@ -1631,8 +1703,12 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # LLM owns the GPU — prefetch is pure network/CPU, so it comes off the
     # critical path for free. The GPU-bound vision judging still runs after
     # content generation (two models on one 16GB GPU would thrash swaps).
-    scraped_images, scraped_metadata = _image_pool_for(payload.source)
-    page_images = _page_images_by_slug(payload.source)
+    image_slugs = (
+        {scaffold.slug for scaffold in payload.selected_pages}
+        if payload.generation_mode != "full" else None
+    )
+    scraped_images, scraped_metadata = _image_pool_for(payload.source, image_slugs)
+    page_images = _page_images_by_slug(payload.source, image_slugs)
     profiles = _profile_pool_for(payload.source)
     profile_urls = [p.photo_url for p in profiles if p.photo_url]
     prefetch_task = asyncio.create_task(
@@ -1663,17 +1739,24 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
     # breakdown shows whether content generation, not design/images, dominates.
     # Also hands back the scaffold→source routing it used, so alignment verifies
     # fact-bearing content against the actual page it was grounded in.
-    try:
-        with stage("content_generation"):
-            scaffolded, source_map = await plan_site_with_scaffolds(
-                payload.source, detected, content_scaffolds
-            )
-    except LlmError as exc:
-        prefetch_task.cancel()
-        ocr_task.cancel()
-        graphics_task.cancel()
-        record_pages_task.cancel()
-        raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
+    if content_scaffolds:
+        try:
+            with stage("content_generation"):
+                scaffolded, source_map = await plan_site_with_scaffolds(
+                    payload.source, detected, content_scaffolds
+                )
+        except LlmError as exc:
+            prefetch_task.cancel()
+            ocr_task.cancel()
+            graphics_task.cancel()
+            record_pages_task.cancel()
+            raise HTTPException(status_code=502, detail=f"LLM error: {exc}") from exc
+    else:
+        scaffolded = ScaffoldedSitePlan(
+            site_name=detected.site_name, tagline=detected.tagline,
+            brand_summary=detected.brand_summary, pages=[],
+        )
+        source_map = {}
 
     # Per-batch failures no longer abort the run (see planner._run_item_safe) —
     # the affected pages ship with scaffold defaults. Surface which ones, so a
@@ -1845,7 +1928,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         if legal.page_type in legal_builders
     ]
 
-    collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
+    collections_task = (
+        asyncio.create_task(_safe_extract_collections(payload.source))
+        if payload.generation_mode == "full" else None
+    )
     site = await plan_to_site(
         plan,
         brand=brand,
@@ -1864,9 +1950,101 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
         stock_only=payload.stock_images_only,
+        source_navigation=source_navigation,
+        available_pages=(
+            payload.available_scaffolds
+            if payload.available_scaffolds is not None
+            else planned_scaffolds if payload.generation_mode == "two_page_preview"
+            else None
+        ),
     )
-    site.collections = await collections_task
+    site.collections = await collections_task if collections_task else None
 
+    if payload.generation_mode == "two_page_preview" and len(site.pages) != 2:
+        raise HTTPException(status_code=500, detail="Preview generation must produce exactly two pages.")
+
+    site.generation_mode = payload.generation_mode
+    site.planned_page_count = len(planned_scaffolds)
+    if payload.generation_mode == "two_page_preview":
+        request = payload.model_dump(mode="json", exclude={"frozen_site", "available_scaffolds"})
+        request["selected_pages"] = [s.model_dump(mode="json") for s in planned_scaffolds]
+        site.generation_project_id = await create_project(request, site)
+
+    return site
+
+
+@router.get("/projects")
+async def generation_project_list() -> list[dict]:
+    return await list_projects()
+
+
+@router.post("/remaining/{project_id}", response_model=GeneratedSite)
+async def generate_remaining(project_id: str) -> GeneratedSite:
+    project = await get_project(project_id)
+    if project is None or project["status"] not in ("preview_published", "complete"):
+        raise HTTPException(status_code=409, detail="Publish the two-page preview before generating the remaining pages.")
+    original = GenerateWithPagesRequest.model_validate(project["request"])
+    preview = GeneratedSite.model_validate(project["preview_site"])
+    done = {page.slug for page in preview.pages} | set(project["published_slugs"])
+    remaining = [s for s in original.selected_pages if s.slug not in done]
+    if not remaining:
+        raise HTTPException(status_code=409, detail="This site's planned pages have already been generated.")
+    if all(scaffold.is_legal for scaffold in remaining):
+        theme = ThemeTokens.model_validate(preview.theme)
+        builders = {"privacy": build_privacy_page, "terms": build_terms_page}
+        contact_email = original.legal_contact_email or (original.contact or {}).get("email") or "hello@example.com"
+        legal_pages = [
+            builders[scaffold.page_type](
+                preview.site_name, theme, contact_email=contact_email,
+                jurisdiction=original.jurisdiction or "your country / state",
+            )
+            for scaffold in remaining if scaffold.page_type in builders
+        ]
+        if not legal_pages:
+            raise HTTPException(status_code=422, detail="No supported remaining legal pages were found.")
+        if {page.slug for page in legal_pages} != {scaffold.slug for scaffold in remaining}:
+            raise HTTPException(status_code=422, detail="A planned legal page could not be generated.")
+        site = preview.model_copy(deep=True)
+        site.pages = legal_pages
+        site.page_tree = []
+        site.collections = None
+        site.generation_mode = "remaining"
+        site.generation_project_id = project_id
+        site.cms_entity_id = project["entity_id"]
+        site.cms_target_name = project["cms_target"]
+        site.public_url = project["public_url"]
+        return site
+    all_scaffolds = list(original.selected_pages)
+    remaining_slugs = {scaffold.slug for scaffold in remaining}
+    # A translated page clones its source-language plan. If that page was
+    # already published in the preview, build it as an internal dependency and
+    # drop it from the extension payload before publishing.
+    dependency_slugs = {
+        scaffold.translation_of
+        for scaffold in remaining if scaffold.locale and scaffold.translation_of is not None
+        and scaffold.translation_of not in remaining_slugs
+    }
+    dependencies = [s for s in all_scaffolds if s.slug in dependency_slugs]
+    if len(dependencies) != len(dependency_slugs):
+        raise HTTPException(status_code=422, detail="A translated page has no source-language page in the saved plan.")
+    original.selected_pages = [*dependencies, *remaining]
+    original.available_scaffolds = all_scaffolds
+    original.generation_mode = "remaining"
+    original.frozen_site = preview
+    if preview.design_manifest:
+        original.header_archetype = preview.design_manifest.get("header_archetype")
+        original.footer_archetype = preview.design_manifest.get("footer_archetype")
+    site = await _generate_with_pages(original)
+    if dependencies:
+        site.pages = [page for page in site.pages if page.slug not in dependency_slugs]
+        site.page_tree = []  # Extension never saves the entity-wide layout.
+    if {page.slug for page in site.pages} != remaining_slugs:
+        raise HTTPException(status_code=422, detail="Some planned pages could not be generated. Review the source and retry.")
+    site.generation_project_id = project_id
+    site.planned_page_count = len(project["request"]["selected_pages"])
+    site.cms_entity_id = project["entity_id"]
+    site.cms_target_name = project["cms_target"]
+    site.public_url = project["public_url"]
     return site
 
 

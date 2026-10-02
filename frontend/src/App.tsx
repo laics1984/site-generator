@@ -17,6 +17,8 @@ import {
   exportSiteDocument,
   extendCrawl,
   generateWithPages,
+  generateRemaining,
+  listGenerationProjects,
   getCrawlJob,
   mergeSourceContents,
   probeSitemap,
@@ -36,6 +38,7 @@ import type {
   CrawlJob,
   DetectedBrand,
   GeneratedSite,
+  GenerationProjectSummary,
   HeroHeightChoice,
   IndustryCategory,
   PageScaffold,
@@ -112,6 +115,9 @@ export default function App() {
   // Page picker state — between source confirmation and generation
   const [confirmedSource, setConfirmedSource] = useState<SourceContent | null>(null)
   const [selectedPages, setSelectedPages] = useState<PageScaffold[]>([])
+  const [generationMode, setGenerationMode] = useState<'full' | 'two_page_preview'>('full')
+  const [previewSecondSlug, setPreviewSecondSlug] = useState<string | null>(null)
+  const [savedProjects, setSavedProjects] = useState<GenerationProjectSummary[]>([])
   const [industryOverride, setIndustryOverride] = useState<IndustryCategory | null>(null)
   // Captured from /api/pages/recipe and passed to /generate/with-pages so we
   // don't re-run brand detection.
@@ -127,6 +133,11 @@ export default function App() {
   const [lastGenerate, setLastGenerate] = useState<LastGenerate | null>(null)
   const [publishOpen, setPublishOpen] = useState(false)
   const [exportBusy, setExportBusy] = useState(false)
+
+  function refreshProjects() {
+    listGenerationProjects().then(setSavedProjects).catch(() => undefined)
+  }
+  useEffect(refreshProjects, [])
 
   // Live-load Google Fonts when the theme picks them. This is for the tool's own
   // brand/theme swatches; the preview frame links its own copy (PagePreview).
@@ -446,7 +457,7 @@ export default function App() {
 
   /** Land a freshly generated site: show it, and keep the wizard intact behind
    * the summary bar so Adjust/Regenerate cost nothing. */
-  function acceptSite(result: GeneratedSite, origin: LastGenerate) {
+  function acceptSite(result: GeneratedSite, origin: LastGenerate | null) {
     setSite(result)
     setLastGenerate(origin)
     // Stay on the same page across a regenerate when it still exists.
@@ -473,6 +484,10 @@ export default function App() {
     const payload: GenerateWithPagesPayload = {
       source: confirmedSource,
       selected_pages: selectedPages,
+      generation_mode: generationMode,
+      preview_second_slug: generationMode === 'two_page_preview'
+        ? previewSecondSlug ?? selectedPages.find((p) => !p.is_homepage && !p.is_legal)?.slug ?? null
+        : null,
       industry: industryOverride || 'other',
       brand: effectiveBrand(),
       mood_override: mood,
@@ -490,6 +505,7 @@ export default function App() {
     try {
       const result = await generateWithPages(payload)
       acceptSite(result, { kind: 'with-pages', payload })
+      if (result.generation_project_id) refreshProjects()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Generation failed')
     } finally {
@@ -522,6 +538,8 @@ export default function App() {
     setLastGenerate(null)
     setConfirmedSource(null)
     setSelectedPages([])
+    setGenerationMode('full')
+    setPreviewSecondSlug(null)
     setDetectedBrand(null)
     setScrapeResult(null)
     setSourceUrl('')
@@ -547,6 +565,19 @@ export default function App() {
     }
   }
 
+  async function handleGenerateRemaining(projectId: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await generateRemaining(projectId)
+      acceptSite(result, null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not generate the remaining pages')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function backToSource() {
     setConfirmedSource(null)
     setSelectedPages([])
@@ -566,6 +597,11 @@ export default function App() {
           onRegenerate={handleRegenerate}
           onAdjust={() => setFormOpen(true)}
           onPublish={() => setPublishOpen(true)}
+          onGenerateRemaining={
+            site.generation_mode === 'two_page_preview' &&
+            savedProjects.some((project) => project.id === site.generation_project_id && project.status === 'preview_published')
+              ? () => handleGenerateRemaining(site.generation_project_id!) : undefined
+          }
           onStartOver={handleStartOver}
           onExport={handleExport}
         />
@@ -599,9 +635,11 @@ export default function App() {
         </main>
 
         <PublishDrawer
+          key={`${site.generation_mode ?? 'full'}:${site.generation_project_id ?? 'new'}`}
           open={publishOpen}
           onClose={() => setPublishOpen(false)}
           site={site}
+          onPublished={refreshProjects}
         />
       </div>
     )
@@ -652,6 +690,19 @@ export default function App() {
       )}
 
       <main className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+        {savedProjects.filter((project) => project.status === 'preview_published').length > 0 && !site && (
+          <div className="mb-5 rounded-xl border border-brand-200 bg-brand-50 p-4">
+            <div className="text-sm font-semibold text-brand-900">Continue a two-page preview</div>
+            <div className="mt-2 space-y-2">
+              {savedProjects.filter((project) => project.status === 'preview_published').map((project) => (
+                <div key={project.id} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="truncate text-brand-900">{project.public_url || project.entity_id || project.id}</span>
+                  <Button size="sm" busy={busy} onClick={() => handleGenerateRemaining(project.id)}>Generate remaining pages</Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-ink">
             {site ? 'Adjust and regenerate' : 'Generate a website'}
@@ -701,6 +752,10 @@ export default function App() {
                     setIndustryOverride={setIndustryOverride}
                     selectedPages={selectedPages}
                     setSelectedPages={setSelectedPages}
+                    generationMode={generationMode}
+                    setGenerationMode={setGenerationMode}
+                    previewSecondSlug={previewSecondSlug}
+                    setPreviewSecondSlug={setPreviewSecondSlug}
                     setDetectedBrand={setDetectedBrand}
                     onConfirm={handlePagesConfirm}
                     onBack={backToSource}

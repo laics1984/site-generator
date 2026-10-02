@@ -33,6 +33,7 @@ interface PublishDrawerProps {
   open: boolean
   onClose: () => void
   site: GeneratedSite
+  onPublished?: () => void
 }
 
 /** Update a site the account already has, or create a new one. */
@@ -74,7 +75,9 @@ function siteLabel(site: CmsSite): string {
  * credential form with a destination choice and a plan — it needs the width,
  * and it should not push the preview off screen to get it.
  */
-export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
+export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawerProps) {
+  const operation = site.generation_mode === 'two_page_preview'
+    ? 'preview' : site.generation_mode === 'remaining' ? 'extend' : 'sync'
   // Which CMS this lands in. The backend owns the list; an install that never
   // configured a second one gets exactly one and no picker is rendered.
   const [targets, setTargets] = useState<CmsTarget[]>([])
@@ -83,7 +86,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
   // The account's sites once Connect succeeds; null = not connected.
   const [sites, setSites] = useState<CmsSite[] | null>(null)
   const [sitesError, setSitesError] = useState<string | null>(null)
-  const [mode, setMode] = useState<Mode>('update')
+  const [mode, setMode] = useState<Mode>(operation === 'preview' ? 'create' : 'update')
   // The site to update — picked from the list, or typed when there is no list.
   const [siteToken, setSiteToken] = useState('')
   const [newEntity, setNewEntity] = useState({
@@ -122,7 +125,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
       .then((list) => {
         if (cancelled || list.length === 0) return
         setTargets(list)
-        setTargetName(list[0].name)
+        setTargetName(list.find((item) => item.name === site.cms_target_name)?.name ?? list[0].name)
       })
       // Degrade to today's behaviour: no picker, no `target` on the wire, and
       // the backend uses its default. Not worth an error banner — the push
@@ -131,7 +134,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [site.cms_target_name])
 
   const target = targets.find((t) => t.name === targetName) ?? null
   const connected = sites !== null
@@ -160,6 +163,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
   }
 
   function switchMode(next: Mode) {
+    if (operation === 'extend' && next !== 'update') return
     setMode(next)
     invalidate()
     setReport(null)
@@ -167,7 +171,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
     setReplaceTemplates(false)
     // An update replaces a live site, so it goes live; a new site lands as
     // drafts to review first. A preset, not a lock — the checkbox stays.
-    setPublish(next === 'update')
+    setPublish(operation !== 'sync' || next === 'update')
   }
 
   function chooseSite(token: string) {
@@ -191,7 +195,10 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
     setPlan(null)
     setPlanError(null)
     setPlanBusy(true)
-    planCmsPush({ site, login, entityToken: siteToken, target: targetName ?? undefined })
+    planCmsPush({
+      site, login, entityToken: siteToken, target: targetName ?? undefined,
+      operation, generationProjectId: site.generation_project_id ?? undefined,
+    })
       .then((res) => {
         if (!cancelled) setPlan(res)
       })
@@ -206,7 +213,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
     return () => {
       cancelled = true
     }
-  }, [connected, mode, siteToken, targetName, site, login])
+  }, [connected, mode, siteToken, targetName, site, login, operation])
 
   async function handleConnect() {
     const requested = invalidate()
@@ -219,7 +226,14 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
       if (epoch.current !== requested) return
       setSites(res.sites)
       setSitesError(res.sites_error ?? null)
-      if (res.sites.length === 1) {
+      const boundSite = operation === 'extend'
+        ? res.sites.find((item) => item.entity_id === site.cms_entity_id)
+        : null
+      if (boundSite) {
+        setSiteToken(boundSite.entity_api_token)
+      } else if (operation === 'extend') {
+        setError('The account does not have access to the CMS site used for this preview.')
+      } else if (res.sites.length === 1 && operation !== 'preview') {
         // One site: nothing to choose, so don't ask.
         setSiteToken(res.sites[0].entity_api_token)
       } else if (res.sites.length === 0 && !res.sites_error) {
@@ -253,6 +267,8 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
         newEntityUrl:
           mode === 'create' && newEntity.url.trim() ? newEntity.url.trim() : undefined,
         target: targetName ?? undefined,
+        operation,
+        generationProjectId: site.generation_project_id ?? undefined,
       })
       // A report that landed after the operator changed destination would read
       // as a report about the new one.
@@ -260,6 +276,8 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
       setReport(res)
       if (!res.success) {
         setError(res.error || 'Push failed; see step results below.')
+      } else {
+        onPublished?.()
       }
     } catch (err) {
       if (epoch.current !== requested) return
@@ -275,7 +293,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
     !busy &&
     (mode === 'create'
       ? newEntity.name.trim().length > 0
-      : Boolean(siteToken && plan))
+      : Boolean(siteToken && plan && (operation !== 'extend' || chosenSite?.entity_id === site.cms_entity_id)))
 
   const pageCount = site.pages.length
   const pagesWord = `${pageCount} page${pageCount === 1 ? '' : 's'}`
@@ -283,14 +301,18 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
   const pushLabel =
     mode === 'create'
       ? `Create site & push ${pagesWord}${whereWord}`
-      : `Update ${chosenSite?.entity_name ?? 'site'} · ${pagesWord}${whereWord}`
+      : operation === 'extend'
+        ? `Add ${pagesWord} to ${chosenSite?.entity_name ?? 'the preview site'}${whereWord}`
+        : `Update ${chosenSite?.entity_name ?? 'site'} · ${pagesWord}${whereWord}`
 
   return (
     <Drawer
       open={open}
       onClose={onClose}
       title="Publish to webtree"
-      description="Sends pages, header, footer, theme and images to a webtree site."
+      description={operation === 'extend'
+        ? 'Adds the remaining pages to the existing preview site.'
+        : 'Sends pages, header, footer, theme and images to a webtree site.'}
       widthClassName="max-w-xl"
     >
       <div className="space-y-4">
@@ -380,7 +402,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
               onChange={switchMode}
               options={[
                 { value: 'update', label: 'Update existing site' },
-                { value: 'create', label: 'Create new site' },
+                ...(operation === 'extend' ? [] : [{ value: 'create' as Mode, label: 'Create new site' }]),
               ]}
             />
 
@@ -395,7 +417,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
                     >
                       <option value="">Choose a site…</option>
                       {sites.map((s) => (
-                        <option key={s.entity_api_token} value={s.entity_api_token}>
+                        <option key={s.entity_api_token} value={s.entity_api_token} disabled={operation === 'extend' && s.entity_id !== site.cms_entity_id}>
                           {siteLabel(s)}
                         </option>
                       ))}
@@ -449,14 +471,16 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
                     error={planError}
                     publish={publish}
                     replaceTemplates={replaceTemplates}
+                    operation={operation}
                   />
                 )}
               </>
             ) : (
               <div className="space-y-3 rounded-xl border border-brand-100 bg-brand-50/60 p-3">
                 <p className="text-xs text-brand-900">
-                  A new site is created under your account and everything is pushed into
-                  it — pages, theme, and any migrated articles and events.
+                  {operation === 'preview'
+                    ? 'A new preview site is created with exactly two published pages and the full source menu.'
+                    : 'A new site is created under your account and everything is pushed into it — pages, theme, and any migrated articles and events.'}
                 </p>
                 <Field label="Site name">
                   <Input
@@ -466,7 +490,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
                     placeholder="e.g. Acme Studios"
                   />
                 </Field>
-                <Field
+                {operation !== 'preview' && <Field
                   label="Website URL"
                   optional
                   hint="Must be unique across the whole CMS. Leave blank if unsure — you can set it later."
@@ -477,7 +501,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
                     onChange={(e) => setNewEntity({ ...newEntity, url: e.target.value })}
                     placeholder="https://example.com"
                   />
-                </Field>
+                </Field>}
               </div>
             )}
           </div>
@@ -485,21 +509,22 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
 
         <Card title="3 · Options">
           <div className="space-y-2.5">
-            <Checkbox
+            {operation !== 'extend' && <Checkbox
               checked={pushBuilderStyles}
               onChange={(e) => setPushBuilderStyles(e.target.checked)}
               label="Apply theme"
               description="Colours, fonts and button radius, written to the site's builder styles."
-            />
-            <Checkbox
+            />}
+            {operation !== 'extend' && <Checkbox
               checked={pushFavicon}
               onChange={(e) => setPushFavicon(e.target.checked)}
               label="Set site icon"
               description="The source site's favicon, shown in browser tabs and beside the site name in search results."
-            />
+            />}
             <Checkbox
-              checked={publish}
+              checked={operation === 'sync' ? publish : true}
               onChange={(e) => setPublish(e.target.checked)}
+              disabled={operation !== 'sync'}
               label="Publish immediately"
               description={
                 mode === 'update'
@@ -509,7 +534,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
             />
             {/* Only when the chosen site has templates: with none there is
                 nothing to replace, and a control that does nothing is noise. */}
-            {mode === 'update' && (plan?.template_pages.length ?? 0) > 0 && (
+            {operation === 'sync' && mode === 'update' && (plan?.template_pages.length ?? 0) > 0 && (
               <Checkbox
                 checked={replaceTemplates}
                 onChange={(e) => setReplaceTemplates(e.target.checked)}
@@ -517,7 +542,7 @@ export function PublishDrawer({ open, onClose, site }: PublishDrawerProps) {
                 description="Reset the site's article and event page layouts to the new design. They land as drafts: open each in the builder, which lays it out afresh, then publish it. Until then the live site keeps its current templates."
               />
             )}
-            {mode === 'update' && !publish && (
+            {operation === 'sync' && mode === 'update' && !publish && (
               <Banner tone="info" title="Drafts still change part of the live site">
                 The header, footer, menus and theme go live as soon as they are saved — the
                 CMS keeps no draft of the site-wide layout. Page bodies land as drafts, and
