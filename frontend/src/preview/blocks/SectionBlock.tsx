@@ -27,6 +27,7 @@ import {
   resolvePageBackgroundHex,
   resolvePaletteHex,
   resolveSectionBackgroundImage,
+  resolveSolidFillHex,
   resolveThemeTexture,
 } from '../lib/backgroundTexture'
 import { useRuntimeBuilderStyles } from '../context'
@@ -55,7 +56,7 @@ export function SectionBlock({ node }: { node: PublicBlockNode }) {
         backgroundTexture: getNodeBackgroundTexture(node),
         backgroundColorHex:
           typeof bgColorValue === 'string'
-            ? resolveColorToHex(bgColorValue, palette, pageBackgroundHex)
+            ? resolveSolidFillHex(bgColorValue, palette, pageBackgroundHex)
             : null,
       },
       {

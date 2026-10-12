@@ -1,7 +1,6 @@
-// Vendored from webtree-public/lib/backgroundTexture.ts. Local delta:
-// `grainDataUriRaw` is new — see its own comment below. `grainDataUri` is
-// rewritten in terms of it but produces byte-identical output. Everything
-// else is verbatim aside from import paths.
+// Vendored from webtree-public/lib/backgroundTexture.ts. Local delta: the
+// type import path, and a `@ts-expect-error` on grainDataUriRaw's Node-only
+// `Buffer` branch. Everything else is verbatim.
 //
 // Decorative section background textures — grain noise and an "aurora" mesh
 // gradient. Mirror of builder/src/lib/background-texture.ts — keep both in
@@ -180,15 +179,18 @@ export const meshGradient = (primaryHex: string): string => {
   }).join(', ')
 }
 
-/**
- * The bare base64 grain SVG data URI — `data:image/svg+xml;base64,...` with
- * no `url(...)` wrapper. Local addition: `grainDataUri()` below (the
- * upstream function) produces a CSS `backgroundImage`-ready value, but
- * SectionDividerLayer.tsx needs the bare URI for an SVG `<image href>`
- * attribute, where a `url(...)` wrapper doesn't resolve. Both share the same
- * SVG markup, so they stay byte-identical apart from the wrapper.
- */
-export const grainDataUriRaw = (opacity = 0.55): string => {
+/** A tiny SVG fractal-noise grain texture as a bare `data:` URI. Mirrors
+ * grain_data_uri() in schema_builder.py byte-for-byte (same markup), so the
+ * rendered noise pattern is identical between editor and Python bake.
+ *
+ * The default opacity MUST track grain_data_uri()'s: this module recomputes
+ * grain live and overrides Python's bake, but only for sections eligible under
+ * resolveSectionBackgroundImage — so a mismatch renders two different grain
+ * strengths on one page.
+ *
+ * This is the form an SVG `<image href>` needs; for a CSS `background-image`
+ * use grainDataUri(), which adds the `url(...)` wrapper CSS requires. */
+export const grainDataUriRaw = (opacity = 0.2): string => {
   const svg =
     "<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'>" +
     "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' " +
@@ -203,10 +205,8 @@ export const grainDataUriRaw = (opacity = 0.55): string => {
   return `data:image/svg+xml;base64,${encoded}`
 }
 
-/** A tiny SVG fractal-noise grain texture as a `url(data:...)` value. Mirrors
- * grain_data_uri() in schema_builder.py byte-for-byte (same markup), so the
- * rendered noise pattern is identical between editor and Python bake. */
-export const grainDataUri = (opacity = 0.55): string => `url("${grainDataUriRaw(opacity)}")`
+/** The grain texture as a `url(data:...)` value, for CSS `background-image`. */
+export const grainDataUri = (opacity = 0.2): string => `url("${grainDataUriRaw(opacity)}")`
 
 /** Compose the decorative `backgroundImage` value for `texture` (grain and/or
  * mesh layers), or null for 'flat'. Mirrors section_background_image(). */
@@ -306,8 +306,9 @@ export const sampleMeshEdgeStops = (
 
 export type SectionTextureInput = {
   backgroundTexture?: BackgroundStrategy | null
-  /** The section's current `backgroundColor`, resolved to a literal hex
-   * (caller resolves any `var(--builder-color-*)` / page-bg token first). */
+  /** The section's current `backgroundColor` as resolveSolidFillHex reads it:
+   * a literal hex, or null when the fill is not one opaque colour — which is
+   * never plain. */
   backgroundColorHex?: string | null
 }
 
@@ -396,23 +397,55 @@ export const resolveThemeTexture = (builderStyles: PublicStyleTokens | null | un
 const PAGE_BG_TOKEN_RE = /--builder-page-background\s*,\s*([^)]+)\)/i
 const BUILDER_COLOR_TOKEN_RE = /var\(\s*--builder-color-([a-z]+)\s*\)/i
 
-/** Resolve a stored color (a `var(--builder-color-*)` token, the page
- * background token, or a literal CSS color) to a concrete hex. Mirrors
- * builder's resolveDividerColorToHex (lib/section-divider.ts) exactly, so a
- * token resolves identically in the editor preview and the published site. */
-export const resolveColorToHex = (value: string | null | undefined, palette: ColorPaletteHex, pageBackgroundHex: string): string => {
-  if (!value) return '#ffffff'
+// A token or literal read to a hex, or null when this module cannot name the
+// colour. The two exports below differ only in what they do with that null.
+const readColorHex = (value: string | null | undefined, palette: ColorPaletteHex, pageBackgroundHex: string): string | null => {
+  if (!value) return null
   const tokenMatch = value.match(BUILDER_COLOR_TOKEN_RE)
   if (tokenMatch) {
     const key = tokenMatch[1] as keyof ColorPaletteHex
-    if (key in palette) return toHexColor(palette[key]) || '#ffffff'
+    if (key in palette) return toHexColor(palette[key])
   }
   if (/--builder-page-background/i.test(value)) {
     const fallback = value.match(PAGE_BG_TOKEN_RE)?.[1]?.trim()
-    return toHexColor(pageBackgroundHex) || toHexColor(fallback || '') || '#ffffff'
+    return toHexColor(pageBackgroundHex) || toHexColor(fallback || '')
   }
-  return toHexColor(value) || '#ffffff'
+  return toHexColor(value)
 }
+
+/** Resolve a stored color (a `var(--builder-color-*)` token, the page
+ * background token, or a literal CSS color) to a concrete hex, white when it
+ * names no colour. Mirrors builder's resolveDividerColorToHex
+ * (lib/section-divider.ts) exactly, so a token resolves identically in the
+ * editor preview and the published site. */
+export const resolveColorToHex = (value: string | null | undefined, palette: ColorPaletteHex, pageBackgroundHex: string): string =>
+  readColorHex(value, palette, pageBackgroundHex) || '#ffffff'
+
+// The alpha of an `rgba(r, g, b, a)` / `rgb(r, g, b, a)`; toHexColor reads the
+// channels and drops it.
+const RGB_ALPHA_RE = /^rgba?\([^,()]*,[^,()]*,[^,()]*,\s*(\d*\.?\d+)(%?)\s*\)$/i
+
+// A composed fill — an alpha below 1, or a color-mix() — paints a colour that
+// depends on what lies under it, even when it names a palette token:
+// `color-mix(in srgb, var(--builder-color-background) 80%, transparent)` is the
+// builder's glass, and the token inside it is not what it paints.
+const isComposite = (value: string): boolean => {
+  const trimmed = value.trim()
+  if (/^color-mix\(/i.test(trimmed)) return true
+  const alpha = trimmed.match(RGB_ALPHA_RE)
+  return alpha !== null && Number(alpha[1]) / (alpha[2] ? 100 : 1) < 1
+}
+
+/** The one opaque colour a fill paints, as a hex — or null when it paints none
+ * this module can name: `transparent`, a translucent `rgba()`, a `color-mix()`,
+ * anything unparseable. Texture eligibility reads a fill through this, never
+ * through resolveColorToHex: a see-through card is not a page-coloured band,
+ * and reading it as white tiled the theme's grain across its whole box — a
+ * grey card behind the copy that the design never drew. The
+ * generator's `is_plain` likewise only ever matches a token or a hex. Mirrors
+ * builder's resolveSolidFillHex (lib/section-divider.ts). */
+export const resolveSolidFillHex = (value: string | null | undefined, palette: ColorPaletteHex, pageBackgroundHex: string): string | null =>
+  value && isComposite(value) ? null : readColorHex(value, palette, pageBackgroundHex)
 
 /** Read a node's `backgroundTexture` override field (BuilderElement.backgroundTexture on the wire). */
 export const getNodeBackgroundTexture = (
