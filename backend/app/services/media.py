@@ -33,6 +33,7 @@ import httpx
 
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
+from app.services.facebook_photo_selection import photo_rejection_reason
 from app.services.image_urls import image_identity, photo_identity
 from app.services.image_match import (
     _UNPINNABLE_VISION_KINDS,
@@ -42,9 +43,10 @@ from app.services.image_match import (
     rank_candidates,
     rank_candidates_with_llm_tiebreaker,
 )
-from app.services.image_sampling import sample_photo
+from app.services.image_sampling import PhotoSample, sample_photo
 from app.services.text_detection import verify_one, verify_url
 from app.services.image_styling import (
+    PhotoLuminance,
     band_for_luminance,
     color_distance,
     relative_luminance,
@@ -194,6 +196,7 @@ class ImageResolver:
         place_cue: str | None = None,
         primary_hex: str | None = None,
         secondary_hex: str | None = None,
+        photo_tone: str | None = None,
     ) -> None:
         # Prefer rich metadata when provided; fall back to wrapping bare URLs.
         if scraped_metadata:
@@ -219,6 +222,9 @@ class ImageResolver:
         # image. We hand each repeat a distinct nonce so the gradient angle
         # differs (first use stays byte-identical, nonce 0).
         self._placeholder_seeds: dict[str, int] = {}
+        # One pixel read per URL per site: the hero's own resolve and the
+        # painter's luminance read share it (see `_sample`).
+        self._samples: dict[str, PhotoSample | None] = {}
         self._use_llm_tiebreaker = use_llm_tiebreaker
         self._stock_only = stock_only
         # Regional demonym (e.g. "Southeast Asian") prepended to people-likely
@@ -227,6 +233,9 @@ class ImageResolver:
         # Site-level industry (SitePlan.industry_category) — drives the
         # contextual fallback query when a slot's own query finds nothing.
         self._industry_category = (industry_category or "").strip().lower()
+        # The design direction's tone for stock people-photography; None defers
+        # to the legacy industry rule (see _stock_query_chain).
+        self._photo_tone = photo_tone
         # Place name (country or region, e.g. "Malaysia") appended to
         # non-person/atmospheric queries so scenery matches the locale too.
         self._place_cue = (place_cue or "").strip()
@@ -292,7 +301,7 @@ class ImageResolver:
         lum, band = _band_fields(known_hex)
         if slot_usage != "background":
             return lum, band, None
-        sample = await sample_photo(url)
+        sample = await self._sample(url)
         if sample is None:
             return lum, band, None
         # A colour the scraper already knew wins — it describes the source's own
@@ -300,6 +309,33 @@ class ImageResolver:
         if known_hex:
             return lum, band, sample.focal_y
         return sample.luminance, band_for_luminance(sample.luminance), sample.focal_y
+
+    async def _sample(self, url: str) -> PhotoSample | None:
+        """`sample_photo`, read at most once per URL for this site."""
+        if url not in self._samples:
+            self._samples[url] = await sample_photo(url)
+        return self._samples[url]
+
+    async def photo_luminance(self, photo: PhotoResult | str) -> PhotoLuminance | None:
+        """How bright `photo` is where — read by whoever paints it behind copy,
+        so the copy scrim is sized for the region the copy sits on
+        (`image_styling._copy_scrim`).
+
+        A result that already knows (a placeholder knows its own colour) answers
+        for itself. None only when sampling is switched off
+        (PHOTO_SAMPLING_ENABLED), which keeps the frame-average ramp exactly as
+        before. A photo that cannot be read is NOT None: it is assumed as bright
+        as a photo can be, the one assumption legibility cannot be wrong under.
+        """
+        if isinstance(photo, PhotoResult) and photo.luminance_map is not None:
+            return photo.luminance_map
+        if not settings.photo_sampling_enabled:
+            return None
+        url = photo.url if isinstance(photo, PhotoResult) else photo
+        sample = await self._sample(url)
+        if sample is None or sample.luminance_map is None:
+            return PhotoLuminance.unreadable()
+        return sample.luminance_map
 
     def mark_used(self, urls: set[str] | list[str]) -> None:
         """Reserve scraped URLs already placed by the ref-binding pass
@@ -409,6 +445,7 @@ class ImageResolver:
                 await verify_one(meta)
             if (
                 not _below_hero_bg_min(meta, min_long_edge)
+                and photo_rejection_reason(meta, intent) is None
                 and not hides_legible_content(meta, slot_usage)
                 and not _unfit_for_featured_pin(
                     meta, slot_usage, allow_portrait=allow_portrait
@@ -532,6 +569,7 @@ class ImageResolver:
                 self._market_cue,
                 self._industry_category,
                 self._place_cue,
+                tone=self._photo_tone,
             )
             for candidate in chain:
                 wanted[(candidate, orientation)] = None
@@ -626,7 +664,8 @@ class ImageResolver:
         back to the unfiltered batch rather than dead-ending the chain here.
         """
         chain = _stock_query_chain(
-            query, intent, self._market_cue, self._industry_category, self._place_cue
+            query, intent, self._market_cue, self._industry_category, self._place_cue,
+            tone=self._photo_tone,
         )
         budget = settings.ocr_verify_budget if screen_text else 0
         for i, candidate in enumerate(chain):
@@ -688,7 +727,8 @@ class ImageResolver:
             return None
         orientation = _INTENT_TO_ORIENTATION[intent]
         chain = _stock_query_chain(
-            query, intent, self._market_cue, self._industry_category, self._place_cue
+            query, intent, self._market_cue, self._industry_category, self._place_cue,
+            tone=self._photo_tone,
         )
         # Every caller of this renders the result full-bleed with text over it,
         # so the OCR screen applies unconditionally here — an "abstract" query
@@ -995,6 +1035,9 @@ def _placeholder_photo(
         avg_color=avg_hex,
         luminance=relative_luminance(avg_hex),
         band=band_for_luminance(relative_luminance(avg_hex)),
+        # A brand-gradient field with no bright region to hide: its own colour
+        # is the whole measurement.
+        luminance_map=PhotoLuminance.uniform(relative_luminance(avg_hex)),
     )
 
 
@@ -1069,8 +1112,15 @@ def _stock_query_chain(
     market_cue: str,
     industry_category: str = "",
     place_cue: str = "",
+    *,
+    tone: str | None = None,
 ) -> list[str]:
-    """Ordered stock queries from specific/local to broad/contextual/plain."""
+    """Ordered stock queries from specific/local to broad/contextual/plain.
+
+    ``tone`` is the design direction's word for people-photography (a scheme's
+    `photo_tone`): it replaces the industry rule below, which searched every
+    kindergarten, restaurant and charity "joyful" whatever the brand was like.
+    None keeps that rule (schemes off); "" searches with no tone word."""
     query = " ".join((query or "").split())
     market_cue = " ".join((market_cue or "").split())
     place_cue = " ".join((place_cue or "").split())
@@ -1114,6 +1164,9 @@ def _stock_query_chain(
     # brand that wants to read as composed and serious, not jolly.
     if intent == "avatar":
         add(f"{query} smiling")
+    elif tone is not None:
+        if tone.strip():
+            add(f"{query} {tone.strip()}")
     elif industry_category.strip().lower() in _UPBEAT_INDUSTRIES:
         add(f"{query} joyful")
 
@@ -1136,9 +1189,10 @@ def _stock_query_chain(
 _GENERIC_ATMOSPHERIC_FALLBACK = "modern abstract texture gradient"
 
 
-# Industries whose own brand tone welcomes a jovial stock-search qualifier
-# ("joyful") without fighting a more serious/composed positioning. See the
-# positive-vibe search bias in _stock_query_chain.
+# The legacy tone rule, used only when no design scheme states a `photo_tone`
+# (schemes off): industries assumed to welcome a jovial qualifier ("joyful").
+# With schemes on, the direction decides — a calm Montessori and a loud
+# playgroup are both childcare and should not be shot the same.
 _UPBEAT_INDUSTRIES = frozenset({
     "restaurant", "childcare", "ecommerce", "agency", "nonprofit",
 })
@@ -1156,6 +1210,9 @@ _INDUSTRY_CONTEXT_QUERIES = {
     "nonprofit": "community volunteers working together",
     "childcare": "children playing learning kindergarten classroom",
     "personal": "creative professional workspace",
+    "home-services": "technician repairing home",
+    "health-wellness": "calm modern clinic interior",
+    "real-estate": "bright modern home interior",
 }
 
 

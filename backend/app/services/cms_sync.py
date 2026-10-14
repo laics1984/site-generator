@@ -172,6 +172,10 @@ def normalize_site_slugs(
 
 def rewrite_hrefs(node: BuilderElement, href_map: dict[str, str]) -> None:
     """Walk a BuilderElement tree, rewriting internal anchor hrefs in place."""
+    if node.catalogue and node.catalogue.sourceKey in href_map:
+        node.catalogue.sourceKey = href_map[node.catalogue.sourceKey]
+    if node.catalogue and node.catalogue.detailPath in href_map:
+        node.catalogue.detailPath = href_map[node.catalogue.detailPath]
     content = node.content
     if isinstance(content, BuilderElementContent):
         href = content.href

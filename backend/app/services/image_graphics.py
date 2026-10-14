@@ -160,7 +160,9 @@ def _candidates(metadata: list[ImageMetadata], max_images: int) -> list[ImageMet
 
 
 async def screen_source_images_for_graphics(
-    metadata: list[ImageMetadata], *, max_images: int | None = None
+    metadata: list[ImageMetadata], *,
+    max_images: int | None = None,
+    prefetched: dict[str, bytes] | None = None,
 ) -> dict[str, bool]:
     """Stamp ``role="logo"`` on pool images the pixels prove are flat graphics.
 
@@ -171,8 +173,9 @@ async def screen_source_images_for_graphics(
     managed to judge. Safe to run alongside the content-generation LLM call:
     it is network plus a little CPU, and the LLM owns the GPU.
 
-    It does its OWN downloads rather than reusing `image_vision`'s prefetched
-    payloads, which cannot serve this measurement: `_downscale_to_b64` does
+    `prefetched` may supply original bytes (including alpha), avoiding another
+    download. Otherwise it downloads originals rather than reusing the vision
+    pass's JPEG thumbnails, which cannot serve this measurement: `_downscale_to_b64` does
     ``convert("RGB")`` and re-encodes as JPEG, so the alpha channel — half the
     evidence — is gone by the time it reaches the cache.
     """
@@ -192,7 +195,9 @@ async def screen_source_images_for_graphics(
 
         async def _one(item: ImageMetadata, client: httpx.AsyncClient) -> None:
             async with sem:
-                raw = await _fetch_image_bytes(item.url, client=client)
+                raw = (prefetched or {}).get(item.url)
+                if raw is None:
+                    raw = await _fetch_image_bytes(item.url, client=client)
             if raw is None:
                 return
             measured = await asyncio.to_thread(measure, raw, item.url)

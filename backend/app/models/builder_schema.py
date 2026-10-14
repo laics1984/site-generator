@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Literal, Union
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from app.models.content_blocks import ContentCollections, NavLink
 
@@ -168,6 +168,16 @@ class SectionDivider(BaseModel):
     bottom: SectionDividerEdge | None = None
 
 
+class CatalogueReference(BaseModel):
+    """CMS resolves generated requests to productId while saving the draft."""
+    scope: Literal["page", "block"] = "block"
+    productId: str | None = None
+    name: str | None = None
+    kind: Literal["product", "service"] | None = None
+    sourceKey: str | None = None
+    detailPath: str | None = None
+
+
 class BuilderElement(BaseModel):
     """
     Mirrors the BuilderElement type in
@@ -212,6 +222,23 @@ class BuilderElement(BaseModel):
     # scroll-shrink padding here, and the builder's right panel points its
     # appearance controls (background + opacity, blur, shadow) at this element.
     headerBar: bool | None = None
+    catalogue: CatalogueReference | None = None
+
+    # Generation-time only: the flat colour this node's own fill presents to the
+    # text on it, when that fill is something the styles cannot say — a photo
+    # under a solved scrim, a washed photo — stated by the pass that painted it
+    # (`image_styling.photo_surface_hex` / `washed_surface_hex`). A PrivateAttr,
+    # so it is never serialized: the wire schema the builder mirrors is
+    # unchanged, and a tree posted back for a push simply carries none.
+    _painted_surface: str | None = PrivateAttr(default=None)
+
+    @property
+    def painted_surface(self) -> str | None:
+        return self._painted_surface
+
+    def paint_surface(self, surface_hex: str | None) -> None:
+        """Record the colour a painter just laid behind this node's text."""
+        self._painted_surface = surface_hex
 
 
 BuilderElement.model_rebuild()
@@ -304,6 +331,7 @@ class GeneratedSite(BaseModel):
     cms_entity_id: str | None = None
     cms_target_name: str | None = None
     public_url: str | None = None
+    generation_warnings: list[str] = Field(default_factory=list)
     media_credits: list[str] = Field(
         default_factory=list,
         description=(

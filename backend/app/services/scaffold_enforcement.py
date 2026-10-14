@@ -222,7 +222,7 @@ def _sanitize_team_block(
     if not members:
         return None
 
-    haystack = _normalize_for_grounding(source_text) if source_text else None
+    haystack = normalize_for_grounding(source_text) if source_text else None
     names = tuple(m.name for m in members)
     cleaned = []
     for member in members:
@@ -278,7 +278,7 @@ def looks_like_placeholder_author(value: str | None) -> bool:
     return normalized in _PLACEHOLDER_AUTHOR_NAMES
 
 
-def _normalize_for_grounding(text: str) -> str:
+def normalize_for_grounding(text: str) -> str:
     return " ".join(text.lower().split())
 
 
@@ -298,7 +298,7 @@ def is_grounded_in_normalized(text: str | None, haystack: str) -> bool:
     """
     if not text or not haystack:
         return False
-    needle = _normalize_for_grounding(text)
+    needle = normalize_for_grounding(text)
     if not needle:
         return False
     if needle in haystack:
@@ -322,7 +322,7 @@ def is_grounded_in_source(text: str | None, source_text: str | None) -> bool:
     """
     if not text or not source_text:
         return False
-    return is_grounded_in_normalized(text, _normalize_for_grounding(source_text))
+    return is_grounded_in_normalized(text, normalize_for_grounding(source_text))
 
 
 def _sanitize_testimonials_block(
@@ -330,7 +330,7 @@ def _sanitize_testimonials_block(
 ) -> TestimonialsBlock | None:
     items: list[TestimonialItem] = []
     dropped_fabricated = 0
-    haystack = _normalize_for_grounding(source_text) if source_text else ""
+    haystack = normalize_for_grounding(source_text) if source_text else ""
     for item in block.items:
         if looks_like_placeholder_author(item.author):
             continue
@@ -393,7 +393,7 @@ def _sanitize_timeline_block(
     """
     items = block.items
     if source_text:
-        haystack = _normalize_for_grounding(source_text)
+        haystack = normalize_for_grounding(source_text)
         items = [
             item for item in items
             if is_grounded_in_normalized(item.year, haystack)
@@ -409,7 +409,7 @@ def _sanitize_awards_block(
 ) -> AwardsBlock | None:
     if not source_text:
         return block
-    haystack = _normalize_for_grounding(source_text)
+    haystack = normalize_for_grounding(source_text)
     items = [
         item for item in block.items
         if is_grounded_in_normalized(item.title, haystack)
@@ -425,7 +425,7 @@ def _sanitize_clients_block(
 ) -> ClientsBlock | None:
     if not source_text:
         return block
-    haystack = _normalize_for_grounding(source_text)
+    haystack = normalize_for_grounding(source_text)
     items = [item for item in block.items if is_grounded_in_normalized(item.name, haystack)]
     if not items:
         return None
@@ -437,7 +437,7 @@ def _sanitize_stats_block(
 ) -> StatsBlock | None:
     if not source_text:
         return block
-    haystack = _normalize_for_grounding(source_text)
+    haystack = normalize_for_grounding(source_text)
     items = [
         item for item in block.items
         if is_grounded_in_normalized(item.value, haystack)

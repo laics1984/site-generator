@@ -26,7 +26,6 @@ from app.models.content_blocks import (
     SitePlan,
 )
 from app.services.schema_builder import (
-    _SCRIM_COMPOSITE_BG,
     _split_headline,
     plan_to_site,
 )
@@ -169,12 +168,21 @@ class HeroAccentRenderTest(unittest.IsolatedAsyncioTestCase):
         lead = _by_inner(site, "Bread baked")
         accent = _by_inner(site, _ACCENT)
         eyebrow = _by_inner(site, "Since 1998")
+        # Judged against the backdrop the hero's solved scrim actually leaves,
+        # which the painter recorded — never an assumed constant.
+        surface = hero.painted_surface
+        self.assertIsNotNone(surface)
+        from app.services.section_content import _parse_color, _to_hex
+
+        theme = build_theme("#2563eb", mood="friendly", color_scheme="light")  # as _site built it
+        resolved = {}
         for el in (lead, accent, eyebrow):
             self.assertIsNotNone(el)
             color = el.styles.get("color")
             self.assertIsInstance(color, str)
-            self.assertGreaterEqual(_contrast(_SCRIM_COMPOSITE_BG, color), 4.5)
-        self.assertNotEqual(lead.styles["color"].lower(), "#ffffff")
+            resolved[el.name] = _to_hex(_parse_color(color, theme)[0])
+            self.assertGreaterEqual(_contrast(surface, resolved[el.name]), 4.5)
+        self.assertNotEqual(resolved[lead.name], "#ffffff")
         # Eyebrow carries the lifted accent, not a flat near-white.
         self.assertNotEqual(eyebrow.styles["color"], lead.styles["color"])
 

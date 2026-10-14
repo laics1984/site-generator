@@ -33,10 +33,11 @@ from uuid import uuid4
 from app.models.builder_schema import (
     BuilderElement,
     BuilderElementContent,
+    CatalogueReference,
     ResponsiveStyles,
 )
 from app.services.icons import icon_data_url
-from app.services.image_styling import HeroAnchor
+from app.services.image_styling import HeroAnchor, PhotoLuminance
 from app.services.media import monogram_avatar_url
 
 CATALOG_PATH = Path(__file__).resolve().parent.parent / "templates" / "section_catalog.json"
@@ -44,9 +45,15 @@ CATALOG_PATH = Path(__file__).resolve().parent.parent / "templates" / "section_c
 # query -> (resolved url, average colour hex or None). The avg colour drives the
 # adaptive dark-overlay intensity for photo backgrounds.
 ResolveImage = Callable[[str], Awaitable[tuple[str, "str | None"]]]
+# url -> how bright that photo is where (services/image_sampling), or None when
+# nothing can be measured. Asked only for a photo painted BEHIND copy, so the
+# copy scrim is sized for the region the copy sits on.
+MeasurePhoto = Callable[[str], Awaitable["PhotoLuminance | None"]]
 ContentFactory = Callable[[], dict[str, Any]]
 # Theme colours for brand-tinted photo overlays: {"primary": hex, "secondary": hex}.
-# An optional "background" hex lets a photo hero fade into the page below it.
+# An optional "background" hex lets a photo hero fade into the page below it, and
+# an optional "ink" hex is the light ink the copy on a photo will wear — what the
+# copy scrim is solved for.
 ThemeColors = dict[str, str]
 
 
@@ -309,6 +316,17 @@ async def _bind_slot(
     return BuilderElementContent(**{**base, "innerText": str(value)})
 
 
+def _copy_anchor(
+    styles: dict[str, Any], composition: PhotoComposition | None, *, root: bool
+) -> HeroAnchor:
+    """Where the copy on a photo-backed node sits: the page's art direction for
+    a section, or the node's own layout for a tile — a bento card stacks its
+    title against the bottom edge (`justifyContent: flex-end`)."""
+    if root and composition is not None:
+        return composition.anchor
+    return "bottom" if styles.get("justifyContent") == "flex-end" else "center"
+
+
 async def _fill_node(
     node: dict[str, Any],
     scope: dict[str, Any],
@@ -316,13 +334,18 @@ async def _fill_node(
     factories: dict[str, ContentFactory],
     theme: ThemeColors | None,
     composition: PhotoComposition | None = None,
+    measure_photo: MeasurePhoto | None = None,
+    *,
+    root: bool = False,
 ) -> BuilderElement | None:
     # $styleSlot: inject a resolved image into a CSS property (e.g. a hero/CTA
     # background). When theme colours are supplied and the target is the
     # background image, build the full layered photo treatment (grain, edge
-    # fade, copy scrim, vignette, brand cast) whose darkness adapts to the
-    # photo's average luminance; otherwise use the template's static format.
+    # fade, copy scrim, vignette, brand cast) with the scrim solved for the
+    # photo behind the copy, and record the surface that leaves for the copy's
+    # ink; otherwise use the template's static format.
     styles = node["styles"]
+    painted: str | None = None
     style_slot = node.get("$styleSlot")
     if style_slot:
         value = scope.get(style_slot["slot"])
@@ -332,27 +355,57 @@ async def _fill_node(
         if url:
             prop = style_slot["property"]
             if theme and prop == "backgroundImage":
-                from app.services.image_styling import photo_background
+                from app.services.image_styling import photo_background, photo_surface_hex
 
+                comp = (composition if root else None) or PhotoComposition()
+                anchor = _copy_anchor(styles, composition, root=root)
+                luminance = await measure_photo(url) if measure_photo else None
+                secondary = theme.get("secondary", "#0f172a")
                 # photo_background returns backgroundSize/Repeat/Position too:
                 # the grain layer tiles at a fixed size while every other layer
                 # covers, so the template's single `background-size: cover`
                 # cannot be left in place. These OVERRIDE the catalog values.
-                comp = composition or PhotoComposition()
+                # Only a SECTION dissolves into the page below it — a tile's
+                # bottom edge is where its own title sits.
                 styles = {
                     **styles,
                     **photo_background(
                         avg, url,
-                        theme.get("secondary", "#0f172a"),
+                        secondary,
                         theme.get("primary", "#2563eb"),
-                        anchor=comp.anchor,
+                        anchor=anchor,
                         focal_y=comp.focal_y,
-                        page_bg_hex=theme.get("background"),
+                        page_bg_hex=theme.get("background") if root else None,
+                        luminance=luminance,
+                        ink_hex=theme.get("ink"),
                     ),
                 }
+                painted = photo_surface_hex(
+                    avg, secondary, anchor=anchor, luminance=luminance,
+                    ink_hex=theme.get("ink"),
+                )
             else:
                 styles = {**styles, prop: style_slot["format"].replace("{}", url)}
 
+    el = await _fill_shape(
+        node, styles, scope, resolve_image, factories, theme, composition, measure_photo
+    )
+    if el is not None and painted is not None:
+        el.paint_surface(painted)
+    return el
+
+
+async def _fill_shape(
+    node: dict[str, Any],
+    styles: dict[str, Any],
+    scope: dict[str, Any],
+    resolve_image: ResolveImage,
+    factories: dict[str, ContentFactory],
+    theme: ThemeColors | None,
+    composition: PhotoComposition | None,
+    measure_photo: MeasurePhoto | None,
+) -> BuilderElement | None:
+    """The node's directives and children, over its already-resolved styles."""
     base = _base_fields(node, styles)
 
     # $repeat: clone the item template per item in the named list.
@@ -364,9 +417,12 @@ async def _fill_node(
         if item_template:
             for item in items:
                 el = await _fill_node(
-                    item_template, item, resolve_image, factories, theme, composition
+                    item_template, item, resolve_image, factories, theme, composition,
+                    measure_photo,
                 )
                 if el is not None:
+                    if isinstance(item, dict) and item.get("_catalogue"):
+                        el.catalogue = CatalogueReference.model_validate(item["_catalogue"])
                     children.append(el)
         # $gridFit: pick column-layout type by item count (mirror of the TS engine).
         # Prefer 3 columns, but drop to 2 whenever a 3-wide grid would strand a lone
@@ -389,9 +445,12 @@ async def _fill_node(
         if item_template:
             for item in items:
                 el = await _fill_node(
-                    item_template, item, resolve_image, factories, theme, composition
+                    item_template, item, resolve_image, factories, theme, composition,
+                    measure_photo,
                 )
                 if el is not None:
+                    if isinstance(item, dict) and item.get("_catalogue"):
+                        el.catalogue = CatalogueReference.model_validate(item["_catalogue"])
                     tiles.append(el)
         for i, el in enumerate(tiles):
             base_styles, overrides = _bento_placement(i, len(tiles))
@@ -425,7 +484,9 @@ async def _fill_node(
     if isinstance(content, list):
         children = []
         for child in content:
-            el = await _fill_node(child, scope, resolve_image, factories, theme, composition)
+            el = await _fill_node(
+                child, scope, resolve_image, factories, theme, composition, measure_photo
+            )
             if el is not None:
                 children.append(el)
         # Prune a container that filled to nothing — e.g. a card/list-item whose
@@ -451,16 +512,19 @@ async def fill_template(
     content_factories: dict[str, ContentFactory] | None = None,
     theme: ThemeColors | None = None,
     composition: PhotoComposition | None = None,
+    measure_photo: MeasurePhoto | None = None,
 ) -> BuilderElement:
     """Build a concrete ``BuilderElement`` tree from a catalog entry + content.
 
     When ``theme`` ({"primary","secondary"} hex) is supplied, photo backgrounds
-    get the full layered treatment (brand-tinted, luminance-adaptive); otherwise
-    the template's static overlay format is used. ``composition`` art-directs
-    that treatment — see ``PhotoComposition``.
+    get the full layered treatment (brand-tinted, scrim solved for the copy);
+    otherwise the template's static overlay format is used. ``composition``
+    art-directs that treatment — see ``PhotoComposition`` — and
+    ``measure_photo`` reads each such photo so its scrim fits it.
     """
     root = await _fill_node(
-        template["tree"], content, resolve_image, content_factories or {}, theme, composition
+        template["tree"], content, resolve_image, content_factories or {}, theme,
+        composition, measure_photo, root=True,
     )
     if root is None:
         raise ValueError(f"Template {template.get('id')!r} filled to nothing")

@@ -21,6 +21,7 @@ _URL_RE = re.compile(r"url\(['\"]?(https?://[^'\")\s]+)['\"]?\)")
 
 _LOCAL_INDUSTRIES = frozenset({
     "restaurant", "childcare", "professional-services",
+    "home-services", "health-wellness", "real-estate",
 })
 
 

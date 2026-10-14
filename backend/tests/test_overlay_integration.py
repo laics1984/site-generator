@@ -102,23 +102,29 @@ class MenuInkHeroContrastTest(unittest.IsolatedAsyncioTestCase):
             plan = _plan()
             for page in plan.pages:
                 page.blocks[0].layout = "split"  # non-overlay hero on page surface
-            return await plan_to_site(
+            theme = build_theme("#0e7490", color_scheme=scheme)
+            site = await plan_to_site(
                 plan,
                 brand=BrandIdentity(name="Hope Foundation", mood="friendly"),
-                theme=build_theme("#0e7490", color_scheme=scheme),
+                theme=theme,
             )
+            return site, theme
         finally:
             settings.design_brain_enabled = original
 
     async def test_ink_and_first_hero_land_in_opposite_bands(self):
         from app.services.theme import _relative_luminance
 
+        from app.services.section_content import surface_of
+
         for scheme in ("light", "dark"):
-            site = await self._site(scheme)
+            site, site_theme = await self._site(scheme)
             menu = _find_menu(site.header_schema)
             ink_lum = _relative_luminance(menu.styles["color"])
             home = next(p for p in site.pages if p.is_homepage)
-            hero_bg = _first_section(home).styles.get("backgroundColor")
+            # What the hero visibly paints — a split hero's own gradient
+            # shorthand, not the backgroundColor it resets.
+            hero_bg = surface_of(_first_section(home), site_theme)
             self.assertIsInstance(hero_bg, str)
             hero_lum = _relative_luminance(hero_bg)
             if ink_lum > 0.5:  # light menu text → dark hero surface

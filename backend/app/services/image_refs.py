@@ -49,6 +49,11 @@ def _unfit_for_kind(meta: ImageMetadata, kind: str, *, layout: str | None) -> st
     per-ITEM refs too, which never reach the resolver: a bound item URL goes
     straight into the card's image slot.
     """
+    from app.services.facebook_photo_selection import photo_rejection_reason
+
+    photo_reason = photo_rejection_reason(meta, kind)
+    if photo_reason:
+        return photo_reason
     portrait = meta.role == "portrait" or meta.vision_portrait is True
     if portrait and kind not in _PORTRAIT_OK_KINDS:
         return "portrait"

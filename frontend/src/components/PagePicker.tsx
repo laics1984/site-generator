@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 
 import { fetchPageRecipe } from '@/lib/api'
+import { parseBrandBrief } from '@/lib/brandBrief'
+import type { BrandBrief } from '@/lib/brandBrief'
 import type {
   DetectedBrand,
   IndustryCategory,
@@ -11,6 +13,7 @@ import type {
   SourceContent,
 } from '@/lib/types'
 import { Button, Spinner } from '@/ui'
+import { BrandBriefCard } from '@/components/BrandBriefCard'
 
 interface PagePickerProps {
   source: SourceContent
@@ -137,6 +140,7 @@ export function PagePicker({
   const [template, setTemplate] = useState<IndustryTemplate | null>(null)
   const [allIndustries, setAllIndustries] = useState<IndustryOption[]>([])
   const [detectedIndustry, setDetectedIndustry] = useState<IndustryCategory | null>(null)
+  const [brief, setBrief] = useState<BrandBrief | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isFirstLoad = useRef(true)
@@ -159,6 +163,7 @@ export function PagePicker({
         setAllIndustries(res.all_industries)
         setDetectedIndustry(res.industry)
         setDetectedBrand(res.detected_brand)
+        setBrief(parseBrandBrief(res.detected_brand))
 
         // Pre-check: all core pages from template + all inferred pages.
         const newDefaults = [...res.template.core_pages, ...res.inferred_pages]
@@ -195,6 +200,7 @@ export function PagePicker({
     () => new Set(selectedPages.map(pageKey)),
     [selectedPages],
   )
+  const contactDesks = useMemo(() => contactDeskLocales(selectedPages), [selectedPages])
 
   const inferredTree = useMemo(() => buildTree(inferred), [inferred])
 
@@ -313,6 +319,8 @@ export function PagePicker({
         )}
       </div>
 
+      {brief && <BrandBriefCard brief={brief} />}
+
       <label className="block">
         <span className="text-sm font-medium text-slate-700">Override industry</span>
         <div className="mt-1 flex items-center gap-2">
@@ -380,6 +388,7 @@ export function PagePicker({
               onToggle={togglePage}
               locked={!p.is_legal}
               depth={0}
+              contactDesks={contactDesks}
             />
           ))}
         </PageGroup>
@@ -415,6 +424,7 @@ export function PagePicker({
               key={pageKey(node.scaffold)}
               node={node}
               selectedKeys={selectedByKey}
+              contactDesks={contactDesks}
               togglePage={togglePage}
               toggleSubtree={toggleSubtree}
               expandedSlugs={expandedSlugs}
@@ -470,6 +480,7 @@ export function PagePicker({
 interface TreeRowProps {
   node: TreeNode
   selectedKeys: Set<string>
+  contactDesks: ReadonlySet<string | null>
   togglePage: (p: PageScaffold) => void
   toggleSubtree: (node: TreeNode) => void
   expandedSlugs: Set<string>
@@ -480,6 +491,7 @@ interface TreeRowProps {
 function TreeRow({
   node,
   selectedKeys,
+  contactDesks,
   togglePage,
   toggleSubtree,
   expandedSlugs,
@@ -495,6 +507,7 @@ function TreeRow({
         checked={selectedKeys.has(pageKey(node.scaffold))}
         onToggle={hasChildren ? () => toggleSubtree(node) : togglePage}
         depth={depth}
+        contactDesks={contactDesks}
         showSubtreeHint={hasChildren ? node.children.length : undefined}
         expandable={hasChildren}
         expanded={expanded}
@@ -509,6 +522,7 @@ function TreeRow({
             key={pageKey(child.scaffold)}
             node={child}
             selectedKeys={selectedKeys}
+            contactDesks={contactDesks}
             togglePage={togglePage}
             toggleSubtree={toggleSubtree}
             expandedSlugs={expandedSlugs}
@@ -526,6 +540,8 @@ interface PageRowProps {
   onToggle: (p: PageScaffold) => void
   locked?: boolean
   depth: number
+  /** Locales whose ticked Contact page renders the form (see contactDeskLocales). */
+  contactDesks?: ReadonlySet<string | null>
   showSubtreeHint?: number
   /** Present when this row has children — drives the chevron. */
   expandable?: boolean
@@ -539,11 +555,13 @@ function PageRow({
   onToggle,
   locked,
   depth,
+  contactDesks,
   showSubtreeHint,
   expandable,
   expanded,
   onToggleExpand,
 }: PageRowProps) {
+  const sections = sectionsGenerated(page, contactDesks)
   return (
     <li>
       <label
@@ -612,9 +630,9 @@ function PageRow({
             )}
           </div>
           <div className="mt-0.5 text-xs text-slate-600">{page.rationale}</div>
-          {page.sections.length > 0 && (
+          {sections.length > 0 && (
             <div className="mt-1.5 flex flex-wrap gap-1">
-              {page.sections.map((s, i) => (
+              {sections.map((s, i) => (
                 <SectionPill key={`${s}-${i}`} kind={s} />
               ))}
             </div>
@@ -795,6 +813,32 @@ function FirstLoadState({ onBack }: { onBack: () => void }) {
 
 function pageKey(p: PageScaffold): string {
   return `${p.page_type}::${p.slug}`
+}
+
+// Display mirror of the backend's `page_inference.defer_home_contact`, which
+// decides: a ticked Contact page that renders the form takes it off Home, in
+// Home's own locale. Without it the Home row would still promise the form.
+function contactDeskLocales(selected: PageScaffold[]): Set<string | null> {
+  return new Set(
+    selected
+      .filter(
+        (p) =>
+          p.page_type === 'contact' &&
+          p.sections.includes('contact') &&
+          !p.is_homepage &&
+          !p.is_legal,
+      )
+      .map((p) => p.locale ?? null),
+  )
+}
+
+function sectionsGenerated(
+  page: PageScaffold,
+  contactDesks: ReadonlySet<string | null> | undefined,
+): string[] {
+  return page.is_homepage && contactDesks?.has(page.locale ?? null)
+    ? page.sections.filter((s) => s !== 'contact')
+    : page.sections
 }
 
 function uniqueByKey(pages: PageScaffold[]): PageScaffold[] {

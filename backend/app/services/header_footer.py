@@ -26,6 +26,7 @@ from app.models.design_manifest import (
     FooterArchetype,
     HeaderArchetype,
 )
+from app.services.design_schemes import for_theme
 from app.services.menu_builder import has_menu_groups
 from app.services.template_filler import (
     fill_chrome_template,
@@ -148,17 +149,17 @@ def _glass_tint(hex_color: str) -> str:
 # same string makes the builder's Divider panel show "Subtle" as selected.
 HEADER_DIVIDER_SUBTLE = "0 1px 3px 0 rgba(15, 23, 42, 0.06)"
 
-# Default header logo height; some industries lead with a larger, more
-# prominent mark (childcare: warm, friendly, front-and-centre for parents).
+# Default header logo height. A design scheme may lead with a larger, more
+# prominent mark (`DesignScheme.logo_height` — playroom's 68px); no industry
+# does any more, so two kindergartens no longer share one header by default.
 _DEFAULT_LOGO_HEIGHT = "52px"
-_LOGO_HEIGHT_BY_INDUSTRY: dict[str, str] = {"childcare": "68px"}
 
 # The floating pill overrides both. The logo is the tallest thing in the bar, so
-# it — not the padding — sets the bar's height: childcare's 68px mark alone
-# makes the pill half again as tall as the compact floating bar the archetype is
-# supposed to be. A self-chrome pill is a slim capsule over the hero, not a
-# brand banner, so it caps the mark and lets the industry keep its bigger logo
-# on every other archetype (where the bar spans the full width and can carry it).
+# it — not the padding — sets the bar's height: a 68px mark alone makes the pill
+# half again as tall as the compact floating bar the archetype is supposed to
+# be. A self-chrome pill is a slim capsule over the hero, not a brand banner, so
+# it caps the mark and lets the scheme keep its bigger logo on every other
+# archetype (where the bar spans the full width and can carry it).
 _SELF_CHROME_LOGO_HEIGHT = "45px"
 
 
@@ -405,7 +406,6 @@ def build_header(
     primary_cta: tuple[str, str] | None = None,
     page_tree: list[PageNode] | None = None,
     overlay: bool = False,
-    industry: str | None = None,
     archetype: HeaderArchetype = "classic",
     social_links: list[tuple[str, str]] | None = None,
 ) -> BuilderElement:
@@ -429,7 +429,6 @@ def build_header(
     stamped below. Never emit a transparent backgroundColor here: it would
     make the solidified header transparent too.
     """
-    norm_industry = (industry or "").strip().lower()
     header_bg, header_fg = _header_chrome(brand, theme)
     # The logo is the one computed subtree the shared catalog can't express
     # (image vs monogram) — built here, injected via the template's
@@ -454,7 +453,7 @@ def build_header(
         logo_height=(
             _SELF_CHROME_LOGO_HEIGHT
             if archetype in SELF_CHROME_HEADERS
-            else _LOGO_HEIGHT_BY_INDUSTRY.get(norm_industry, _DEFAULT_LOGO_HEIGHT)
+            else for_theme(theme).logo_height or _DEFAULT_LOGO_HEIGHT
         ),
         adaptive_ink=archetype in SELF_CHROME_HEADERS,
     )
@@ -529,6 +528,7 @@ def build_footer(
     social_links: list[tuple[str, str]] | None = None,
     archetype: FooterArchetype = "mega",
     primary_cta: tuple[str, str] | None = None,
+    cta_headline: str | None = None,
 ) -> BuilderElement:
     """
     Themed footer with grouped sub-page navigation.
@@ -651,8 +651,8 @@ def build_footer(
         # opened with. (No-CTA callers were already degraded to mega above.)
         cta_label, cta_href = primary_cta  # type: ignore[misc]  # guarded above
         content["cta_headline"] = (
-            brand.tagline
-            if brand.tagline and len(brand.tagline) <= 90
+            cta_headline.strip() if cta_headline and cta_headline.strip()
+            else brand.tagline if brand.tagline and len(brand.tagline) <= 90
             else "Ready when you are."
         )
         content["cta"] = {"innerText": cta_label, "href": cta_href}

@@ -51,19 +51,22 @@ class RecipeThemePreviewTest(unittest.TestCase):
         self.assertNotEqual(res.theme_preview["colors"]["primary"], "#2563eb")
 
     def test_preview_font_matches_generation_inputs(self):
-        # Same inputs the generator uses (industry + mood + no seed) → identical font,
-        # so the picker preview reflects the real site. restaurant → friendly mood.
+        # The preview runs the generator's own design direction (minus the
+        # model's pick) on the same inputs, so the picker previews the real
+        # site's type. restaurant → friendly mood; no brand name yet → "site".
         from app.models.content_blocks import industry_default_mood
-        from app.services.theme import build_theme
+        from app.services.design_direction import resolve_direction
 
         res = self._recipe("restaurant")
-        gen = build_theme(
-            None,
-            mood=industry_default_mood("restaurant"),
-            font_seed=None,
-            industry="restaurant",
-            palette_mode="auto",
-        )
+        gen = asyncio.run(
+            resolve_direction(
+                brand_name="site",
+                mood=industry_default_mood("restaurant"),
+                industry="restaurant",
+                logo_hex=None,
+                use_model=False,
+            )
+        ).theme
         self.assertEqual(
             res.theme_preview["typography"]["headingFont"],
             gen.typography.heading_font,

@@ -55,6 +55,8 @@ Override defaults via env vars or a `.env` file:
 | `LLM_REPETITION_PENALTY` | `1.1` | `mlx_lm.server` defaults this to 0.0 (off); without it a small model can loop re-emitting the same JSON fragment until it burns the whole token budget. Matches Ollama's default; `0` restores the server default |
 | `LLM_CONTEXT_TOKENS` | `16384` | The batcher's view of the server's context window — **not** sent to the model. Keep in step with `LLM_CTX` in `ai-server/.env` |
 | `LLM_VISION_MODEL` | unset | Opt-in multimodal model that captions/classifies scraped images for better slot matching. Unset ⇒ pass skipped |
+| `FACEBOOK_PHOTO_REVIEW_MODE` | `metadata` | Facebook photos use CPU/caption checks; `vision` opts an industry profile with its own reviewer prompt (childcare) into visual-model review |
+| `FACEBOOK_PHOTO_MAX_IMAGES` | `12` | Maximum childcare Facebook photos measured per scrape; remaining images stay supporting backups |
 | `LLM_VISION_BASE_URL` | unset | Only when the vision model is on a different endpoint |
 | `REASONING_BASE_URL` | unset | Second endpoint for the judgment-heavy calls (brand detection, design language + recipe, image judge). Unset ⇒ role disabled |
 | `REASONING_MODEL` | unset | Only needed to pin one of several models on that endpoint |

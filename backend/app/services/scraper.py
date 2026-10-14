@@ -67,7 +67,7 @@ from app.services.image_urls import (
     BG_URL_RE,
     absolute_url as _absolute_url,
     declared_display_width as _declared_display_width,
-    image_src_from_tag as _image_src_from_tag,
+    resolved_image_url as _resolved_image_url,
     looks_like_icon as _looks_like_icon,
     looks_like_logo_url as _looks_like_logo_url,
     tag_classes as _tag_classes,
@@ -106,6 +106,12 @@ from app.services.platform_routes import is_template_page_path
 from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
 
 logger = logging.getLogger(__name__)
+
+# Bump when a change alters what a crawl extracts, so `/api/scrape` stops
+# serving crawls cached under the old rules (`routers.scrape.job_options`).
+# 1: every image URL resolved by `image_urls.resolved_image_url` — a cached
+# crawl still carries Wix blur-up placeholders in its section racks.
+EXTRACTION_VERSION = 1
 
 
 # --- public types ---------------------------------------------------------------
@@ -704,8 +710,7 @@ def _extract_images(
     for img in soup.find_all("img"):
         if not isinstance(img, Tag):
             continue
-        src = _image_src_from_tag(img)
-        abs_url = _absolute_url(base_url, src or "")
+        abs_url = _resolved_image_url(img, base_url)
         if not abs_url or abs_url in seen:
             continue
         alt = (img.get("alt") or "").strip() if isinstance(img.get("alt"), str) else ""
@@ -1734,8 +1739,7 @@ def _extract_profile_candidates(
     for img in soup.find_all("img"):
         if not isinstance(img, Tag):
             continue
-        src = _image_src_from_tag(img)
-        photo_url = _absolute_url(base_url, src or "")
+        photo_url = _resolved_image_url(img, base_url)
         if not photo_url:
             continue
         alt = (img.get("alt") or "").strip() if isinstance(img.get("alt"), str) else ""
@@ -1981,8 +1985,7 @@ def _extract_document_cards(
         img = next((i for i in container.find_all("img") if isinstance(i, Tag)), None)
         image_url = None
         if img is not None:
-            src = _image_src_from_tag(img)
-            resolved = _absolute_url(base_url, src or "")
+            resolved = _resolved_image_url(img, base_url)
             alt = (img.get("alt") or "").strip() if isinstance(img.get("alt"), str) else ""
             if resolved and not _looks_like_icon(resolved, alt):
                 image_url = resolved

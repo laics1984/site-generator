@@ -53,16 +53,18 @@ from app.models.content_blocks import (
 from app.services.icons import icons_for_items
 from app.services.image_styling import _split_layers
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
-from app.services.style_tokens import brand_ink
+from app.services.style_tokens import brand_ink, heading_ink
 from app.services.template_filler import get_template, templates_for_type
 from app.services.theme import (
     _adjust_lightness,
     _contrast,
     _ensure_contrast_against,
     _hex_to_rgb,
+    _neutral_inks,
     _relative_luminance,
-    _text_for_background,
     band_colors,
+    ink_css,
+    ink_on,
 )
 
 
@@ -179,6 +181,8 @@ def _services_content(b: ServicesBlock) -> dict[str, Any]:
         "items": [
             {
                 "title": i.title,
+                "_catalogue": {"name": i.title, "kind": i.catalogue_kind, "scope": "block",
+                    "detailPath": i.cta_href if i.cta_href and i.cta_href.startswith("/") and not i.cta_href.startswith("//") and not i.cta_href.startswith("/#") else None},
                 "description": i.description,
                 "ideal": i.audience,
                 "image": _item_image(i, i.title),
@@ -788,14 +792,15 @@ def apply_hero_cta_policy(
     *,
     is_homepage: bool,
     scroll_target_kind: str | None,
+    conversion_hero: bool = False,
 ) -> None:
     """Mutate hero ``content`` so interior-page heroes follow the orientation rule.
 
-    Homepage heroes are left untouched (conversion hero). Interior heroes either
+    Homepage and dedicated landing heroes keep their conversion action. Other heroes either
     get a single scroll-cue CTA (full-bleed variants, when there is a content
     section to scroll to) or no CTA at all (compact variants). See module notes.
     """
-    if is_homepage:
+    if is_homepage or conversion_hero:
         return
     # Interior heroes carry one action at most — never a secondary button.
     content["secondary_cta"] = None
@@ -1144,7 +1149,10 @@ def _infer_visual_mode(block: ContentBlock) -> str:
 
 
 def section_visual_input_for(
-    block: ContentBlock, *, image_band: Band | None = None
+    block: ContentBlock,
+    *,
+    image_band: Band | None = None,
+    painted: Band | None = None,
 ) -> SectionVisualInput:
     """Derive the luminance-pass input from a block's visual_policy.
 
@@ -1152,6 +1160,13 @@ def section_visual_input_for(
     still handles them (back-compat). `image_band` is the band of the section's
     resolved featured image (captured in plan_to_site, Phase 4b); it only matters
     for anchored sections. None → anchored sections default light per §8.4.
+
+    `painted` is the band the RENDERED section visibly is when it paints its
+    own surface (`painted_band`). It outranks everything the block says: the
+    policy was assigned from the planner's layout before the hero director chose
+    the template, so a hero planned "background" and rendered as a split still
+    claimed to be a dark photo band — and a split anchored opposite a bright
+    side photo claimed dark over its own light gradient.
     """
     policy = getattr(block, "visual_policy", None)
     if policy is None:
@@ -1162,6 +1177,8 @@ def section_visual_input_for(
         mode = _infer_visual_mode(block)
 
     override = policy.band_override if policy.band_override != "auto" else None
+    if painted is not None:
+        override = painted
     anchored = mode == "supporting_image"
     return SectionVisualInput(
         participates=True,
@@ -1274,7 +1291,13 @@ def apply_luminance_rhythm(
     ]
     plans = resolve_section_bands(inputs)
     for section, plan in zip(sections, plans):
-        if plan.band is None:
+        # A section that paints its own surface (a photo, a wash, a gradient)
+        # keeps it and the ink it was built with: its band is the one it
+        # visibly is (`painted_band`, fed in as an override so its neighbours
+        # still alternate around it). Repainting `backgroundColor` underneath a
+        # fill that hides it, then recolouring the copy for that hidden colour,
+        # is how a split hero shipped white copy on its own light gradient.
+        if plan.band is None or _paints_its_own_surface(section) or section.painted_surface:
             continue
         bg, fg = band_colors(palette, plan.band)
         if plan.separator_before:
@@ -1285,7 +1308,7 @@ def apply_luminance_rhythm(
             styles["borderTop"] = f"1px solid {_adjust_lightness(bg, 0.12)}"
         section.styles = styles
         if plan.band == "dark":
-            _recolor_text_for_dark(section, fg)
+            _recolor_text_for_dark(section, ink_css(palette, fg))
     return plans
 
 
@@ -1298,7 +1321,9 @@ _HEX6 = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _VAR_TOKEN = _re.compile(r"var\(\s*(--builder-[a-z-]+)")
 # The catalog's only color-mix() shape: two colors (each independently a
 # var(--builder-*, #fallback) or a literal hex) blended in sRGB by a literal
-# percent. Must be checked before _VAR_TOKEN below — a bare .search() there
+# percent — the second may be `transparent`, which makes the mix the first
+# colour at that alpha (the catalog's theme-following muted ink and translucent
+# fills). Must be checked before _VAR_TOKEN below — a bare .search() there
 # would otherwise grab the var() embedded inside this expression and treat
 # the whole mix as that token's raw, fully-opaque color.
 _COLOR_MIX = _re.compile(
@@ -1320,6 +1345,11 @@ def _token_hex(token: str, theme: ThemeTokens) -> str | None:
         "--builder-color-text": p.text,
         "--builder-color-background": p.background,
         "--builder-color-surface": p.surface,
+        "--builder-color-heading": heading_ink(p.secondary, p.text, p.background),
+        # The palette's two copy inks, derived by every renderer from the live
+        # palette (`theme._neutral_inks`) — what the ink pass writes as copy.
+        "--builder-color-ink-light": _neutral_inks(p)[0],
+        "--builder-color-ink-dark": _neutral_inks(p)[1],
         "--builder-page-background": theme.page.background,
         # Buttons carry their own token pair, and it is contrast-guaranteed by
         # construction (theme.build_theme lifts the fill until the label clears
@@ -1358,10 +1388,13 @@ def _parse_color(
     cm = _COLOR_MIX.match(v)
     if cm:
         c1 = _parse_color(cm.group(1).strip(), theme)
+        pct = max(0.0, min(100.0, float(cm.group(2)))) / 100.0
+        if cm.group(3).strip().lower() == "transparent":
+            # Mixing toward transparent keeps the hue and scales its alpha.
+            return (c1[0], pct * c1[1]) if c1 is not None else None
         c2 = _parse_color(cm.group(3).strip(), theme)
         if c1 is None or c2 is None:
             return None
-        pct = max(0.0, min(100.0, float(cm.group(2)))) / 100.0
         (r1, g1, b1), a1 = c1
         (r2, g2, b2), a2 = c2
         rgb = (
@@ -1653,12 +1686,12 @@ def _first_text(node: BuilderElement) -> BuilderElement | None:
 
 _WHATSAPP_HREF = re.compile(r"(?:^whatsapp:|//wa\.me/|//api\.whatsapp\.com/)", re.IGNORECASE)
 
-# Official WhatsApp glyph (simple-icons path), white fill, inlined as a data URI
-# so the button needs no asset pipeline. Rendered as a backgroundImage on the
-# link's left edge; paddingLeft clears it.
-_WHATSAPP_ICON = (
+# Official WhatsApp glyph (simple-icons path), inlined as a data URI so the
+# button needs no asset pipeline. Rendered as a backgroundImage on the link's
+# left edge; paddingLeft clears it. Its fill is the label's ink (`_whatsapp_icon`).
+_WHATSAPP_ICON_TEMPLATE = (
     "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' "
-    "viewBox='0 0 24 24' fill='white'%3E%3Cpath d='M17.472 14.382c-.297-.149-1.758"
+    "viewBox='0 0 24 24' fill='__INK__'%3E%3Cpath d='M17.472 14.382c-.297-.149-1.758"
     "-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173."
     "199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1."
     "653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198"
@@ -1681,13 +1714,23 @@ _WHATSAPP_ICON = (
 _WHATSAPP_GREEN = "#25D366"
 
 
-def style_whatsapp_links(elements: list[BuilderElement]) -> int:
+def _whatsapp_icon(ink_hex: str) -> str:
+    """The glyph drawn in the label's own ink (`#` is `%23` inside a data URI)."""
+    return _WHATSAPP_ICON_TEMPLATE.replace("__INK__", "%23" + ink_hex.lstrip("#"))
+
+
+def style_whatsapp_links(elements: list[BuilderElement], palette: ColorPalette) -> int:
     """First-class WhatsApp buttons: any body link whose href opens a WhatsApp
     chat (wa.me / api.whatsapp.com / whatsapp:) is restyled as the recognisable
     green pill with the WhatsApp glyph, regardless of which template or legacy
     builder produced it. Icon-only links (no visible label) are left alone.
-    Returns the number of links restyled. Run AFTER enforce_text_contrast so the
-    white-on-green ink is never retinted."""
+
+    The green is the brand's; the label and glyph are the palette's ink for it
+    (`ink_on`) — white on #25D366 is under 2:1, so a hard-coded white made the
+    one button a visitor is meant to recognise the hardest one to read.
+    Returns the number of links restyled."""
+    ink = ink_on(palette, _WHATSAPP_GREEN)
+    icon = _whatsapp_icon(ink)
     styled = 0
 
     def walk(el: BuilderElement) -> None:
@@ -1707,8 +1750,8 @@ def style_whatsapp_links(elements: list[BuilderElement]) -> int:
                 "justifyContent": "center",
                 "width": "fit-content",
                 "backgroundColor": _WHATSAPP_GREEN,
-                "color": "#ffffff",
-                "backgroundImage": _WHATSAPP_ICON,
+                "color": ink,
+                "backgroundImage": icon,
                 "backgroundRepeat": "no-repeat",
                 "backgroundPosition": "18px center",
                 "backgroundSize": "18px 18px",
@@ -1762,116 +1805,215 @@ def _flipped_border(border: object, ink_hex: str, theme: ThemeTokens) -> str | N
     return None
 
 
-def enforce_text_contrast(
-    elements: list[BuilderElement], theme: ThemeTokens, *, surface: str | None = None
-) -> int:
-    """Scheme-agnostic contrast safety net. Retargets any text whose colour fails
-    contrast against its *resolved* band background to that band's correct
-    foreground (white on a dark band, dark ink on a light band).
+# --- surfaces: what a node's own fill presents to the text on it ---------------
+#
+# One answer, asked by every pass that inks text or classifies a band — the ink
+# pass below, the band markers, the luminance rhythm's input, the eyebrow and
+# hero-accent inks — so they cannot disagree about what a section looks like.
+# Before it, each pass had its own partial answer: `backgroundColor` alone (which
+# a photo or a `background` shorthand paints over), or "a photo or gradient owns
+# its ink" (which let a light template gradient keep white copy).
 
-    Catalogue sections hard-code a single palette token for text — often
-    `secondary`, which is dark in *every* scheme — so it vanishes whenever the
-    section lands on a same-luminance band: dark-on-dark (dark scheme, or a dark
-    CTA band in a light scheme) or light-on-light. Because the replacement is
-    chosen from the band's luminance, not the global scheme, this works in both
-    schemes. It only flips text that is on the *wrong* side of its background
-    (the flip must strictly improve contrast and differ from the current colour),
-    so photo overlays, cards that paint their own surface, and brand-colour text
-    that is merely low-contrast-but-correct are left untouched. Mutates in place;
-    returns the count changed.
+_NO_FILL = object()  # the node paints nothing of its own: its parent's surface shows
+_UNREADABLE = object()  # it paints something no pass measured (an unrecorded photo)
 
-    ``surface``: the flat colour the caller has just PAINTED behind ``elements``,
-    for a fill this pass cannot read off the styles — today, the split hero's
-    washed photo (`image_styling.washed_surface_hex`). It replaces the page
-    background as the starting backdrop and, only for the elements passed in,
-    lifts the photo rule above: the photo is under a near-opaque wash the caller
-    measured, so its ink is knowable after all. Descendants still walk normally,
-    so a photo tile nested inside keeps owning its own ink."""
-    page_rgb = _hex_to_rgb(_expand_hex(surface or theme.page.background))
-    # Brand-hued text (primary/accent eyebrows, links) is intentional even when it
-    # lands a little under AA on a band — never recolour it. The vanishing-text bug
-    # is always `secondary`/slate, never a brand colour.
+# The literal whites the catalog and older builders hard-code as copy ink. Each
+# is restated as the palette's ink for the surface it actually sits on.
+_LITERAL_WHITE = _re.compile(
+    r"^\s*(?:#fff(?:fff)?|white|rgba?\(\s*255\s*,\s*255\s*,\s*255\s*(?:,\s*[\d.]+\s*)?\))\s*$",
+    _re.IGNORECASE,
+)
+_STOP_POSITION = _re.compile(r"(?:\s+-?[\d.]+(?:%|px|deg))+\s*$")
+# The palette's neutral inks as tokens, bare or mixed toward transparent — copy
+# the ink pass may re-pick, unlike a brand hue.
+_NEUTRAL_INK_TOKEN = _re.compile(
+    r"var\(\s*--builder-color-(?:ink-light|ink-dark|text|secondary|background|surface|heading)\b"
+)
+# AA for copy: body text, and large text (WCAG ≥24px, or ≥18.66px bold).
+_COPY_MIN = 4.5
+_COPY_MIN_LARGE = 3.0
+
+_RGB = tuple[int, int, int]
+
+
+def _over(rgb: _RGB, alpha: float, below: _RGB | None) -> _RGB | None:
+    """`rgb` at `alpha` over `below`; None when it lets an unreadable surface through."""
+    if alpha >= 0.999:
+        return rgb
+    return _composite(rgb, alpha, below) if below is not None else None
+
+
+def _layer_over(layer: str, theme: ThemeTokens, below: _RGB | None) -> _RGB | None | object:
+    """One background layer over `below`: a gradient as the average of its stops
+    (the copy runs across the whole ramp), a flat colour as itself. `_NO_FILL`
+    for a layer that paints no colour (a `data:` grain tile)."""
+    if "gradient(" in layer:
+        inner = layer[layer.index("(") + 1 : layer.rindex(")")]
+        stops = [
+            parsed
+            for arg in _split_layers(inner)
+            if (parsed := _parse_color(_STOP_POSITION.sub("", arg).strip(), theme))
+        ]
+        if not stops:
+            return _NO_FILL
+        over = [_over(rgb, a, below) for rgb, a in stops]
+        if any(o is None for o in over):
+            return None
+        return tuple(round(sum(o[i] for o in over) / len(over)) for i in range(3))  # type: ignore[index]
+    parsed = _parse_color(layer, theme)
+    return _over(parsed[0], parsed[1], below) if parsed else _NO_FILL
+
+
+def _own_fill(node: BuilderElement, theme: ThemeTokens, below: _RGB | None) -> _RGB | object:
+    """The colour `node`'s own fill presents to the text on it, over `below`
+    (None: an unreadable surface). `_NO_FILL` when it paints nothing,
+    `_UNREADABLE` when it paints something no pass could measure.
+
+    A fill a painter measured (`BuilderElement.painted_surface` — a photo under
+    a solved scrim, a washed photo) is the answer outright. A `background`
+    shorthand RESETS `background-color`, so a node carrying both shows the
+    shorthand alone (the split heroes' light gradient over the dark band colour
+    the luminance pass used to write underneath it); `backgroundImage` layers
+    sit over `backgroundColor`."""
+    if node.painted_surface:
+        return _hex_to_rgb(_expand_hex(node.painted_surface))
+    styles = node.styles if isinstance(node.styles, dict) else {}
+    if _has_real_photo(styles):
+        return _UNREADABLE
+    shorthand, image = styles.get("background"), styles.get("backgroundImage")
+    rgb: _RGB | None = below
+    painted = False
+    if not shorthand:
+        parsed = _parse_color(styles.get("backgroundColor"), theme)
+        if parsed is not None:
+            rgb, painted = _over(parsed[0], parsed[1], rgb), True
+    for value in (shorthand, image):
+        if not isinstance(value, str):
+            continue
+        for layer in reversed(_split_layers(value)):
+            layer_rgb = _layer_over(layer, theme, rgb)
+            if layer_rgb is _NO_FILL:
+                continue
+            rgb, painted = layer_rgb, True  # type: ignore[assignment]
+    if not painted:
+        return _NO_FILL
+    return rgb if rgb is not None else _UNREADABLE
+
+
+def _is_neutral_ink(raw: object, rgb: _RGB, theme: ThemeTokens) -> bool:
+    """Whether copy written `raw` is one of the palette's neutral inks."""
+    if isinstance(raw, str) and _NEUTRAL_INK_TOKEN.search(raw):
+        return True
+    p = theme.palette
+    return rgb in {
+        _hex_to_rgb(_expand_hex(c)) for c in (p.background, p.surface, p.text, p.secondary)
+    }
+
+
+def surface_of(node: BuilderElement, theme: ThemeTokens) -> str | None:
+    """The flat colour `node`'s own fill shows its text, over the page; None
+    when it paints nothing or nothing readable."""
+    fill = _own_fill(node, theme, _hex_to_rgb(_expand_hex(theme.page.background)))
+    return _to_hex(fill) if isinstance(fill, tuple) else None
+
+
+def band_of_surface(surface_hex: str, theme: ThemeTokens) -> Band:
+    """Which band a surface is, by the ink that reads on it: "dark" when the
+    palette's light ink wins. The same question the copy's ink answers, so a
+    band marker and the text under it cannot disagree."""
+    ink = ink_on(theme.palette, surface_hex)
+    return "dark" if _relative_luminance(ink) > _relative_luminance(surface_hex) else "light"
+
+
+def painted_surface_of(section: BuilderElement, theme: ThemeTokens) -> str | None:
+    """The surface of a section that paints its OWN (a photo, a wash, a
+    gradient) — the designed moments the band passes leave alone; None for a
+    flat section, whose band those passes decide, or an unreadable one."""
+    if not _paints_its_own_surface(section) and not section.painted_surface:
+        return None
+    return surface_of(section, theme)
+
+
+def painted_band(section: BuilderElement, theme: ThemeTokens) -> Band | None:
+    """The band a section that paints its own surface visibly is, for the
+    luminance rhythm to alternate around."""
+    surface = painted_surface_of(section, theme)
+    return band_of_surface(surface, theme) if surface else None
+
+
+def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) -> int:
+    """The final ink pass: every line of copy wears the palette's ink for the
+    surface it ACTUALLY sits on (`_own_fill`, inherited down the tree).
+
+    Two kinds of text are restated, both as `theme.ink_on(palette, surface)`:
+
+    - **Hard-coded white.** The catalog and older builders write `#ffffff` /
+      `rgba(255,255,255,a)` as copy ink, assuming a dark photo or band behind
+      it. Nothing guarantees that — a split hero's light gradient, a bright
+      photo, a yellow brand ramp — so a literal white is never left standing:
+      it becomes the palette's light ink where that reads, its dark ink where it
+      doesn't.
+    - **Wrong-side text.** Catalogue sections hard-code a single palette token
+      (often `secondary`, dark in every scheme), which vanishes on a
+      same-luminance band. Only text on the WRONG side of its surface is
+      flipped; a muted caption on the right side stays as designed.
+
+    Brand-hued text (primary/accent eyebrows, links) is intentional and never
+    recoloured. A surface no pass could measure (a photo nobody recorded) is
+    left alone, since there is nothing to judge against. A solid button's label
+    is judged against the button, a ghost button's against the band — and its
+    outline follows its label. Mutates in place; returns the count changed."""
+    page_rgb = _hex_to_rgb(_expand_hex(theme.page.background))
     brand_rgb = {
         _hex_to_rgb(_expand_hex(theme.palette.primary)),
         _hex_to_rgb(_expand_hex(theme.palette.accent)),
     }
     changed = 0
 
-    def walk(
-        node: BuilderElement,
-        bg_rgb: tuple[int, int, int],
-        photo: bool,
-        *,
-        surface_measured: bool = False,
-    ) -> None:
+    def walk(node: BuilderElement, bg_rgb: _RGB | None) -> None:
         nonlocal changed
-        styles = node.styles if isinstance(node.styles, dict) else {}
-        # A genuine photo or an opaque gradient fill owns its subtree's text:
-        # the template designed that ink against its own backdrop (scrim/photo
-        # overlay or gradient tones we can't parse into a flat colour).
-        # Crucially this holds even when the SAME node also carries a
-        # backgroundColor — the photo/gradient paints over it, so that colour
-        # must not be treated as the effective surface (it used to flip the
-        # catalog's white hero headings to dark ink under dark gradients and
-        # photos). Semi-transparent decorative gradients don't count — see
-        # _has_opaque_gradient.
-        covered = not surface_measured and (
-            _has_real_photo(styles) or _has_opaque_gradient(styles)
-        )
-        if covered:
-            photo = True
-        # A solid / semi-transparent own background updates the effective surface
-        # and (painting over whatever is beneath) clears the photo-owned flag —
-        # unless this very node is the one carrying the photo/gradient.
-        # `surface_measured` says the caller painted over this node's own
-        # declared fill (the wash covers the template's backgroundColor), so
-        # reading it here would composite a colour nobody can see.
-        own = (
-            None
-            if surface_measured
-            else _parse_color(styles.get("backgroundColor"), theme)
-            or _parse_color(styles.get("background"), theme)
-        )
-        if own is not None:
-            (r, g, b), a = own
-            opaque = a >= 0.999
-            bg_rgb = (r, g, b) if opaque else _composite((r, g, b), a, bg_rgb)
-            # Only an OPAQUE fill hides what it sits on. A translucent chip on a
-            # photo/gradient band (the gradient hero's ghost CTA:
-            # `rgba(255,255,255,0.12)`) composites over a backdrop nobody can
-            # read, so the band still owns its ink — compositing it over the
-            # last known flat colour would "measure" a surface that isn't there
-            # and flip the CTA's white label to dark.
-            if not covered and opaque:
-                photo = False
+        fill = _own_fill(node, theme, bg_rgb)
+        if fill is _UNREADABLE:
+            bg_rgb = None
+        elif fill is not _NO_FILL:
+            bg_rgb = fill  # type: ignore[assignment]
 
+        styles = node.styles if isinstance(node.styles, dict) else {}
         content = node.content
         if isinstance(content, BuilderElementContent):
-            # Links count too: a ghost button states a colour and paints no
-            # surface, so it vanishes on a same-luminance band exactly like a
-            # paragraph does. A SOLID button is already safe here — its own fill
-            # became `bg_rgb` two blocks up, so its label is measured against
-            # the button, not the band.
-            if node.type in ("text", "link") and not photo:
-                fg = _parse_color(styles.get("color"), theme)
+            if node.type in ("text", "link") and bg_rgb is not None:
+                raw = styles.get("color")
+                fg = _parse_color(raw, theme)
                 if fg is not None and fg[0] not in brand_rgb:
                     fg_hex, bg_hex = _to_hex(fg[0]), _to_hex(bg_rgb)
-                    # Only "wrong-side" text — the same luminance tone as its band —
-                    # is the vanishing-text bug (dark-on-dark / light-on-light). Text
-                    # on the correct side that is merely muted (a soft caption, a
-                    # low-contrast-but-legible accent) is left as designed.
-                    same_side = (_relative_luminance(fg_hex) < 0.5) == (
+                    hard_coded = isinstance(raw, str) and bool(_LITERAL_WHITE.match(raw))
+                    # Only "wrong-side" text — the same luminance tone as its
+                    # band — is the vanishing-text bug (dark-on-dark /
+                    # light-on-light).
+                    wrong_side = (_relative_luminance(fg_hex) < 0.5) == (
                         _relative_luminance(bg_hex) < 0.5
-                    )
-                    safe = _text_for_background(bg_hex)
-                    if (
-                        same_side
-                        and _contrast(fg_hex, bg_hex) < 4.5
-                        and safe.lower() != fg_hex.lower()
+                    ) and _contrast(fg_hex, bg_hex) < 4.5
+                    # A neutral ink on the right side can still fail once its
+                    # translucency lets the surface through: a 92% paragraph on a
+                    # photo's solved scrim (which is solved for the OPAQUE ink).
+                    need = _COPY_MIN_LARGE if _is_large_text(styles) else _COPY_MIN
+                    faded = fg[1] < 1.0 and _contrast(
+                        _to_hex(_composite(fg[0], fg[1], bg_rgb)), bg_hex
+                    ) < need
+                    neutral = hard_coded or _is_neutral_ink(raw, fg[0], theme)
+                    safe = ink_on(theme.palette, bg_hex)
+                    written = ink_css(theme.palette, safe)
+                    # The author's translucency is a nicety, kept only where the
+                    # ink still reads with it; legibility outranks it.
+                    keep_alpha = fg[1] < 1.0 and _contrast(
+                        _to_hex(_composite(_hex_to_rgb(safe), fg[1], bg_rgb)), bg_hex
+                    ) >= need
+                    if (hard_coded or wrong_side or (neutral and faded)) and (
+                        written.lower() != str(raw).lower()
                     ):
                         new_styles = dict(styles)
-                        new_styles["color"] = safe
-                        if fg[1] < 1.0 and "opacity" not in new_styles:
+                        new_styles["color"] = written
+                        if keep_alpha and "opacity" not in new_styles:
                             new_styles["opacity"] = f"{round(fg[1] * 100)}%"
                         # A ghost button's outline is drawn in the same tone as
                         # the label it frames, so it vanished with it. Only the
@@ -1885,109 +2027,97 @@ def enforce_text_contrast(
         elif isinstance(content, list):
             for child in content:
                 if isinstance(child, BuilderElement):
-                    walk(child, bg_rgb, photo)
+                    walk(child, bg_rgb)
 
     for el in elements:
-        walk(el, page_rgb, False, surface_measured=surface is not None)
+        walk(el, page_rgb)
     return changed
 
 
-# The design brief's cheerful pastel set (cream, sky, mint, peach, lavender,
-# butter). All are very light (Tailwind 50/100-class tints), so the theme's dark
-# ink keeps a wide WCAG margin on every one — a childcare page can rotate through
-# them band-to-band and stay legible. Ordered so adjacent bands contrast in hue.
-_CHILDCARE_PASTELS: tuple[str, ...] = (
-    "#FFF7ED",  # cream
-    "#E0F2FE",  # sky blue
-    "#DCFCE7",  # mint green
-    "#FFEDD5",  # peach
-    "#EDE9FE",  # lavender
-    "#FEF9C3",  # butter yellow
-)
+def _paints_its_own_surface(section: BuilderElement) -> bool:
+    """A photo, gradient or texture fill — a designed moment the band passes
+    leave alone, since repainting it flat would erase it."""
+    styles = section.styles or {}
+    return bool(styles.get("backgroundImage") or styles.get("background"))
 
 
-# Vivid, cheerful section-title inks for childcare — one per section so the
-# page's headings read multi-coloured instead of one dark theme hue. All are
-# Tailwind-700-class: saturated but dark enough to clear WCAG AA (≥4.5:1) on
-# every pastel band above, so they stay legible whichever pastel they land on.
-_CHILDCARE_HEADING_INKS: tuple[str, ...] = (
-    "#BE123C",  # rose
-    "#6D28D9",  # violet
-    "#1D4ED8",  # blue
-    "#0F766E",  # teal
-    "#BE185D",  # pink
-    "#047857",  # emerald
-)
-
-
-def _first_named_text(el: BuilderElement, name: str) -> BuilderElement | None:
-    """The first descendant text node named `name` (depth-first), or None."""
-    if el.type == "text" and (el.name or "") == name:
-        return el
-    content = el.content
-    if isinstance(content, list):
-        for child in content:
-            found = _first_named_text(child, name)
+def _band_title(node: BuilderElement) -> BuilderElement | None:
+    """The section's title ("Heading") when it sits on the section's own band —
+    reached without passing through a container that paints its own fill."""
+    if node.type == "text" and (node.name or "") == "Heading":
+        return node
+    if isinstance(node.content, list):
+        for child in node.content:
+            if child.type != "text" and _is_own_surface(child.styles or {}):
+                continue
+            found = _band_title(child)
             if found is not None:
                 return found
     return None
 
 
-def apply_childcare_heading_colors(sections: list[BuilderElement]) -> None:
-    """Give each pastel section's TITLE its own vivid colour (rose/violet/blue/
-    teal/pink/emerald), so the page's headings are multi-coloured rather than one
-    dark theme hue — the cheerful direction, extended past the hero.
+def apply_section_title_inks(sections: list[BuilderElement], inks: tuple[str, ...]) -> None:
+    """Ink each flat section's TITLE with the next of ``inks`` (the scheme's
+    per-section-accent voice), so a page's headings read multi-coloured in the
+    brand's own hues rather than one dark theme hue.
 
-    Only the section-level title (the node named "Heading") is recoloured; card
-    titles and body copy stay dark for readability. Heroes (their own treatment)
-    and photo/gradient sections are skipped. Run AFTER apply_childcare_pastel_
-    rhythm so its dark-ink recolour doesn't overwrite these. Mutates in place."""
+    Only the section-level title (the node named "Heading") is recoloured;
+    card titles and body copy stay on the theme ink for readability. Heroes
+    (their own treatment) and painted sections are skipped, and so is a title
+    inside a panel that paints its own fill (`cta-banner`'s gradient card):
+    the ink is held to AA against the BAND, which is not what that title sits
+    on — a brand-blue title went onto a navy panel at 1.08:1. Every ink is held
+    to AA against the band it actually lands on, so the rotation can never pair
+    a light ink with a light tint. Run AFTER `apply_band_tints`, whose dark-ink
+    recolour would otherwise overwrite these. Mutates in place."""
+    if not inks:
+        return
     i = 0
     for section in sections:
-        if (section.name or "").startswith("Hero"):
+        if (section.name or "").startswith("Hero") or _paints_its_own_surface(section):
             continue
-        styles = section.styles or {}
-        if styles.get("backgroundImage") or styles.get("background"):
-            continue
-        heading = _first_named_text(section, "Heading")
+        heading = _band_title(section)
         if heading is None:
             continue
-        heading.styles = {
-            **(heading.styles or {}),
-            "color": _CHILDCARE_HEADING_INKS[i % len(_CHILDCARE_HEADING_INKS)],
-        }
+        band = (section.styles or {}).get("backgroundColor")
+        ink = inks[i % len(inks)]
+        if isinstance(band, str) and band.startswith("#"):
+            ink = _ensure_contrast_against(band, ink, min_ratio=4.5)
+        heading.styles = {**(heading.styles or {}), "color": ink}
         i += 1
 
 
-def apply_childcare_pastel_rhythm(sections: list[BuilderElement], ink: str) -> None:
-    """Recolour a childcare page's flat-background sections through the rotating
-    pastel set, so the page reads cheerful and multi-coloured instead of one hue
-    plus a dark band (the brief's "bright, layered" direction).
+def apply_band_tints(sections: list[BuilderElement], tints: tuple[str, ...], ink: str) -> None:
+    """Recolour a page's flat-background sections through ``tints`` (the
+    scheme's multi-tint voice — light tints of the site's own hues, see
+    style_tokens.band_tints), so the page reads multi-coloured instead of one
+    hue plus a dark band.
 
     Only sections whose background is a FLAT colour are recoloured; anything
     painting a real photo, gradient, or texture (the photo hero, the photo CTA,
     an interior washed-split hero) is left untouched so those moments survive.
-    Every recoloured band gets the theme's dark `ink` — all pastels are light, so
+    Every recoloured band gets the theme's dark `ink` — all tints are light, so
     this also flips any previously-light text (e.g. a former dark band) back to
     legible dark and drops the dark-band hairline. Mutates in place.
 
     Run AFTER the luminance/legacy rhythm (it overrides their flat colours) and
-    BEFORE apply_section_dividers (so seam fills read the final pastel colours)."""
+    BEFORE apply_section_dividers (so seam fills read the final tint colours)."""
+    if not tints:
+        return
     i = 0
     for section in sections:
         styles = dict(section.styles or {})
-        # A real photo/gradient/texture fill → leave it as the designed moment.
-        if styles.get("backgroundImage") or styles.get("background"):
+        if _paints_its_own_surface(section):
             continue
         # The announcement strap is a designed brand-primary bar with matching
-        # ink — repainting it pastel while its ink stays light made it vanish.
+        # ink — repainting it light while its ink stays light made it vanish.
         if (section.name or "") == "Linkbar":
             continue
-        styles["backgroundColor"] = _CHILDCARE_PASTELS[i % len(_CHILDCARE_PASTELS)]
-        styles.pop("borderTop", None)  # a former dark-band hairline reads wrong on pastel
+        styles["backgroundColor"] = tints[i % len(tints)]
+        styles.pop("borderTop", None)  # a former dark-band hairline reads wrong on a tint
         section.styles = styles
         i += 1
-        # Pastels are light → force dark ink (undoes any dark-band recolour).
+        # Tints are light → force dark ink (undoes any dark-band recolour).
         _recolor_text_for_dark(section, ink)
 
 
@@ -2060,6 +2190,29 @@ def apply_section_rhythm(sections: list[BuilderElement]) -> None:
 # still a text grid. Kept as ids rather than a catalog flag so there is no new
 # field to keep in lockstep across the two catalogs.
 _DECORATIVE_IMAGE_SLOTS = frozenset({"icon", "logo", "badge", "avatar"})
+
+
+# How much a section weighs on the page, by its layout family: a full-bleed or
+# colour-blocked band is heavy, a lone line of type is light. A page reads as
+# composed when the weights vary; three of one weight in a row reads as a stack
+# of equal boxes (ux_audit's advisory rhythm check).
+_HEAVY_FAMILIES = frozenset({"background", "banner", "bento", "gradient", "feature"})
+_LIGHT_FAMILIES = frozenset(
+    {"minimal", "centered", "stacked", "single", "strip", "list", "band", "narrative"}
+)
+
+
+def visual_weight(template_id: str) -> Literal["heavy", "medium", "light"] | None:
+    """A body section's visual weight, from its catalog layout family; None for
+    an id the catalog does not know."""
+    family = _layout_family(template_id)
+    if family is None:
+        return None
+    if family in _HEAVY_FAMILIES:
+        return "heavy"
+    if family in _LIGHT_FAMILIES:
+        return "light"
+    return "medium"
 
 
 def _layout_family(template_id: str) -> str | None:
@@ -2146,6 +2299,64 @@ def _policy_template_id(
     return None
 
 
+def _image_shape(template: dict[str, Any]) -> tuple[bool, bool]:
+    """(has a lone image slot, its items lead with photos) — what a template
+    does with the section's pictures, so a swap never drops or invents one."""
+    slots = template.get("slots", [])
+    return any(slot.get("kind") == "image" for slot in slots), _leads_with_photo(template)
+
+
+def _rhythm_alternative(
+    kind: str,
+    content: dict[str, Any],
+    chosen: dict[str, Any],
+    preferred: list[str],
+    *,
+    mood: BrandMood | None,
+    industry: str | None,
+    layout_bias: tuple[str, ...],
+) -> dict[str, Any] | None:
+    """A template of a DIFFERENT layout family to stand in for ``chosen``, which
+    repeats the section above it — or None to keep ``chosen``.
+
+    Two of one composition in a row (a split hero over a split about, a card
+    grid over a card grid) is what makes a page read as one template stamped
+    twice. The swap stays inside the brand's own language: the alternative must
+    be feasible and gated for this brand, of a family the site's layout
+    preference NAMES (mood + scheme bias — never one it is silent on, unless the
+    repeat was itself unnamed), and use the section's pictures exactly as
+    ``chosen`` does. Among those the preference order decides. When nothing
+    qualifies the repeat stands. An explicit pick (the design brain's, or
+    content policy) never reaches here.
+
+    "No worse ranked than the repeat" was the first bound tried and it almost
+    never fired: when the repeat is the mood's TOP family (a friendly card grid
+    over a card grid), nothing ranks better, which is exactly the monotony the
+    rule exists for.
+    """
+    named = len(layout_preference(mood, layout_bias))
+    bound = max(_mood_rank(mood, chosen["id"], layout_bias), named - 1)
+    shape = _image_shape(chosen)
+    family = chosen.get("layoutVariant")
+    order = {pid: i for i, pid in enumerate(preferred)}
+    alternatives = [
+        t
+        for t in templates_for_type(kind)
+        if t.get("layoutVariant") != family
+        and mood_allows(t, mood)
+        and industry_allows(t, industry)
+        and is_feasible(t, content)
+        and _mood_rank(mood, t["id"], layout_bias) <= bound
+        and _image_shape(t) == shape
+    ]
+    if not alternatives:
+        return None
+    return min(
+        alternatives,
+        key=lambda t: (_mood_rank(mood, t["id"], layout_bias), order.get(t["id"], len(order))),
+    )
+
+
 def selectable_templates(
     block: ContentBlock,
     *,
@@ -2200,9 +2411,11 @@ def block_to_section(
     mood: BrandMood | None = None,
     industry: str | None = None,
     is_homepage: bool = True,
+    conversion_hero: bool = False,
     hero_scroll_target_kind: str | None = None,
     variety_seed: str | None = None,
     layout_bias: tuple[str, ...] = (),
+    previous_family: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     """Map a block to (template, content). Returns None if the kind is unsupported.
 
@@ -2226,6 +2439,10 @@ def block_to_section(
     For a hero, ``is_homepage`` / ``hero_scroll_target_kind`` drive the interior-
     page CTA policy (see ``apply_hero_cta_policy``); the default (homepage hero)
     leaves the CTA untouched.
+
+    ``previous_family`` is the layout family of the section above this one.
+    When the pick would repeat it, an alternative takes its place — see
+    ``_rhythm_alternative`` for how narrowly.
     """
     kind = block.kind
     mapper = _MAPPERS.get(kind)
@@ -2292,6 +2509,15 @@ def block_to_section(
     )
     if template is None:
         return None
+    if (
+        previous_family
+        and template.get("layoutVariant") == previous_family
+        and template["id"] != explicit_id
+    ):
+        template = _rhythm_alternative(
+            kind, content, template, preferred,
+            mood=mood, industry=industry, layout_bias=layout_bias,
+        ) or template
     # The CTA policy runs AFTER selection so it can key off the chosen variant.
     if kind == "hero":
         apply_hero_cta_policy(
@@ -2299,5 +2525,6 @@ def block_to_section(
             template["id"],
             is_homepage=is_homepage,
             scroll_target_kind=hero_scroll_target_kind,
+            conversion_hero=conversion_hero,
         )
     return template, content

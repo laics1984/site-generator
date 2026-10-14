@@ -43,6 +43,8 @@ import base64
 import hashlib
 import logging
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -73,6 +75,7 @@ from app.services.generation_projects import (
     bind_project, get_project, mark_complete, mark_page_published,
     mark_preview_published, record_page,
 )
+from app.services.image_urls import is_expired_url, signed_url_expiry
 from app.services.menu_builder import build_layout_payload
 from app.services.platform_routes import BLANK_TEMPLATE_BODY, TEMPLATE_PAGE_DEFAULTS
 from app.services.timing import stage
@@ -166,48 +169,78 @@ class PushRequest:
 _PUSH_CONCURRENCY = 5
 
 
-async def _create_entity_tolerating_url_clash(
+# The optional create fields a push may lose rather than fail over, each with
+# the warning the report carries when the CMS rejected it.
+_DROPPABLE_ENTITY_FIELDS: dict[str, Callable[[str], str]] = {
+    # entity_url is `nullable` but `unique` across the WHOLE install, so on a
+    # shared production CMS the site's own address may already belong to
+    # another tenant — a clash that cannot happen on a fresh local one.
+    "entity_url": lambda url: (
+        f"The website URL {url} is already registered to another site on this "
+        "CMS, so this site was created without one. Set it in the admin once the "
+        "clash is resolved."
+    ),
+    # A CMS that has not deployed the shared industry taxonomy yet refuses a
+    # slug it does not know; the site is still worth landing.
+    "industry": lambda slug: (
+        f"This CMS does not recognise the industry '{slug}', so the site was "
+        "created without one. Set it in Site settings."
+    ),
+}
+
+
+async def _create_entity_tolerating_rejected_optionals(
     client: CmsClient,
     *,
     name: str,
-    entity_url: str | None,
     builder_styles: dict[str, Any] | None,
+    entity_url: str | None,
+    industry: str | None,
 ) -> tuple[dict[str, Any], str | None]:
-    """Create the entity, retrying once without `entity_url` if that URL is taken.
+    """Create the entity, retrying once without any optional field it rejected.
 
-    The CMS rules entity_url `nullable` but `unique` across the WHOLE install, so
-    on a shared production CMS the site's own address may already belong to
-    another tenant — a clash that simply cannot happen on a fresh local one. The
-    URL is the one optional part of the request, so dropping it lands the site
-    instead of failing an entire push over a field the operator can set later.
-
-    Detected on the `errors` KEY, never on the message text: Laravel's copy is
-    translatable and the key is the contract. Returns (entity, warning).
+    The optional fields are details the operator can set later; failing an
+    entire push over one of them would be a poor trade. Detected on the
+    `errors` KEYS, never on the message text: Laravel's copy is translatable and
+    the key is the contract. Returns (entity, warning).
     """
+    optionals = {
+        key: value
+        for key, value in (("entity_url", entity_url), ("industry", industry))
+        if value
+    }
     try:
         entity = await client.create_entity(
-            entity_name=name, entity_url=entity_url, builder_styles=builder_styles
+            entity_name=name, builder_styles=builder_styles, **optionals
         )
         return entity, None
     except CmsApiError as exc:
         body = exc.response_body if isinstance(exc.response_body, dict) else {}
         errors = body.get("errors")
-        clash = (
-            exc.status == 422
-            and isinstance(errors, dict)
-            and "entity_url" in errors
-            and bool(entity_url)
+        rejected = (
+            [key for key in optionals if key in errors]
+            if exc.status == 422 and isinstance(errors, dict)
+            else []
         )
-        if not clash:
+        if not rejected:
             raise
     entity = await client.create_entity(
-        entity_name=name, entity_url=None, builder_styles=builder_styles
+        entity_name=name,
+        builder_styles=builder_styles,
+        **{key: value for key, value in optionals.items() if key not in rejected},
     )
-    return entity, (
-        f"The website URL {entity_url} is already registered to another site on this "
-        "CMS, so this site was created without one. Set it in the admin once the "
-        "clash is resolved."
-    )
+    return entity, " ".join(_DROPPABLE_ENTITY_FIELDS[key](optionals[key]) for key in rejected)
+
+
+def _site_industry(site: GeneratedSite) -> str | None:
+    """The industry the generated site was built for, as the CMS stores it.
+
+    `other` is the taxonomy's "nothing fits" and is never pushed: an entity left
+    without an industry keeps its "set your industry" prompt in the admin,
+    which `other` would silence for a site nobody classified.
+    """
+    industry = _brand_field(site.brand, "industry")
+    return industry if isinstance(industry, str) and industry not in ("", "other") else None
 
 
 async def push_site(req: PushRequest) -> PushReport:
@@ -233,6 +266,19 @@ def _raise_first_error(results: list) -> None:
 
 
 async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> PushReport:
+    # 0. Nothing is written for a site whose photos can no longer be fetched.
+    dead = _dead_photo_links(req.site, at=time.time())
+    if dead:
+        deadline = min(signed_url_expiry(src) or 0 for src in dead)
+        message = (
+            f"{len(dead)} photo link{'s' if len(dead) != 1 else ''} from Facebook "
+            f"expired on {datetime.fromtimestamp(deadline, tz=timezone.utc):%d %b %Y}. "
+            "Generate the site again to renew them, then publish."
+        )
+        report.record(PushStep(name="photo_links", ok=False, error=message))
+        report.error = message
+        return report
+
     # 1. Auth
     try:
         await client.login(req.cms_email, req.cms_password)
@@ -261,11 +307,12 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     if req.create_entity:
         try:
             name = (req.new_entity_name or req.site.site_name or "New Site").strip()
-            entity, url_warning = await _create_entity_tolerating_url_clash(
+            entity, create_warning = await _create_entity_tolerating_rejected_optionals(
                 client,
                 name=name,
-                entity_url=(req.new_entity_url or None),
                 builder_styles=req.site.builder_styles or None,
+                entity_url=(req.new_entity_url or None),
+                industry=_site_industry(req.site),
             )
             req.entity_token = str(entity.get("entity_api_token") or "")
             req.entity_id = str(entity.get("entity_id") or "")
@@ -291,7 +338,7 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                         "public_identifier": entity.get("public_identifier"),
                         "public_url": entity.get("public_url"),
                     },
-                    warning=url_warning,
+                    warning=create_warning,
                 )
             )
         except CmsApiError as exc:
@@ -337,7 +384,7 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                 name="media",
                 ok=True,
                 detail=_describe_media(media),
-                data=media.counts(),
+                data={**media.counts(), **({"skipped_assets": list(media.skipped)} if media.skipped else {})},
                 warning=_media_warning(media),
             )
         )
@@ -435,6 +482,9 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         report.error = str(exc)
         return report
 
+    from app.services.product_catalogue import link_product_detail_pages
+    link_product_detail_pages(req.site)
+
     # 7. Save drafts — bodySchema per page, concurrently (each save uses only
     #    its own page's draftVersion; layout was already saved in step 6).
     saved_drafts: dict[str, int] = {}  # pageId → latest draft_version
@@ -506,6 +556,11 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     #     is something the owner can set in the admin afterwards.
     if req.operation != "extend":
         await _push_favicon(client, req, report)
+
+    # 8b'. Site industry, for an entity that existed before this push (a created
+    #      one carried it in its create request). Non-fatal, like the icon.
+    if not req.create_entity and req.operation != "extend":
+        await _push_industry(client, req, report)
 
     # 8c. WhatsApp chat button, when the source site published a number
     #     (services/whatsapp_discovery.py). Non-fatal for the same reason as the
@@ -838,33 +893,22 @@ _IMAGE_MIME_MAP = {
 }
 
 
-def _brand_field(brand: Any, name: str) -> Any:
-    """Read one field off `GeneratedSite.brand`, whichever shape it is in.
-
-    The field is typed `Any`, so it is a `BrandIdentity` when the plan is built
-    in-process and a plain dict when the frontend posts the same site back to
-    /api/cms/push. A bare getattr silently returns None for the dict form —
-    which is every real push.
-    """
-    if brand is None:
-        return None
-    if isinstance(brand, dict):
-        return brand.get(name)
-    return getattr(brand, name, None)
-
-
 @dataclass(frozen=True, slots=True)
 class MediaUpload:
     """What the media step did.
 
     `rewrites` maps every src/href now hosted on the CMS to its URL; `failed`
     is the IMAGE srcs that resolved to nothing (stripped by the caller);
-    `reused` counts the rewrites that were files the library already held.
+    `reused` counts the rewrites that were files the library already held;
+    `skipped` is what the site's plan had no room for (``{url, reason}``,
+    reason ``storage_full`` or ``file_too_large``) — also in `failed` when an
+    image, so it is stripped like any other, but reported by name.
     """
 
     rewrites: dict[str, str]
     failed: set[str]
     reused: int = 0
+    skipped: tuple[dict[str, str], ...] = ()
 
     @property
     def uploaded(self) -> int:
@@ -880,7 +924,29 @@ def _describe_media(media: MediaUpload) -> str:
         parts.append(f"{media.reused} already in the library")
     if media.failed:
         parts.append(f"{len(media.failed)} skipped")
+    if media.skipped:
+        parts.append(f"{len(media.skipped)} not stored (storage plan)")
     return ", ".join(parts)
+
+
+def _storage_warning(media: MediaUpload) -> str | None:
+    """Files the site's plan had no room for. The push still lands the pages —
+    text and layout never wait on photos — but the operator has to know which
+    images are missing and why, or the site looks finished when it is not."""
+    if not media.skipped:
+        return None
+    full = sum(1 for item in media.skipped if item["reason"] == "storage_full")
+    large = len(media.skipped) - full
+    reasons = []
+    if full:
+        reasons.append(f"{full} because the site's storage is full")
+    if large:
+        reasons.append(f"{large} because they are larger than the plan allows per file")
+    return (
+        f"{len(media.skipped)} file(s) were not added — " + " and ".join(reasons) + ". "
+        "The pages were pushed without them. Remove unused files in the admin app "
+        "(Website › Files) or move the site to a larger plan, then push again."
+    )
 
 
 def _media_warning(media: MediaUpload) -> str | None:
@@ -894,6 +960,9 @@ def _media_warning(media: MediaUpload) -> str | None:
     CMS missing the `media_hash` column answered 500 to all 132 uploads of a
     push, and the step still read "ok".
     """
+    storage = _storage_warning(media)
+    if storage:
+        return storage
     if media.failed and media.uploaded == 0 and media.reused == 0:
         return (
             f"The CMS accepted none of the {len(media.failed)} image(s), so these "
@@ -903,6 +972,60 @@ def _media_warning(media: MediaUpload) -> str | None:
     return None
 
 
+# The CMS's refusals when a site's plan has no room for a file.
+_STORAGE_FULL = "STORAGE_QUOTA_EXCEEDED"
+_FILE_TOO_LARGE = "FILE_TOO_LARGE"
+
+
+@dataclass(slots=True)
+class _StorageBudget:
+    """What the site's plan still has room for, during one push.
+
+    Read once from ``GET entities/{token}/storage``. Files that will not fit
+    are skipped before they are sent rather than sent to be refused; the CMS
+    still decides (its answer can differ — another upload, a plan change), and
+    a STORAGE_QUOTA_EXCEEDED from it closes the budget for the rest of the push.
+    The upload tasks share one event loop, so no lock is needed.
+    """
+
+    available: int | None = None  # None: no limit, or an API without quotas
+    file_limits: dict[str, int | None] = field(default_factory=dict)
+    full: bool = False
+    skipped: list[dict[str, str]] = field(default_factory=list)
+
+    @classmethod
+    def from_usage(cls, usage: dict[str, Any] | None) -> "_StorageBudget":
+        if not usage:
+            return cls()
+        storage = usage.get("storage") or {}
+        available = storage.get("available_bytes")
+        limits = usage.get("file_limits") or {}
+        return cls(
+            available=int(available) if isinstance(available, (int, float)) else None,
+            file_limits={k: (int(v) if isinstance(v, (int, float)) else None) for k, v in limits.items()},
+            full=available == 0 and storage.get("limit_bytes") is not None,
+        )
+
+    def refusal(self, size: int, content_type: str) -> str | None:
+        """Why the plan would refuse this file, or None if it should fit."""
+        if self.full:
+            return "storage_full"
+        kind = content_type.split("/", 1)[0]
+        limit = self.file_limits.get(kind if kind in ("image", "video") else "document")
+        if limit is not None and size > limit:
+            return "file_too_large"
+        if self.available is not None and size > self.available:
+            return "storage_full"
+        return None
+
+    def spend(self, size: int) -> None:
+        if self.available is not None:
+            self.available = max(0, self.available - size)
+
+    def skip(self, src: str, reason: str) -> None:
+        self.skipped.append({"url": src[:500], "reason": reason})
+
+
 async def _store_bytes(
     client: CmsClient,
     entity_token: str,
@@ -910,6 +1033,8 @@ async def _store_bytes(
     file_bytes: bytes,
     filename: str,
     content_type: str,
+    budget: _StorageBudget | None = None,
+    source: str = "",
 ) -> tuple[str, bool] | None:
     """Put these bytes in the entity's library, or find them already there.
 
@@ -931,6 +1056,13 @@ async def _store_bytes(
         existing = None
     if existing:
         return existing, True
+    # Bytes the library already holds cost nothing; only a new file is
+    # checked against what the plan has left.
+    reason = budget.refusal(len(file_bytes), content_type) if budget else None
+    if reason:
+        logger.info("Not storing %s: %s", filename, reason)
+        budget.skip(source or filename, reason)
+        return None
     for attempt in range(2):
         try:
             url = await client.upload_media(
@@ -939,8 +1071,17 @@ async def _store_bytes(
                 filename=filename,
                 content_type=content_type,
             )
+            if budget:
+                budget.spend(len(file_bytes))
             return url, False
         except CmsApiError as exc:
+            if budget and exc.code in (_STORAGE_FULL, _FILE_TOO_LARGE):
+                # The plan said no: not retried, and when the site is full
+                # nothing else in this push is sent to be refused too.
+                budget.full = budget.full or exc.code == _STORAGE_FULL
+                budget.skip(source or filename, "storage_full" if exc.code == _STORAGE_FULL else "file_too_large")
+                logger.warning("Upload refused by the site's plan for %s: %s", filename, exc)
+                return None
             if attempt == 0 and exc.status in (502, 503, 504):
                 logger.warning("Upload retry for %s (%s)", filename, exc)
                 continue
@@ -961,42 +1102,27 @@ async def _upload_media(client: CmsClient, req: PushRequest) -> MediaUpload:
     rewrites: dict[str, str] = {}
     # Collect unique sources first to avoid uploading the same image twice
     # (e.g. a logo that appears on every page).
-    sources: dict[str, BuilderElement] = {}  # src → first element using it (for alt)
+    sources = _site_image_sources(req.site)
     documents: dict[str, BuilderElement] = {}  # href → first link element using it
-    for page in req.site.pages:
-        for el in page.body_schema.elements:
-            _collect_image_srcs(el, sources)
-            _collect_document_hrefs(el, documents)
-    # Also walk header/footer if present
-    if req.site.header_schema:
-        _collect_image_srcs(req.site.header_schema, sources)
-        _collect_document_hrefs(req.site.header_schema, documents)
-    if req.site.footer_schema:
-        _collect_image_srcs(req.site.footer_schema, sources)
-        _collect_document_hrefs(req.site.footer_schema, documents)
-    # And the brand logo (it's pulled into the header but defensive doesn't hurt).
-    # Skipped when the mark failed the render gate — nothing references it, so
-    # uploading would just park a favicon in the tenant's media library. Read
-    # through _brand_field: `brand` is a dict on the /api/cms/push path, where a
-    # bare getattr made the whole block inert — gate included.
-    brand = req.site.brand
-    # Absent means "not stated", not "not renderable": BrandIdentity defaults it
-    # True and the frontend's mirror declares it optional. Only an explicit
-    # False is the gate closing.
-    render_ok = _brand_field(brand, "logo_render_ok")
-    if render_ok is None or render_ok:
-        logo_url = _brand_field(brand, "logo_url") or _brand_field(
-            brand, "logo_data_url"
-        )
-        if isinstance(logo_url, str):
-            sources.setdefault(logo_url, _placeholder_logo_element(logo_url))
+    for root in _site_roots(req.site):
+        _collect_document_hrefs(root, documents)
 
-    uploadable = [src for src in sources if _needs_upload(src, req.target)]
+    uploadable = _by_priority(
+        req.site, [src for src in sources if _needs_upload(src, req.target)]
+    )
     uploadable_docs = [
         href for href in documents if _needs_upload_document(href, req.target)
     ]
     if not uploadable and not uploadable_docs:
         return MediaUpload(rewrites, set())
+
+    # What the site's plan still has room for. A failure to ask is not a
+    # failure to push: the CMS enforces the plan on every upload regardless.
+    try:
+        budget = _StorageBudget.from_usage(await client.get_storage_usage(req.entity_token))
+    except CmsApiError as exc:
+        logger.info("Storage usage unavailable (%s); uploading without a pre-check", exc)
+        budget = _StorageBudget()
 
     # Resolve + upload concurrently: each image/document is independent, and
     # the wait is dominated by network (download + POST). One shared download
@@ -1033,6 +1159,8 @@ async def _upload_media(client: CmsClient, req: PushRequest) -> MediaUpload:
                     file_bytes=file_bytes,
                     filename=filename,
                     content_type=content_type,
+                    budget=budget,
+                    source=src,
                 )
                 return (src, *stored) if stored else None
 
@@ -1051,6 +1179,8 @@ async def _upload_media(client: CmsClient, req: PushRequest) -> MediaUpload:
                     file_bytes=file_bytes,
                     filename=filename,
                     content_type=content_type,
+                    budget=budget,
+                    source=href,
                 )
                 return (href, *stored) if stored else None
 
@@ -1076,7 +1206,21 @@ async def _upload_media(client: CmsClient, req: PushRequest) -> MediaUpload:
     # deliberately excluded: an un-rehosted document link still works (it
     # points at the original source), so it's left as-is, not stripped.
     failed = {src for src in uploadable if src not in rewrites}
-    return MediaUpload(rewrites, failed, reused)
+    return MediaUpload(rewrites, failed, reused, tuple(budget.skipped))
+
+
+def _by_priority(site: GeneratedSite, srcs: list[str]) -> list[str]:
+    """The site's own chrome first — the logo and the header and footer images
+    every page shows — then the pages' images in page order (homepage first,
+    each page top to bottom). Uploads start in this order, so when the plan's
+    storage runs out it is the least visible images that are left out."""
+    chrome: dict[str, BuilderElement] = {}
+    for schema in (site.header_schema, site.footer_schema):
+        if schema:
+            _collect_image_srcs(schema, chrome)
+    logo = _brand_field(site.brand, "logo_url") or _brand_field(site.brand, "logo_data_url")
+    first = [src for src in srcs if src in chrome or src == logo]
+    return first + [src for src in srcs if src not in chrome and src != logo]
 
 
 def _split_css_layers(value: str) -> list[str]:
@@ -1166,6 +1310,50 @@ def _rewrite_bg_photo_urls(css_value: str, rewrites: dict[str, str]) -> str:
         layers.append(layer[: match.start(1)] + new_url + layer[match.end(1) :])
         changed = True
     return ",".join(layers) if changed else css_value
+
+
+def _site_roots(site: GeneratedSite) -> list[BuilderElement]:
+    """Every element tree the push publishes: page bodies, header, footer."""
+    roots = [el for page in site.pages for el in page.body_schema.elements]
+    return roots + [schema for schema in (site.header_schema, site.footer_schema) if schema]
+
+
+def _site_image_sources(site: GeneratedSite) -> dict[str, BuilderElement]:
+    """Every image the push would re-host, src → the first element using it
+    (for alt text): the element trees, plus the brand mark."""
+    sources: dict[str, BuilderElement] = {}
+    for root in _site_roots(site):
+        _collect_image_srcs(root, sources)
+    # And the brand logo (it's pulled into the header but defensive doesn't hurt).
+    # Skipped when the mark failed the render gate — nothing references it, so
+    # uploading would just park a favicon in the tenant's media library. Read
+    # through _brand_field: `brand` is a dict on the /api/cms/push path, where a
+    # bare getattr made the whole block inert — gate included.
+    brand = site.brand
+    # Absent means "not stated", not "not renderable": BrandIdentity defaults it
+    # True and the frontend's mirror declares it optional. Only an explicit
+    # False is the gate closing.
+    render_ok = _brand_field(brand, "logo_render_ok")
+    if render_ok is None or render_ok:
+        logo_url = _brand_field(brand, "logo_url") or _brand_field(
+            brand, "logo_data_url"
+        )
+        if isinstance(logo_url, str):
+            sources.setdefault(logo_url, _placeholder_logo_element(logo_url))
+    return sources
+
+
+def _dead_photo_links(site: GeneratedSite, *, at: float) -> list[str]:
+    """Photo links whose signed deadline has passed (`image_urls.signed_url_expiry`).
+
+    Checked before anything is written, because the alternative is what used
+    to happen: every download fails, `_strip_invalid_images` deletes every one
+    of those photos, and the site publishes without them as if the source had
+    none. Generation renews or leaves out a due link
+    (services/photo_url_expiry.py), so a dead one here means the site was
+    generated before its links died and pushed after.
+    """
+    return [src for src in _site_image_sources(site) if is_expired_url(src, at=at)]
 
 
 def _collect_image_srcs(node: BuilderElement, out: dict[str, BuilderElement]) -> None:
@@ -1385,6 +1573,55 @@ async def _push_whatsapp_widget(
                 ok=False,
                 error=str(exc),
                 detail="Site is in; set the WhatsApp button manually in Site settings.",
+            )
+        )
+
+
+async def _push_industry(
+    client: CmsClient, req: PushRequest, report: PushReport
+) -> None:
+    """Fill the entity's industry from the generated site, if it has none.
+
+    Fill, never replace: an industry already on the entity was chosen by the
+    owner in Site settings (or by an earlier push they have since corrected),
+    and it drives their cohort benchmarks and agent templates. Same restraint
+    as `push_favicon`, without a flag — a value is only ever written into a gap.
+    """
+    industry = _site_industry(req.site)
+    if industry is None:
+        report.record(
+            PushStep(name="industry", ok=True, detail="Skipped — no specific industry detected")
+        )
+        return
+
+    try:
+        current = await client.get_entity_industry(req.entity_token)
+        if current:
+            report.record(
+                PushStep(
+                    name="industry",
+                    ok=True,
+                    detail=f"Kept the site's industry '{current}'",
+                    data={"industry": current},
+                )
+            )
+            return
+        await client.set_entity_industry(req.entity_token, industry)
+        report.record(
+            PushStep(
+                name="industry",
+                ok=True,
+                detail=f"Industry set to '{industry}'",
+                data={"industry": industry},
+            )
+        )
+    except CmsApiError as exc:
+        report.record(
+            PushStep(
+                name="industry",
+                ok=False,
+                error=str(exc),
+                detail="Site is in; set its industry in Site settings.",
             )
         )
 

@@ -153,11 +153,13 @@ class CoverPhotoTest(unittest.TestCase):
         brand = asyncio.run(facebook_source.build_brand(page))
         self.assertIsNone(brand.logo_url)
 
-    def test_the_cover_photo_is_the_hero_image_instead(self):
+    def test_the_cover_photo_joins_the_photo_pool_instead(self):
+        """First in the pool, but a hero only if measurement says so: a cover is
+        a banner with baked-in text as often as it is a photograph."""
         page = _page(cover_photo_url="https://cdn.example/cover.jpg")
         metas = facebook_source.to_image_metadata(page)
         self.assertEqual(metas[0].url, "https://cdn.example/cover.jpg")
-        self.assertEqual(metas[0].intent, "hero")
+        self.assertEqual((metas[0].intent, metas[0].role), ("generic", "content"))
 
 
 if __name__ == "__main__":

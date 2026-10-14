@@ -336,13 +336,10 @@ class CatalogGateVocabularyTest(unittest.TestCase):
         """The generalisation: a gated template nobody can reach is dead weight
         that still passes every test written about its internals.
 
-        Both axes are checked together, and against the moods an industry can
-        actually carry — `industry_locked_mood` pins childcare to `friendly`, so
-        a template gated to `industries: [childcare]` with `moods: [modern]`
-        would be unreachable in production while looking perfectly sensible in
-        the catalog."""
-        from app.models.content_blocks import industry_locked_mood
-
+        Both axes are checked together: a template gated to an industry AND a
+        mood is reachable only by a brand that carries both. No industry locks
+        its mood any more (`content_blocks.resolve_mood`), so every pairing of
+        the two vocabularies is a brand that can exist."""
         moods = typing.get_args(BrandMood)
         industries = typing.get_args(IndustryCategory)
         for section in self._catalog():
@@ -351,7 +348,7 @@ class CatalogGateVocabularyTest(unittest.TestCase):
             reachable = [
                 (m, i)
                 for i in industries
-                for m in ([industry_locked_mood(i)] if industry_locked_mood(i) else moods)
+                for m in moods
                 if mood_allows(section, m) and industry_allows(section, i)
             ]
             self.assertTrue(

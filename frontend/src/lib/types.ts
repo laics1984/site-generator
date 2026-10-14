@@ -20,9 +20,19 @@ export interface ProfileCandidate {
   confidence?: number
 }
 
+/** Mirrors `content_blocks.SourceConflict` (services/source_conflicts.py). */
+export interface SourceConflict {
+  field: 'phone' | 'email'
+  kept: string
+  values: Array<{ source: string; value: string }>
+}
+
 export interface SourceContent {
   source_kind: SourceKind
   source_ref: string
+  /** The industry the source states about itself (a Facebook Page's own
+   * category). Mirrors `SourceContent.declared_industry` in the backend. */
+  declared_industry?: IndustryCategory | null
   title?: string | null
   description?: string | null
   raw_text: string
@@ -36,6 +46,9 @@ export interface SourceContent {
   url_path?: string | null
   /** Additional same-domain pages found by the bounded crawler. */
   discovered_pages?: SourceContent[]
+  /** Facts two combined sources state differently — reported, never silently
+   * resolved; the site uses `kept`. Mirrors `SourceContent.source_conflicts`. */
+  source_conflicts?: SourceConflict[]
 }
 
 export interface SourceNavLink {
@@ -135,6 +148,10 @@ export type BrandMood =
   | 'editorial'
   | 'playful'
 
+/** 'auto' is a UI-only choice → sent as null so the backend decides: the
+ * industry's locked mood (childcare → friendly), then brand detection. */
+export type BrandMoodChoice = 'auto' | BrandMood
+
 /** Baked color scheme. 'auto' is a UI-only choice → sent as null so the backend
  * applies its logo-based default (a light logo defaults the site to dark). */
 export type ColorScheme = 'light' | 'dark'
@@ -203,6 +220,7 @@ export interface BrandExtractionResult {
 }
 
 export interface GeneratedSite {
+  generation_warnings?: string[]
   site_name: string
   tagline?: string | null
   primary_color?: string | null
@@ -296,6 +314,9 @@ export type IndustryCategory =
   | 'nonprofit'
   | 'childcare'
   | 'personal'
+  | 'home-services'
+  | 'health-wellness'
+  | 'real-estate'
   | 'other'
 
 export interface PageScaffold {
@@ -316,6 +337,8 @@ export interface PageScaffold {
   /** Exemplar slug of the look-alike page set this page belongs to (e.g. a
    * catalogue's products) — laid out once, filled from its own content. */
   record_set?: string | null
+  /** Language directory of a translated mirror (/bm/...); null for the source language. */
+  locale?: string | null
 }
 
 export interface IndustryTemplate {
@@ -359,11 +382,39 @@ export interface FacebookHours {
   closes: string
 }
 
+export interface FacebookPhoto {
+  url: string
+  width?: number | null
+  height?: number | null
+  /** Facebook's automatic description — evidence about the pixels, never copy. */
+  auto_alt?: string | null
+}
+
+export interface FacebookVideo {
+  url: string
+  video_id?: string | null
+  thumbnail_url?: string | null
+  width?: number | null
+  height?: number | null
+  duration_ms?: number | null
+}
+
 export interface FacebookPost {
   message?: string | null
   created_time?: string | null
   image_url?: string | null
   permalink?: string | null
+  post_id?: string | null
+  photos?: FacebookPhoto[]
+  videos?: FacebookVideo[]
+}
+
+export interface FacebookEvent {
+  name: string
+  description?: string | null
+  start_time?: string | null
+  place?: string | null
+  url?: string | null
 }
 
 export interface FacebookReview {
@@ -392,9 +443,13 @@ export interface FacebookFacts {
   products?: string | null
   founded?: string | null
   price_range?: string | null
+  service_options?: string[]
   phone?: string | null
   emails?: string[]
   website?: string | null
+  /** The Page's profiles on other platforms (Instagram, TikTok…), as URLs. */
+  social_profiles?: string[]
+  service_area?: string | null
   single_line_address?: string | null
   street?: string | null
   city?: string | null
@@ -409,10 +464,11 @@ export interface FacebookFacts {
   profile_picture_url?: string | null
   cover_photo_url?: string | null
   posts?: FacebookPost[]
+  events?: FacebookEvent[]
   /** Which reader ran. Mirrors `FetchPath` in backend/app/models/facebook.py.
-   * `render_session` is a render signed in with a saved browser session: it
-   * sees the About panel a logged-out render doesn't, but still no structured
-   * posts or recommendations — only Graph has those. */
+   * `render_session` is a render signed in with a saved browser session — a
+   * rescue for a Page that refuses a logged-out visitor, and a thinner read
+   * than the anonymous one everywhere else. */
   fetched_via: 'graph' | 'render' | 'render_session'
   /** Some fields couldn't be read — the UI offers a token to fill the gaps. */
   partial?: boolean
@@ -472,7 +528,6 @@ export interface ScrapePreview {
   /** Present only on a Facebook read. Additive — the rest of the shape is identical. */
   facebook_facts?: FacebookFacts
   facebook_contact?: Record<string, string>
-  facebook_industry?: IndustryCategory
   facebook_sections?: string[]
 }
 

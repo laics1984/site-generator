@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from app.services.contact_text import phones_in
+
 _BOILERPLATE_PHRASES = (
     "read more",
     "read bio",
@@ -50,7 +52,6 @@ _BOILERPLATE_PHRASES = (
     "back to",
 )
 
-_PHONE_RE = re.compile(r"\+?\d[\d\s().\-]{5,}\d")
 
 _ROLE_MAX_LEN = 90
 
@@ -197,9 +198,7 @@ def has_contact_token(text: str) -> bool:
     low = text.lower()
     if "http://" in low or "https://" in low or "www." in low:
         return True
-    return any(
-        sum(ch.isdigit() for ch in m.group(0)) >= 7 for m in _PHONE_RE.finditer(text)
-    )
+    return bool(phones_in(text))
 
 
 def is_boilerplate_line(line: str) -> bool:

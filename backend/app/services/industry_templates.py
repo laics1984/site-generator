@@ -158,7 +158,7 @@ def _blog_page() -> PageScaffold:
     )
 
 
-def _gallery_page() -> PageScaffold:
+def gallery_page() -> PageScaffold:
     return PageScaffold(
         page_type="gallery",
         slug="gallery",
@@ -168,7 +168,7 @@ def _gallery_page() -> PageScaffold:
     )
 
 
-def _menu_page() -> PageScaffold:
+def menu_page() -> PageScaffold:
     return PageScaffold(
         page_type="menu",
         slug="menu",
@@ -241,10 +241,10 @@ def _core_set(home: PageScaffold) -> list[PageScaffold]:
 TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     "restaurant": IndustryTemplate(
         industry="restaurant",
-        label="Restaurant / Café",
+        label="Restaurant / Café / Hospitality",
         description="Hospitality businesses where menu, vibe, and reservations drive bookings.",
         core_pages=_core_set(_core_home("restaurant", extra_sections=["gallery"])),
-        suggested_pages=[_menu_page(), _gallery_page()],
+        suggested_pages=[menu_page(), gallery_page()],
         optional_pages=[_faq_page(), _testimonials_page()],
     ),
     "agency": IndustryTemplate(
@@ -265,7 +265,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "professional-services": IndustryTemplate(
         industry="professional-services",
-        label="Professional Services (legal, dental, medical)",
+        label="Professional Services (legal, accounting, advisory)",
         description="Service businesses where trust and credentials drive bookings.",
         core_pages=_core_set(_core_home("professional-services")),
         suggested_pages=[_services_page(), _team_page(), _faq_page(), _testimonials_page()],
@@ -276,7 +276,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         label="E-commerce",
         description="Product-led businesses. (Storefront integration is out of scope — these pages set the brand around it.)",
         core_pages=_core_set(_core_home("ecommerce", extra_sections=["gallery"])),
-        suggested_pages=[_gallery_page(), _faq_page()],
+        suggested_pages=[gallery_page(), _faq_page()],
         optional_pages=[_blog_page(), _testimonials_page()],
     ),
     "consultancy": IndustryTemplate(
@@ -293,7 +293,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         description="Mission-led organizations where impact stories and donation paths matter most.",
         core_pages=_core_set(_core_home("nonprofit")),
         suggested_pages=[_services_page(), _team_page(), _testimonials_page()],
-        optional_pages=[_blog_page(), _faq_page(), _gallery_page()],
+        optional_pages=[_blog_page(), _faq_page(), gallery_page()],
     ),
     "childcare": IndustryTemplate(
         industry="childcare",
@@ -304,7 +304,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         # can't be chunked; ~10 sections overflows the token budget). Gallery has
         # its own suggested page below.
         core_pages=_core_set(_core_home("childcare")),
-        suggested_pages=[_programs_page(), _teachers_page(), _gallery_page(), _faq_page()],
+        suggested_pages=[_programs_page(), _teachers_page(), gallery_page(), _faq_page()],
         optional_pages=[_daily_journey_page(), _testimonials_page(), _blog_page()],
     ),
     "personal": IndustryTemplate(
@@ -315,13 +315,37 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
         suggested_pages=[_work_page(), _testimonials_page()],
         optional_pages=[_blog_page(), _services_page()],
     ),
+    "home-services": IndustryTemplate(
+        industry="home-services",
+        label="Home Services (trades, repairs, cleaning)",
+        description="Trades and home-service businesses where fast quotes and proven past jobs win the call-out.",
+        core_pages=_core_set(_core_home("home-services")),
+        suggested_pages=[_services_page(), _process_page(), _testimonials_page(), _faq_page()],
+        optional_pages=[gallery_page(), _team_page(), _blog_page()],
+    ),
+    "health-wellness": IndustryTemplate(
+        industry="health-wellness",
+        label="Health & Wellness (clinics, dental, spa, fitness)",
+        description="Clinics, practices and wellness studios where qualified people and easy booking build trust.",
+        core_pages=_core_set(_core_home("health-wellness")),
+        suggested_pages=[_services_page(), _team_page(), _faq_page(), _testimonials_page()],
+        optional_pages=[_pricing_page(), gallery_page(), _blog_page()],
+    ),
+    "real-estate": IndustryTemplate(
+        industry="real-estate",
+        label="Real Estate (agents, developers, property)",
+        description="Property businesses where the listings and the people behind them drive viewings.",
+        core_pages=_core_set(_core_home("real-estate", extra_sections=["gallery"])),
+        suggested_pages=[gallery_page(), _services_page(), _team_page()],
+        optional_pages=[_testimonials_page(), _faq_page(), _blog_page()],
+    ),
     "other": IndustryTemplate(
         industry="other",
         label="Other / General",
         description="Generic small-business template when nothing else fits.",
         core_pages=_core_set(_core_home("other")),
         suggested_pages=[_services_page(), _faq_page()],
-        optional_pages=[_testimonials_page(), _blog_page(), _team_page(), _gallery_page()],
+        optional_pages=[_testimonials_page(), _blog_page(), _team_page(), gallery_page()],
     ),
 }
 

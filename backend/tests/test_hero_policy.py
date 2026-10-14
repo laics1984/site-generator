@@ -405,6 +405,17 @@ class WashedHeroInkTest(unittest.IsolatedAsyncioTestCase):
     def _all(inks):
         return [styles for group in inks.values() for styles in group]
 
+    @staticmethod
+    def _ink(value, theme):
+        """The colour a style value paints, read the way the contrast pass reads
+        it — the catalog inks with theme tokens, so a token left in place is
+        measured as what it resolves to."""
+        from app.services.section_content import _parse_color, _to_hex
+
+        parsed = _parse_color(value, theme)
+        assert parsed is not None, value
+        return _to_hex(parsed[0])
+
     async def test_dark_scheme_copy_is_light_on_the_wash(self):
         el, theme = await self._hero("dark")
         surface = washed_surface_hex(
@@ -417,15 +428,17 @@ class WashedHeroInkTest(unittest.IsolatedAsyncioTestCase):
         for name in ("Heading", "Body"):
             (styles,) = inks[name]
             self.assertGreaterEqual(
-                _contrast(styles["color"], surface), 4.5, f"{name} is unreadable"
+                _contrast(self._ink(styles["color"], theme), surface), 4.5,
+                f"{name} is unreadable",
             )
         # The ghost CTA is a link with no surface of its own: same fix, and its
         # hairline comes with it or the label sits in an invisible frame.
         ghost = next(
             s for s in self._all(inks) if s.get("backgroundColor") == "transparent"
         )
-        self.assertGreaterEqual(_contrast(ghost["color"], surface), 4.5)
-        self.assertIn("255,255,255", ghost["border"])
+        self.assertGreaterEqual(_contrast(self._ink(ghost["color"], theme), surface), 4.5)
+        outline = ghost["border"].split(" ", 2)[2]  # "1px solid <colour>"
+        self.assertGreaterEqual(_contrast(self._ink(outline, theme), surface), 4.5)
 
     async def test_light_scheme_keeps_the_template_ink(self):
         """The wash is light there, so the catalog's dark copy is already right
@@ -433,8 +446,11 @@ class WashedHeroInkTest(unittest.IsolatedAsyncioTestCase):
         el, _theme = await self._hero("light")
         inks = self._inks(el)
         (heading,), (body,) = inks["Heading"], inks["Body"]
-        self.assertEqual(heading["color"], "var(--builder-color-secondary, #0f172a)")
-        self.assertEqual(body["color"], "rgba(15,23,42,0.72)")
+        self.assertEqual(heading["color"], "var(--builder-color-heading, #0f172a)")
+        self.assertEqual(
+            body["color"],
+            "color-mix(in srgb, var(--builder-color-text, #111827) 72%, transparent)",
+        )
 
     async def test_the_primary_cta_keeps_its_own_token_pair(self):
         el, _theme = await self._hero("dark")

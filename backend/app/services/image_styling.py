@@ -14,6 +14,7 @@ from __future__ import annotations
 import colorsys
 import math
 import re
+from dataclasses import dataclass
 from typing import Literal
 
 
@@ -127,70 +128,255 @@ def brand_overlay_gradient(secondary_hex: str, primary_hex: str, alpha: float) -
 
 # Text scrim: the layer that actually buys legibility, concentrated where the
 # copy sits and faded out well before the far side, so the rest of the frame
-# keeps the photograph almost untouched. Expressed as a multiple of the cast
-# alpha, so a bright photo gets a stronger scrim on the same curve rather than a
-# second hand-tuned ramp.
+# keeps the photograph almost untouched. With nothing measured it is a multiple
+# of the cast alpha (the frame-average ramp below); with the photo measured it is
+# SOLVED for the copy — see `_copy_scrim`.
 #
 # The ratio is chosen so that cast and scrim COMPOUND to the pre-split single
-# sheet (0.30→0.62 on the same luminance ramp) behind the copy: the headline
-# lands on the same backdrop it always did — which is what keeps
-# schema_builder._SCRIM_COMPOSITE_BG, and every ink derived from it, honest —
-# while everything outside the scrim is roughly half as covered as before.
+# sheet (0.30→0.62 on the same luminance ramp) behind the copy, while everything
+# outside the scrim is roughly half as covered as before. It is also the floor of
+# the solve: measuring never makes a scrim lighter than this ramp did.
 _TEXT_SCRIM_RATIO = 1.25
-# Where the scrim starts easing off and where it reaches zero.
-_TEXT_SCRIM_MID_STOP = "44%"
-_TEXT_SCRIM_END_STOP = "78%"
+# The scrim fades off its plateau to half-ish strength, then to nothing, over
+# these spans (fractions of the gradient ray beyond the plateau).
+_SCRIM_FALL_MID = 0.22
+_SCRIM_FALL_END = 0.44
+_SCRIM_MID_SHARE = 0.55
 
-# Where the hero's copy block sits, which is the only thing the scrim geometry
-# needs to know. `center` is the historical treatment; the directional variants
-# let the open side of the frame keep full saturation.
-HeroAnchor = Literal["center", "left", "bottom-left"]
+# Where the copy block sits, which is the only thing the scrim geometry needs to
+# know. `center` is the historical treatment; the directional variants let the
+# open side of the frame keep full saturation. `bottom` is a photo TILE's copy
+# (a bento card sets its title along the bottom edge), never a hero composition.
+HeroAnchor = Literal["center", "left", "bottom-left", "bottom"]
+
+# The box the copy occupies, per anchor, as (x0, y0, x1, y1) fractions of the
+# frame. Read off the layouts that put copy there: a centred hero's 760px column
+# on a 1280px frame; an anchored hero's 620px column off its 80px gutter; a
+# bento tile's bottom-aligned title and description. Two things answer to it,
+# so they cannot disagree: the scrim holds full strength across it (its
+# plateau), and the photo is judged inside it (`PhotoLuminance.behind`).
+COPY_ZONES: dict[HeroAnchor, tuple[float, float, float, float]] = {
+    "center": (0.2, 0.3, 0.8, 0.7),
+    "left": (0.06, 0.3, 0.54, 0.7),
+    "bottom-left": (0.06, 0.5, 0.54, 0.92),
+    "bottom": (0.0, 0.55, 1.0, 1.0),
+}
+# The centred scrim's ellipse, as fractions of the frame's width and height.
+_RADIAL_RADII = (1.15, 0.88)
+
+
+def _pct(fraction: float) -> str:
+    return f"{round(fraction * 100)}%"
+
+
+def _scrim_ramp(rgb: tuple[int, int, int], peak: float, plateau: float) -> str:
+    """The stops of one scrim layer: full strength across the copy (the
+    plateau), then the historical fall-off to nothing."""
+    r, g, b = rgb
+    mid = round(peak * _SCRIM_MID_SHARE, 2)
+    return (
+        f"rgba({r},{g},{b},{peak}) {_pct(plateau)}, "
+        f"rgba({r},{g},{b},{mid}) {_pct(plateau + _SCRIM_FALL_MID)}, "
+        f"rgba({r},{g},{b},0) {_pct(plateau + _SCRIM_FALL_END)}"
+    )
 
 
 def text_scrim_gradient(
-    secondary_hex: str, alpha: float, *, anchor: HeroAnchor = "center"
+    secondary_hex: str,
+    alpha: float,
+    *,
+    anchor: HeroAnchor = "center",
+    scrim_alpha: float | None = None,
 ) -> str:
     """A legibility scrim weighted toward the copy (CSS gradient, no image).
 
-    Peak alpha is identical across anchors — only the geometry moves — so the
-    compounding invariant above holds whichever way the hero is composed.
+    ``scrim_alpha`` is the strength the copy needs (`_copy_scrim` solves it);
+    absent, it is the frame-average ramp off the cast ``alpha``. It holds flat
+    across the anchor's whole `COPY_ZONES` box and only then falls off, so the
+    last word of a line gets the backdrop its first word got — a scrim that
+    peaked at one point would have to be darker there to be enough at the edge.
 
-    `center` keeps the original radial. It is the weakest of the three as art
-    direction: a centre-weighted scrim dims the middle of the frame, which is
-    where a photograph's subject almost always is, and leaves the corners
-    bright. The directional variants run the darkness off the edge the copy is
-    anchored to, so the subject stays vivid on the open side — the standard
-    editorial treatment, and the reason a magazine cover doesn't look hazy.
+    `center` is the weakest composition as art direction: a centre-weighted
+    scrim dims the middle of the frame, which is where a photograph's subject
+    almost always is. The directional variants run the darkness off the edge
+    the copy is anchored to, so the subject stays vivid on the open side.
     """
-    r, g, b = _hex_to_rgb(secondary_hex)
-    a = round(alpha * _TEXT_SCRIM_RATIO, 2)
-    mid = round(a * 0.55, 2)
+    rgb = _hex_to_rgb(secondary_hex)
+    a = scrim_alpha if scrim_alpha is not None else round(alpha * _TEXT_SCRIM_RATIO, 2)
+    x0, y0, x1, y1 = COPY_ZONES[anchor]
     if anchor == "left":
-        return (
-            f"linear-gradient(to right, rgba({r},{g},{b},{a}), "
-            f"rgba({r},{g},{b},{mid}) {_TEXT_SCRIM_MID_STOP}, "
-            f"rgba({r},{g},{b},0) {_TEXT_SCRIM_END_STOP})"
-        )
+        return f"linear-gradient(to right, {_scrim_ramp(rgb, a, x1)})"
+    if anchor == "bottom":
+        return f"linear-gradient(to top, {_scrim_ramp(rgb, a, 1 - y0)})"
     if anchor == "bottom-left":
         # Two axes: the copy sits in the corner, so darkness has to fall off
         # both upward and rightward or the headline's top line loses its
-        # backdrop. Split the alpha between them so they compound to `a` in the
-        # corner rather than doubling it. Rounded UP, not to nearest: two
-        # rounded-down halves compound to less than `a`, which would quietly put
-        # the corner below the legibility sheet every ink is derived from.
+        # backdrop. Split the alpha between them so they compound to `a` across
+        # the copy rather than doubling it. Rounded UP, not to nearest: two
+        # rounded-down halves compound to less than `a`.
         half = math.ceil((1 - (1 - a) ** 0.5) * 100) / 100
-        half_mid = round(half * 0.55, 2)
         return (
-            f"linear-gradient(to top, rgba({r},{g},{b},{half}), "
-            f"rgba({r},{g},{b},{half_mid}) 46%, rgba({r},{g},{b},0) 82%), "
-            f"linear-gradient(to right, rgba({r},{g},{b},{half}), "
-            f"rgba({r},{g},{b},{half_mid}) 46%, rgba({r},{g},{b},0) 82%)"
+            f"linear-gradient(to top, {_scrim_ramp(rgb, half, 1 - y0)}), "
+            f"linear-gradient(to right, {_scrim_ramp(rgb, half, x1)})"
         )
+    rx, ry = _RADIAL_RADII
+    plateau = math.hypot((x1 - 0.5) / rx, (y1 - 0.5) / ry)
     return (
-        f"radial-gradient(115% 88% at 50% 50%, rgba({r},{g},{b},{a}), "
-        f"rgba({r},{g},{b},{mid}) {_TEXT_SCRIM_MID_STOP}, "
-        f"rgba({r},{g},{b},0) {_TEXT_SCRIM_END_STOP})"
+        f"radial-gradient({_pct(rx)} {_pct(ry)} at 50% 50%, "
+        f"{_scrim_ramp(rgb, a, plateau)})"
     )
+
+
+# --- the copy scrim, solved for what is behind the copy ------------------------
+#
+# The scrim used to be sized from the photo's AVERAGE colour, and every ink on it
+# was chosen against a constant assumed backdrop. Neither is what the copy sits
+# on: stock photography puts its brightest region — a white wall, a white shirt,
+# sky — in the middle of the frame, which is where the copy goes. Measured over
+# 45 real stock heroes, 28 were too bright behind the copy for a white paragraph
+# to reach 4.5:1 under the average-sized scrim.
+
+# What the copy must clear: AA for body text. The hero's paragraph is the binding
+# line — the headline is large, and carries a shadow.
+COPY_MIN_CONTRAST = 4.5
+# The solve aims this far above AA, for what the model leaves out: it reads a
+# 24-cell grid of the photo, not the rendered cover-crop with its grain layer.
+# Measured over 45 stock heroes in the preview renderer, the paragraph landed
+# 0.05-0.25 under the solved ratio without it; with it, mean cover behind the
+# copy rises 0.44 → 0.46 (the cap below still binds).
+_COPY_SOLVE_MARGIN = 1.06
+# The darkest the copy's backdrop is ever made — cast and scrim compounded. It is
+# the single sheet every photo hero carried before the overlay was split into a
+# faint cast and a copy scrim (0.30→0.62 on the luminance ramp), so measuring
+# never darkens a hero past what this generator already shipped; and it is just
+# enough for the palette's light ink on a pure-white region (~0.59).
+_COPY_MAX_COVER = 0.62
+# Which part of the copy zone has to read: the bright tail, not the average. A
+# white shirt behind half a sentence makes the sentence unreadable whatever the
+# frame averages to.
+_COPY_ZONE_PERCENTILE = 0.9
+# The backdrop assumed when nothing was measured — the legacy mid-grey photo.
+_UNMEASURED_PHOTO_HEX = "#808080"
+
+
+@dataclass(frozen=True)
+class PhotoLuminance:
+    """A photo's WCAG relative luminance on a coarse grid (row-major), as
+    `image_sampling` read it off the pixels — enough to tell a bright centre
+    from a bright corner, which is all the copy scrim needs to know."""
+
+    cols: int
+    rows: int
+    cells: tuple[float, ...]
+
+    @classmethod
+    def uniform(cls, luminance: float) -> PhotoLuminance:
+        """One value for the whole frame: a flat placeholder whose colour is
+        known, or the assumption made for a photo that could not be read."""
+        return cls(1, 1, (max(0.0, min(1.0, luminance)),))
+
+    @classmethod
+    def unreadable(cls) -> PhotoLuminance:
+        """A real photo whose pixels could not be read. Assumed as bright as a
+        photo can be: the one assumption legibility cannot be wrong under."""
+        return cls.uniform(1.0)
+
+    def behind(self, anchor: HeroAnchor) -> float:
+        """The bright tail of the luminance inside the copy's zone."""
+        x0, y0, x1, y1 = COPY_ZONES[anchor]
+        cells = [
+            self.cells[row * self.cols + col]
+            for row in range(self.rows)
+            for col in range(self.cols)
+            if x0 <= (col + 0.5) / self.cols <= x1 and y0 <= (row + 0.5) / self.rows <= y1
+        ]
+        if not cells:  # a grid coarser than the zone: the whole frame stands in
+            cells = list(self.cells)
+        cells.sort()
+        return cells[min(len(cells) - 1, int(len(cells) * _COPY_ZONE_PERCENTILE))]
+
+
+def _grey_for_luminance(lum: float) -> str:
+    """The neutral grey whose WCAG relative luminance is `lum`."""
+    lum = max(0.0, min(1.0, lum))
+    c = lum * 12.92 if lum <= 0.0031308 else 1.055 * lum ** (1 / 2.4) - 0.055
+    v = round(c * 255)
+    return _rgb_to_hex(v, v, v)
+
+
+def _mix_hex(top_hex: str, alpha: float, bottom_hex: str) -> str:
+    """`top_hex` at `alpha` over `bottom_hex`, blended in sRGB like CSS does."""
+    return _rgb_to_hex(*_mix(bottom_hex, top_hex, alpha))
+
+
+def _contrast_ratio(a_hex: str, b_hex: str) -> float:
+    la, lb = relative_luminance(a_hex), relative_luminance(b_hex)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _cover_needed(photo_hex: str, scrim_hex: str, ink_hex: str, target: float) -> float:
+    """The least compound cover of `scrim_hex` over `photo_hex` that lets
+    `ink_hex` clear `target` — or 1.0 if no cover can."""
+    if _contrast_ratio(ink_hex, photo_hex) >= target:
+        return 0.0
+    lo, hi = 0.0, 1.0
+    for _ in range(24):
+        mid = (lo + hi) / 2
+        if _contrast_ratio(ink_hex, _mix_hex(scrim_hex, mid, photo_hex)) >= target:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+@dataclass(frozen=True)
+class _CopyScrim:
+    """One photo's overlay strengths and the backdrop they leave behind the copy."""
+
+    cast: float  # whole-frame brand cast (and vignette base), wash-scaled
+    scrim: float  # the copy scrim's strength across the copy zone
+    surface_hex: str  # what the copy reads against: both, over the zone's bright tail
+
+
+def _copy_scrim(
+    avg_hex: str | None,
+    secondary_hex: str,
+    *,
+    anchor: HeroAnchor,
+    luminance: PhotoLuminance | None,
+    ink_hex: str | None,
+    wash_alpha_scale: float,
+) -> _CopyScrim:
+    """Size the copy scrim for the photo behind the copy, and say what it leaves.
+
+    One home for both halves, because `photo_background` (which paints the
+    scrim) and `photo_surface_hex` (which tells the ink pass what the copy sits
+    on) must never disagree — the `_wash_base` rule for the split hero's wash.
+
+    ``luminance`` None means nothing was measured (the PHOTO_SAMPLING_ENABLED
+    kill switch): the frame-average ramp, exactly as before. Measured, the scrim
+    is the least that lets ``ink_hex`` (the copy's light ink; absent, the
+    lightest an ink can be) clear AA over the zone's bright tail — never lighter
+    than the ramp, never past `_COPY_MAX_COVER`.
+    """
+    alpha = overlay_alpha(avg_hex) if avg_hex else 0.26
+    cast = round(alpha * wash_alpha_scale, 2)
+    scrim = round(alpha * _TEXT_SCRIM_RATIO, 2)
+    if luminance is None:
+        photo_hex = avg_hex or _UNMEASURED_PHOTO_HEX
+    else:
+        photo_hex = _grey_for_luminance(luminance.behind(anchor))
+        need = min(
+            _cover_needed(
+                photo_hex, secondary_hex, ink_hex or _grey_for_luminance(1.0),
+                COPY_MIN_CONTRAST * _COPY_SOLVE_MARGIN,
+            ),
+            _COPY_MAX_COVER,
+        )
+        solved = 1 - (1 - need) / (1 - cast) if cast < 1 else 0.0
+        scrim = max(scrim, math.ceil(solved * 100) / 100)
+    cover = 1 - (1 - cast) * (1 - scrim)
+    return _CopyScrim(cast, scrim, _mix_hex(secondary_hex, cover, photo_hex))
 
 
 # Vignette strength, as a fraction of the cast alpha. Small on purpose: this is
@@ -290,16 +476,24 @@ def photo_background(
     focal_y: float | None = None,
     page_bg_hex: str | None = None,
     wash_alpha_scale: float = 1.0,
+    luminance: PhotoLuminance | None = None,
+    ink_hex: str | None = None,
 ) -> dict[str, str]:
     """The full background style set for a photo hero, as CSS properties.
 
     Six layers, top to bottom: grain, an edge fade into the page, the copy
     scrim, a vignette, the brand cast, and the photograph. Splitting scrim from
-    cast is what lets the overlay stay light without costing contrast — behind
-    the headline they compound to roughly the old single sheet, while the rest
-    of the frame carries only the faint cast and reads as a photograph. The
-    vignette and grain add depth on top of that; the fade ties the section to
-    the one below it.
+    cast is what lets the overlay stay light without costing contrast — the
+    scrim is as strong as THIS photo needs behind the copy (`_copy_scrim`),
+    while the rest of the frame carries only the faint cast and reads as a
+    photograph. The vignette and grain add depth on top of that; the fade ties
+    the section to the one below it, and is left out wherever it would run under
+    the copy (a bottom-anchored block), since it dissolves toward the page
+    colour — the colour the copy's light ink cannot read on.
+
+    ``luminance`` is the photo measured (`image_sampling`) and ``ink_hex`` the
+    light ink the copy will wear; `photo_surface_hex` reports, from the same
+    inputs, the backdrop this leaves behind the copy.
 
     Returns a dict rather than a string because the layers need DIFFERENT
     sizing: the grain is a repeating 140px tile while everything else covers the
@@ -314,15 +508,18 @@ def photo_background(
     ``wash_alpha_scale`` (default 1.0, a no-op) scales ONLY the vignette and
     brand cast — the two layers whose job is binding the photo to the brand,
     not legibility — so a caller can let a photo read as more vivid/true-to-
-    colour without touching the text scrim, which is what actually buys
-    contrast for the copy.
+    colour. A measured scrim makes up whatever the lighter cast gives away.
     """
     # Lazy: style_tokens pulls in the theme chain, and this module is otherwise
     # a dependency-free leaf that the rest of the package imports freely.
     from app.services.style_tokens import grain_data_uri
 
     alpha = overlay_alpha(avg_hex) if avg_hex else 0.26
-    wash_alpha = round(alpha * wash_alpha_scale, 2)
+    plan = _copy_scrim(
+        avg_hex, secondary_hex, anchor=anchor, luminance=luminance,
+        ink_hex=ink_hex, wash_alpha_scale=wash_alpha_scale,
+    )
+    wash_alpha = plan.cast
 
     layers = [grain_data_uri(_GRAIN_OPACITY)]
     sizes = [f"{_GRAIN_TILE_PX}px {_GRAIN_TILE_PX}px"]
@@ -335,11 +532,13 @@ def photo_background(
         repeats.append("no-repeat")
         positions.append("center")
 
-    if page_bg_hex:
+    if page_bg_hex and COPY_ZONES[anchor][3] <= _EDGE_FADE_STOPS[0][1] / 100:
         cover(edge_fade_gradient(page_bg_hex))
     # text_scrim_gradient may itself return two comma-joined layers (the
     # bottom-left anchor), so expand it rather than assuming one.
-    for scrim_layer in _split_layers(text_scrim_gradient(secondary_hex, alpha, anchor=anchor)):
+    for scrim_layer in _split_layers(
+        text_scrim_gradient(secondary_hex, alpha, anchor=anchor, scrim_alpha=plan.scrim)
+    ):
         cover(scrim_layer)
     cover(vignette_gradient(secondary_hex, wash_alpha))
     cover(brand_overlay_gradient(secondary_hex, primary_hex, wash_alpha))
@@ -355,6 +554,27 @@ def photo_background(
         "backgroundRepeat": ", ".join(repeats),
         "backgroundPosition": ", ".join(positions),
     }
+
+
+def photo_surface_hex(
+    avg_hex: str | None,
+    secondary_hex: str,
+    *,
+    anchor: HeroAnchor = "center",
+    luminance: PhotoLuminance | None = None,
+    ink_hex: str | None = None,
+    wash_alpha_scale: float = 1.0,
+) -> str:
+    """The flat colour the copy on a `photo_background` reads against — the
+    cast and scrim it paints, over the bright tail of the photo behind the copy.
+
+    Same inputs as `photo_background`, same plan (`_copy_scrim`), so the painted
+    backdrop and the measured one cannot disagree. A painter records this on the
+    element it paints (`BuilderElement.paint_surface`); the ink pass reads it."""
+    return _copy_scrim(
+        avg_hex, secondary_hex, anchor=anchor, luminance=luminance,
+        ink_hex=ink_hex, wash_alpha_scale=wash_alpha_scale,
+    ).surface_hex
 
 
 def _split_layers(css: str) -> list[str]:

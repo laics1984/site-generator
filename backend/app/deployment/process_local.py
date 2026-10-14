@@ -137,6 +137,13 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
         severity=EFFICIENCY,
     ),
     ProcessLocal(
+        module="app.services.facebook_photo_metadata",
+        attribute="_PIXEL_CACHE",
+        holds="url → a Facebook photo's measured size, fingerprints and screens (bounded FIFO)",
+        at_scale="Cache miss on another worker — the photo is re-downloaded and re-measured.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
         module="app.services.scraper",
         attribute="_ROBOTS_CACHE",
         holds="parsed robots.txt per origin (TTL)",
@@ -163,8 +170,15 @@ NOT_PROCESS_LOCAL: tuple[tuple[str, str, str], ...] = (
     (
         "app.services.theme",
         "_INDUSTRY_BACKGROUND_STRATEGY",
-        "A lookup table that is currently empty (every industry was moved to an "
-        "explicit rhythm — see the comment above it). Read-only: only ever .get().",
+        "A lookup table that is currently empty (a background is a design "
+        "scheme's choice now — see the comment above it). Read-only: only ever "
+        ".get().",
+    ),
+    (
+        "app.services.design_fingerprint",
+        "_template_id_by_root_name",
+        "Pure memo derived from load_catalog(): catalog root name → template id. "
+        "Deterministic, a few KB per worker.",
     ),
     (
         "app.services.template_filler",

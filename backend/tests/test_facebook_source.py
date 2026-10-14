@@ -127,6 +127,27 @@ class SectionGatingTest(unittest.TestCase):
         posts = [FacebookPost(message=f"Post {i}") for i in range(3)]
         self.assertIn("features", homepage_sections_for(_page(posts=posts)))
 
+    def test_stats_need_two_counts_the_authority_will_keep(self):
+        """The gate and the rewrite read one `stat_items`, so a stats slot is
+        never requested only to be dropped."""
+        self.assertNotIn("stats", homepage_sections_for(_page(fan_count=761)))
+        self.assertIn("stats", homepage_sections_for(_page(fan_count=761, founded="1988")))
+
+    def test_a_full_page_keeps_contact_and_drops_by_priority(self):
+        """Seven grounded candidates for six body slots: a tail cut used to
+        drop contact first. The least essential goes instead, in display order."""
+        rich = _page(
+            products="Beans",
+            fan_count=761,
+            founded="1988",
+            reviews=[FacebookReview(text="Great", author="Sam")],
+            posts=[FacebookPost(message="Fresh roast", image_url=f"https://cdn.example/{i}.jpg") for i in range(5)],
+        )
+        self.assertEqual(
+            homepage_sections_for(rich),
+            ["hero", "about", "features", "gallery", "testimonials", "locations", "contact", "cta"],
+        )
+
     def test_hero_and_cta_always_bracket_the_page(self):
         sections = homepage_sections_for(_page())
         self.assertEqual(sections[0], "hero")
@@ -223,7 +244,11 @@ class ContactDictTest(unittest.TestCase):
 
 
 class ImageTest(unittest.TestCase):
-    def test_cover_is_the_hero_and_posts_are_gallery(self):
+    def test_no_photo_is_a_hero_by_position(self):
+        """A cover is a banner as often as a photograph. Only measurement
+        (`facebook_photo_selection`) promotes a photo to hero, and every Page
+        photo is content of its own — never a cell of a source rack, which is
+        what the poster, QR and screening passes skip."""
         page = _page(
             cover_photo_url="https://cdn.example/cover.jpg",
             posts=[
@@ -234,8 +259,9 @@ class ImageTest(unittest.TestCase):
             ],
         )
         metas = to_image_metadata(page)
-        self.assertEqual(metas[0].intent, "hero")
-        self.assertEqual(metas[1].role, "gallery")
+        self.assertEqual([m.intent for m in metas], ["generic", "generic"])
+        self.assertEqual([m.role for m in metas], ["content", "content"])
+        self.assertEqual({m.selection_context for m in metas}, {"facebook"})
         self.assertEqual(metas[1].alt, "Latte art class this Saturday")
 
     def test_the_profile_picture_is_not_in_the_photo_pool(self):
@@ -267,6 +293,13 @@ class IndustryTest(unittest.TestCase):
             ("Clothing Store", "ecommerce"),
             ("Non-Profit Organization", "nonprofit"),
             ("Public Figure", "personal"),
+            ("Medical & Health", "health-wellness"),
+            ("Dentist & Dental Office", "health-wellness"),
+            ("Beauty Salon", "health-wellness"),
+            ("Real Estate Agent", "real-estate"),
+            ("Plumbing Service", "home-services"),
+            ("Cleaning Service", "home-services"),
+            ("Accountant", "professional-services"),
         ]
         for category, expected in cases:
             with self.subTest(category=category):
@@ -452,3 +485,21 @@ class SessionChainTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeclaredIndustryTest(unittest.TestCase):
+    """The Page's own category outranks a model reading its About text, and
+    yields to the user's choice — one precedence for the recipe and for
+    generation."""
+
+    def test_the_source_declares_what_its_category_maps_to(self):
+        self.assertEqual(to_source_content(_page(category="Caterer")).declared_industry, "restaurant")
+        self.assertIsNone(to_source_content(_page(category="Interest")).declared_industry)
+
+    def test_precedence(self):
+        from app.models.content_blocks import resolve_industry
+
+        self.assertEqual(resolve_industry("agency", "restaurant", "saas"), "agency")
+        self.assertEqual(resolve_industry("other", "restaurant", "saas"), "restaurant")
+        self.assertEqual(resolve_industry(None, None, "saas"), "saas")
+        self.assertEqual(resolve_industry(None, "other", None), "other")

@@ -135,7 +135,35 @@ export function ScrapePreview({
         {preview.paste && <PasteSummary report={preview.paste} />}
       </div>
 
+      {(sc.source_conflicts?.length ?? 0) > 0 && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+          <div className="font-semibold">Your sources disagree</div>
+          <ul className="mt-1 space-y-1">
+            {sc.source_conflicts!.map((conflict) => (
+              <li key={`${conflict.field}:${conflict.kept}`}>
+                {conflict.field === 'phone' ? 'Phone number' : 'Email'}:{' '}
+                {conflict.values.map((v, i) => (
+                  <span key={`${v.source}:${v.value}`}>
+                    {i > 0 && ' vs '}
+                    <span className="font-semibold">{v.value}</span> ({v.source})
+                  </span>
+                ))}
+                . The site will show <span className="font-semibold">{conflict.kept}</span> —
+                fix the other source, or edit it on the generated site.
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {facts && <FacebookFactsPanel facts={facts} />}
+      {isFacebook && (sc.images?.length ?? 0) === 0 && (
+        <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          No usable Facebook photos were collected. The site will use stock imagery where
+          appropriate and omit the photo gallery. You can still use the Page profile picture
+          as the logo, or upload your own logo.
+        </p>
+      )}
 
       {blockedByBotProtection && (
         <div

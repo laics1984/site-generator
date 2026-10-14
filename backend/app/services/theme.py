@@ -35,7 +35,9 @@ from app.models.brand import (
     Buttons,
     ColorPalette,
     PageTokens,
+    PaletteStrategy,
     ThemeTokens,
+    TypeDirection,
     Typography,
 )
 
@@ -115,18 +117,88 @@ def _text_for_background(bg_hex: str) -> str:
     return "#ffffff" if _relative_luminance(bg_hex) < 0.5 else "#0f172a"
 
 
+# How close to the lightest neutral another may sit and still count as "the
+# light ink" — wide enough that a light build's surface tint (#f0f9ff against a
+# #ffffff page, 0.06 apart) qualifies, narrow enough that no mid-tone does.
+_LIGHT_INK_SPREAD = 0.1
+
+
+def _chroma(hex_color: str) -> int:
+    r, g, b = _hex_to_rgb(hex_color)
+    return max(r, g, b) - min(r, g, b)
+
+
+def _neutral_inks(palette: ColorPalette) -> tuple[str, str]:
+    """(light, dark) — the only two inks copy is ever given on a surface
+    (`ink_on`). The light one is the most brand-tinted of the palette's
+    near-lightest neutrals: copy on a dark band or a photo reads as THIS brand's
+    near-white (a light build's surface tint), never a stock #ffffff."""
+    neutrals = (palette.background, palette.surface, palette.text, palette.secondary)
+    lightest = max(_relative_luminance(n) for n in neutrals)
+    near_white = [n for n in neutrals if _relative_luminance(n) >= lightest - _LIGHT_INK_SPREAD]
+    return max(near_white, key=_chroma), min(neutrals, key=_relative_luminance)
+
+
+def ink_css(palette: ColorPalette, ink_hex: str) -> str:
+    """`ink_hex` as copy is WRITTEN: the palette's ink TOKEN when it is one of
+    the palette's two inks as they stand (`--builder-color-ink-light|dark`,
+    derived by every renderer from the live palette), so the copy follows a
+    palette edit in the builder; the hex itself when `ink_on` had to nudge it
+    for this particular surface. The token's fallback is the palette's own
+    colour, never a stock white."""
+    light, dark = _neutral_inks(palette)
+    if ink_hex.lower() == light.lower():
+        return f"var(--builder-color-ink-light, {light})"
+    if ink_hex.lower() == dark.lower():
+        return f"var(--builder-color-ink-dark, {dark})"
+    return ink_hex
+
+
+def light_ink(palette: ColorPalette) -> str:
+    """The palette's light ink — what copy on a photo wears, and so what a
+    photo's copy scrim is solved for (`image_styling.photo_background`)."""
+    return _neutral_inks(palette)[0]
+
+
+def ink_on(palette: ColorPalette, surface_hex: str, *, min_ratio: float = 4.5) -> str:
+    """The palette's own ink for text on `surface_hex` — the one answer to "what
+    colour does copy on this surface wear", so no pass hard-codes a white.
+
+    The candidates are the palette's NEUTRALS, never a literal: its lightest
+    (the page colour of a light build, the body ink of a dark one) and its
+    darkest. Whichever reads better on the surface wins, nudged until it clears
+    `min_ratio` where it can — so a cream page's dark bands get cream copy, and
+    a light surface that a template authored white ink for gets the palette's
+    dark ink instead of vanishing.
+    """
+    light, dark = _neutral_inks(palette)
+    pick = light if _contrast(light, surface_hex) >= _contrast(dark, surface_hex) else dark
+    # Push AWAY from the surface — lighter for the light ink, darker for the
+    # dark one. `_ensure_contrast_against` steers by the surface's side of 0.5
+    # instead, which on a mid-tone surface (where the dark ink wins below 0.5)
+    # walks the dark ink toward the surface.
+    step = 0.05 if pick == light else -0.05
+    for _ in range(20):
+        if _contrast(pick, surface_hex) >= min_ratio:
+            break
+        nudged = _adjust_lightness(pick, step)
+        if nudged == pick:
+            break
+        pick = nudged
+    return pick
+
+
 def band_colors(palette: ColorPalette, band: Literal["light", "dark"]) -> tuple[str, str]:
     """(background, text) brand colours for a luminance band.
 
     light → `surface` (a faint primary tint, near the page colour) with dark text;
-    dark → `secondary` (the dark, primary-hued neutral) with white text. Both stay
+    dark → `secondary` (the dark, primary-hued neutral) with light text. Both stay
     inside the one brand palette, so the page alternates *luminance* of one hue
-    family rather than clashing hues. Text comes from `_text_for_background`, so a
-    section's band and its font colour always agree. See
-    SECTION_VISUAL_POLICY_SPEC.md §6/§7.
+    family rather than clashing hues. Text comes from `ink_on`, so a section's
+    band and its font colour always agree. See SECTION_VISUAL_POLICY_SPEC.md §6/§7.
     """
     bg = palette.secondary if band == "dark" else palette.surface
-    return bg, _text_for_background(bg)
+    return bg, ink_on(palette, bg)
 
 
 # --- palette construction -------------------------------------------------------
@@ -134,8 +206,8 @@ def band_colors(palette: ColorPalette, band: Literal["light", "dark"]) -> tuple[
 
 def _slug(text: str) -> str:
     """Stable kebab-case identifier from a display name ("E-commerce Luxury" →
-    "e-commerce-luxury"). Used so the design-language LLM can reference curated
-    palettes/pairings by id instead of fuzzy names."""
+    "e-commerce-luxury"). The stable identity the manifest records and the
+    diversity history steers on."""
     out = "".join(ch if ch.isalnum() else "-" for ch in text.strip().lower())
     while "--" in out:
         out = out.replace("--", "-")
@@ -169,11 +241,15 @@ class FontPairing:
     # Used to prefer the pairing that best fits the site's industry; see
     # _pick_pairing. Empty tags simply never win an industry match.
     tags: tuple[str, ...] = ()
+    # The pairing's typographic voice. A design scheme that states the
+    # directions it is built for picks among these instead of by industry
+    # keywords (see _pick_pairing); None never matches a stated direction.
+    direction: TypeDirection | None = None
 
     @property
     def slug(self) -> str:
         """Stable id derived from the two lead family names (e.g.
-        "space-grotesk-inter") — the handle the design-language LLM picks by."""
+        "space-grotesk-inter")."""
         return _slug(f"{_first_family(self.heading_font)} {_first_family(self.body_font)}")
 
 
@@ -201,11 +277,14 @@ class CuratedPalette:
     # BrandMood values this palette was designed for. Empty = suits any mood; see
     # _mood_narrow for why that is a wildcard rather than a "matches nothing".
     moods: tuple[BrandMood, ...] = ()
+    # How the palette spends its colour. A design scheme narrows the curated
+    # pick to the strategies it is built for (_strategy_narrow); empty = any.
+    strategies: tuple[PaletteStrategy, ...] = ()
 
     @property
     def slug(self) -> str:
         """Stable id derived from the name (e.g. "ai-platform") — the handle
-        the design-language LLM picks by."""
+        the manifest and the diversity history key on."""
         return _slug(self.name)
 
 
@@ -235,6 +314,7 @@ class CuratedDarkPalette:
     band: str  # the DARKEST rung → ColorPalette.secondary → band_colors("dark")
     ink: str  # light body-text seed, capped by _dark_ink
     moods: tuple[BrandMood, ...] = ()
+    strategies: tuple[PaletteStrategy, ...] = ()
 
     @property
     def slug(self) -> str:
@@ -268,10 +348,15 @@ class MoodSpec:
     style: str = ""
     # Industry/use-case tags for the default pairing (the scalar fields above).
     default_font_tags: tuple[str, ...] = ()
+    default_font_direction: TypeDirection | None = None
     # Curated alternate pairings for this mood (same personality, different faces).
     # The scalar fields above are the default pairing (pool index 0); build_theme
     # picks one from `font_pool` by industry fit, then by a per-site seed.
     alt_pairings: tuple[FontPairing, ...] = ()
+    # Pairings reachable ONLY through a design scheme's type direction. Kept out
+    # of `font_pool` on purpose: the legacy pick is a seeded index into that
+    # pool, so growing it would re-roll every scheme-less site's typography.
+    direction_pairings: tuple[FontPairing, ...] = ()
 
     @property
     def font_pool(self) -> tuple[FontPairing, ...]:
@@ -282,6 +367,7 @@ class MoodSpec:
             google_fonts=self.google_fonts,
             display_font=self.display_font,
             tags=self.default_font_tags,
+            direction=self.default_font_direction,
         )
         return (default, *self.alt_pairings)
 
@@ -302,6 +388,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         surface_tint_strength=0.09,
         page_width_mode="full",
         heading_font='"Schibsted Grotesk", system-ui, sans-serif',
+        default_font_direction="grotesk-minimal",
         body_font='"Hanken Grotesk", system-ui, sans-serif',
         google_fonts=(
             "Schibsted Grotesk:wght@400;500;600;700;800",
@@ -316,6 +403,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         alt_pairings=(
             FontPairing(
                 heading_font='"Space Grotesk", system-ui, sans-serif',
+                direction="geometric",
                 body_font='"DM Sans", system-ui, sans-serif',
                 google_fonts=(
                     "Space Grotesk:wght@400;500;600;700",
@@ -325,6 +413,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Outfit", system-ui, sans-serif',
+                direction="geometric",
                 body_font='"Work Sans", system-ui, sans-serif',
                 google_fonts=(
                     "Outfit:wght@300;400;500;600;700",
@@ -334,6 +423,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Plus Jakarta Sans", system-ui, sans-serif',
+                direction="geometric",
                 body_font='"Plus Jakarta Sans", system-ui, sans-serif',
                 google_fonts=("Plus Jakarta Sans:wght@400;500;600;700",),
                 tags=("dashboard", "tools", "health", "minimal", "showcase"),
@@ -347,6 +437,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         surface_tint_strength=0.07,
         page_width_mode="full",
         heading_font='"Cormorant Garamond", Georgia, serif',
+        default_font_direction="editorial-serif",
         body_font='"Jost", system-ui, sans-serif',
         google_fonts=(
             "Cormorant Garamond:wght@500;600;700",
@@ -364,6 +455,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         alt_pairings=(
             FontPairing(
                 heading_font='"Playfair Display", Georgia, serif',
+                direction="editorial-serif",
                 body_font='"Inter", system-ui, sans-serif',
                 google_fonts=(
                     "Playfair Display:wght@400;500;600;700",
@@ -376,6 +468,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Cormorant", Georgia, serif',
+                direction="editorial-serif",
                 body_font='"Montserrat", system-ui, sans-serif',
                 google_fonts=(
                     "Cormorant:wght@400;500;600;700",
@@ -388,6 +481,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Cinzel", Georgia, serif',
+                direction="editorial-serif",
                 body_font='"Josefin Sans", system-ui, sans-serif',
                 google_fonts=(
                     "Cinzel:wght@400;500;600;700",
@@ -407,6 +501,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         surface_tint_strength=0.16,
         page_width_mode="full",
         heading_font='"Gabarito", system-ui, sans-serif',
+        default_font_direction="geometric",
         body_font='"Figtree", system-ui, sans-serif',
         google_fonts=(
             "Gabarito:wght@500;700;800",
@@ -423,6 +518,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         alt_pairings=(
             FontPairing(
                 heading_font='"Fredoka", system-ui, sans-serif',
+                direction="rounded",
                 body_font='"Nunito", system-ui, sans-serif',
                 google_fonts=(
                     "Fredoka:wght@400;500;600;700",
@@ -435,6 +531,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Varela Round", system-ui, sans-serif',
+                direction="rounded",
                 body_font='"Nunito Sans", system-ui, sans-serif',
                 google_fonts=(
                     "Varela Round",
@@ -444,6 +541,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Lora", Georgia, serif',
+                direction="editorial-serif",
                 body_font='"Raleway", system-ui, sans-serif',
                 google_fonts=(
                     "Lora:wght@400;500;600;700",
@@ -454,6 +552,65 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
                 ),
             ),
         ),
+        # Reachable only through a scheme's type direction (see MoodSpec):
+        # every direction a friendly brand can be built in has two faces here,
+        # so a warm brand is no longer one rounded face by default.
+        direction_pairings=(
+            FontPairing(
+                heading_font='"Fraunces", Georgia, serif',
+                direction="editorial-serif",
+                body_font='"Figtree", system-ui, sans-serif',
+                google_fonts=(
+                    "Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700",
+                    "Figtree:wght@400;500;600",
+                ),
+                tags=("editorial", "story", "warm", "school", "craft"),
+            ),
+            FontPairing(
+                heading_font='"DM Serif Display", Georgia, serif',
+                direction="editorial-serif",
+                body_font='"DM Sans", system-ui, sans-serif',
+                google_fonts=("DM Serif Display", "DM Sans:wght@400;500;700"),
+                tags=("editorial", "heritage", "community", "boutique"),
+            ),
+            FontPairing(
+                heading_font='"Lexend", system-ui, sans-serif',
+                direction="humanist",
+                body_font='"Source Sans 3", system-ui, sans-serif',
+                google_fonts=(
+                    "Lexend:wght@400;500;600;700",
+                    "Source Sans 3:wght@400;500;600;700",
+                ),
+                tags=("education", "readability", "learning", "community"),
+            ),
+            FontPairing(
+                heading_font='"Atkinson Hyperlegible", system-ui, sans-serif',
+                direction="humanist",
+                body_font='"Source Sans 3", system-ui, sans-serif',
+                google_fonts=(
+                    "Atkinson Hyperlegible:wght@400;700",
+                    "Source Sans 3:wght@400;500;600;700",
+                ),
+                tags=("accessibility", "public", "care", "health"),
+            ),
+            FontPairing(
+                heading_font='"Manrope", system-ui, sans-serif',
+                direction="grotesk-minimal",
+                body_font='"Manrope", system-ui, sans-serif',
+                google_fonts=("Manrope:wght@400;500;600;700;800",),
+                tags=("minimal", "clean", "modern", "practice"),
+            ),
+            FontPairing(
+                heading_font='"Sora", system-ui, sans-serif',
+                direction="geometric",
+                body_font='"Figtree", system-ui, sans-serif',
+                google_fonts=(
+                    "Sora:wght@400;500;600;700;800",
+                    "Figtree:wght@400;500;600",
+                ),
+                tags=("contemporary", "bold", "modern", "energetic"),
+            ),
+        ),
     ),
     "technical": MoodSpec(
         style="Flat Design",
@@ -462,6 +619,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         surface_tint_strength=0.06,
         page_width_mode="full",
         heading_font='"Chivo", system-ui, sans-serif',
+        default_font_direction="grotesk-minimal",
         body_font='"IBM Plex Sans", system-ui, sans-serif',
         google_fonts=(
             "Chivo:wght@500;700;800",
@@ -478,6 +636,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         alt_pairings=(
             FontPairing(
                 heading_font='"JetBrains Mono", ui-monospace, monospace',
+                direction="mono",
                 body_font='"IBM Plex Sans", system-ui, sans-serif',
                 google_fonts=(
                     "JetBrains Mono:wght@400;500;600;700",
@@ -490,6 +649,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Fira Code", ui-monospace, monospace',
+                direction="mono",
                 body_font='"Fira Sans", system-ui, sans-serif',
                 google_fonts=(
                     "Fira Code:wght@400;500;600;700",
@@ -499,6 +659,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Exo", system-ui, sans-serif',
+                direction="geometric",
                 body_font='"Roboto Mono", ui-monospace, monospace',
                 google_fonts=(
                     "Exo:wght@300;400;500;600;700",
@@ -515,6 +676,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         surface_tint_strength=0.09,
         page_width_mode="full",
         heading_font='"Fraunces", Georgia, serif',
+        default_font_direction="editorial-serif",
         body_font='"Hanken Grotesk", system-ui, sans-serif',
         google_fonts=(
             "Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700",
@@ -531,6 +693,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         alt_pairings=(
             FontPairing(
                 heading_font='"Newsreader", Georgia, serif',
+                direction="editorial-serif",
                 body_font='"Roboto", system-ui, sans-serif',
                 google_fonts=(
                     "Newsreader:wght@400;500;600;700",
@@ -542,6 +705,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Libre Bodoni", Georgia, serif',
+                direction="editorial-serif",
                 body_font='"Public Sans", system-ui, sans-serif',
                 google_fonts=(
                     "Libre Bodoni:wght@400;500;600;700",
@@ -560,6 +724,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         surface_tint_strength=0.14,
         page_width_mode="full",
         heading_font='"Syne", system-ui, sans-serif',
+        default_font_direction="geometric",
         body_font='"Figtree", system-ui, sans-serif',
         google_fonts=(
             "Syne:wght@600;700;800",
@@ -576,6 +741,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
         alt_pairings=(
             FontPairing(
                 heading_font='"Abril Fatface", Georgia, serif',
+                direction="editorial-serif",
                 body_font='"Merriweather", Georgia, serif',
                 google_fonts=(
                     "Abril Fatface",
@@ -588,6 +754,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Righteous", system-ui, sans-serif',
+                direction="geometric",
                 body_font='"Poppins", system-ui, sans-serif',
                 google_fonts=(
                     "Righteous",
@@ -599,6 +766,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             ),
             FontPairing(
                 heading_font='"Barlow Condensed", system-ui, sans-serif',
+                direction="grotesk-minimal",
                 body_font='"Barlow", system-ui, sans-serif',
                 google_fonts=(
                     "Barlow Condensed:wght@400;500;600;700",
@@ -612,6 +780,7 @@ MOOD_SPECS: dict[BrandMood, MoodSpec] = {
             # on the vintage Abril Fatface serif — off the childcare brief.
             FontPairing(
                 heading_font='"Baloo 2", system-ui, sans-serif',
+                direction="rounded",
                 body_font='"Nunito", system-ui, sans-serif',
                 google_fonts=(
                     "Baloo 2:wght@500;600;700;800",
@@ -715,9 +884,9 @@ _SLATE_900 = TAILWIND["slate"]["900"]
 def _nearest_tailwind_hue(seed_hex: str) -> str:
     """Nearest Tailwind colour family to a seed hex (by hue). Low-saturation
     seeds (greyscale logos) fall back to a tasteful blue."""
-    h, _, s = _rgb_to_hls(*_hex_to_rgb(seed_hex))
-    if s < 0.12:
+    if not has_brand_hue(seed_hex):
         return "blue"
+    h = _rgb_to_hls(*_hex_to_rgb(seed_hex))[0]
     seed_deg = h * 360.0
     best, best_dist = "blue", 1e9
     for name, shades in TAILWIND.items():
@@ -792,43 +961,44 @@ def _dark_palette(seed_hex: str) -> ColorPalette:
 # catalogue Background.
 _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
     # restaurant
-    CuratedPalette("Restaurant", ("restaurant",), "#DC2626", "#A16207", "#450A0A", "#FEF2F2"),
-    CuratedPalette("Bakery / Cafe", ("restaurant",), "#92400E", "#B45309", "#78350F", "#FEF3C7"),
-    CuratedPalette("Brewery / Winery", ("restaurant",), "#7C2D12", "#A16207", "#450A0A", "#FEF2F2"),
+    CuratedPalette("Restaurant", ("restaurant",), "#DC2626", "#A16207", "#450A0A", "#FEF2F2", strategies=("bold-accent",)),
+    CuratedPalette("Bakery / Cafe", ("restaurant",), "#92400E", "#B45309", "#78350F", "#FEF3C7", strategies=("warm-neutral", "earth")),
+    CuratedPalette("Brewery / Winery", ("restaurant",), "#7C2D12", "#A16207", "#450A0A", "#FEF2F2", strategies=("earth",)),
     # agency
-    CuratedPalette("Creative Agency", ("agency",), "#EC4899", "#0891B2", "#831843", "#FDF2F8"),
-    CuratedPalette("Design Studio", ("agency",), "#4F46E5", "#EA580C", "#312E81", "#EEF2FF"),
-    CuratedPalette("Coworking / Studio", ("agency",), "#F59E0B", "#2563EB", "#78350F", "#FFFBEB"),
+    CuratedPalette("Creative Agency", ("agency",), "#EC4899", "#0891B2", "#831843", "#FDF2F8", strategies=("bold-accent",)),
+    CuratedPalette("Design Studio", ("agency",), "#4F46E5", "#EA580C", "#312E81", "#EEF2FF", strategies=("bold-accent",)),
+    CuratedPalette("Coworking / Studio", ("agency",), "#F59E0B", "#2563EB", "#78350F", "#FFFBEB", strategies=("bold-accent",)),
     # saas
-    CuratedPalette("SaaS", ("saas",), "#2563EB", "#EA580C", "#1E293B", "#F8FAFC"),
-    CuratedPalette("Analytics", ("saas",), "#1E40AF", "#D97706", "#1E3A8A", "#F8FAFC"),
-    CuratedPalette("AI Platform", ("saas",), "#7C3AED", "#0891B2", "#1E1B4B", "#FAF5FF"),
+    CuratedPalette("SaaS", ("saas",), "#2563EB", "#EA580C", "#1E293B", "#F8FAFC", strategies=("high-contrast",)),
+    CuratedPalette("Analytics", ("saas",), "#1E40AF", "#D97706", "#1E3A8A", "#F8FAFC", strategies=("muted", "high-contrast")),
+    CuratedPalette("AI Platform", ("saas",), "#7C3AED", "#0891B2", "#1E1B4B", "#FAF5FF", strategies=("bold-accent",)),
     # professional-services
-    CuratedPalette("B2B Service", ("professional-services",), "#0F172A", "#0369A1", "#020617", "#F8FAFC"),
-    CuratedPalette("Legal", ("professional-services", "consultancy"), "#1E3A8A", "#B45309", "#0F172A", "#F8FAFC"),
-    CuratedPalette("Real Estate", ("professional-services",), "#0F766E", "#0369A1", "#134E4A", "#F0FDFA"),
-    CuratedPalette("Medical Clinic", ("professional-services",), "#0891B2", "#16A34A", "#134E4A", "#F0FDFA"),
+    CuratedPalette("B2B Service", ("professional-services", "home-services", "health-wellness", "real-estate"), "#0F172A", "#0369A1", "#020617", "#F8FAFC", strategies=("mono", "high-contrast")),
+    CuratedPalette("Legal", ("professional-services", "consultancy", "home-services", "health-wellness", "real-estate"), "#1E3A8A", "#B45309", "#0F172A", "#F8FAFC", strategies=("muted", "high-contrast")),
+    CuratedPalette("Real Estate", ("real-estate",), "#0F766E", "#0369A1", "#134E4A", "#F0FDFA", strategies=("soft-natural", "muted")),
+    CuratedPalette("Medical Clinic", ("health-wellness",), "#0891B2", "#16A34A", "#134E4A", "#F0FDFA", strategies=("soft-natural",)),
     # ecommerce
-    CuratedPalette("E-commerce", ("ecommerce",), "#059669", "#EA580C", "#064E3B", "#ECFDF5"),
-    CuratedPalette("E-commerce Luxury", ("ecommerce",), "#1C1917", "#A16207", "#0C0A09", "#FAFAF9"),
-    CuratedPalette("Subscription Box", ("ecommerce",), "#D946EF", "#EA580C", "#86198F", "#FDF4FF"),
-    CuratedPalette("Marketplace", ("ecommerce",), "#7C3AED", "#16A34A", "#4C1D95", "#FAF5FF"),
+    CuratedPalette("E-commerce", ("ecommerce",), "#059669", "#EA580C", "#064E3B", "#ECFDF5", strategies=("bold-accent",)),
+    CuratedPalette("E-commerce Luxury", ("ecommerce",), "#1C1917", "#A16207", "#0C0A09", "#FAFAF9", strategies=("mono",)),
+    CuratedPalette("Subscription Box", ("ecommerce",), "#D946EF", "#EA580C", "#86198F", "#FDF4FF", strategies=("bold-accent",)),
+    CuratedPalette("Marketplace", ("ecommerce",), "#7C3AED", "#16A34A", "#4C1D95", "#FAF5FF", strategies=("bold-accent",)),
     # consultancy
-    CuratedPalette("Banking / Finance", ("consultancy",), "#0F172A", "#A16207", "#020617", "#F8FAFC"),
-    CuratedPalette("Insurance", ("consultancy",), "#0369A1", "#16A34A", "#0C4A6E", "#F0F9FF"),
+    CuratedPalette("Banking / Finance", ("consultancy",), "#0F172A", "#A16207", "#020617", "#F8FAFC", strategies=("mono", "high-contrast")),
+    CuratedPalette("Insurance", ("consultancy",), "#0369A1", "#16A34A", "#0C4A6E", "#F0F9FF", strategies=("muted",)),
     # nonprofit
-    CuratedPalette("Non-profit / Charity", ("nonprofit",), "#0891B2", "#EA580C", "#164E63", "#ECFEFF"),
-    CuratedPalette("Community", ("nonprofit",), "#7C3AED", "#16A34A", "#4C1D95", "#FAF5FF"),
-    CuratedPalette("Religious / Faith", ("nonprofit",), "#7C3AED", "#A16207", "#4C1D95", "#FAF5FF"),
+    CuratedPalette("Non-profit / Charity", ("nonprofit",), "#0891B2", "#EA580C", "#164E63", "#ECFEFF", strategies=("soft-natural", "bold-accent")),
+    CuratedPalette("Community", ("nonprofit",), "#7C3AED", "#16A34A", "#4C1D95", "#FAF5FF", strategies=("bold-accent",)),
+    CuratedPalette("Religious / Faith", ("nonprofit",), "#7C3AED", "#A16207", "#4C1D95", "#FAF5FF", strategies=("muted",)),
     # childcare — soft cheerful tones (sky, mint/sage, lavender) on warm cream
-    # tints, one brighter coral/amber accent; never dark or corporate.
-    CuratedPalette("Kindergarten Sky", ("childcare",), "#0284C7", "#F97316", "#0C4A6E", "#FFFBEB"),
-    CuratedPalette("Montessori Nature", ("childcare",), "#059669", "#D97706", "#064E3B", "#ECFDF5"),
-    CuratedPalette("Early Learning Pastel", ("childcare",), "#8B5CF6", "#EA580C", "#4C1D95", "#F5F3FF"),
+    # tints, one brighter coral/amber accent. The pastel voice is one of several
+    # a school may take (see the strategy-led entries below).
+    CuratedPalette("Kindergarten Sky", ("childcare",), "#0284C7", "#F97316", "#0C4A6E", "#FFFBEB", strategies=("pastel", "bold-accent")),
+    CuratedPalette("Montessori Nature", ("childcare",), "#059669", "#D97706", "#064E3B", "#ECFDF5", strategies=("soft-natural", "earth")),
+    CuratedPalette("Early Learning Pastel", ("childcare",), "#8B5CF6", "#EA580C", "#4C1D95", "#F5F3FF", strategies=("pastel",)),
     # personal
-    CuratedPalette("Portfolio", ("personal",), "#18181B", "#2563EB", "#09090B", "#FAFAFA"),
-    CuratedPalette("Freelancer", ("personal",), "#6366F1", "#16A34A", "#312E81", "#EEF2FF"),
-    CuratedPalette("Magazine / Blog", ("personal",), "#18181B", "#EC4899", "#09090B", "#FAFAFA"),
+    CuratedPalette("Portfolio", ("personal",), "#18181B", "#2563EB", "#09090B", "#FAFAFA", strategies=("mono",)),
+    CuratedPalette("Freelancer", ("personal",), "#6366F1", "#16A34A", "#312E81", "#EEF2FF", strategies=("bold-accent",)),
+    CuratedPalette("Magazine / Blog", ("personal",), "#18181B", "#EC4899", "#09090B", "#FAFAFA", strategies=("mono", "high-contrast")),
     #
     # --- mood-tagged entries ----------------------------------------------------
     # The 28 above predate the mood axis and stay untagged (wildcards, see
@@ -839,9 +1009,10 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
     #
     # modern / technical — trust, clarity, engineering
     CuratedPalette(
-        "Corporate Trust", ("professional-services", "consultancy"),
+        "Corporate Trust", ("professional-services", "consultancy", "home-services", "health-wellness", "real-estate"),
         "#2563EB", "#0D9488", "#0F172A", "#F1F5F9",
         moods=("modern", "technical"),
+        strategies=("high-contrast",),
     ),
     CuratedPalette(
         "Modern Minimalist", ("agency", "personal", "saas"),
@@ -850,21 +1021,25 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
         # actions at 10.35:1 — which is the minimalist look the brief describes.
         "#334155", "#F43F5E", "#0F172A", "#F8FAFC",
         moods=("modern", "editorial"),
+        strategies=("mono", "muted"),
     ),
     CuratedPalette(
         "Signal Indigo", ("saas", "ecommerce"),
         "#4338CA", "#F59E0B", "#1E1B4B", "#EEF2FF",
         moods=("modern", "playful"),
+        strategies=("bold-accent",),
     ),
     CuratedPalette(
-        "Blueprint Cyan", ("saas", "professional-services"),
+        "Blueprint Cyan", ("saas", "professional-services", "home-services", "health-wellness", "real-estate"),
         "#0E7490", "#F97316", "#082F49", "#ECFEFF",
         moods=("technical",),
+        strategies=("high-contrast",),
     ),
     CuratedPalette(
-        "Slate Systems", ("saas", "consultancy", "professional-services"),
+        "Slate Systems", ("saas", "consultancy", "professional-services", "home-services", "health-wellness", "real-estate"),
         "#475569", "#06B6D4", "#020617", "#F1F5F9",
         moods=("technical", "modern"),
+        strategies=("muted", "mono"),
     ),
     CuratedPalette(
         # `dark` is #0F2A18 rather than a deeper green-950: below about L 0.11 an
@@ -873,33 +1048,39 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
         "Terminal Green", ("saas",),
         "#15803D", "#0EA5E9", "#0F2A18", "#F0FDF4",
         moods=("technical",),
+        strategies=("high-contrast",),
     ),
     # luxury — deep, saturated, restrained
     CuratedPalette(
         "Bordeaux", ("restaurant", "ecommerce"),
         "#881337", "#A16207", "#4C0519", "#FFF1F2",
         moods=("luxury", "editorial"),
+        strategies=("muted", "warm-neutral"),
     ),
     CuratedPalette(
-        "Deep Forest", ("professional-services", "consultancy", "ecommerce"),
+        "Deep Forest", ("professional-services", "consultancy", "ecommerce", "home-services", "health-wellness", "real-estate"),
         "#14532D", "#B45309", "#0E3B26", "#F0FDF4",
         moods=("luxury",),
+        strategies=("earth",),
     ),
     CuratedPalette(
         "Plum Velvet", ("ecommerce", "agency", "personal"),
         "#581C87", "#D97706", "#2E1065", "#FAF5FF",
         moods=("luxury",),
+        strategies=("muted",),
     ),
     # editorial — warm papers, high-contrast type
     CuratedPalette(
         "Ink and Paper", ("personal", "agency"),
         "#292524", "#DC2626", "#1C1917", "#F5F5F4", page="#FAFAF9",
         moods=("editorial",),
+        strategies=("mono", "warm-neutral"),
     ),
     CuratedPalette(
         "Warm Editorial", ("restaurant", "personal", "agency"),
         "#9A3412", "#0F766E", "#1C1917", "#F5F1E9", page="#FBF8F3",
         moods=("editorial", "friendly"),
+        strategies=("warm-neutral", "earth"),
     ),
     CuratedPalette(
         # The brief's single #F5F5F4 is split into a warm parchment page and a
@@ -909,6 +1090,7 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
         "Eco Natural", ("nonprofit", "ecommerce", "restaurant"),
         "#15803D", "#A16207", "#1C1917", "#F5F1E9", page="#FBF8F3",
         moods=("friendly", "editorial"),
+        strategies=("earth", "soft-natural", "warm-neutral"),
     ),
     # playful — bright, high-energy
     CuratedPalette(
@@ -918,16 +1100,67 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
         "Citrus Pop", ("restaurant", "ecommerce", "personal"),
         "#C2410C", "#7C3AED", "#431407", "#FFF7ED",
         moods=("playful", "friendly"),
+        strategies=("bold-accent",),
     ),
     CuratedPalette(
         "Lime Punch", ("agency", "ecommerce", "personal"),
         "#4D7C0F", "#DB2777", "#1C2E12", "#F7FEE7",
         moods=("playful",),
+        strategies=("bold-accent",),
     ),
     CuratedPalette(
         "Electric Grape", ("saas", "agency"),
         "#6D28D9", "#F59E0B", "#2E1065", "#F5F3FF",
         moods=("playful", "modern"),
+        strategies=("bold-accent",),
+    ),
+    #
+    # --- strategy-led entries ---------------------------------------------------
+    # Childcare had three palettes, all pastel, and ignored the logo: ten
+    # kindergartens shipped in three colourways. The logo now leads (build_theme),
+    # and these give a school with no usable logo colour an honest choice of
+    # voice — earthy, academic, bold, warm-neutral, natural, monochrome — chosen
+    # by the design scheme's palette strategy rather than by the industry.
+    # Childcare-only for now: tagging them into other industries would re-roll
+    # those industries' seeded picks with no evidence it helps them.
+    # Primaries are AA-safe against white as authored (5.5:1 or better).
+    CuratedPalette(
+        "Terracotta Garden", ("childcare",),
+        # `dark` is #2A1E16, not the warmer #2B1D14: _brand_ink's 8-bit round
+        # trip lands the latter 0.003 over the ink saturation cap.
+        "#A8461F", "#4D7C0F", "#2A1E16", "#F6EEE6", page="#FCF8F3",
+        moods=("friendly", "editorial", "playful"),
+        strategies=("earth", "warm-neutral"),
+    ),
+    CuratedPalette(
+        "Academy Navy", ("childcare",),
+        "#1E3A8A", "#CA8A04", "#0F172A", "#F1F5F9",
+        moods=("friendly", "modern", "technical"),
+        strategies=("high-contrast", "muted"),
+    ),
+    CuratedPalette(
+        "Tomato and Ink", ("childcare",),
+        "#C2341B", "#0369A1", "#18181B", "#FFF4EF",
+        moods=("playful", "friendly", "modern"),
+        strategies=("bold-accent", "high-contrast"),
+    ),
+    CuratedPalette(
+        "Oat and Forest", ("childcare",),
+        "#166534", "#B45309", "#1C1917", "#F3EDE3", page="#FBF8F2",
+        moods=("friendly", "editorial", "luxury"),
+        strategies=("warm-neutral", "earth", "soft-natural"),
+    ),
+    CuratedPalette(
+        "Clay and Lagoon", ("childcare",),
+        "#0F766E", "#C2410C", "#1F2A2E", "#EEF5F3", page="#FAFCFB",
+        moods=("friendly", "modern"),
+        strategies=("soft-natural", "muted"),
+    ),
+    CuratedPalette(
+        "Charcoal Marigold", ("childcare",),
+        "#27272A", "#D97706", "#18181B", "#F4F4F5",
+        moods=("modern", "editorial", "friendly"),
+        strategies=("mono", "high-contrast"),
     ),
 )
 
@@ -955,12 +1188,12 @@ _CURATED_DARK_PALETTES: tuple[CuratedDarkPalette, ...] = (
         moods=("modern", "technical"),
     ),
     CuratedDarkPalette(
-        "Deep Space Blue", ("saas", "professional-services", "consultancy"),
+        "Deep Space Blue", ("saas", "professional-services", "consultancy", "home-services", "health-wellness", "real-estate"),
         "#2563EB", "#22D3EE", "#080D1C", "#121A2B", "#020617", "#E5E9EE",
         moods=("modern", "technical"),
     ),
     CuratedDarkPalette(
-        "Terminal Emerald", ("saas", "agency", "professional-services", "consultancy"),
+        "Terminal Emerald", ("saas", "agency", "professional-services", "consultancy", "home-services", "health-wellness", "real-estate"),
         "#047857", "#A3E635", "#04140F", "#0C2620", "#020D0A", "#E3EBE7",
         moods=("technical",),
     ),
@@ -980,7 +1213,7 @@ _CURATED_DARK_PALETTES: tuple[CuratedDarkPalette, ...] = (
         moods=("editorial",),
     ),
     CuratedDarkPalette(
-        "Forest Night", ("nonprofit", "professional-services", "ecommerce", "personal"),
+        "Forest Night", ("nonprofit", "professional-services", "ecommerce", "personal", "home-services", "health-wellness", "real-estate"),
         "#15803D", "#FACC15", "#06180C", "#0F2A18", "#031006", "#E6EDE8",
         moods=("friendly", "editorial"),
     ),
@@ -990,7 +1223,7 @@ _CURATED_DARK_PALETTES: tuple[CuratedDarkPalette, ...] = (
         moods=("modern", "playful"),
     ),
     CuratedDarkPalette(
-        "Graphite Luxe", ("consultancy", "professional-services", "ecommerce", "nonprofit"),
+        "Graphite Luxe", ("consultancy", "professional-services", "ecommerce", "nonprofit", "home-services", "health-wellness", "real-estate"),
         "#A16207", "#38BDF8", "#0C0A09", "#1C1917", "#050403", "#FAFAF9",
         moods=("luxury", "editorial"),
     ),
@@ -1005,7 +1238,7 @@ _CURATED_DARK_PALETTES: tuple[CuratedDarkPalette, ...] = (
         moods=("friendly", "playful"),
     ),
     CuratedDarkPalette(
-        "Deep Ocean", ("nonprofit", "professional-services", "restaurant"),
+        "Deep Ocean", ("nonprofit", "professional-services", "restaurant", "home-services", "health-wellness", "real-estate"),
         "#0E7490", "#FBBF24", "#041619", "#0C2A31", "#020F11", "#E4EAEC",
         moods=("friendly", "modern"),
     ),
@@ -1025,7 +1258,7 @@ _CURATED_DARK_PALETTES: tuple[CuratedDarkPalette, ...] = (
         moods=("friendly", "luxury"),
     ),
     CuratedDarkPalette(
-        "Steel Meridian", ("consultancy", "professional-services", "nonprofit"),
+        "Steel Meridian", ("consultancy", "professional-services", "nonprofit", "home-services", "health-wellness", "real-estate"),
         "#7C3AED", "#FBBF24", "#0B0E14", "#181C24", "#050709", "#E6E9ED",
         moods=("modern", "luxury"),
     ),
@@ -1148,10 +1381,26 @@ def _palette_of(entry: CuratedPalette | CuratedDarkPalette) -> ColorPalette:
     return _palette_from_curated(entry)
 
 
-def _has_brand_hue(seed_hex: str) -> bool:
-    """True when the seed carries a usable brand hue (not greyscale). Mirrors the
-    saturation threshold _nearest_tailwind_hue uses to fall back to generic blue."""
-    return _rgb_to_hls(*_hex_to_rgb(seed_hex))[2] >= 0.12
+# Below this measured chroma (max − min channel, 0..1) a colour reads as grey,
+# black or white whatever its nominal hue. Chroma, not HLS saturation: HLS calls
+# the near-black #111827 39% saturated, so a black wordmark used to "lead" the
+# palette as navy, while a pale-but-real pastel (#BAE6FD, 0.26) stays coloured.
+_MIN_BRAND_CHROMA = 0.15
+
+
+def has_brand_hue(hex_color: str | None) -> bool:
+    """True when a colour carries a usable hue — the one test for "does this
+    logo colour say anything about the brand's palette". Read by build_theme
+    (does the logo lead?), the Tailwind snap (greyscale → generic blue) and the
+    design fingerprint (hue bucket), so they cannot disagree."""
+    raw = (hex_color or "").strip()
+    if not (raw.startswith("#") and len(raw) == 7):
+        return False
+    try:
+        r, g, b = _hex_to_rgb(raw)
+    except ValueError:
+        return False
+    return (max(r, g, b) - min(r, g, b)) / 255 >= _MIN_BRAND_CHROMA
 
 
 _CuratedEntry = CuratedPalette | CuratedDarkPalette
@@ -1178,79 +1427,38 @@ def _mood_narrow(
     return kept or pool
 
 
+def _strategy_narrow(
+    pool: list[_CuratedEntry], strategies: tuple[PaletteStrategy, ...]
+) -> list[_CuratedEntry]:
+    """Narrow to the palettes a design scheme's colour strategy is built for.
+
+    Same contract as `_mood_narrow`, for the same reasons: an untagged entry is
+    a wildcard, and a pool the strategies would empty is returned whole — a
+    scheme states a preference about how colour is spent, never a reason to
+    leave a site without a palette."""
+    if not strategies:
+        return pool
+    kept = [c for c in pool if not c.strategies or set(c.strategies) & set(strategies)]
+    return kept or pool
+
+
 def _curated_candidates(
     industry: str | None,
     mood: BrandMood | None = None,
     scheme: str = "light",
+    strategies: tuple[PaletteStrategy, ...] = (),
 ) -> list[_CuratedEntry]:
     """The curated palettes a site may draw from: the scheme's table, narrowed to
-    the industry's tagged subset when it has one, then to the mood's.
+    the industry's tagged subset when it has one, then to the mood's, then to
+    the design scheme's colour strategies.
 
-    The single source of truth — the deterministic picker, the design-language
-    slug lookup and the LLM's option list all route through here, so an LLM pick
-    can never widen the pool or cross schemes."""
+    The single source of truth for which palettes a site may draw from."""
     table: list[_CuratedEntry] = list(
         _CURATED_DARK_PALETTES if scheme == "dark" else _CURATED_PALETTES
     )
     norm = (industry or "").strip().lower()
     pool = [c for c in table if norm in c.categories] or table
-    return _mood_narrow(pool, mood)
-
-
-def curated_palette_by_slug(
-    slug: str | None,
-    industry: str | None,
-    *,
-    mood: BrandMood | None = None,
-    scheme: str = "light",
-) -> _CuratedEntry | None:
-    """Resolve a design-language palette pick, validated against the same
-    candidate set `_curated_palette` chooses from (preserving the forced-industry
-    palettes, e.g. childcare pastels). Unknown/None slug → None, so callers fall
-    back to the deterministic pick. Because the set is scheme-scoped, a light slug
-    can never resolve in a dark build."""
-    if not slug:
-        return None
-    norm_slug = slug.strip().lower()
-    for c in _curated_candidates(industry, mood, scheme):
-        if c.slug == norm_slug:
-            return c
-    return None
-
-
-def curated_palette_options(
-    industry: str | None,
-    *,
-    mood: BrandMood | None = None,
-    scheme: str = "light",
-) -> list[dict[str, object]]:
-    """The palette options offered to the design-language LLM — one dict per
-    candidate with the slug it must answer with plus the swatches it judges by.
-    Mirrors `curated_palette_by_slug`'s candidate set exactly.
-
-    `swatches` carries the MAPPED ColorPalette, not the raw source tokens: a
-    curated `dark` of #0F172A ships as #171a22 once `_brand_ink` has capped it, so
-    quoting the source would show the model colours the page never paints.
-    """
-    options: list[dict[str, object]] = []
-    for c in _curated_candidates(industry, mood, scheme):
-        mapped = _palette_of(c)
-        options.append(
-            {
-                "slug": c.slug,
-                "name": c.name,
-                "categories": list(c.categories),
-                "moods": list(c.moods),
-                "primary": mapped.primary,
-                "accent": mapped.accent,
-                "swatches": {
-                    "page": mapped.background,
-                    "band": mapped.secondary,
-                    "ink": mapped.text,
-                },
-            }
-        )
-    return options
+    return _strategy_narrow(_mood_narrow(pool, mood), strategies)
 
 
 def _curated_palette(
@@ -1261,6 +1469,7 @@ def _curated_palette(
     *,
     mood: BrandMood | None = None,
     scheme: str = "light",
+    strategies: tuple[PaletteStrategy, ...] = (),
 ) -> tuple[ColorPalette, str]:
     """Pick a curated palette by industry fit, then by nearest hue to the brand
     seed (so the logo colour still steers the choice); the seed breaks ties. With
@@ -1277,8 +1486,8 @@ def _curated_palette(
     Scheme-agnostic: both catalogue dataclasses expose `.primary` and `.slug`, so
     the selection below is identical for light and dark — only the candidate set
     and the final mapper differ."""
-    candidates = _curated_candidates(industry, mood, scheme)
-    if seed_hex and _has_brand_hue(seed_hex):
+    candidates = _curated_candidates(industry, mood, scheme, strategies)
+    if seed_hex and has_brand_hue(seed_hex):
         seed_h = _rgb_to_hls(*_hex_to_rgb(seed_hex))[0] * 360.0
 
         def hue_dist(c: _CuratedEntry) -> float:
@@ -1318,8 +1527,17 @@ _INDUSTRY_FONT_KEYWORDS: dict[str, tuple[str, ...]] = {
     ),
     "professional services": (
         "professional", "corporate", "business", "consulting", "services",
-        "finance", "legal", "real estate", "property",
+        "finance", "legal",
     ),
+    "home services": (
+        "home", "services", "construction", "trades", "repair", "cleaning",
+        "local", "business",
+    ),
+    "health wellness": (
+        "health", "medical", "clinic", "wellness", "spa", "beauty", "fitness",
+        "healthcare", "calm",
+    ),
+    "real estate": ("real estate", "property", "architecture", "luxury", "interior"),
     "ecommerce": (
         "ecommerce", "e-commerce", "shop", "retail", "store", "fashion",
         "jewelry", "jewellery", "product",
@@ -1341,18 +1559,11 @@ _INDUSTRY_FONT_KEYWORDS: dict[str, tuple[str, ...]] = {
 
 
 # Industries whose design brief needs a background treatment different from
-# their mood's default. (Childcare previously used "mesh" here; it now gets an
-# explicit multi-pastel section rhythm instead — see
-# section_content.apply_childcare_pastel_rhythm — so a single-hue mesh wouldn't
-# read as the cheerful cream/sky/mint/peach mix the brief wants.)
+# their mood's default. Empty: a background is a design scheme's choice now
+# (`DesignScheme.background_strategy`, and `band_tint` for multi-tint bands),
+# never an industry's — childcare used to be pinned here, then to a fixed
+# pastel rotation, and both made every kindergarten one look.
 _INDUSTRY_BACKGROUND_STRATEGY: dict[str, str] = {}
-
-# Industries whose brief wants a fixed cheerful palette regardless of the logo's
-# own hue: use the curated pastel set (see _CURATED_PALETTES) and IGNORE the
-# brand seed, so a single-hue logo (e.g. an orange kindergarten mark) can't drag
-# the site to a muted monochrome Tailwind snap. The pastel palette is picked
-# deterministically from the industry's curated entries by font_seed.
-_INDUSTRY_CURATED_PALETTE = frozenset({"childcare"})
 
 
 def _industry_keywords(industry: str | None) -> tuple[str, ...]:
@@ -1398,6 +1609,8 @@ _INDUSTRY_SCHEME_LEAN: dict[str, str] = {
     "childcare": "light",
     "nonprofit": "light",
     "professional-services": "light",
+    "health-wellness": "light",
+    "home-services": "light",
     "saas": "dark",
     "agency": "dark",
 }
@@ -1445,12 +1658,41 @@ def resolve_color_scheme(
     return "dark" if score > 0 else "light"
 
 
-def _pick_pairing(
-    spec: MoodSpec, font_seed: str | None, industry: str | None = None
-) -> FontPairing:
-    """Choose one pairing from the mood's pool.
+def _direction_pool(
+    spec: MoodSpec, directions: tuple[TypeDirection, ...]
+) -> list[FontPairing]:
+    """The pairings that speak in one of `directions`: the site's own mood
+    first (its pool, then its direction-only pairings), then — only when that
+    leaves fewer than two to choose between — every other mood's, in catalogue
+    order. Two is the floor because one candidate is a forced answer, which is
+    the convergence this exists to break."""
+    wanted = set(directions)
+    own = [p for p in (*spec.font_pool, *spec.direction_pairings) if p.direction in wanted]
+    if len(own) >= 2:
+        return own
+    seen = {p.slug for p in own}
+    for other in MOOD_SPECS.values():
+        for p in (*other.font_pool, *other.direction_pairings):
+            if p.direction in wanted and p.slug not in seen:
+                own.append(p)
+                seen.add(p.slug)
+    return own
 
-    Selection order:
+
+def _pick_pairing(
+    spec: MoodSpec,
+    font_seed: str | None,
+    industry: str | None = None,
+    directions: tuple[TypeDirection, ...] = (),
+) -> FontPairing:
+    """Choose one pairing.
+
+    A design scheme that states its type ``directions`` decides first: the pick
+    is seeded across every pairing in those directions (`_direction_pool`), and
+    the industry is NOT consulted — industry keywords are what handed every
+    kindergarten the same rounded face. With no directions (schemes off, or a
+    scheme that defers), the mood's pool decides, exactly as before:
+
       1. **Industry fit** — prefer the pairing whose tags best match the site's
          industry. Ties are broken by the seed, so the choice stays meaningful
          *and* stable.
@@ -1460,6 +1702,10 @@ def _pick_pairing(
       3. **Default** — no seed and no match → the mood's default pairing (index 0),
          reproducing the original single-pairing behaviour.
     """
+    if directions:
+        directed = _direction_pool(spec, directions)
+        if directed:
+            return directed[_seeded_index(f"{font_seed}|type", len(directed))]
     pool = spec.font_pool
     keywords = _industry_keywords(industry)
     if keywords:
@@ -1474,33 +1720,6 @@ def _pick_pairing(
     return pool[_seeded_index(font_seed, len(pool))]
 
 
-def pairing_by_slug(spec: MoodSpec, slug: str | None) -> FontPairing | None:
-    """Resolve a design-language font pick against the mood's own pool.
-    Unknown/None slug → None, so callers fall back to `_pick_pairing`."""
-    if not slug:
-        return None
-    norm_slug = slug.strip().lower()
-    for p in spec.font_pool:
-        if p.slug == norm_slug:
-            return p
-    return None
-
-
-def font_pairing_options(mood: BrandMood) -> list[dict[str, object]]:
-    """The font-pairing options offered to the design-language LLM for a mood —
-    one dict per pool entry with the slug it must answer with plus the lead
-    family names/tags it judges by."""
-    return [
-        {
-            "slug": p.slug,
-            "heading_font": _first_family(p.heading_font),
-            "body_font": _first_family(p.body_font),
-            "tags": list(p.tags),
-        }
-        for p in MOOD_SPECS[mood].font_pool
-    ]
-
-
 def build_theme(
     seed_hex: str | None,
     mood: BrandMood = "modern",
@@ -1508,8 +1727,6 @@ def build_theme(
     font_seed: str | None = None,
     industry: str | None = None,
     color_scheme: str = "light",
-    palette_choice: str | None = None,
-    font_choice: str | None = None,
     avoid_palettes: set[str] | None = None,
     scheme_choice: str | None = None,
     avoid_schemes: set[str] | None = None,
@@ -1535,16 +1752,16 @@ def build_theme(
     band/rhythm machinery handles light text automatically. `palette_mode="derive"`
     is the escape hatch back to the algorithmic `_dark_palette` ramp.
 
-    Font pairing is chosen from the mood's pool by (1) `industry` fit when given,
-    then (2) `font_seed` (a stable per-site id, typically the brand name) for
-    variety/tie-breaks. With neither, the mood's default pairing is used —
-    preserving the original single-pairing behaviour.
+    Font pairing is chosen within the design scheme's type directions, seeded by
+    `font_seed` (a stable per-site id, typically the brand name). With no scheme
+    direction it falls back to the mood's pool by `industry` fit, then the seed
+    (see _pick_pairing).
 
-    `palette_choice`/`font_choice` are design-language picks (curated palette /
-    font-pairing slugs, typically from the LLM pass in design_brain.py). A valid
-    palette slug takes that curated palette directly on either scheme; a valid
-    font slug takes that pairing from the mood's pool. Invalid or None choices
-    change nothing: the deterministic selection above runs exactly as before.
+    There is deliberately no palette or font "choice" parameter any more: the
+    model used to pick a slug off one industry's menu here, which bypassed the
+    diversity history and gave a whole industry one palette. It now picks among
+    complete scored concepts (services/design_direction.py), each built by this
+    factory with a pinned `scheme_choice`.
 
     `scheme_choice`/`avoid_schemes` are the design-scheme half, deliberately the
     same shape: an explicit slug pins the style pack, otherwise it is chosen from
@@ -1554,6 +1771,28 @@ def build_theme(
     slug that doesn't resolve, the neutral scheme defers on every axis and this
     factory returns exactly what it returned before the feature existed.
     """
+    # The design scheme is chosen FIRST: it states how this site spends colour
+    # and which typographic voice it speaks in, so the palette and the font
+    # pairing below are picked inside it rather than beside it. Lazy import:
+    # design_schemes reads BrandMood/archetype vocabularies and
+    # services.diversity, none of which import theme — keeping it local
+    # documents that theme.py is the leaf here, and costs nothing after first
+    # call.
+    from app.config import settings as _settings
+    from app.services import design_schemes
+
+    scheme = (
+        design_schemes.select_scheme(
+            seed=font_seed or "site",
+            mood=mood,
+            industry=industry,
+            choice=scheme_choice,
+            avoid=avoid_schemes,
+        )
+        if _settings.design_schemes_enabled
+        else design_schemes.NEUTRAL_SCHEME
+    )
+
     raw = (seed_hex or "").strip().lower()
     has_seed = raw.startswith("#") and len(raw) == 7
     seed = raw if has_seed else "#2563eb"
@@ -1561,24 +1800,21 @@ def build_theme(
     # A real, non-greyscale logo colour drives the brand-tailwind snap. No colour
     # at all (or greyscale) → "auto" prefers a curated industry palette over the
     # generic-blue fallback.
-    brand_hue = has_seed and _has_brand_hue(seed)
-    norm_industry = (industry or "").strip().lower()
-    # A valid design-language pick wins on either scheme. It is validated against
-    # the industry's AND mood's AND scheme's own candidate set, so forced-industry
-    # palettes (childcare pastels) can't be escaped, a hallucinated slug is a
-    # no-op, and a light slug can never resolve in a dark build.
-    chosen_curated = curated_palette_by_slug(
-        palette_choice, industry, mood=mood, scheme=color_scheme
+    brand_hue = has_seed and has_brand_hue(seed)
+    # On a light build a usable LOGO hue leads the palette: the brand's own
+    # colour is evidence. Every industry, childcare included — which used to
+    # ignore the logo for a pastel set, so ten kindergartens with ten logo
+    # colours shipped in three colourways.
+    logo_leads = (
+        color_scheme != "dark" and brand_hue and palette_mode in ("tailwind", "auto")
     )
     # Track WHICH curated palette was taken (None on the non-curated paths) so
     # the design manifest can record a real slug and the diversity history can
     # steer future picks. `avoid_palettes` only ever rotates within a curated
-    # candidate group (_curated_palette) — an explicit design-language pick and
-    # the non-curated paths are never overridden by history.
+    # candidate group (_curated_palette); the logo-led path never consults it.
     palette_slug: str | None = None
-    if chosen_curated is not None:
-        palette = _palette_of(chosen_curated)
-        palette_slug = chosen_curated.slug
+    if logo_leads:
+        palette = _snap_palette(seed)
     elif color_scheme == "dark":
         if palette_mode == "derive" or not _CURATED_DARK_PALETTES:
             # The algorithmic escape hatch, and the only remaining way to get it.
@@ -1598,13 +1834,8 @@ def build_theme(
                 avoid_slugs=avoid_palettes,
                 mood=mood,
                 scheme="dark",
+                strategies=scheme.palette_strategies,
             )
-    elif norm_industry in _INDUSTRY_CURATED_PALETTE:
-        # Fixed cheerful pastel palette, logo hue ignored (seed=None) so the
-        # brand colour can't override the brief's multi-pastel direction.
-        palette, palette_slug = _curated_palette(
-            None, industry, font_seed, avoid_slugs=avoid_palettes, mood=mood
-        )
     elif palette_mode == "curated" or (palette_mode == "auto" and not brand_hue):
         palette, palette_slug = _curated_palette(
             seed if has_seed else None,
@@ -1612,32 +1843,14 @@ def build_theme(
             font_seed,
             avoid_slugs=avoid_palettes,
             mood=mood,
+            strategies=scheme.palette_strategies,
         )
     elif palette_mode in ("tailwind", "auto"):
         palette = _snap_palette(seed)
     else:
         palette = _build_palette(seed, mood)
     spec = MOOD_SPECS[mood]
-    pairing = pairing_by_slug(spec, font_choice) or _pick_pairing(spec, font_seed, industry)
-
-    # The design scheme layers over the mood spec. Lazy import: design_schemes
-    # reads BrandMood/archetype vocabularies and services.diversity, none of
-    # which import theme — but keeping it local documents that theme.py is the
-    # leaf here, and costs nothing after first call.
-    from app.config import settings as _settings
-    from app.services import design_schemes
-
-    scheme = (
-        design_schemes.select_scheme(
-            seed=font_seed or "site",
-            mood=mood,
-            industry=industry,
-            choice=scheme_choice,
-            avoid=avoid_schemes,
-        )
-        if _settings.design_schemes_enabled
-        else design_schemes.NEUTRAL_SCHEME
-    )
+    pairing = _pick_pairing(spec, font_seed, industry, scheme.type_directions)
 
     # Button background needs ≥4.5:1 against white text.
     button_bg = palette.primary

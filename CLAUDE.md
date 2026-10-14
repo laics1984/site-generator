@@ -112,15 +112,17 @@ modules — the largest are `schema_builder.py` 4.5k, `scraper.py` 2.6k,
 be one answer per mood. A `DesignScheme` bundles shape (`radius_scale`,
 `card_treatment`, shadow, texture, divider), density (`padding_scale`,
 `card_padding_scale`, `container_max_width`, type ratio, heading weight/tracking,
-eyebrow treatment), composition (`layout_bias`, `hero_policy`, chrome affinity)
-and colour expression (`section_rotation`, `inverted_cta`). Sixteen are authored;
-all 60 (mood, industry) cells offer ≥3.
+eyebrow treatment), composition (`layout_bias`, `hero_policy`, chrome affinity),
+colour expression (`section_rotation`, `inverted_cta`, `palette_strategies`,
+`band_tint`, `heading_ink`, `hero_title_accent`, `photo_cast`) and type
+(`type_directions`, `logo_height`). Eighteen are authored; all 78 (mood,
+industry) cells offer ≥4. On by default since the design-identity plan's Phase 1.
 
-**Selection is the chrome machinery, reused, not a second one**: fit list →
-`diversity.pick_diverse` seeded on the brand name → history avoidance on the
-`"scheme"` area. **Threading is the `palette_choice`/`avoid_palettes` idiom,
-reused**: `build_theme(scheme_choice=, avoid_schemes=)` at the same three
-generation call sites, slug onto `ThemeTokens.design_scheme` (internal like
+**Selection is scored, then seeded**: the fit list is scored by
+`design_direction` (brief, content, `"scheme"` history) and ties fall to the
+brand-seeded rotation — see "The direction is chosen among scored concepts"
+below. **Threading**: `build_theme(scheme_choice=…)` realises one scheme, the
+slug lands on `ThemeTokens.design_scheme` (internal like
 `palette_slug`, **absent from `to_builder_styles()`** — the wire payload is
 unchanged), and every pass reads it back with `design_schemes.for_theme(theme)`.
 So a new axis is a data edit, not a parameter threaded through the pipeline.
@@ -164,10 +166,119 @@ the picker takes a seeded index across the whole list. Still an intersection,
 never an addition, and always ≥2 candidates so diversity has room. The pill's
 `force_background=True` outranks any `hero_policy` — broken chrome beats taste —
 and every contrast pass runs downstream of the scheme's, so no scheme can ship
-an illegible page. Builder side: `design-manifest.ts` parses `design_scheme` and
-labels the `scheme` decision area; nothing else cross-repo changed.
+an illegible page. Nothing cross-repo depends on a scheme: the builder carries
+`designManifest` as an opaque record (its `design-manifest.ts` only swaps
+chrome archetypes).
 
 Tests: `test_design_schemes.py`. Docs: [docs/DESIGN_ENGINE.md](docs/DESIGN_ENGINE.md).
+
+### No industry owns a look
+
+Ten kindergartens with ten logo colours used to ship in three palettes and one
+typeface (measured; `docs/design-identity-plan.md`). The look was pinned in ten
+industry-keyed places — mood lock, logo-ignoring pastel palettes, a keyword font
+pick, a fixed six-pastel band rotation, fixed rainbow title inks, a fixed
+two-tone hero, a wave divider, chrome fit lists, a 68px logo — so the industry
+WAS the design. Now:
+
+- **The look is a scheme's.** The old childcare brief is the `playroom` scheme
+  (`band_tint="multi-tint"`, `heading_ink="per-section-accent"`,
+  `hero_title_accent`, `photo_cast="neutral"`, wave seams, 68px mark), one of
+  seven a school can land on. Tints and inks derive from THIS site's palette
+  (`style_tokens.band_tints` / `section_title_inks`), each title held to AA on
+  its own band. An industry still owns content shape (pages, landing journey,
+  CTA wording, imagery honesty) and legibility (childcare's light lean).
+- **The logo leads the palette** on a light build, every industry. "Has a hue" is `theme.has_brand_hue` —
+  **chroma**, not HLS saturation, which calls the near-black `#111827` 39%
+  saturated and used to turn a black wordmark into a navy site. Curated palettes
+  only fill in for a hueless logo, narrowed by the scheme's
+  `palette_strategies` (`_strategy_narrow`, the `_mood_narrow` wildcard contract).
+- **Type is a direction, not an industry keyword.** `FontPairing.direction` +
+  `DesignScheme.type_directions`; `_pick_pairing` seeds across
+  `_direction_pool` (own mood first, other moods only to reach two). New faces go
+  in `MoodSpec.direction_pairings`, outside `font_pool`, so the scheme-less
+  seeded pick never re-rolls.
+- **Mood has one precedence**, `content_blocks.resolve_mood` (explicit → brand →
+  detected → industry default), used by both generate paths and the recipe.
+  `INDUSTRY_LOCKED_MOOD` is gone.
+
+Two renderer traps the first browser check found: a decorated eyebrow (chip,
+rule, underline) must be `width: fit-content` with no forced `alignSelf`, or it
+stretches across the column / sits left of a centred heading; and a surfaceless
+card must declare `backgroundTexture: "flat"`, because every renderer resolves
+`transparent` to white and paints the theme grain on it.
+
+### The direction is chosen among scored concepts
+
+`services/design_direction.resolve_direction` is the **one** place a site's
+visual language is decided — both generate endpoints, plan_to_site's no-theme
+path and the recipe preview call it (they used to spell colour scheme →
+LLM palette pick → build_theme → hero height four times). A **concept** is one
+fit-list scheme realised by `build_theme(scheme_choice=…)`; each is scored on
+brand alignment (the brief's KNOWN axes against `DesignScheme.personality`,
+evidenced axes weighted over inferred), content fit (`ContentProfile`: a
+photo-led language with no source photos, a narrative one with thin prose)
+and freshness (the `scheme` history). With no brief and no history every score
+ties and the brand-seeded rotation decides — the old behaviour, byte for byte.
+
+At most ONE reasoning call then picks among the top
+`DESIGN_CONCEPT_CANDIDATES` (default 3) **by index**, and states the hero
+height; out-of-range, failure, `DESIGN_LANGUAGE_ENABLED=false` or one
+candidate all keep the best score. It replaced `generate_design_language`,
+which handed the model one industry's palette menu and let its slug bypass the
+history — the cause of 14/18 kindergartens in one palette. So `build_theme` has
+no `palette_choice`/`font_choice` any more, and the menu helpers are gone.
+`ThemeTokens.design_rationale` (internal, like `palette_slug`) carries the
+account into the manifest's `scheme` decision. `resolve_hero_height` lives here.
+
+### Layout answers to the content
+
+- **The homepage hero answers to the evidence.** `plan_site_heroes(scheme=…,
+  has_hero_photo=…)`: a source KNOWN to have no photograph
+  (`ContentProfile.has_hero_photo is False`) opens every page on the scheme's
+  `type_led_hero` (imageless only), so stock never stands in for the business on
+  its own front page; `None` (unmeasured, or stock-only on purpose) changes
+  nothing. A scheme's `homepage_hero` leads the homepage under either
+  `HERO_FULLBLEED_ALL_PAGES` setting, and under "banded" only when it shows a
+  photo (banded means a shorter PHOTO opening). The pill and a pinned source
+  background still win. No industry has a hero spec any more — nonprofit's and
+  childcare's art direction is the friendly mood's.
+- **Two of one composition in a row are swapped** (`block_to_section(
+  previous_family=…)`, `RenderContext.previous_layout_family`) for a family the
+  site's layout preference NAMES, with the same use of the pictures; an explicit
+  pick is never swapped. "No worse ranked than the repeat" was tried first and
+  never fired when the repeat was the mood's top family.
+- **The zigzag is the scheme's** (`alternate_splits`); restrained languages hold
+  one side.
+- `ux_audit.audit_design` flags 3+ consecutive body sections of one
+  `section_content.visual_weight` (advisory, `rhythm-monotone`).
+  `design_fingerprint.template_id_of` is the one "which template built this".
+
+### Sameness is measured, recorded and steered on
+
+Every built site's `DesignFingerprint` (homepage hero, chrome, scheme, hue
+bucket, canvas, heading face, radius, section and band sequences, divider,
+title inks) is recorded as area `"fingerprint"` in the existing
+`design_choices` table — no schema change; `diversity.recent_records` returns
+raw records so `diversity` stays import-light. Two consumers:
+
+- **Before**: the direction's freshness is `1 − nearest(...)` of each realised
+  concept's `fingerprint_of_theme` against the last `FINGERPRINT_WINDOW` sites
+  over `THEME_FIELDS` — so two schemes that would land on one font and colour
+  count as the repeat they are. No fingerprints yet → the scheme history.
+- **After**: `design_director.report_and_record_fingerprint` adds a
+  `distinctiveness` decision (1 − nearest, plus the shared tokens) to the
+  manifest, **naming no other site** — the manifest rides into this site's CMS
+  payload. The builder has no decisions panel any more; the record is the
+  manifest itself.
+
+Measure before/after with `backend/scripts/measure_design_diversity.py`
+(fingerprints from `services/design_fingerprint.py`; `--personas` builds each
+brand through the direction with a distinct brief, `--no-photos` models a
+photo-less source, `--fullbleed on|off` pins the hero policy). Tests:
+`test_childcare_industry.py`, `test_design_fingerprint.py`,
+`test_design_schemes.GateVocabularyTest`/`TreatmentRenderingTest`,
+`test_brand_brief.py`, `test_design_direction.py`, `test_layout_rhythm.py`.
 
 ## Adding a new section block
 
@@ -582,7 +693,44 @@ poster, banner or flyer 0.93–1.00. The floor is 0.8. And a poster group with
 no source heading now has none: `PosterBlock.heading` defaulted to
 "Announcements", a claim the source never made.
 
-Tests: `test_image_identity.py`.
+**An `<img>` has one URL, in every list.** `image_urls.resolved_image_url` —
+best of `src`/`srcset`/lazy attributes, a `data:` placeholder never counting,
+CDN placeholders upgraded — is asked by the photo pool, `section_extraction`'s
+cards and racks, and `content_collections`. It was spelled three ways and only
+the pool upgraded, so a Wix rack placed verbatim by `_inject_image_walls`
+shipped Glorykids' gallery as 77px `blur_2` smears while the same photos were
+crisp elsewhere on the page. `scraper.EXTRACTION_VERSION` keys the crawl cache;
+bump it when what a crawl extracts changes.
+
+Tests: `test_image_identity.py`, `test_section_extraction.OnePictureOneUrlTest`.
+
+## A signed photo link dies, so nothing is built on a dead one
+
+Facebook's CDN signs every photo URL and the signature carries its own deadline:
+`oe=` is the expiry in hex (`image_urls.signed_url_expiry`) — measured, five days
+after the read. The push re-downloads every photo to re-host it, so a site
+generated from a week-old read used to publish with every Facebook photo deleted
+by `_strip_invalid_images`, silently: a dead link reads as "nothing there".
+
+Generation (`services/photo_url_expiry.keep_photo_links_alive`, first thing in
+both generate handlers) renews a Facebook source whose links die within
+`FACEBOOK_PHOTO_URL_REFRESH_HOURS` (24) by **reading the Page again and swapping
+each link for the fresh one with the same `photo_identity`** — the filename is
+the picture, the query a rendition. A link dead and not renewable (the read
+failed, or the photo scrolled off the Page) is cut from the source with
+`source_images.without_images` — the selective twin of the stock-only supply cut
+— so nothing is generated around it, with a `generation_warnings` entry saying
+how many; a dead brand mark falls back to the wordmark, palette kept. A link
+alive but due gets a warning naming its deadline. Nothing is read when nothing
+is due. Every URL is matched and rewritten whole (`renew_signed_urls`), the
+prefix-collision rule from "A URL is rewritten whole".
+
+The push refuses a site with a dead link **before anything is written**
+(`push_orchestrator._dead_photo_links`, over `_site_image_sources` — the one
+walk `_upload_media` uses), with "generate again to renew them". Within
+`SIGNED_URL_GRACE_SECONDS` of its deadline a link already counts as dead.
+
+Tests: `test_photo_url_expiry.py`.
 
 ## The platform's routes are not a site's pages
 
@@ -955,18 +1103,34 @@ fact that isn't a field there cannot reach the site. Three layers enforce it:
    defines exactly what the model may say. Absent fields emit **no label** — a
    bare `Phone:` line would let the model treat the label as its own grounding.
 2. `homepage_sections_for` gates each section on its own evidence (no `gallery`
-   under 4 photos, no `testimonials` without reviews, no `locations` without an
-   address). A section that can't be grounded is never *requested*, so the model
-   is never put in the position of padding one.
+   under 4 gallery-fit photos, no `testimonials` without reviews, no `locations`
+   without an address, no `stats` without two counts). A section that can't be
+   grounded is never *requested*, so the model is never put in the position of
+   padding one. The stats gate and the authority's rewrite read one
+   `facebook_authority.stat_items`, and the gallery gate reads
+   `source_router.gallery_photos` — a gate asks the predicate its filler uses.
+   The cap drops by `_KEEP_ORDER`, never by position: a tail cut took contact
+   first.
 3. `facebook_authority.enforce_facebook_facts` runs **after** the LLM and after
    `align_page_to_scaffold`, rewriting contact/locations/testimonials/stats from
    the Page and **nulling what the Page never stated**. Same precedent as the
    profile refill in `routers/generate.py` ("the scraped card is the authority").
    It is the answer to a fluent invention that looks grounded enough to survive.
 
-One landing page: `infer_page_scaffolds(..., single_page=True)` returns home +
-legal only. The template fan-out would hand back ~5 pages the fidelity net then
-strips to nothing.
+One landing page, plus what it EARNED: `infer_page_scaffolds(..., single_page=True)`
+returns home + `page_inference.evidence_pages` + legal. The template fan-out
+would hand back ~5 pages the fidelity net then strips to nothing — a Page has
+one homepage of TEXT. Material is a different question: ≥12 gallery-fit photos
+earn a Gallery page (filled verbatim by `_inject_image_walls`), and a
+restaurant's menu sheets (`menu_assets.read_menu_image`, gated by the same
+`serves_menus` every menu step asks) earn a Menu page of sheets alone. Neither
+asks the model to describe pictures it can't see, and each gate asks its
+filler's own predicate, so an earned page is never empty. Template About and
+Contact are offered, never pre-ticked (`routers/pages.py`): they would restate
+the homepage. Ticking a Contact page that renders the form takes the
+homepage's `contact` section away (`page_inference.defer_home_contact`, asked
+of the whole planned set at generation so a two-page preview knows Contact is
+coming; the picker mirrors it for its pills only). Any source, not just a Page.
 
 Other contracts: `source_kind` Literal is mirrored in
 `models/content_blocks.py` **and** `frontend/src/lib/types.ts` — change both.
@@ -979,7 +1143,13 @@ grounding text plus photos, never a rendered dated feed. Access tokens live in
 redacted from Graph errors — `options_json` records only `has_token`.
 
 Category → `IndustryCategory` uses whole-word/stem matching, not substrings:
-`"pub"` inside `"Public Figure"` filed a musician's Page as a restaurant.
+`"pub"` inside `"Public Figure"` filed a musician's Page as a restaurant. The
+result rides as `SourceContent.declared_industry` (mirrored in `types.ts`), and
+`content_blocks.resolve_industry` — explicit choice → declared → detected,
+"other" never an answer while a later one has more to say — is the one
+precedence the recipe and generation both use. It used to be computed and
+never read, so a Page filed under "Nursery" was designed for whatever a model
+guessed from its About text.
 
 **The Facebook modules import nothing from `scraper.py` or `doc_parser.py`, and
 neither imports them.** What genuinely is shared lives in three neutral modules
@@ -990,7 +1160,7 @@ way — each of those replaced a duplicate or a reach into a private name, and
 `render_url` returns a **named** `RenderedPage` because the bare
 `(final_url, html)` tuple it replaced was being unpacked backwards.
 
-Tests: `test_source_detect.py`, `test_facebook_{urls,graph,render,source,logo,authority,orchestrator,single_page}.py`.
+Tests: `test_source_detect.py`, `test_facebook_{urls,graph,render,dom,source,logo,authority,orchestrator,single_page,photo_collection,photo_profiles}.py`.
 `conftest._offline_facebook` nulls the token, disables the render fallback and
 points `browser_session_dir` at a scratch path, so the default chain is empty,
 no test can reach Facebook, and none can read the developer's real session.
@@ -1014,7 +1184,9 @@ always there, since a real login screen carries none. `mbasic.*` is gone from
 `_candidate_urls` for the same reason — Facebook retired it, so it 302s to
 `/login` and cost a full render per read to discover that.
 
-Three more rules the live DOM taught, all pinned in `test_facebook_render.py`:
+The parsers are pure and live in `facebook_dom.py`; `facebook_render.py` is
+navigation only. Rules the live DOM taught, pinned in `test_facebook_render.py`
+and `test_facebook_dom.py`:
 
 - **`_visible_text` filters, it does not delete.** The obvious version
   (decompose the `<script>`s, then `get_text()`) also destroys the
@@ -1028,10 +1200,13 @@ Three more rules the live DOM taught, all pinned in `test_facebook_render.py`:
   anti-hallucination boundary into site copy. It is out of `_TEXT_LABELS`
   entirely; `og:description` is the real source and `parse_public_html` already
   falls back to it. `_CHROME_VALUES` guards the remaining labels.
-- **The About panel labels a row on EITHER side of its value.** "Phone" above
-  the number in one place; the email address above "Email address" in another.
-  `_scan_labelled` runs forward then backward, the forward pass winning, so the
-  second can only fill a gap. `_FIELD_SHAPE` gates email/phone **in the scan**
+- **The About panel labels a row on EITHER side of its value**, and a RUN of rows
+  is laid out one way. `_scan_labelled` reads each run of labels two lines apart
+  by its shape — opening on a value and closing on a label means value-first, so
+  read backward; a lone label reads forward then backward, forward winning.
+  Forward-first everywhere paired every contact row with the NEXT row's value:
+  a kindergarten's street address became its service area and was lost. An
+  inline `Price range · ££` states its own pairing. `_FIELD_SHAPE` gates email/phone **in the scan**
   rather than only downstream — otherwise a label above a section heading fills
   the slot and blocks the real value further down the page. NASA's
   `public-inquiries@hq.nasa.gov` was being reported as missing while sitting in
@@ -1050,6 +1225,140 @@ Three more rules the live DOM taught, all pinned in `test_facebook_render.py`:
   sitewide: "Basic info" (chrome) and `tadika_murni_1988` (a handle — an
   underscore isn't legal in a hostname label) were both doing it. `_URL_RE`
   wants a scheme or a dotted host with a TLD-shaped tail.
+
+### What a public Page shows, read whole
+
+Measured on a logged-out catering Page, the read used to be 5 lines of text and
+7 photos that were **all square centre-crops** (`stp=c0.233.1294.1294a`) of
+1294x2000 originals — no hero could ever qualify, every site photo was a crop of
+a crop. The Page itself was showing far more. After the ladder, a **views
+stage** (`facebook_render._collect_views`) opens the timeline, the Photos tab
+and `/reviews` in the same context under one budget
+(`FACEBOOK_VIEWS_TIMEOUT_SECONDS`), each folded in by `facebook_dom.merge_view`,
+which **only fills gaps**. A failed view costs itself; the first wall stops the
+stage (repeated anonymous views are what make Facebook start refusing); the
+ladder's own root render is never opened twice. Measured: 4 page loads, 12-16s.
+
+- **The inline payload over the painted DOM.** A rendered tab ships the GraphQL
+  data it painted from as `<script type="application/json">`. One structure walk
+  (`_inline_payload`) yields each photo's original (`uri`/`width`/`height`) and
+  each post's whole `message.text` — schema names, which outlive generated class
+  names by years. **No page load per photo** and no "See more" click (logged
+  out, a click may open the login dialog). The DOM still decides WHICH posts a
+  visitor sees; the payload only says what they really are. A crop and its
+  original share `image_urls.photo_identity` (`fbcdn:<filename>`), so the
+  resolver and poster grouping treat them as one picture.
+- **Intro facts are Facebook's vocabulary.** `Page · A · B` is every category;
+  a `·` line counts as service options only when every item is in
+  `models/facebook.SERVICE_OPTIONS` (Graph's `restaurant_services` maps through
+  `GRAPH_SERVICE_OPTIONS` into the same field); outbound links are unwrapped
+  from `l.facebook.com` (`facebook_urls.unwrap_outbound`) and classified by
+  `nav_extraction.social_link_for_href`, the one platform table — they reach the
+  footer through `SourceContent.social_links`. A clipped `og:description`
+  ("…preparing them...") is completed by the Intro bio only when the bio carries
+  the clipped text's last words.
+- **A recommendation quotes its reviewer.** The `<h2>` names the reviewer and
+  the verdict; the words are that story's `message` in the payload. "Doesn't
+  recommend" is not a testimonial; no words, nothing to quote.
+- **`missing_fields` is what was read, not what a path is assumed to miss**
+  (`missing_fields_for`); a Page stating "(0 reviews)" has nothing to miss.
+  `partial` stays True on every render.
+- **The digest's labels have one spelling**: `models/facebook.FactLabel`, read
+  back by `landing_source`, which splits the digest at them. Multi-line facts are
+  indented as one block, or a caption's own "Price:" line would read as a label.
+
+Cache: `facebook_source.reader_options()` is the Facebook half of the scrape
+reuse key, owned beside the readers; bump `READER_VERSION` when what a read
+collects changes.
+
+### The Page's posts are in the data it already sent
+
+Measured on a captured childcare Page: the logged-out timeline payload holds
+**exactly one** Story, the lazy-load scrolls return byte-identical HTML, and the
+Photos tab's `Photo` objects carry no caption and no date. The reader kept one
+post — and it was a reel, which is why it looked like "a caption with no
+photos". Meanwhile the **About page** the ladder loads first carried ten of the
+Page's recent posts, whole, in its reels collection. They were fetched on every
+read and thrown away.
+
+- **A Page post is a Story inside one of the Page's own feeds**, named by
+  schema: `timeline_list_feed_units` and `aggregated_fb_shorts`
+  (`facebook_dom._PAGE_FEEDS`). A reviewer's story sits under
+  `ratings_list_feed_units` and is never read as the Page's words; a story
+  inside a story (`attached_story`) is a reshare and contributes nothing.
+  `_feed_post` reads words, `creation_time`, `post_id`, permalink, `Photo` and
+  `Video` attachments — pictures from `attachments` only, never an avatar.
+  This relaxes "the DOM decides which posts a visitor sees" for these feeds:
+  they are what the Page renders for a logged-out visitor, not hidden data.
+- **One post read twice is one post** (`facebook_dom.merge_posts`, which the
+  Graph read folds through too): same id, same words, or — when one side has
+  no words — a shared picture. Gaps fill; two captioned posts sharing a photo
+  stay two.
+- **A video's frame illustrates its caption** (`FacebookPost.pictures`), so it
+  joins the photo pool with that caption. On a reels-only Page the frames are
+  the only pictures any caption describes; the frame counts against
+  `facebook_photo_max_images`, and a video past the cap keeps its permalink.
+- **Facebook's `accessibility_caption`** ("May be an image of child, gelato and
+  text") rides as `FacebookPhoto.auto_alt` → `ImageMetadata.platform_alt` →
+  `platform_alt` in the planner's image entry. Machine-made and hedged:
+  evidence for matching, never alt text or copy.
+
+Measured on the capture, no extra request: captioned posts 1 → 10, dated posts
+0 → 10, captioned pictures 0 → 10, gallery-fit photos 9 → 17 (earning the
+Gallery page), `features` earned.
+
+**Captures, not guesses.** `scripts/capture_facebook_page.py` drives the
+reader's own browser setup and navigation and saves every step's HTML to
+`backend/.facebook-captures/` — **gitignored**: captures hold real people's
+names and words. `scripts/measure_facebook_read.py` replays them through
+`facebook_dom.fold_view`, the step the live reader folds through, and prints the
+yield. A reader change states its before/after there.
+
+The Graph path reads the same evidence when a token allows: video attachments
+(`type` `video*`, facebook.com targets only — a shared YouTube link is someone
+else's), uploaded photos with their own `name` captions, and events (grounding
+under `FactLabel.EVENTS`, never a dated listing). Throttled requests (429, 5xx,
+Graph codes 4/17/32/613) retry on `polite`'s back-off; a missing permission
+fails at once, which is what the tolerant groups absorb. Pagination is not
+needed: `posts.limit(25)` returns the whole cap in one request.
+
+Tests: `test_facebook_feed_posts.py`, `test_facebook_graph.py`.
+
+### One photo pass, a profile per industry
+
+Every Facebook Page's photos go through one measured pass
+(`facebook_photo_metadata`: decoded size, fingerprints, OCR/QR, flat-graphic
+screen) and one selection (`facebook_photo_selection`). What differs between a
+kindergarten and a caterer is a row in `facebook_photo_profiles.PROFILES`,
+keyed by `ImageMetadata.selection_context` (`PhotoContext`); a drift test pins
+the two together. Childcare's row is its original rules verbatim (caption must
+name an activity for a hero, words-in-pixels withdrawn, its own vision
+reviewer). The generic row judges a hero **by measurement only** and leaves
+menus, posters and QR codes in the pool — `menu_assets`, `legible_images` and
+`hides_legible_content` already decide where those go, and a second gate
+would be a second answer. Universal: no Facebook photo ever stands for a named
+person (team/testimonials/avatar), and a profile with no reviewer prompt is
+never sent to the vision model.
+
+Every Page photo is `role="content"`, the cover included and never a hero by
+position. `gallery` meant "a cell of a source rack, replayed by its rack" — the
+role every poster, QR and screening pass skips — so a Facebook flyer tagged that
+way could never be placed whole. Measured on the caterer: 6 of its 7 photos are
+menu sheets (OCR names dishes and RM prices), which now earn a Menu page shown
+uncropped at 1294x2000 instead of square crops in a gallery.
+
+**Near-duplicates are a question about pixels alone.** `_similar_photo` used to
+compare dHashes only when both photos shared a caption classification — never
+true for an uncaptioned photo or any non-childcare Page — so it was off where it
+mattered. Measured on real photos: resized, recompressed or re-exposed copies
+land within 3 bits; eight different shots of one activity in one frame no closer
+than 18. `_NEAR_DUPLICATE_BITS = 6`. A crop is not this question (3% already
+costs up to 12 bits); Facebook's crops are told apart by `photo_identity`.
+
+Tests: `test_facebook_dom.py`, `test_facebook_photo_collection.py`,
+`test_facebook_photo_profiles.py`, `test_facebook_photo_dedupe.py`,
+`test_facebook_single_page.EvidencePagesTest`,
+`test_image_walls.EarnedGalleryPageTest`.
 
 ### Signing in once
 
@@ -1286,8 +1595,10 @@ Three parts, each inert without the next:
    `demote_self_chrome_header` can fire after it). `_band_class_for` reads the
    **final** styles — `SectionBandPlan.band` is `None` for non-participants and
    five later passes rewrite `backgroundColor`. Precedence: `headerOverlaySafe`
-   (the scrim is the surface) → photo/opaque gradient → parsed
-   `backgroundColor` composited over the page → page background.
+   (the scrim is the surface) → the section's own surface (`surface_of`, the
+   same model the ink pass reads — see "Copy is inked for the surface it sits
+   on") classed by the ink that reads on it → a photo nobody measured, dark →
+   page background.
 2. **Wire format.** The pill's ink, glass tint and hairline ship as
    `var(--wt-pill-ink|tint|hairline, <built value>)` — catalog
    (`chrome-header-floating-pill`) plus `_logo_mark`'s typographic wordmark.
@@ -1393,11 +1704,12 @@ wash, and `enforce_text_contrast` fixes those exact inks on the flat band.
 That pass could not help here, and correctly so: a real photo in the fill means
 the surface is unknowable from the styles, so it hands the subtree back
 untouched. **The caller knows it, though — it just painted it.** So the wash is
-measured (`image_styling.washed_surface_hex`) and handed to the same pass as
-`enforce_text_contrast(..., surface=…)`, rather than a second colour rule
-growing beside it. `surface` lifts the photo bail-out **for the elements passed
-in only** (a photo tile nested inside still owns its own ink) and suppresses the
-node's own declared `backgroundColor`, which is a colour the wash covered.
+measured (`image_styling.washed_surface_hex`) and recorded on the section
+(`BuilderElement.paint_surface`), which every pass reads through `surface_of` —
+see "Copy is inked for the surface it sits on" — rather than a second colour
+rule growing beside it. The record is the painted node's only (a photo tile
+nested inside still owns its own ink) and outranks the node's declared
+`backgroundColor`, a colour the wash covered.
 `washed_surface_hex` and `washed_photo_background` read one `_wash_base`, so the
 measured surface and the painted one cannot disagree; an unknown/unreadable
 photo colour falls back to the base stop, which at 0.80 alpha cannot cross the
@@ -1432,6 +1744,114 @@ the preview, the builder and the published site agree by construction.
 
 Tests: `test_hero_policy.WashedHeroInkTest`/`WashedSurfaceTest`,
 `test_ux_audit.TextContrastTest`.
+
+## Copy is inked for the surface it sits on — never a hard-coded white
+
+White hero copy on a white or light hero had two causes, and both were the same
+mistake: **an ink chosen for a surface the copy does not sit on.**
+
+- **The split hero (1.02:1).** `assign_visual_policies` froze the hero's band
+  from the PLANNER's `layout` ("background" → a dark photo band) before the hero
+  director picked a split template; a correctly planned split anchored "dark"
+  too whenever its side photo was bright. `apply_luminance_rhythm` then wrote a
+  dark `backgroundColor` — which the split's own light `background` shorthand
+  paints over, a shorthand RESETS `background-color` — and recoloured every
+  line white for the colour nobody could see.
+- **The photo hero (2.97:1 paragraph).** The copy scrim was sized from the
+  photo's whole-frame AVERAGE (Pexels' `avg_color`; Pexels photos were never
+  sampled), and every ink on it chosen against a constant assumed backdrop
+  (`_SCRIM_COMPOSITE_BG`, "0.55 over mid-grey"). Stock photography puts its
+  brightest region behind the copy: of 45 measured stock heroes, 28 left a white
+  paragraph under 4.5:1. Bento photo tiles were worse — every photo got the
+  hero's bottom dissolve into the page colour, under the tile's own title.
+
+Nothing caught either: `enforce_text_contrast` skipped photo/gradient subtrees
+("they own their ink"), and the audit judged hero text against the
+`backgroundColor` the photo covers.
+
+The fix is four pieces, each one home:
+
+1. **One surface model** (`section_content._own_fill` / `surface_of`): what a
+   node's own fill presents to its text — a recorded painted surface outright;
+   a `background` shorthand over (not beside) the colour it resets; gradients
+   as the average of their stops; translucent layers composited; a photo nobody
+   measured is unreadable. The ink pass, the band markers (`_band_class_for`),
+   the rhythm's input (`painted_band`), the eyebrow treatment and the hero
+   accent all read it.
+2. **The scrim is solved for the copy** (`image_styling._copy_scrim`). The
+   photo is measured (`image_sampling` → `PhotoLuminance`, a 24-cell grid, read
+   once per URL per site by `ImageResolver.photo_luminance`); the scrim holds
+   flat across the anchor's `COPY_ZONES` box and is the least that lets the
+   palette's light ink clear 4.5:1 (×`_COPY_SOLVE_MARGIN`) over the zone's
+   bright tail — never lighter than the old average ramp, never past the old
+   single sheet (cover 0.62). `photo_surface_hex` reports, from the same plan,
+   the surface it leaves, and the painter records it (`paint_surface`, a
+   PrivateAttr — never serialized). The edge fade is left out wherever the copy
+   reaches it (a bottom-anchored tile), and only a SECTION fades to the page.
+   A photo that cannot be read is assumed as bright as a photo can be;
+   `PHOTO_SAMPLING_ENABLED=false` is the old ramp exactly.
+3. **One ink rule** (`theme.ink_on`): copy wears the palette's own neutral —
+   its brand-tinted near-white (`light_ink`) or its darkest — whichever reads on
+   the surface, nudged AWAY from it. `band_colors`, the ink pass, the fallback
+   builders, the gallery caption chip and the WhatsApp pill (white on #25D366
+   was under 2:1) all use it. A white in the output is therefore one the palette
+   chose for that surface, never a literal.
+4. **Sections that paint their own surface keep it.** `apply_luminance_rhythm`
+   never repaints them; their band is the one they visibly are
+   (`section_visual_input_for(painted=…)`, which outranks the stale policy).
+   `apply_section_title_inks` skips a title inside a self-filled panel
+   (`cta-banner`'s navy card took a brand-blue title at 1.08:1), and the
+   eyebrow treatment inks a painted section's label for its surface.
+
+`enforce_text_contrast` is the final ink pass: it restates every literal white
+and every wrong-side ink against the surface it actually sits on, and leaves
+brand-hued text and unreadable surfaces alone.
+
+Measured with the preview renderer (`measure.py`-style pixel sampling behind
+each text rect) over 144 offline-built sites — every scheme × palette, 45 stock
+heroes: white paragraphs failing on light backgrounds 34 → 0, split-hero copy
+45/45 → 0, photo-hero paragraphs 15 → 0, headlines 2 → 0, eyebrows 45 → 3. The
+three are small labels over a small bright patch in an otherwise dark photo (a
+p90 over 24 cells does not see a patch that size; reading p99 would darken most
+heroes for a few labels).
+
+**Copy is written as the palette's ink TOKEN** (`theme.ink_css`):
+`var(--builder-color-ink-light|dark, <hex>)` whenever `ink_on` picked one of the
+palette's inks un-nudged, the hex only when it had to nudge for this surface.
+Every renderer derives the two tokens from the live palette (`neutralInks` in
+webtree-public `lib/styles.ts` — vendored to the preview — and builder
+`builder-styles.ts`, mirrors of `theme._neutral_inks`), so generated copy
+follows a palette edit in the builder. The catalog's 31 hard-coded whites are
+those tokens now (`#ffffff` survives only as the var's fallback, for a renderer
+that predates the token); the step-number coin uses the button pair, the
+WhatsApp CTA the dark ink. **A translucent ink is kept only where it still
+reads**: the scrim is solved for the OPAQUE ink, so a 92% paragraph on it
+measured 4.13:1 — the ink pass drops the alpha there (`keep_alpha`).
+
+**The builder's half** (`builder/src/lib/surface-ink.ts`). The generator inks
+the surface it measured; the owner then edits it. Every `UPDATE_ELEMENT` to a
+body element that changes what it paints behind its copy (colour, gradient,
+photo, overlay) runs `withLegibleCopy` at the reducer: a photo the edit put
+there — a swap, a new one — gets the single sheet (`ensureLegibleOverPhoto`, a
+uniform `color-mix(var(--builder-color-ink-dark) 62%)` layer laid directly on
+the photo, aligned size lists kept), and the element's copy is re-inked for its
+new surface (hard-coded white always, a neutral token when it no longer reads,
+a brand or owner-picked colour lifted to AA with its hue kept; a ghost
+button's outline follows). The builder has no pixels, so a photo reads there
+only once its copy cover — what the styles PROVE: uniform sheets, plateau
+scrims, the overlay token — reaches `COPY_MAX_COVER`, and then as that cover
+over a white frame. Article/event cover heroes (`site-hero-style.ts`) take the
+single sheet too: the home hero's scrim was solved for the home photo, and each
+item brings a cover nobody measured. The selection is the tree's copy after the
+seam, or the panel's next write would undo a sheet. `band-markers.ts` reads the
+same surface model (it mirrored the old "photo or opaque gradient is dark").
+
+Tests: `test_surface_ink.py` (including an every-scheme matrix asserting no
+hard-coded white and nothing under 3:1 on a known surface),
+`test_surface_ink_mirror.py` (cross-repo constants, tokens, no literal white in
+the catalog), `test_ux_audit.TextContrastTest`; builder
+`src/lib/surface-ink.test.ts`, `band-markers.test.ts`,
+`site-hero-style.test.ts` (`npm test`); webtree-public `lib/styles.test.ts`.
 
 ## The compact header (below 1024px)
 
@@ -1915,9 +2335,7 @@ Generator side, three rules:
 and a plain **dict** once the frontend posts the site back to `/api/cms/push` —
 which is every real push. `_brand_field` reads either, and a bare `getattr`
 returns None for the dict form. `_upload_media`'s brand-logo block **had** that
-bug; it was fixed in `65e1bc5` and reads `_brand_field` now. (It left one
-artefact: `_brand_field` is defined **twice**, byte-identically, at ~690 and
-~1050. Python keeps the last, so the first is dead code.)
+bug; it was fixed in `65e1bc5` and reads `_brand_field` now.
 
 `webtree-public` needed **no change**:
 `usePublicSeo.ts` already emits `<link rel="icon">` from `entity.favicon`, and
@@ -1930,6 +2348,35 @@ tags and categories forms each had a hand-rolled copy, now replaced. Its
 
 Tests: `test_favicon.py` here; `EntityFaviconEndpointTest`,
 `EntityFaviconUrlTest` in cms-api.
+
+## The site's industry reaches the CMS
+
+The generator settles an industry once (`resolve_industry`); the push stores it
+on `entities.industry`, where it drives the admin's cohort benchmarks and the
+agent's suggested rule templates.
+
+- **One taxonomy, two repos.** `IndustryCategoryLiteral` (`content_blocks.py`;
+  `industry.IndustryCategory` is the same object) and webtree-cms-api's
+  `config/benchmarks.php` `industries` hold the same 13 slugs, labelled CMS-side
+  and read there only through `App\Support\Industry`.
+  `test_industry_taxonomy.py` parses the PHP and fails on drift. A new industry
+  is a slug on both sides plus a row in every per-industry table — the
+  `get_args(IndustryCategory)` tests (theme, design schemes, landing patterns,
+  templates) are the checklist.
+- **`brand.industry` is the carrier.** `generate.py` stamps the resolved value
+  on every brand, the frontend's included — it used to be null whenever the
+  browser posted its own brand. `_site_industry` reads it at push time and
+  never pushes `other`, which would silence the admin's "set your industry"
+  prompt.
+- **Set on create, filled on update, never replaced.** The create request
+  carries it; on an existing entity `_push_industry` writes only into a gap,
+  since a value there was chosen by the owner. A CMS that refuses a slug drops
+  that field, not the push: `_create_entity_tolerating_rejected_optionals`
+  retries once without any optional field the 422 names (the old
+  `entity_url`-clash rule, generalised).
+
+Tests: `test_industry_taxonomy.py`, `test_push_orchestrator.py` (industry
+block); cms-api `EntityIndustryTest`, `AgentAdminApiTest`.
 
 ## Pushing to a live CMS
 
@@ -2289,6 +2736,12 @@ health and brand-cache key included). The local path stays covered by
 `test_llm_backend.py` / `test_llm_cache.py`, unchanged.
 
 ## Gotchas
+
+- **The UI's mood starts at Auto** (`BrandMoodChoice`, sent as `null`). It
+  used to start at `'modern'` and was sent as `mood_override` AND stamped on the
+  brand, which outranks the industry lock and detection — so every site of every
+  source was "modern" unless someone clicked, and childcare's friendly brief
+  never applied. The recipe's theme preview reads the same precedence.
 
 - **Docker dependency skew.** Compose mounts only `./backend/app`, so code edits
   hot-reload but `requirements.txt` additions do **not** reach the container until

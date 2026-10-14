@@ -261,6 +261,37 @@ class GateVocabularyTest(unittest.TestCase):
             for name in scheme.footer_affinity:
                 self.assertIn(name, footers, f"{scheme.slug}: bad footer {name!r}")
 
+    def test_palette_strategies_are_real_and_spendable(self):
+        """Each strategy a scheme states must be one some curated palette is
+        tagged with — a strategy no palette carries narrows to nothing, and
+        `_strategy_narrow` would then quietly fall back to the whole pool."""
+        from app.models.brand import PaletteStrategy
+        from app.services.theme import _CURATED_PALETTES
+
+        known = set(get_args(PaletteStrategy))
+        tagged = {s for c in _CURATED_PALETTES for s in c.strategies}
+        for scheme in DESIGN_SCHEMES:
+            self.assertTrue(scheme.palette_strategies, f"{scheme.slug} states no strategy")
+            for strategy in scheme.palette_strategies:
+                self.assertIn(strategy, known, f"{scheme.slug}: unknown {strategy!r}")
+                self.assertIn(strategy, tagged, f"{scheme.slug}: no palette is {strategy!r}")
+
+    def test_type_directions_are_real_and_offer_a_choice(self):
+        """Every direction a scheme speaks in must reach at least two pairings,
+        or the seeded pick is a forced answer — one typeface per scheme, the
+        convergence directions exist to break."""
+        from app.models.brand import TypeDirection
+        from app.services.theme import MOOD_SPECS, _direction_pool
+
+        known = set(get_args(TypeDirection))
+        for scheme in DESIGN_SCHEMES:
+            self.assertTrue(scheme.type_directions, f"{scheme.slug} states no direction")
+            for direction in scheme.type_directions:
+                self.assertIn(direction, known, f"{scheme.slug}: unknown {direction!r}")
+            for mood in scheme.moods or MOODS:
+                pool = _direction_pool(MOOD_SPECS[mood], scheme.type_directions)
+                self.assertGreaterEqual(len(pool), 2, (scheme.slug, mood))
+
     def test_divider_shapes_are_ones_the_renderers_know(self):
         # webtree-public/lib/sectionDivider.ts has exactly four. A fifth needs
         # renderer changes in three repos, so it cannot be introduced here.
@@ -543,7 +574,9 @@ class SchemesOnDivergeTest(unittest.TestCase):
         )
         self.assertIsNotNone(decision, "no scheme decision was recorded")
         self.assertEqual(decision["choice"], manifest["design_scheme"])
-        self.assertIn("fit list", decision["rationale"])
+        # The design direction's own account: the concepts weighed and why.
+        self.assertIn("Weighed:", decision["rationale"])
+        self.assertIn(manifest["design_scheme"], decision["rationale"])
         # It rides into the CMS on the same flexible-JSON channel as the rest of
         # the manifest, so a builder round-trip keeps it.
         self.assertEqual(site.builder_styles.get("designManifest"), manifest)
@@ -627,13 +660,17 @@ class ContrastSurvivesEverySchemeTest(unittest.TestCase):
         # "flat" removes the fill AND the frame together. A card that kept its
         # fill but lost its border/shadow is the one combination that can vanish
         # against a matching band, so the treatment must never produce it.
-        site = _build("Airy Brand", "luxury", "other", scheme_slug="airy-luxe")
+        # bold-block, not airy-luxe: airy-luxe lays this fixture out without a
+        # single card, so the loop below used to check nothing at all.
+        site = _build("Airy Brand", "friendly", "other", scheme_slug="bold-block")
+        checked = 0
         for element in _walk(_sections(site)):
             if not (element.name or "").lower().endswith("card"):
                 continue
             styles = element.styles or {}
             if not any(k in styles for k in ("border", "boxShadow", "backgroundColor")):
                 continue
+            checked += 1
             framed = styles.get("border") not in (None, "none") or styles.get(
                 "boxShadow"
             ) not in (None, "none")
@@ -642,6 +679,45 @@ class ContrastSurvivesEverySchemeTest(unittest.TestCase):
                 framed or not filled,
                 f"{element.name} is filled but has no frame",
             )
+        self.assertGreater(checked, 0, "the fixture produced no styled card to check")
+
+
+class TreatmentRenderingTest(unittest.TestCase):
+    """Two treatments that rendered wrong the first time schemes were looked at
+    in a browser — schemes had shipped off, so nobody had (design-identity
+    plan, Phase 1)."""
+
+    def setUp(self):
+        settings.design_schemes_enabled = True
+
+    def tearDown(self):
+        settings.design_schemes_enabled = False
+
+    def test_a_decorated_eyebrow_hugs_its_text_and_follows_the_section(self):
+        # A chip stretched across the whole column (the catalog's eyebrow nodes
+        # carry width: 100%), and a forced alignSelf: flex-start pinned a rule
+        # label to the left of a CENTRED intro.
+        site = _build("Pelangi Studio", "friendly", "childcare", scheme_slug="playroom")
+        eyebrows = [e for e in _walk(_sections(site)) if e.name == "Eyebrow"]
+        self.assertTrue(eyebrows)
+        for eyebrow in eyebrows:
+            self.assertEqual(eyebrow.styles.get("width"), "fit-content")
+            self.assertNotIn("alignSelf", eyebrow.styles)
+
+    def test_a_surfaceless_card_declares_no_texture(self):
+        # Every renderer resolves `transparent` to white, calls the card a plain
+        # page band and paints the theme's grain on it — one grey tile behind
+        # the quote, with the catalog's no-repeat.
+        site = _build("Tadika Murni", "friendly", "other", scheme_slug="bold-block")
+        transparent_cards = [
+            e
+            for e in _walk(_sections(site))
+            if (e.name or "").lower().endswith("card")
+            and (e.styles or {}).get("backgroundColor") == "transparent"
+        ]
+        self.assertTrue(transparent_cards)
+        for card in transparent_cards:
+            self.assertEqual(card.backgroundTexture, "flat", card.name)
 
 
 if __name__ == "__main__":

@@ -37,10 +37,10 @@ field that is already emitted. **No renderer anywhere needs to learn anything.**
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
-from app.models.brand import BrandMood, MotionIntensity
+from app.models.brand import BrandMood, MotionIntensity, PaletteStrategy, TypeDirection
 from app.models.design_manifest import FooterArchetype, HeaderArchetype
 from app.services.diversity import pick_diverse
 
@@ -78,6 +78,33 @@ HeroPolicy = Literal[
     "fullbleed-all",   # every page opens on a full-bleed photo hero
     "hero-led",        # homepage full-bleed, interiors take the mood rotation
     "editorial-mix",   # the mood rotation everywhere, homepage included
+]
+
+# How flat section bands are filled. "inherit" keeps the theme's section
+# rotation; "multi-tint" rotates light tints derived from THIS site's palette
+# hues (style_tokens.band_tints), so even the pastel voice differs per brand.
+BandTint = Literal["inherit", "multi-tint"]
+
+# How a section's title is inked. "per-section-accent" cycles brand-derived inks
+# (style_tokens.section_title_inks), each held to AA on its own band.
+HeadingInk = Literal["inherit", "per-section-accent"]
+
+# How a full-bleed photo hero is cast. "neutral" darkens without tinting, so a
+# documentary photo keeps its own colours instead of wearing a brand wash.
+PhotoCast = Literal["inherit", "neutral"]
+
+# A hero composition, by name (services/hero_director maps each to its catalog
+# template). The last four render no photograph at all.
+HeroLead = Literal[
+    "background",     # full-bleed photo
+    "split-washed",   # photo beside copy on an abstract wash
+    "editorial",      # editorial split
+    "bento",          # modular tiles
+    "playful-split",  # blob-masked photo beside sticker chips (friendly/playful)
+    "gradient",       # brand gradient, no photo
+    "centered",       # centred type, no photo
+    "minimal",        # oversized type, no photo
+    "asymmetric",     # asymmetric display type, no photo
 ]
 
 ShadowScale = Literal["soft", "elevated", "dramatic"]
@@ -176,6 +203,16 @@ class DesignScheme:
     # --- layout composition ----------------------------------------------------
     layout_bias: tuple[str, ...] = ()
     hero_policy: HeroPolicy = "inherit"
+    # The homepage's opening when a photograph can carry it; None keeps the
+    # mood's lead (hero_director._MOOD_SPECS).
+    homepage_hero: HeroLead | None = None
+    # The opening when the source has NO photograph to lead with: a type-led
+    # hero, so a stock picture never stands in for the business on its own
+    # front page. None takes the mood's type-led default.
+    type_led_hero: HeroLead | None = None
+    # Whether image/text splits alternate sides down a page (the zigzag). None
+    # keeps today's alternation; False holds every split on one side.
+    alternate_splits: bool | None = None
     header_affinity: tuple[HeaderArchetype, ...] = ()
     footer_affinity: tuple[FooterArchetype, ...] = ()
     motion_intensity: MotionIntensity | None = None
@@ -183,6 +220,32 @@ class DesignScheme:
     # --- colour expression -----------------------------------------------------
     section_rotation: tuple[SectionSlot, ...] = ()
     inverted_cta: bool | None = None
+    # How colour is spent: narrows the curated palette pick when the logo has no
+    # usable hue (theme._strategy_narrow). A usable logo hue always leads.
+    palette_strategies: tuple[PaletteStrategy, ...] = ()
+    band_tint: BandTint = "inherit"
+    heading_ink: HeadingInk = "inherit"
+    # True splits a plain hero headline into two inks even when the copy named
+    # no accent phrase; None/False only splits on an explicit accent.
+    hero_title_accent: bool | None = None
+    photo_cast: PhotoCast = "inherit"
+    # The tone word stock people-photography is searched with ("joyful",
+    # "calm", "candid"…). None keeps the legacy rule (an industry list decided
+    # it — every kindergarten "joyful"); "" searches with no tone word at all.
+    photo_tone: str | None = None
+
+    # --- type & brand mark ------------------------------------------------------
+    # The typographic voices this scheme is built in (theme._pick_pairing picks
+    # within them, seeded); empty defers to the mood pool's industry-fit pick.
+    type_directions: tuple[TypeDirection, ...] = ()
+    # Header logo height, as a CSS length; None keeps header_footer's default.
+    logo_height: str | None = None
+
+    # --- who it is for ------------------------------------------------------------
+    # The brand personality this language suits, as a point on the six
+    # PERSONALITY_AXES (-2..+2; models/brand.py). services/design_direction
+    # scores a brand's known axes against it — the brand-alignment criterion.
+    personality: dict[str, int] = field(default_factory=dict)
 
     @property
     def is_neutral(self) -> bool:
@@ -236,6 +299,13 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("minimal-line", "centered-stack"),
         footer_affinity=("minimal-centered", "editorial"),
         motion_intensity="subtle",
+        palette_strategies=("mono", "muted", "high-contrast"),
+        type_directions=("grotesk-minimal", "editorial-serif"),
+        personality={"playful_sophisticated": 2, "traditional_contemporary": 1, "minimal_expressive": -2, "calm_energetic": -1, "organic_structured": 2, "premium_accessible": -1},
+        photo_tone="minimal",
+        homepage_hero="split-washed",
+        type_led_hero="minimal",
+        alternate_splits=False,
     ),
     DesignScheme(
         slug="editorial-broadsheet",
@@ -264,6 +334,13 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("minimal-line", "centered-stack"),
         footer_affinity=("editorial", "minimal-centered"),
         motion_intensity="subtle",
+        palette_strategies=("warm-neutral", "earth", "mono"),
+        type_directions=("editorial-serif",),
+        personality={"playful_sophisticated": 2, "traditional_contemporary": -1, "minimal_expressive": 1, "calm_energetic": -1, "organic_structured": 0, "premium_accessible": -1},
+        photo_tone="candid",
+        homepage_hero="editorial",
+        type_led_hero="asymmetric",
+        alternate_splits=True,
     ),
     DesignScheme(
         slug="soft-warm",
@@ -290,6 +367,13 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         layout_bias=("grid", "split", "steps"),
         footer_affinity=("cta-banner", "mega"),
         motion_intensity="balanced",
+        palette_strategies=("warm-neutral", "soft-natural", "earth", "pastel"),
+        type_directions=("humanist", "rounded", "editorial-serif"),
+        personality={"playful_sophisticated": -1, "traditional_contemporary": 0, "minimal_expressive": 0, "calm_energetic": -1, "organic_structured": -2, "premium_accessible": 2},
+        photo_tone="warm",
+        homepage_hero="playful-split",
+        type_led_hero="centered",
+        alternate_splits=True,
     ),
     DesignScheme(
         slug="glass-lab",
@@ -315,6 +399,13 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("glass-blur", "floating-pill"),
         footer_affinity=("cta-banner", "minimal-centered"),
         motion_intensity="balanced",
+        palette_strategies=("bold-accent", "high-contrast"),
+        type_directions=("geometric", "grotesk-minimal"),
+        personality={"playful_sophisticated": 1, "traditional_contemporary": 2, "minimal_expressive": 1, "calm_energetic": 1, "organic_structured": 1, "premium_accessible": 0},
+        photo_tone="",
+        homepage_hero="split-washed",
+        type_led_hero="gradient",
+        alternate_splits=True,
     ),
     DesignScheme(
         slug="bold-block",
@@ -347,6 +438,12 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         inverted_cta=True,
         footer_affinity=("cta-banner", "mega"),
         motion_intensity="expressive",
+        palette_strategies=("bold-accent", "high-contrast"),
+        type_directions=("geometric", "grotesk-minimal"),
+        personality={"playful_sophisticated": -1, "traditional_contemporary": 2, "minimal_expressive": 2, "calm_energetic": 2, "organic_structured": 1, "premium_accessible": 1},
+        photo_tone="vibrant",
+        type_led_hero="gradient",
+        alternate_splits=True,
     ),
     DesignScheme(
         slug="dense-technical",
@@ -375,6 +472,13 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("minimal-line", "classic"),
         footer_affinity=("minimal-centered", "mega"),
         motion_intensity="subtle",
+        palette_strategies=("muted", "mono", "high-contrast"),
+        type_directions=("grotesk-minimal", "mono"),
+        personality={"playful_sophisticated": 1, "traditional_contemporary": 1, "minimal_expressive": -2, "calm_energetic": 0, "organic_structured": 2, "premium_accessible": 1},
+        photo_tone="",
+        homepage_hero="split-washed",
+        type_led_hero="minimal",
+        alternate_splits=False,
     ),
     DesignScheme(
         slug="airy-luxe",
@@ -401,6 +505,12 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("centered-stack", "minimal-line"),
         footer_affinity=("minimal-centered", "editorial"),
         motion_intensity="subtle",
+        palette_strategies=("warm-neutral", "muted", "mono"),
+        type_directions=("editorial-serif",),
+        personality={"playful_sophisticated": 2, "traditional_contemporary": 0, "minimal_expressive": -2, "calm_energetic": -2, "organic_structured": 0, "premium_accessible": -2},
+        photo_tone="minimal",
+        type_led_hero="asymmetric",
+        alternate_splits=False,
     ),
     DesignScheme(
         slug="bento-modular",
@@ -424,6 +534,13 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         layout_bias=("bento", "grid", "split"),
         header_affinity=("glass-blur", "floating-pill"),
         motion_intensity="balanced",
+        palette_strategies=("bold-accent", "muted"),
+        type_directions=("geometric", "grotesk-minimal"),
+        personality={"playful_sophisticated": 0, "traditional_contemporary": 2, "minimal_expressive": 1, "calm_energetic": 1, "organic_structured": 1, "premium_accessible": 1},
+        photo_tone="",
+        homepage_hero="bento",
+        type_led_hero="gradient",
+        alternate_splits=True,
     ),
     DesignScheme(
         slug="poster-display",
@@ -452,6 +569,13 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("minimal-line", "centered-stack"),
         footer_affinity=("editorial", "minimal-centered"),
         motion_intensity="balanced",
+        palette_strategies=("high-contrast", "bold-accent", "mono"),
+        type_directions=("editorial-serif", "geometric"),
+        personality={"playful_sophisticated": 1, "traditional_contemporary": 2, "minimal_expressive": 2, "calm_energetic": 1, "organic_structured": 0, "premium_accessible": -1},
+        photo_tone="bold",
+        homepage_hero="asymmetric",
+        type_led_hero="asymmetric",
+        alternate_splits=True,
     ),
     DesignScheme(
         slug="calm-clinical",
@@ -481,6 +605,13 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("classic", "minimal-line"),
         footer_affinity=("minimal-centered", "mega"),
         motion_intensity="subtle",
+        palette_strategies=("soft-natural", "muted"),
+        type_directions=("humanist", "grotesk-minimal"),
+        personality={"playful_sophisticated": 1, "traditional_contemporary": 1, "minimal_expressive": -1, "calm_energetic": -2, "organic_structured": 1, "premium_accessible": 1},
+        photo_tone="calm",
+        homepage_hero="split-washed",
+        type_led_hero="minimal",
+        alternate_splits=False,
     ),
     DesignScheme(
         slug="gallery-first",
@@ -507,6 +638,12 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         hero_policy="fullbleed-all",
         footer_affinity=("editorial", "cta-banner"),
         motion_intensity="balanced",
+        palette_strategies=("warm-neutral", "earth", "muted"),
+        type_directions=("editorial-serif", "humanist"),
+        personality={"playful_sophisticated": 1, "traditional_contemporary": 0, "minimal_expressive": 1, "calm_energetic": 0, "organic_structured": -1, "premium_accessible": -1},
+        photo_tone="natural light",
+        type_led_hero="centered",
+        alternate_splits=True,
     ),
     DesignScheme(
         slug="civic-trust",
@@ -532,6 +669,12 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("classic", "glass-blur"),
         footer_affinity=("cta-banner", "mega"),
         motion_intensity="subtle",
+        palette_strategies=("muted", "high-contrast", "soft-natural"),
+        type_directions=("humanist", "grotesk-minimal"),
+        personality={"playful_sophisticated": 0, "traditional_contemporary": -1, "minimal_expressive": -1, "calm_energetic": -1, "organic_structured": 1, "premium_accessible": 2},
+        photo_tone="candid",
+        type_led_hero="centered",
+        alternate_splits=False,
     ),
     DesignScheme(
         slug="storefront",
@@ -555,6 +698,12 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         layout_bias=("grid", "bento", "banner"),
         footer_affinity=("cta-banner", "mega"),
         motion_intensity="balanced",
+        palette_strategies=("bold-accent", "warm-neutral"),
+        type_directions=("geometric", "humanist"),
+        personality={"playful_sophisticated": -1, "traditional_contemporary": 1, "minimal_expressive": 1, "calm_energetic": 1, "organic_structured": 1, "premium_accessible": 2},
+        photo_tone="bright",
+        type_led_hero="centered",
+        alternate_splits=True,
     ),
     DesignScheme(
         slug="studio-mono",
@@ -583,22 +732,31 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("minimal-line", "centered-stack"),
         footer_affinity=("editorial", "minimal-centered"),
         motion_intensity="subtle",
+        palette_strategies=("mono", "high-contrast"),
+        type_directions=("grotesk-minimal", "editorial-serif"),
+        personality={"playful_sophisticated": 2, "traditional_contemporary": 2, "minimal_expressive": -2, "calm_energetic": -1, "organic_structured": 1, "premium_accessible": -1},
+        photo_tone="minimal",
+        type_led_hero="asymmetric",
+        alternate_splits=False,
     ),
     DesignScheme(
         slug="playroom",
         label="Playroom",
         rationale=(
-            "maximum radius, a mesh wash and shaped seams between every band — "
-            "energy without clutter, aimed at the parent as much as the child"
+            "maximum radius, every band a different light tint of the brand's own "
+            "hues, multi-coloured titles and soft wave seams — cheerful energy "
+            "without clutter, aimed at the parent as much as the child"
         ),
         moods=frozenset({"playful", "friendly"}),
         industries=frozenset({"childcare", "nonprofit"}),
         radius_scale=1.7,
         card_treatment="elevated",
         shadow_scale="dramatic",
-        background_strategy="mesh",
+        # Flat, not mesh: the tinted bands ARE the decoration, and a band carrying
+        # a texture keeps its own fill (the tint pass skips painted sections).
+        background_strategy="flat",
         use_glass=False,
-        divider_shape="peak",
+        divider_shape="wave",
         divider_height=68,
         padding_scale=1.05,
         card_padding_scale=1.15,
@@ -607,8 +765,20 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         heading_weight=800,
         eyebrow_treatment="chip",
         layout_bias=("steps", "grid", "bento", "background"),
+        header_affinity=("classic", "floating-pill"),
         footer_affinity=("cta-banner", "mega"),
         motion_intensity="expressive",
+        palette_strategies=("pastel", "bold-accent"),
+        type_directions=("rounded", "geometric"),
+        personality={"playful_sophisticated": -2, "traditional_contemporary": 1, "minimal_expressive": 2, "calm_energetic": 2, "organic_structured": -1, "premium_accessible": 2},
+        photo_tone="joyful",
+        type_led_hero="gradient",
+        alternate_splits=True,
+        band_tint="multi-tint",
+        heading_ink="per-section-accent",
+        hero_title_accent=True,
+        photo_cast="neutral",
+        logo_height="68px",
     ),
     DesignScheme(
         slug="consult-formal",
@@ -639,6 +809,88 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         header_affinity=("classic", "minimal-line"),
         footer_affinity=("minimal-centered", "mega"),
         motion_intensity="subtle",
+        palette_strategies=("muted", "mono", "warm-neutral"),
+        type_directions=("editorial-serif", "grotesk-minimal"),
+        personality={"playful_sophisticated": 2, "traditional_contemporary": -1, "minimal_expressive": -1, "calm_energetic": -1, "organic_structured": 2, "premium_accessible": -1},
+        photo_tone="",
+        homepage_hero="split-washed",
+        type_led_hero="minimal",
+        alternate_splits=False,
+    ),
+    DesignScheme(
+        slug="nature-studio",
+        label="Nature Studio",
+        rationale=(
+            "earthy colour on a paper grain, organic curved seams and documentary "
+            "photography left in its own colours — calm and grounded, for brands "
+            "whose story happens outdoors or by hand"
+        ),
+        moods=frozenset({"friendly", "editorial", "luxury"}),
+        industry_affinity=frozenset(
+            {"childcare", "nonprofit", "health-wellness", "restaurant"}
+        ),
+        radius_scale=1.2,
+        card_treatment="flat",
+        shadow_scale="soft",
+        background_strategy="grain",
+        use_glass=False,
+        divider_shape="curve",
+        divider_height=56,
+        padding_scale=1.2,
+        card_padding_scale=1.15,
+        container_max_width=1200,
+        type_scale_ratio=1.32,
+        heading_weight=600,
+        heading_tracking="-0.012em",
+        eyebrow_treatment="sentence",
+        layout_bias=("split", "editorial", "grid", "narrative"),
+        hero_policy="hero-led",
+        header_affinity=("classic", "centered-stack"),
+        footer_affinity=("minimal-centered", "editorial"),
+        motion_intensity="subtle",
+        palette_strategies=("earth", "soft-natural", "warm-neutral"),
+        type_directions=("editorial-serif", "humanist"),
+        personality={"playful_sophisticated": 1, "traditional_contemporary": -1, "minimal_expressive": -1, "calm_energetic": -2, "organic_structured": -2, "premium_accessible": 0},
+        photo_tone="natural light",
+        type_led_hero="centered",
+        alternate_splits=True,
+        photo_cast="neutral",
+    ),
+    DesignScheme(
+        slug="storybook-editorial",
+        label="Storybook Editorial",
+        rationale=(
+            "a serif headline voice on a narrow, generous measure with "
+            "narrative splits — the page reads as the brand telling its own "
+            "story, so the copy and the photography carry it, not decoration"
+        ),
+        moods=frozenset({"friendly", "editorial"}),
+        industry_affinity=frozenset({"childcare", "nonprofit", "personal"}),
+        radius_scale=0.6,
+        card_treatment="flat",
+        shadow_scale="soft",
+        background_strategy="flat",
+        use_glass=False,
+        divider_shape=None,
+        padding_scale=1.25,
+        card_padding_scale=1.1,
+        container_max_width=1120,
+        type_scale_ratio=1.4,
+        heading_weight=600,
+        heading_tracking="-0.02em",
+        eyebrow_treatment="rule",
+        layout_bias=("editorial", "narrative", "split", "single"),
+        hero_policy="editorial-mix",
+        header_affinity=("minimal-line", "centered-stack", "classic"),
+        footer_affinity=("editorial", "minimal-centered"),
+        motion_intensity="subtle",
+        palette_strategies=("warm-neutral", "mono", "earth"),
+        type_directions=("editorial-serif",),
+        personality={"playful_sophisticated": 1, "traditional_contemporary": 0, "minimal_expressive": 1, "calm_energetic": -1, "organic_structured": -1, "premium_accessible": 1},
+        photo_tone="candid",
+        homepage_hero="editorial",
+        type_led_hero="asymmetric",
+        alternate_splits=False,
     ),
 )
 

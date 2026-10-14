@@ -293,6 +293,8 @@ class ConnectTest(_TargetSettings):
             body["sites"],
             [
                 {
+                    # Identifies the site an "extend" publish must land on.
+                    "entity_id": "1",
                     "entity_api_token": "tok-acme",
                     "entity_name": "Acme",
                     "entity_url": "https://acme.example",

@@ -358,3 +358,44 @@ class PageBuilderProseTest(unittest.TestCase):
         for section in sections:
             for card in section.cards:
                 self.assertNotIn(card.body[:60], section.prose)
+
+
+# A Wix page paints a 77px `blur_2` blur-up placeholder in `src`; the real
+# photo is named by the media id, which carries its original size.
+_WIX_ID = "b90fa9_522830f99e3c4a05869f25831ba2d48d~mv2_d_7360_4912_s_4_2.jpg"
+_WIX_PLACEHOLDER = (
+    f"https://static.wixstatic.com/media/{_WIX_ID}/v1/fill/w_77,h_51,al_c,q_80,"
+    f"usm_0.66_1.00_0.01,blur_2,enc_avif,quality_auto/{_WIX_ID}"
+)
+
+
+class OnePictureOneUrlTest(unittest.TestCase):
+    """A section's rack and the photo pool must name a picture by the same URL.
+
+    The pool upgraded Wix placeholders and the section reader didn't, so a rack
+    placed verbatim (`_inject_image_walls`) shipped every gallery tile as the
+    77px smear — Glorykids' "Welcome to Glorykids" gallery, while the same
+    photos elsewhere on the page were crisp.
+    """
+
+    _PAGE = f"""
+    <html><body>
+      <h2>Welcome to Glorykids</h2>
+      <div class="row">
+        <div class="tile"><img src="{_WIX_PLACEHOLDER}" width="460" height="340"></div>
+        <div class="tile"><img src="{_WIX_PLACEHOLDER.replace('522830', '80e8ec')}" width="460" height="340"></div>
+        <div class="tile"><img src="{_WIX_PLACEHOLDER.replace('522830', 'bec388')}" width="460" height="340"></div>
+      </div>
+    </body></html>
+    """
+
+    def test_a_rack_names_its_photos_as_the_pool_does(self):
+        url = "https://glorykids.example/"
+        rack = next(s for s in _extract(self._PAGE, url) if s.image_urls)
+        pool = {c.url for c in scraper._extract_images(BeautifulSoup(self._PAGE, "lxml"), url)}
+        self.assertTrue(rack.image_urls)
+        self.assertTrue(set(rack.image_urls) <= pool, (rack.image_urls, pool))
+        for photo in rack.image_urls:
+            self.assertNotIn("blur_2", photo)
+            self.assertIn("w_2560,h_1708", photo)
+        self.assertEqual([c.image_url for c in rack.cards if c.image_url], rack.image_urls)

@@ -35,9 +35,9 @@ from app.services.facebook_orchestrator import (
     run_facebook_job,
     stash_token,
 )
-from app.services.facebook_source import saved_session
+from app.services.facebook_source import reader_options, saved_session
 from app.services.facebook_urls import FacebookUrlError, parse_ref
-from app.services.scraper import ScrapeError, extend_crawl
+from app.services.scraper import EXTRACTION_VERSION, ScrapeError, extend_crawl
 from app.services.sitemap import probe_sitemap
 from app.services.source_detect import SourceHandler, detect
 from app.services.url_guard import UnsafeUrlError, assert_public_url
@@ -136,8 +136,12 @@ def job_options(handler: SourceHandler, payload: StartCrawlRequest) -> dict[str,
             "source": "facebook",
             "has_token": bool((payload.access_token or "").strip()),
             "has_session": saved_session() is not None,
+            # Owned by the reader, so a change to what a read collects can't
+            # forget to invalidate the reads cached before it.
+            **reader_options(),
         }
     return {
+        "extraction_version": EXTRACTION_VERSION,
         "respect_robots": payload.respect_robots,
         "crawl": payload.crawl,
         "crawl_max_pages": payload.crawl_max_pages,

@@ -14,7 +14,7 @@ confidently wrong. We detect the shape and say which it is.
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 from dataclasses import dataclass
 from typing import Literal
@@ -235,3 +235,47 @@ def parse_ref(raw: str, *, strict: bool = True) -> FacebookRef:
         return FacebookRef(handle=None, page_id=handle, canonical_url=_canonical(None, handle))
 
     return FacebookRef(handle=handle, page_id=None, canonical_url=_canonical(handle, None))
+
+
+def tab_url(ref: FacebookRef, tab: str = "") -> str | None:
+    """The address of one of a Page's tabs (`""` is the timeline itself).
+
+    A handle addresses its tabs with a path segment; a numeric id with `&sk=`.
+    """
+    if ref.handle:
+        root = f"{_CANONICAL_HOST}/{ref.handle}"
+        return f"{root}/{tab}" if tab else root
+    if ref.page_id:
+        root = f"{_CANONICAL_HOST}/profile.php?id={ref.page_id}"
+        return f"{root}&sk={tab}" if tab else root
+    return None
+
+
+# Facebook routes every outbound link through its redirector, so the Page's own
+# website and its Instagram are, in the markup, links to facebook.com.
+_OUTBOUND_HOSTS = frozenset({"l.facebook.com", "lm.facebook.com"})
+
+
+def unwrap_outbound(href: str) -> str | None:
+    """Where a `l.facebook.com/l.php?u=…` link really goes, tracking stripped.
+
+    None for anything that isn't Facebook's redirector, or whose target isn't
+    an http(s) URL — the caller only ever wants a dereferenceable destination.
+    """
+    try:
+        parts = urlsplit(href or "")
+    except ValueError:
+        return None
+    if (parts.hostname or "").lower() not in _OUTBOUND_HOSTS or parts.path != "/l.php":
+        return None
+    target = parse_qs(parts.query).get("u", [""])[0]
+    try:
+        dest = urlsplit(target)
+    except ValueError:
+        return None
+    if dest.scheme not in ("http", "https") or not dest.netloc:
+        return None
+    query = urlencode(
+        [(k, v) for k, v in parse_qsl(dest.query) if k.lower() not in _TRACKING_PARAMS]
+    )
+    return urlunsplit((dest.scheme, dest.netloc, dest.path, query, ""))

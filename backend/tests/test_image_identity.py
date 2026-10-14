@@ -229,3 +229,29 @@ class _Chosen:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResolvedImageUrlTest(unittest.TestCase):
+    """One answer to "which picture does this <img> show"."""
+
+    def _img(self, attrs: str):
+        from bs4 import BeautifulSoup
+
+        return BeautifulSoup(f"<img {attrs}>", "html.parser").img
+
+    def test_a_cdn_placeholder_becomes_the_real_photo(self):
+        from app.services.image_urls import resolved_image_url
+
+        media = "abc_123~mv2_d_4000_3000_s_4_2.jpg"
+        placeholder = f"https://static.wixstatic.com/media/{media}/v1/fill/w_40,h_30,blur_2/{media}"
+        self.assertEqual(
+            resolved_image_url(self._img(f'src="{placeholder}"'), "https://x.example/"),
+            f"https://static.wixstatic.com/media/{media}/v1/fill/w_2560,h_1920,al_c,q_90/{media}",
+        )
+
+    def test_a_lazy_image_resolves_to_its_real_source(self):
+        from app.services.image_urls import resolved_image_url
+
+        img = self._img('src="data:image/gif;base64,R0lGOD" data-src="/photos/a.jpg"')
+        self.assertEqual(resolved_image_url(img, "https://x.example/blog/"), "https://x.example/photos/a.jpg")
+        self.assertIsNone(resolved_image_url(self._img('src="data:image/gif;base64,R0lGOD"'), "https://x.example/"))

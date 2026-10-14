@@ -13,6 +13,7 @@ section, never a padded one.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -20,10 +21,63 @@ from pydantic import BaseModel, Field
 # How the Page was read. Mirrored in frontend/src/lib/types.ts — the UI tells
 # the user which path ran, because it explains what's missing and what would fix
 # it. `render_session` is a render signed in with a saved browser session
-# (services/browser_session.py): it sees the About panel a logged-out render
-# doesn't, but still no structured posts or recommendations — only Graph has
-# those.
+# (services/browser_session.py) — a rescue for a Page that refuses a logged-out
+# visitor, and a thinner read than the anonymous one everywhere else.
 FetchPath = Literal["graph", "render", "render_session"]
+
+
+class FactLabel(StrEnum):
+    """The labels `facebook_source.build_raw_text` writes into the fact digest.
+
+    One spelling, because the digest is also PARSED: `landing_source` splits
+    it back into sections at these labels, so a label written here and missing
+    there glues one fact onto the previous section.
+    """
+
+    ABOUT = "About"
+    CATEGORIES = "Categories"
+    MISSION = "Mission"
+    PRODUCTS = "Products and services"
+    SERVICE_OPTIONS = "Service options"
+    FOUNDED = "Founded"
+    PRICE_RANGE = "Price range"
+    ADDRESS = "Address"
+    SERVICE_AREA = "Service area"
+    PHONE = "Phone"
+    EMAIL = "Email"
+    WEBSITE = "Website"
+    ALSO_ON = "Also on"
+    HOURS = "Opening hours"
+    UPDATES = "Updates from the Page"
+    EVENTS = "Events from the Page"
+    REVIEWS = "What customers say"
+    FOLLOWERS = "Followers on Facebook"
+    RATING = "Rating"
+
+
+FACT_LABELS = frozenset(label.casefold() for label in FactLabel)
+
+# How a Page says it serves people — Facebook's own closed vocabulary, shown
+# as one `·`-separated Intro line ("Takeaway · Roadside collection"). A line is
+# read as service options only when EVERY item is in this set, the same bet
+# `facebook_dom._CHROME_VALUES` makes: Facebook's words, never a business's.
+# Both spellings Facebook ships (en-GB and en-US) are listed.
+SERVICE_OPTIONS = frozenset({
+    "dine-in", "takeaway", "takeout", "delivery", "no-contact delivery",
+    "drive-through", "drive-thru", "kerbside pickup", "curbside pickup",
+    "kerbside collection", "roadside collection", "roadside pickup",
+    "in-store collection", "in-store pickup", "in-store shopping",
+    "outdoor seating", "catering", "reservations", "walk-ins welcome",
+    "good for groups", "good for kids", "table service",
+})
+
+# Graph's `restaurant_services` flags → the names the Page itself displays.
+GRAPH_SERVICE_OPTIONS = {
+    "delivery": "Delivery", "takeout": "Takeaway", "pickup": "In-store collection",
+    "outdoor": "Outdoor seating", "catering": "Catering", "reserve": "Reservations",
+    "walkins": "Walk-ins welcome", "groups": "Good for groups", "kids": "Good for kids",
+    "waiter": "Table service",
+}
 
 
 class FacebookHours(BaseModel):
@@ -37,8 +91,31 @@ class FacebookHours(BaseModel):
         return f"{self.day} {self.opens}–{self.closes}"
 
 
+class FacebookPhoto(BaseModel):
+    url: str
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    # Facebook's own automatic description of the picture — its
+    # `accessibility_caption`, "May be an image of child, gelato and text".
+    # Machine-made and hedged, so it is evidence about the pixels for matching
+    # and screening, never a caption the business wrote and never site copy.
+    auto_alt: str | None = None
+
+
+class FacebookVideo(BaseModel):
+    """A video a post carries. The frame Facebook shows for it is a picture of
+    the business like any photo; the video itself is never downloaded."""
+
+    url: str  # the video's own permalink on facebook.com
+    video_id: str | None = None
+    thumbnail_url: str | None = None
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    duration_ms: int | None = Field(default=None, ge=0)
+
+
 class FacebookPost(BaseModel):
-    """A published post. Used as grounding text and as a photo source.
+    """A published post. Used as grounding text and as a picture source.
 
     Deliberately never rendered as a dated feed: "15% off this Friday" is true
     on the Page and wrong baked into permanent site copy.
@@ -48,6 +125,42 @@ class FacebookPost(BaseModel):
     created_time: str | None = None
     image_url: str | None = None
     permalink: str | None = None
+    post_id: str | None = None
+    photos: list[FacebookPhoto] = Field(default_factory=list)
+    videos: list[FacebookVideo] = Field(default_factory=list)
+
+    @property
+    def photo_sources(self) -> list[FacebookPhoto]:
+        """Attachment originals first, with the legacy full-picture fallback."""
+        photos = list(self.photos)
+        if self.image_url and all(p.url != self.image_url for p in photos):
+            photos.append(FacebookPhoto(url=self.image_url))
+        return photos
+
+    @property
+    def video_frames(self) -> list[FacebookPhoto]:
+        """The frame Facebook shows for each video, as a picture. Its size is
+        the pixel pass's to measure: the video's own size is not the frame's."""
+        return [FacebookPhoto(url=video.thumbnail_url) for video in self.videos if video.thumbnail_url]
+
+    @property
+    def pictures(self) -> list[FacebookPhoto]:
+        """Every picture the post shows — its photos, then its video frames —
+        all of them illustrating the same caption."""
+        photos = self.photo_sources
+        known = {photo.url for photo in photos}
+        return [*photos, *(frame for frame in self.video_frames if frame.url not in known)]
+
+
+class FacebookEvent(BaseModel):
+    """An event the Page published. Grounding, like a post, and never a dated
+    listing on the site: a past event is history, a future one goes stale."""
+
+    name: str
+    description: str | None = None
+    start_time: str | None = None
+    place: str | None = None
+    url: str | None = None
 
 
 class FacebookReview(BaseModel):
@@ -75,11 +188,17 @@ class FacebookPage(BaseModel):
     products: str | None = None
     founded: str | None = None
     price_range: str | None = None
+    service_options: list[str] = Field(default_factory=list)
 
     # --- contact ----------------------------------------------------------
     phone: str | None = None
     emails: list[str] = Field(default_factory=list)
     website: str | None = None
+    # Profiles on other platforms the Page links to (Instagram, TikTok…), as
+    # URLs `nav_extraction.social_link_for_href` accepted. Labels are derived
+    # from that same classifier wherever they are shown, so they can't drift.
+    social_profiles: list[str] = Field(default_factory=list)
+    service_area: str | None = None
     street: str | None = None
     city: str | None = None
     state: str | None = None
@@ -98,6 +217,7 @@ class FacebookPage(BaseModel):
     profile_picture_url: str | None = None
     cover_photo_url: str | None = None
     posts: list[FacebookPost] = Field(default_factory=list)
+    events: list[FacebookEvent] = Field(default_factory=list)
 
     # --- provenance -------------------------------------------------------
     # Drives the preview's trust surface. Because the user never explicitly
@@ -143,12 +263,19 @@ class FacebookPage(BaseModel):
 
     @property
     def post_photo_urls(self) -> list[str]:
-        """De-duplicated post images, newest first, order preserved."""
+        """De-duplicated post pictures (photos and video frames), in post order."""
         seen: list[str] = []
         for post in self.posts:
-            if post.image_url and post.image_url not in seen:
-                seen.append(post.image_url)
+            for photo in post.pictures:
+                if photo.url not in seen:
+                    seen.append(photo.url)
         return seen
+
+    @property
+    def photo_urls(self) -> list[str]:
+        """Every picture this read names — mark, cover and post photos."""
+        heads = [url for url in (self.profile_picture_url, self.cover_photo_url) if url]
+        return [*heads, *(url for url in self.post_photo_urls if url not in heads)]
 
     @property
     def posts_with_text(self) -> list[FacebookPost]:

@@ -73,3 +73,7 @@ npm-debug.log*
 
 # Claude Code local worktrees (nested git repos — must not be committed as gitlinks)
 /.claude/worktrees/
+
+# Captured Facebook reads (real people's names and words) — local replay only,
+# see backend/scripts/capture_facebook_page.py. Never commit.
+/backend/.facebook-captures/

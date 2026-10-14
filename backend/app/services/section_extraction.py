@@ -58,9 +58,11 @@ from bs4 import BeautifulSoup, Tag
 from app.models.content_blocks import SectionCandidate, SourceCard, SourceCardKind
 from app.services.image_urls import (
     BG_URL_RE as _BG_URL_RE,
+    absolute_url,
     declared_display_width,
     descriptive_name_from_url,
     image_src_from_tag,
+    resolved_image_url,
 )
 from app.services.source_outline import is_text_block
 
@@ -194,9 +196,10 @@ def _background_image_src(tag: Tag) -> str | None:
 
 
 def _background_image_url(tag: Tag, base_url: str) -> str | None:
-    """First CSS ``background-image`` url() at or under `tag`, absolutized."""
+    """First CSS ``background-image`` url() at or under `tag`, resolved the way
+    the photo pool resolves it."""
     src = _background_image_src(tag)
-    return urljoin(base_url, src) if src else None
+    return absolute_url(base_url, src) if src else None
 
 
 # How far above an <img> the repeating tile can sit. Hand-built and page-builder
@@ -542,9 +545,8 @@ def _build_card(
                 continue
             if is_decorative_image(img):
                 continue
-            src = img.get("src")
-            if isinstance(src, str) and src.strip():
-                image_url = urljoin(base_url, src.strip())
+            image_url = resolved_image_url(img, base_url)
+            if image_url is not None:
                 alt = img.get("alt")
                 image_alt = alt.strip() if isinstance(alt, str) else ""
         if image_url is None:
@@ -695,11 +697,8 @@ def _image_only_cards(
     for el in span:
         if el.name != "img":
             continue
-        src = el.get("src")
-        if not isinstance(src, str) or not src.strip():
-            continue
-        url = urljoin(base_url, src.strip())
-        if url in seen:
+        url = resolved_image_url(el, base_url)
+        if url is None or url in seen:
             continue
         seen.add(url)
         out.append((_build_card(_image_tile_title(el), [el], base_url, own_lines=[]), [el]))

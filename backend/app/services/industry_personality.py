@@ -75,17 +75,17 @@ _PERSONALITIES: dict[str, IndustryPersonality] = {
     ),
     "childcare": IndustryPersonality(
         voice=(
-            "warm, reassuring, parent-first — sell outcomes (confidence, "
-            "curiosity, belonging), never facilities alone; joyful but never "
-            "childish or sales-heavy; the parent should feel 'I can picture "
-            "my child thriving here'"
+            "warm, reassuring, parent-first — name this school's real "
+            "programmes, routines and approach rather than generic promises "
+            "about bright futures; joyful but never childish or sales-heavy; "
+            "let the parent picture their child's actual day here"
         ),
         design=(
-            "soft organic layouts with rounded corners and curved section "
-            "dividers, Scandinavian calm with playful hand-drawn accents, "
-            "cream/sky/mint/peach pastel palette with one brighter accent, "
-            "rounded friendly display type, candid photography of children "
-            "learning and teachers caring — never corporate, dark, or clip-art"
+            "the look follows THIS school's own logo colours, photography and "
+            "stated approach — calm Montessori minimal, nature-led, editorial, "
+            "academic or bright and contemporary are all at home here; candid "
+            "photography of real activities and caring teachers — never "
+            "corporate stock, dark, or clip-art"
         ),
     ),
     "personal": IndustryPersonality(
@@ -93,6 +93,27 @@ _PERSONALITIES: dict[str, IndustryPersonality] = {
         design=(
             "portfolio grid or single-column narrative, expressive display "
             "face, one signature color against neutrals"
+        ),
+    ),
+    "home-services": IndustryPersonality(
+        voice="dependable, local, straight-talking — say what gets fixed and how fast",
+        design=(
+            "sturdy grid, bold readable type, high-contrast quote CTA, real "
+            "job-site photography over polished stock"
+        ),
+    ),
+    "health-wellness": IndustryPersonality(
+        voice="calm, caring, qualified — reassure first, then explain the care",
+        design=(
+            "airy layouts with generous whitespace, soft natural palette, "
+            "humanist type, practitioners pictured, booking always one tap away"
+        ),
+    ),
+    "real-estate": IndustryPersonality(
+        voice="aspirational yet precise — location, space and light, then the facts",
+        design=(
+            "full-bleed property photography, refined serif display type, "
+            "restrained neutral palette, listing details set like a spec sheet"
         ),
     ),
     "other": IndustryPersonality(

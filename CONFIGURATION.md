@@ -114,9 +114,11 @@ is the cost record.
 | Variable | Default | Description |
 |---|---|---|
 | `DESIGN_BRAIN_ENABLED` | `true` | LLM per-section template variety (safe no-op off). |
-| `DESIGN_LANGUAGE_ENABLED` | `true` | LLM palette/font pairing pass. |
+| `DESIGN_LANGUAGE_ENABLED` | `true` | The concept pick: one reasoning call choosing, by index, among the top scored design concepts (`services/design_direction.py`) and stating the hero height. Off → the best-scored concept. |
+| `DESIGN_CONCEPT_CANDIDATES` | `3` | How many scored concepts the pick weighs (1–6). `1` = fast: best score, no call. |
 | `DESIGN_ENGINE_ENABLED` | `true` | Design director: varies header/footer chrome archetypes per brand (off → legacy classic/mega chrome). |
 | `DIVERSITY_ENGINE_ENABLED` | `true` | SQLite usage history steering consecutive sites away from repeating chrome picks (off → pure seeded rotation). |
+| `DESIGN_SCHEMES_ENABLED` | `true` | Design schemes (`services/design_schemes.py`): each site is built in one of several visual languages — palette strategy, type direction, density, shape, decoration — chosen per brand. Off → every axis defers to the per-mood defaults (byte-identical to the pre-scheme generator). |
 | `HERO_FULLBLEED_ALL_PAGES` | `true` | Full-bleed hero on every page. |
 | `HERO_MIN_BACKGROUND_DIM` | `1200` | Min long-edge (px) for a scraped hero background. |
 | `HERO_BG_MIN_ASPECT` | `1.2` | Min width/height for a scraped hero background. |
@@ -160,6 +162,11 @@ when a token is available, a public-page render otherwise.
 | `FACEBOOK_MAX_REVIEWS` | `12` | Recommendations read as testimonials. |
 | `FACEBOOK_MIN_RAW_TEXT_CHARS` | `200` | Below this, a Page is refused (422) rather than padded into a site. Higher than the document path's 80 because a Page always yields a name plus a category. |
 | `FACEBOOK_RENDER_FALLBACK_ENABLED` | `true` | `false` requires a token instead of rendering the public Page. |
+| `FACEBOOK_VIEWS_TIMEOUT_SECONDS` | `30` | One budget for the render's timeline, Photos-tab and recommendations views. Running out costs the views not yet read, never the About facts. |
+| `FACEBOOK_VIEW_SCROLL_STEPS` | `2` | Lazy-load scrolls per view; each waits at most 1.2s for new images. |
+| `FACEBOOK_PHOTO_MAX_IMAGES` | `24` | Distinct photos a read keeps. Originals come from the page's inline data, so a higher cap costs downloads and CPU checks, not page loads. |
+| `FACEBOOK_PHOTO_REVIEW_MODE` | `metadata` | How every Page's photos are screened: measured CPU checks plus caption hints, or `vision` (only for an industry profile with its own reviewer prompt — childcare today). |
+| `FACEBOOK_PHOTO_URL_REFRESH_HOURS` | `24` | Facebook photo links are signed and expire ~5 days after a read. Generating a site whose links die within this window re-reads the Page and renews them by photo identity; a link that is dead and can't be renewed is left out with a warning, and the push refuses a dead one instead of stripping it. |
 | `FACEBOOK_LOGO_VISION_CHECK` | `true` | Ask the vision judge whether the profile picture is a mark or a photograph; a photograph is demoted to palette-only so the header falls back to the wordmark. No-op unless `OLLAMA_VISION_MODEL` is set. |
 
 ## Network, security & infrastructure

@@ -95,6 +95,7 @@ class PixelReading:
     # recognised as one (image_urls.image_identity). None only for a reading
     # built without bytes.
     content_hash: str | None = None
+    text: str = ""
 
 
 # Process-lifetime cache: {url: reading}. Regenerations commonly reuse the same
@@ -155,8 +156,9 @@ def ocr_engine_available() -> bool:
     return ocr_enabled() and _engine() is not None
 
 
-def _decode(payload: bytes | str) -> Any:
-    """Bytes or base64-JPEG → an RGB numpy array the detector accepts."""
+def _decode(payload: bytes | str, max_px: int | None = None) -> Any:
+    """Bytes or base64-JPEG → an RGB numpy array the detector accepts, no larger
+    than ``max_px`` on its long side (default: the photo-screening size)."""
     import numpy as np
     from PIL import Image
 
@@ -172,7 +174,8 @@ def _decode(payload: bytes | str) -> Any:
         # reused as-is. Smaller inputs also *improve* separation: incidental
         # small text (a logo on a shirt) drops below the detector's floor while
         # a headline stays well above it.
-        rgb.thumbnail((settings.ocr_input_px, settings.ocr_input_px))
+        limit = max_px or settings.ocr_input_px
+        rgb.thumbnail((limit, limit))
         return np.array(rgb)
 
 
@@ -195,6 +198,25 @@ def _coverage(boxes: Any, width: int, height: int) -> float:
     return covered / (width * height)
 
 
+def _recognized_text(boxes: Any, limit: int | None = 2000) -> str:
+    """Confident words in reading order, keeping price/dish rows together; capped
+    at ``limit`` characters (None: a whole document page)."""
+    rows: list[tuple[float, list[tuple[float, str]]]] = []
+    words = []
+    for box, text, confidence in boxes or []:
+        if confidence < _MIN_BOX_CONFIDENCE or len(str(text).strip()) < _MIN_BOX_CHARS:
+            continue
+        xs, ys = [point[0] for point in box], [point[1] for point in box]
+        words.append((sum(ys) / len(ys), min(xs), max(4, (max(ys) - min(ys)) / 2), str(text).strip()))
+    for y, x, tolerance, text in sorted(words):
+        if rows and abs(rows[-1][0] - y) <= tolerance:
+            rows[-1][1].append((x, text))
+        else:
+            rows.append((y, [(x, text)]))
+    text = "\n".join(" ".join(text for _, text in sorted(row)) for _, row in rows)
+    return text if limit is None else text[:limit]
+
+
 def read_pixels(payload: bytes | str) -> PixelReading | None:
     """Read one image's words and code from a single decode. None if unreadable."""
     engine = _engine()
@@ -211,10 +233,35 @@ def read_pixels(payload: bytes | str) -> PixelReading | None:
     if height <= 0 or width <= 0:
         return None
     return PixelReading(
+        text=_recognized_text(boxes),
         has_text=_coverage(boxes, width, height) >= _COVERAGE_THRESHOLD,
         qr_payload=qr_codes.decode(pixels),
         content_hash=_content_hash(payload),
     )
+
+
+# A scanned page is read at reading resolution, not the 512px photo screen —
+# body type at 512px is a few pixels tall and the recognizer cannot resolve it.
+_DOCUMENT_PAGE_PX = 2000
+
+
+def read_document_page(image: bytes) -> str | None:
+    """The words on one rendered document page (a scanned PDF has no text
+    layer), in reading order. None when OCR is off or unavailable, or the
+    image is unreadable; "" for a page that says nothing."""
+    if not ocr_enabled():
+        return None
+    engine = _engine()
+    if engine is None:
+        return None
+    try:
+        pixels = _decode(image, max_px=_DOCUMENT_PAGE_PX)
+        if pixels is None:
+            return None
+        boxes, _elapsed = engine(pixels)
+    except Exception:  # noqa: BLE001 — undecodable page, model hiccup
+        return None
+    return _recognized_text(boxes, limit=None)
 
 
 def _content_hash(payload: bytes | str) -> str | None:
@@ -231,7 +278,7 @@ def _content_hash(payload: bytes | str) -> str | None:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _candidates(metadata: list[ImageMetadata], max_images: int) -> list[ImageMetadata]:
+def _candidates(metadata: list[ImageMetadata], max_images: int, *, include_gallery: bool = False) -> list[ImageMetadata]:
     """The images worth a prefetch inference, most background-plausible first.
 
     A headshot or a 40px icon is barred from every slot by other gates long
@@ -241,7 +288,7 @@ def _candidates(metadata: list[ImageMetadata], max_images: int) -> list[ImageMet
         item
         for item in metadata
         if item.url
-        and item.role not in _SKIP_ROLES
+        and (item.role not in _SKIP_ROLES or (include_gallery and item.role == "gallery"))
         and item.url not in _TEXT_CACHE
     ]
     # The source's own CSS backgrounds and hero-intent images are the ones that
@@ -250,7 +297,13 @@ def _candidates(metadata: list[ImageMetadata], max_images: int) -> list[ImageMet
         background_ish = (
             item.source_usage == "css_background" or item.role in ("hero", "background")
         )
-        return (0 if background_ish else 1, 0 if item.intent == "hero" else 1)
+        if item.content_purpose:
+            tier = 0
+        elif background_ish:
+            tier = 1
+        else:
+            tier = 2
+        return tier, 0 if item.intent == "hero" else 1
 
     eligible.sort(key=priority)
     return eligible[: max(0, max_images)]
@@ -260,6 +313,7 @@ def _stamp(metadata: list[ImageMetadata], readings: dict[str, PixelReading]) -> 
     for item in metadata:
         reading = readings.get(item.url)
         if reading is not None:
+            item.ocr_text = reading.text
             item.ocr_has_text = reading.has_text
             item.qr_payload = reading.qr_payload
             item.content_hash = reading.content_hash
@@ -268,8 +322,9 @@ def _stamp(metadata: list[ImageMetadata], readings: dict[str, PixelReading]) -> 
 async def prefetch_text_flags(
     metadata: list[ImageMetadata],
     *,
-    prefetched: dict[str, str] | None = None,
+    prefetched: dict[str, bytes | str] | None = None,
     max_images: int | None = None,
+    include_gallery: bool = False,
 ) -> dict[str, PixelReading]:
     """Stamp `ocr_has_text` and `qr_payload` on up to `max_images` scraped images.
 
@@ -292,7 +347,7 @@ async def prefetch_text_flags(
     limit = settings.ocr_max_images if max_images is None else max_images
     # Anything already judged this process is free, whatever the cap.
     judged = [item.url for item in metadata if item.url in _TEXT_CACHE]
-    targets = [item.url for item in _candidates(metadata, limit)]
+    targets = [item.url for item in _candidates(metadata, limit, include_gallery=include_gallery)]
     readings = await _screen([*judged, *targets], prefetched or {})
     _stamp(metadata, readings)
     return readings
@@ -346,7 +401,7 @@ async def verify_url(url: str) -> bool:
     return reading is not None and reading.has_text
 
 
-async def _screen(urls: list[str], prefetched: dict[str, str]) -> dict[str, PixelReading]:
+async def _screen(urls: list[str], prefetched: dict[str, bytes | str]) -> dict[str, PixelReading]:
     """Readings for `urls`: cached ones free, the rest read in one batch."""
     unique = list(dict.fromkeys(url for url in urls if url))
     readings = {url: _TEXT_CACHE[url] for url in unique if url in _TEXT_CACHE}
@@ -363,7 +418,7 @@ async def _screen(urls: list[str], prefetched: dict[str, str]) -> dict[str, Pixe
 
 
 async def _payloads(
-    urls: list[str], prefetched: dict[str, str]
+    urls: list[str], prefetched: dict[str, bytes | str]
 ) -> list[tuple[str, bytes | str]]:
     """(url, image payload) for each URL, reusing prefetched downloads and
     dropping the ones that don't fetch."""

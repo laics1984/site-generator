@@ -22,6 +22,7 @@ from app.services.section_content import (
     whatsapp_href,
 )
 from app.services.template_filler import fill_template, get_template
+from app.services.theme import _contrast, build_theme, ink_on
 
 
 async def _stub_image(query: str):
@@ -167,6 +168,8 @@ class MoodGatingTest(unittest.TestCase):
 
 
 class WhatsAppButtonPassTest(unittest.TestCase):
+    palette = build_theme("#2563eb").palette
+
     def _link(self, href, label="WhatsApp us"):
         return BuilderElement(
             id="l1", name="Link", type="link", styles={"color": "#000"},
@@ -175,27 +178,33 @@ class WhatsAppButtonPassTest(unittest.TestCase):
 
     def test_wa_link_becomes_green_pill(self):
         el = self._link("https://wa.me/60123456789")
-        styled = style_whatsapp_links([el])
+        styled = style_whatsapp_links([el], self.palette)
         self.assertEqual(styled, 1)
         self.assertEqual(el.styles["backgroundColor"], "#25D366")
-        self.assertEqual(el.styles["color"], "#ffffff")
+        # The brand's green, the palette's ink for it: white on #25D366 is under
+        # 2:1, so a hard-coded white made the pill the hardest button to read.
+        ink = ink_on(self.palette, "#25D366")
+        self.assertEqual(el.styles["color"], ink)
+        self.assertGreaterEqual(_contrast(ink, "#25D366"), 4.5)
         self.assertIn("data:image/svg+xml", el.styles["backgroundImage"])
+        # The glyph is drawn in the label's ink.
+        self.assertIn("fill='%23" + ink.lstrip("#"), el.styles["backgroundImage"])
 
     def test_non_wa_links_untouched(self):
         el = self._link("https://example.com/contact", "Contact")
-        self.assertEqual(style_whatsapp_links([el]), 0)
+        self.assertEqual(style_whatsapp_links([el], self.palette), 0)
         self.assertEqual(el.styles, {"color": "#000"})
 
     def test_icon_only_links_skipped(self):
         el = self._link("https://wa.me/60123456789", label="")
-        self.assertEqual(style_whatsapp_links([el]), 0)
+        self.assertEqual(style_whatsapp_links([el], self.palette), 0)
 
     def test_nested_links_found(self):
         wrapper = BuilderElement(
             id="c1", name="Row", type="container", styles={},
             content=[self._link("https://api.whatsapp.com/send?phone=60123456789")],
         )
-        self.assertEqual(style_whatsapp_links([wrapper]), 1)
+        self.assertEqual(style_whatsapp_links([wrapper], self.palette), 1)
 
 
 class ProcessStepsMoodPreferenceTest(unittest.TestCase):

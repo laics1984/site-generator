@@ -11,8 +11,6 @@ from app.services.theme import (
     FontPairing,
     band_colors,
     build_theme,
-    curated_palette_by_slug,
-    curated_palette_options,
     resolve_color_scheme,
     _CURATED_DARK_PALETTES,
     _CURATED_PALETTES,
@@ -29,6 +27,7 @@ from app.services.theme import (
     _relative_luminance,
     _rgb_to_hls,
     _text_for_background,
+    ink_on,
 )
 
 MOODS: tuple[BrandMood, ...] = (
@@ -436,12 +435,16 @@ class CuratedDarkPaletteTest(unittest.TestCase):
             self.assertGreaterEqual(_contrast(p.background, p.text), 7.0, c.name)
             self.assertGreater(_relative_luminance(p.text), 0.6, c.name)
 
-    def test_dark_bands_stay_white_ink(self):
+    def test_dark_bands_take_the_palettes_light_ink(self):
+        """Both bands of a dark palette are dark, so both carry light copy — the
+        palette's OWN light ink (its body text colour), held to AA, never a
+        hard-coded #ffffff (`theme.ink_on`)."""
         for c in _CURATED_DARK_PALETTES:
             p = _palette_from_curated_dark(c)
             for band in ("light", "dark"):
                 bg, fg = band_colors(p, band)
-                self.assertEqual(fg, "#ffffff", f"{c.name}/{band}")
+                self.assertEqual(fg, ink_on(p, bg), f"{c.name}/{band}")
+                self.assertGreater(_relative_luminance(fg), 0.5, f"{c.name}/{band}")
                 self.assertGreaterEqual(_contrast(bg, fg), 4.5, f"{c.name}/{band}")
 
     def test_dark_ladder_ascends_from_band_to_surface(self):
@@ -533,32 +536,15 @@ class MoodAwareCandidatesTest(unittest.TestCase):
             for c in legacy:
                 self.assertIn(c, offered, f"{c.name} lost on mood {mood}")
 
-    def test_options_and_lookup_mirror_the_candidate_set(self):
-        """The three-way lockstep the module docstrings promise, plus the
-        guarantee that a slug can never cross schemes."""
-        for scheme in ("light", "dark"):
-            other = "dark" if scheme == "light" else "light"
-            for mood in MOODS:
-                for industry in self.INDUSTRIES:
-                    where = f"{scheme}/{mood}/{industry}"
-                    candidates = {c.slug for c in _curated_candidates(industry, mood, scheme)}
-                    options = {
-                        o["slug"]
-                        for o in curated_palette_options(industry, mood=mood, scheme=scheme)
-                    }
-                    self.assertEqual(candidates, options, where)
-                    for slug in candidates:
-                        self.assertIsNotNone(
-                            curated_palette_by_slug(slug, industry, mood=mood, scheme=scheme),
-                            f"{where}: {slug} unresolvable",
-                        )
-                    for slug in {
-                        c.slug for c in _curated_candidates(industry, mood, other)
-                    }:
-                        self.assertIsNone(
-                            curated_palette_by_slug(slug, industry, mood=mood, scheme=scheme),
-                            f"{where}: {other} slug {slug} leaked",
-                        )
+    def test_a_slug_never_crosses_schemes(self):
+        """Light and dark draw from separate tables with namespaced slugs, so the
+        diversity history (one bare slug per pick, no scheme column) can never
+        let a light pick steer a dark one."""
+        for mood in MOODS:
+            for industry in self.INDUSTRIES:
+                light = {c.slug for c in _curated_candidates(industry, mood, "light")}
+                dark = {c.slug for c in _curated_candidates(industry, mood, "dark")}
+                self.assertFalse(light & dark, f"{mood}/{industry}")
 
     def test_mood_actually_changes_the_palette(self):
         """The point of the whole mood axis.
@@ -593,18 +579,6 @@ class MoodAwareCandidatesTest(unittest.TestCase):
             else:
                 self.assertNotIn("bordeaux", offered, mood)
 
-    def test_options_quote_the_colours_that_actually_ship(self):
-        # The menu used to print raw source tokens: a curated `dark` of #0F172A
-        # was offered while _brand_ink capped it to #171a22 on the page.
-        for o in curated_palette_options("saas"):
-            entry = curated_palette_by_slug(str(o["slug"]), "saas")
-            self.assertIsNotNone(entry)
-            mapped = _palette_from_curated(entry)  # type: ignore[arg-type]
-            swatches = o["swatches"]
-            self.assertEqual(swatches["page"], mapped.background)  # type: ignore[index]
-            self.assertEqual(swatches["band"], mapped.secondary)  # type: ignore[index]
-            self.assertEqual(swatches["ink"], mapped.text)  # type: ignore[index]
-
 
 class HeroHeightTokenTest(unittest.TestCase):
     """to_builder_styles emits the hero token only when banded, so default
@@ -635,82 +609,36 @@ class BrandMoodTokenTest(unittest.TestCase):
             self.assertEqual(theme.to_builder_styles()["brandMood"], mood)
 
 
-class DesignLanguageOverrideTest(unittest.TestCase):
-    """palette_choice/font_choice (the design-language LLM picks) override the
-    deterministic selection when valid, and are silent no-ops when not."""
+class CuratedSelectionTest(unittest.TestCase):
+    """What the palette path guarantees now that no menu pick reaches it: the
+    logo leads, curated palettes fill in for a hueless one, and every curated
+    path records a slug the manifest and the history can use."""
 
     def test_slugs_are_unique(self):
         palette_slugs = [c.slug for c in _CURATED_PALETTES]
         self.assertEqual(len(palette_slugs), len(set(palette_slugs)))
         for mood in MOODS:
-            pool_slugs = [p.slug for p in MOOD_SPECS[mood].font_pool]
+            spec = MOOD_SPECS[mood]
+            pool_slugs = [p.slug for p in (*spec.font_pool, *spec.direction_pairings)]
             self.assertEqual(
                 len(pool_slugs), len(set(pool_slugs)), f"{mood}: duplicate pairing slugs"
             )
 
-    def test_valid_palette_choice_takes_that_curated_palette(self):
-        entry = next(c for c in _CURATED_PALETTES if c.slug == "ai-platform")
-        # A strong brand hue would normally win a Tailwind snap under "auto";
-        # the design-language pick must beat it.
-        theme = build_theme(
-            "#dc2626",
-            mood="modern",
-            palette_mode="auto",
-            industry="saas",
-            palette_choice="ai-platform",
+    def test_a_logo_hue_leads_and_records_no_curated_slug(self):
+        """Decision Q2 (docs/design-identity-plan.md): the brand's own colour is
+        evidence, so it leads on every light build."""
+        theme = build_theme("#dc2626", mood="modern", palette_mode="auto", industry="saas")
+        self.assertIsNone(theme.palette_slug)
+        self.assertNotIn(
+            theme.palette.primary.upper(),
+            {c.primary.upper() for c in _CURATED_PALETTES if "saas" in c.categories},
         )
-        self.assertEqual(theme.palette.primary.lower(), entry.primary.lower())
+
+    def test_a_hueless_logo_takes_a_curated_palette(self):
+        theme = build_theme("#111827", mood="modern", palette_mode="auto", industry="saas")
+        self.assertIsNotNone(theme.palette_slug)
+        entry = next(c for c in _CURATED_PALETTES if c.slug == theme.palette_slug)
         self.assertEqual(theme.palette, _palette_from_curated(entry))
-
-    def test_invalid_palette_choice_changes_nothing(self):
-        base = build_theme("#dc2626", mood="modern", palette_mode="auto", industry="saas")
-        hallucinated = build_theme(
-            "#dc2626",
-            mood="modern",
-            palette_mode="auto",
-            industry="saas",
-            palette_choice="not-a-real-palette",
-        )
-        self.assertEqual(base.palette, hallucinated.palette)
-
-    def test_palette_choice_is_confined_to_industry_candidates(self):
-        # childcare's curated set is forced; a saas palette slug must not escape it.
-        base = build_theme(None, mood="friendly", palette_mode="auto", industry="childcare")
-        cross = build_theme(
-            None,
-            mood="friendly",
-            palette_mode="auto",
-            industry="childcare",
-            palette_choice="ai-platform",
-        )
-        self.assertEqual(base.palette, cross.palette)
-
-    def test_dark_scheme_takes_a_curated_dark_pick(self):
-        entry = next(
-            c for c in _CURATED_DARK_PALETTES if c.slug == "dark-midnight-violet"
-        )
-        t = build_theme(
-            "#2563eb",
-            mood="modern",
-            color_scheme="dark",
-            industry="saas",
-            palette_choice="dark-midnight-violet",
-        )
-        self.assertEqual(t.palette, _palette_from_curated_dark(entry))
-        self.assertEqual(t.palette_slug, "dark-midnight-violet")
-
-    def test_a_light_slug_cannot_leak_into_a_dark_build(self):
-        # "ai-platform" is a light-catalogue slug; on a dark build it must not
-        # resolve at all, leaving the deterministic dark pick untouched.
-        base = build_theme("#2563eb", mood="modern", color_scheme="dark", industry="saas")
-        leaked = build_theme(
-            "#2563eb",
-            mood="modern",
-            color_scheme="dark",
-            industry="saas",
-            palette_choice="ai-platform",
-        )
-        self.assertEqual(base.palette, leaked.palette)
 
     def test_dark_curated_records_a_slug(self):
         # Before the dark catalogue existed the dark path recorded nothing, so
@@ -719,32 +647,13 @@ class DesignLanguageOverrideTest(unittest.TestCase):
         t = build_theme("#2563eb", mood="modern", color_scheme="dark", industry="saas")
         self.assertIsNotNone(t.palette_slug)
         self.assertTrue(str(t.palette_slug).startswith("dark-"))
+        entry = next(c for c in _CURATED_DARK_PALETTES if c.slug == t.palette_slug)
+        self.assertEqual(t.palette, _palette_from_curated_dark(entry))
 
     def test_derive_mode_keeps_the_algorithmic_dark_palette(self):
         t = build_theme("#2563eb", palette_mode="derive", color_scheme="dark")
         self.assertEqual(t.palette, _dark_palette("#2563eb"))
         self.assertIsNone(t.palette_slug)
-
-    def test_valid_font_choice_takes_that_pairing(self):
-        pool = MOOD_SPECS["modern"].font_pool
-        # Pick a non-default pairing so the assertion can't pass by accident.
-        target = pool[-1]
-        theme = build_theme(
-            "#2563eb", mood="modern", industry="saas", font_choice=target.slug
-        )
-        self.assertEqual(theme.typography.heading_font, target.heading_font)
-        self.assertEqual(theme.typography.body_font, target.body_font)
-
-    def test_invalid_font_choice_changes_nothing(self):
-        base = build_theme("#2563eb", mood="modern", industry="saas", font_seed="Acme")
-        hallucinated = build_theme(
-            "#2563eb",
-            mood="modern",
-            industry="saas",
-            font_seed="Acme",
-            font_choice="comic-sans-papyrus",
-        )
-        self.assertEqual(base.typography, hallucinated.typography)
 
 
 if __name__ == "__main__":

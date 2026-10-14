@@ -13,7 +13,6 @@ from app.models.brand import (
     BrandMood,
     HeroBackgroundHeight,
     ThemeTokens,
-    default_hero_height,
 )
 from app.models.builder_schema import (
     BodySchema,
@@ -29,7 +28,8 @@ from app.models.content_blocks import (
     GalleryBlock,
     ImageMetadata,
     IndustryCategoryLiteral,
-    industry_locked_mood,
+    resolve_industry,
+    resolve_mood,
     LinkBarBlock,
     LinkBarLink,
     LinkCluster,
@@ -56,14 +56,15 @@ from app.models.facebook import FacebookPage
 from app.models.industry import PageScaffold
 from app.services.facebook_authority import enforce_facebook_facts
 from app.services.facebook_source import to_contact_dict
-from app.services.industry_templates import get_template
-from app.services.design_brain import generate_design_language
+from app.services.industry_templates import gallery_page, get_template
+from app.services.design_direction import ContentProfile, resolve_direction
 from app.services.record_pages import build_record_pages
-from app.services.source_router import pages_by_source_slug
+from app.services.source_router import gallery_photos, match_scaffolds_to_pages, pages_by_source_slug
 from app.services.translations import build_translated_pages
 from app.services.text_detection import prefetch_text_flags, verify_many
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
+from app.services.landing_order import prepare_landing_pages
 from app.services.planner import (
     DetectedBrand,
     ScaffoldedSitePlan,
@@ -72,7 +73,7 @@ from app.services.planner import (
     plan_site_with_scaffolds,
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
-from app.services.page_inference import DIRECTORY_MIN_PROFILES
+from app.services.page_inference import DIRECTORY_MIN_PROFILES, defer_home_contact
 from app.services.source_injection import (
     MAX_GALLERY_ITEMS,
     accumulate_by_slug,
@@ -93,6 +94,13 @@ from app.services.bio_condense import condense_bios
 from app.services.llm import LlmClient
 from app.services.image_refs import bind_image_refs, referenced_images
 from app.services.legible_images import inject_legible_images
+from app.services.menu_assets import (
+    assess_menu_assets,
+    inject_menu_assets,
+    menu_review_warnings,
+    serves_menus,
+)
+from app.services.photo_url_expiry import keep_photo_links_alive
 from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
     align_page_to_scaffold,
@@ -112,9 +120,7 @@ from app.services.image_vision import (
 )
 from app.services.locale import detect_market, image_query_cue, place_query_cue
 from app.services.content_collections import extract_collections
-from app.services.diversity import recent_choices
 from app.services.schema_builder import plan_to_site
-from app.services.theme import build_theme, resolve_color_scheme
 from app.services.timing import stage
 from app.services.generation_projects import create_project, get_project, list_projects
 from app.services.scraper import ScrapeError, extend_crawl
@@ -148,23 +154,6 @@ class GenerateRequest(BaseModel):
     # pick (see design_director.compose_design_manifest). None → let it decide.
     header_archetype: HeaderArchetype | None = None
     footer_archetype: FooterArchetype | None = None
-
-
-def resolve_hero_height(
-    explicit: HeroBackgroundHeight | None,
-    chosen: HeroBackgroundHeight | None,
-    *,
-    mood: BrandMood | None,
-    industry: str | None,
-) -> HeroBackgroundHeight:
-    """Site-wide hero height, most-specific source first.
-
-    explicit (the user's own pick, "Auto" sends None) → the design-brain pick →
-    the deterministic industry/mood default. Mirrors how palette_choice and
-    font_choice defer to build_theme's pickers: a disabled or failed pass leaves
-    a fully-determined result, never an empty one.
-    """
-    return explicit or chosen or default_hero_height(mood, industry)
 
 
 def _market_cues_for(source: SourceContent) -> tuple[str, str]:
@@ -402,6 +391,7 @@ def _profile_match_score(member_name: str, profile: ProfileCandidate) -> float:
 async def _screen_source_images_for_text(
     metadata: list[ImageMetadata],
     prefetched: dict[str, str] | None = None,
+    *, include_gallery: bool = False,
 ) -> None:
     """Flag SOURCE images that carry their own words or a QR code, so none of them
     fills a slot that overprints or crops it, and each is placed whole instead
@@ -415,7 +405,7 @@ async def _screen_source_images_for_text(
     """
     try:
         with stage("ocr_text_screen"):
-            await prefetch_text_flags(metadata, prefetched=prefetched)
+            await prefetch_text_flags(metadata, prefetched=prefetched, include_gallery=include_gallery)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 — OCR must not 500 a generation
@@ -1304,6 +1294,8 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     LLM picks pages and sections freely. Kept for backward compatibility;
     new flows should use /with-pages for deterministic output.
     """
+    live = await keep_photo_links_alive(payload.source, payload.brand)
+    payload.source, payload.brand = live.source, live.brand
     # Locale detection reads image URLs as domain evidence
     # (_market_cues_for → detect_market), and the cues it produces steer every
     # Pexels query toward the right market. Under stock_images_only those cues
@@ -1341,73 +1333,41 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     )
 
     brand = payload.brand
-    # Explicit choices win; an industry with a locked mood (e.g. childcare →
-    # friendly) then beats the LLM-detected mood, which is advisory only.
-    mood = (
-        payload.mood_override
-        or (brand.mood if brand else None)
-        or industry_locked_mood(plan.industry_category)
-        or plan.brand_mood
+    mood = resolve_mood(
+        override=payload.mood_override,
+        brand_mood=brand.mood if brand else None,
+        detected=plan.brand_mood,
+        industry=plan.industry_category,
     )
     if brand:
         brand = brand.model_copy(update={"mood": mood})
 
-    seed_hex = (
-        (brand.extracted_palette[0] if brand and brand.extracted_palette else None)
-        or plan.primary_color_hint
-    )
-    # Resolved BEFORE the design-language pass, not inline in build_theme: the
-    # curated palettes are scheme-specific, so the model has to be shown the dark
-    # menu on a dark build or it can only ever pick something that gets discarded.
-    color_scheme = resolve_color_scheme(
-        payload.color_scheme_override,
-        brand.color_scheme if brand else None,
-        brand.logo_is_light if brand else None,
-        industry=plan.industry_category,
-    )
-    # Design-language pass: the reasoning model picks a curated palette + font
-    # pairing before theme construction. Empty/invalid picks change nothing —
-    # build_theme falls back to its deterministic selection.
-    language = await generate_design_language(
+    # The legacy free-form path has no brand brief (no personality), so the
+    # direction is scored on content and freshness alone.
+    direction = await resolve_direction(
         brand_name=brand.name if brand else plan.site_name,
         mood=mood,
         industry=plan.industry_category,
-        seed_hex=seed_hex,
-        color_scheme=color_scheme,
-    )
-    theme = build_theme(
-        seed_hex,
-        mood=mood,
-        # Per-site font pool + curated-palette selection (auto: curated palette only
-        # when there's no usable logo hue, else the brand-driven Tailwind snap).
-        font_seed=(brand.name if brand else plan.site_name),
-        industry=plan.industry_category,
-        palette_mode="auto",
-        color_scheme=color_scheme,
-        palette_choice=language.palette,
-        font_choice=language.font_pairing,
-        # Diversity: steer the curated pick off palettes recent sites used
-        # (rotates within the fit group only; fail-open empty set).
-        avoid_palettes=await recent_choices(
-            "palette", site_key=(brand.name if brand else plan.site_name)
+        logo_hex=(
+            (brand.extracted_palette[0] if brand and brand.extracted_palette else None)
+            or plan.primary_color_hint
         ),
-        # Same for the design scheme — the widest single choice on the site, so
-        # two consecutive generations landing on one is the most visible way a
-        # batch converges.
-        avoid_schemes=await recent_choices(
-            "scheme", site_key=(brand.name if brand else plan.site_name)
-        ),
+        color_scheme_override=payload.color_scheme_override,
+        brand_color_scheme=brand.color_scheme if brand else None,
+        logo_is_light=brand.logo_is_light if brand else None,
+        content=ContentProfile.of(payload.source),
+        hero_height=payload.hero_height,
     )
-    theme.hero_background_height = resolve_hero_height(
-        payload.hero_height,
-        language.hero_height,
-        mood=mood,
-        industry=plan.industry_category,
-    )
+    theme = direction.theme
 
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     await _screen_source_images_for_graphics(scraped_metadata)
     annotations = await _annotate_source_images(payload.source, scraped_metadata)
+    menu_assets = []
+    if serves_menus(plan.industry_category):
+        await _screen_source_images_for_text(scraped_metadata, include_gallery=True)
+        menu_assets = assess_menu_assets(payload.source, scraped_metadata)
+        inject_menu_assets(plan.pages, payload.source, menu_assets, [])
     _enrich_plan_profile_cards(plan, payload.source, annotations)
     _ensure_scraped_team_blocks(plan, payload.source, annotations)
     await _condense_team_card_bios(plan)
@@ -1432,6 +1392,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         stock_only=payload.stock_images_only,
     )
     site.collections = await collections_task
+    site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
     return site
 
 
@@ -1565,7 +1526,10 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
 
 
 async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
-    planned_scaffolds = list(payload.selected_pages)
+    # Before the preview narrows the selection: the planned set is what says a
+    # Contact page is coming, and the saved project replays this stripped plan.
+    planned_scaffolds = defer_home_contact(payload.selected_pages)
+    payload.selected_pages = planned_scaffolds
     if payload.generation_mode == "two_page_preview":
         home = next((s for s in planned_scaffolds if s.is_homepage and not s.is_legal), None)
         second = next((s for s in planned_scaffolds if s.slug == payload.preview_second_slug and not s.is_homepage and not s.is_legal), None)
@@ -1574,6 +1538,11 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         payload.selected_pages = [home, second]
     if payload.generation_mode != "full":
         await _ensure_source_pages(payload.source, payload.selected_pages)
+    # Before anything reads a photo: a Facebook link past its signed deadline
+    # is renewed from a fresh read, or left out with a warning — never built
+    # around and then stripped at push (services/photo_url_expiry.py).
+    live = await keep_photo_links_alive(payload.source, payload.brand)
+    payload.source, payload.brand = live.source, live.brand
     if payload.frozen_site is not None:
         source_navigation = payload.frozen_site.source_navigation
     elif payload.generation_mode == "two_page_preview":
@@ -1627,21 +1596,21 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     #   2. industry-locked mood (a design brief that pins the visual language)
     #   3. detected
     #   4. defaults
-    # `payload.industry` defaults to "other" — the frontend's catch-all when the
-    # user never touched the override dropdown — so treat "other" as *unset* and
-    # defer to the (more specific) detected industry. Otherwise a detected
-    # childcare/etc. never reaches the theme and its light-only brief is lost
-    # (the Glorykids kindergarten rendering dark). A specific selection still wins.
-    industry = (
-        payload.industry
-        if payload.industry and payload.industry != "other"
-        else detected.industry_category
+    # `resolve_industry` treats "other" as unset — the frontend's catch-all when
+    # the user never touched the override dropdown — so a detected or declared
+    # childcare/etc. still reaches the theme and its light-only brief (the
+    # Glorykids kindergarten rendering dark). A specific selection still wins.
+    industry = resolve_industry(
+        payload.industry, payload.source.declared_industry, detected.industry_category
     )
-    mood = (
-        payload.mood_override
-        or (payload.brand.mood if payload.brand else None)
-        or industry_locked_mood(industry)
-        or detected.brand_mood
+    if serves_menus(industry):
+        assess_menu_assets(payload.source)
+    detected = detected.model_copy(update={"industry_category": industry})
+    mood = resolve_mood(
+        override=payload.mood_override,
+        brand_mood=payload.brand.mood if payload.brand else None,
+        detected=detected.brand_mood,
+        industry=industry,
     )
 
     brand = payload.brand or BrandIdentity(
@@ -1654,41 +1623,33 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         mood=mood,
         industry=industry,
     )
-    if not brand.mood:
-        brand = brand.model_copy(update={"mood": mood})
+    # The resolved industry is stamped on every brand, the frontend's included:
+    # it is what the push hands the CMS (`entities.industry`), and a brand the
+    # browser posted carries whatever it held before this resolution ran.
+    brand = brand.model_copy(update={"industry": industry, "mood": brand.mood or mood})
 
     seed_hex = (
         (brand.extracted_palette[0] if brand.extracted_palette else None)
         or detected.primary_color_hint
     )
-    # Resolved BEFORE the design-language pass, not inline in build_theme: the
-    # curated palettes are scheme-specific, so the model has to be shown the dark
-    # menu on a dark build or it can only ever pick something that gets discarded.
-    color_scheme = resolve_color_scheme(
-        payload.color_scheme_override,
-        brand.color_scheme,
-        brand.logo_is_light,
-        industry=industry,
-    )
-    # Design-language pass: the reasoning model picks a curated palette + font
-    # pairing before theme construction. Empty/invalid picks change nothing —
-    # build_theme falls back to its deterministic selection.
+    # The design direction: scored concepts, read against the brand brief the
+    # detection call returned, then (at most) one pick by the reasoning model.
     if payload.frozen_site is None:
-        with stage("design_language"):
-            language = await generate_design_language(
-                brand_name=brand.name, mood=mood, industry=industry,
-                seed_hex=seed_hex, color_scheme=color_scheme,
+        with stage("design_direction"):
+            direction = await resolve_direction(
+                brand_name=brand.name,
+                mood=mood,
+                industry=industry,
+                logo_hex=seed_hex,
+                color_scheme_override=payload.color_scheme_override,
+                brand_color_scheme=brand.color_scheme,
+                logo_is_light=brand.logo_is_light,
+                personality=detected.personality,
+                positioning=detected.positioning,
+                content=ContentProfile.of(payload.source),
+                hero_height=payload.hero_height,
             )
-        theme = build_theme(
-            seed_hex, mood=mood, font_seed=brand.name, industry=industry,
-            palette_mode="auto", color_scheme=color_scheme,
-            palette_choice=language.palette, font_choice=language.font_pairing,
-            avoid_palettes=await recent_choices("palette", site_key=brand.name),
-            avoid_schemes=await recent_choices("scheme", site_key=brand.name),
-        )
-        theme.hero_background_height = resolve_hero_height(
-            payload.hero_height, language.hero_height, mood=mood, industry=industry,
-        )
+        theme = direction.theme
     else:
         theme = ThemeTokens.model_validate(payload.frozen_site.theme)
 
@@ -1707,7 +1668,9 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         {scaffold.slug for scaffold in payload.selected_pages}
         if payload.generation_mode != "full" else None
     )
-    scraped_images, scraped_metadata = _image_pool_for(payload.source, image_slugs)
+    scraped_images, scraped_metadata = _image_pool_for(
+        payload.source, None if serves_menus(industry) else image_slugs
+    )
     page_images = _page_images_by_slug(payload.source, image_slugs)
     profiles = _profile_pool_for(payload.source)
     profile_urls = [p.photo_url for p in profiles if p.photo_url]
@@ -1718,7 +1681,9 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # CPU, so it overlaps the GPU-bound content pass instead of adding to the
     # wall clock. Unlike the vision judging below it does NOT contend for the
     # GPU, which is why it can run here rather than after generation.
-    ocr_task = asyncio.create_task(_screen_source_images_for_text(scraped_metadata))
+    ocr_task = asyncio.create_task(_screen_source_images_for_text(
+        scraped_metadata, include_gallery=serves_menus(industry)
+    ))
     # Same window, same reason. This one is mostly network (it must re-download:
     # the prefetch above re-encodes to JPEG and drops the alpha channel), so it
     # overlaps both the GPU pass and the OCR CPU pass rather than adding to
@@ -1740,10 +1705,12 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # Also hands back the scaffold→source routing it used, so alignment verifies
     # fact-bearing content against the actual page it was grounded in.
     if content_scaffolds:
+        source_map = match_scaffolds_to_pages(content_scaffolds, payload.source)
+        content_scaffolds, source_map = prepare_landing_pages(content_scaffolds, source_map)
         try:
             with stage("content_generation"):
                 scaffolded, source_map = await plan_site_with_scaffolds(
-                    payload.source, detected, content_scaffolds
+                    payload.source, detected, content_scaffolds, source_map=source_map
                 )
         except LlmError as exc:
             prefetch_task.cancel()
@@ -1842,6 +1809,9 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     )
     # Every pixel reading is in now. An image carrying words or a code can fill
     # no slot that crops or overprints it, so it is placed whole instead.
+    menu_assets = []
+    if serves_menus(industry):
+        menu_assets = assess_menu_assets(payload.source, scraped_metadata)
     inject_legible_images(plan.pages, payload.source, scraped_metadata)
     _enrich_plan_profile_cards(plan, payload.source, annotations, profiles=profiles)
     team_section_slugs = {s.slug for s in content_scaffolds if "team" in s.sections}
@@ -1876,7 +1846,13 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # word: verified contact details, hours, reviews and counts replace whatever
     # the model wrote, and anything the Page never stated is dropped rather than
     # left standing because no rule happened to catch it.
-    if payload.facebook_facts is not None:
+    #
+    # Only when the Page IS the source. Added to a website, the Page is one
+    # source among two: "drop what the Page never stated" would delete the
+    # website's own testimonials and branches, so its facts are evidence there
+    # (in the merged text, grounded like any other) and disagreements are the
+    # merge's conflict report to surface (services/source_conflicts.py).
+    if payload.facebook_facts is not None and payload.source.source_kind == "facebook":
         plan.pages = enforce_facebook_facts(plan.pages, payload.facebook_facts)
 
     # Resolve LLM-bound image refs (block.image_ref → block.image_url) against
@@ -1884,6 +1860,12 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # photos the model chose are screened first, in one batch: a bound card
     # photo never meets the resolver's on-demand screen.
     await verify_many(referenced_images(plan.pages, source_map))
+    if serves_menus(industry):
+        menu_assets = assess_menu_assets(payload.source, scraped_metadata)
+        inject_menu_assets(
+            plan.pages, payload.source, menu_assets,
+            payload.available_scaffolds or planned_scaffolds,
+        )
     bound_image_urls = bind_image_refs(plan.pages, source_map)
     # A gallery ref the binder rejected has nothing behind it — drop the tile
     # rather than let it resolve a stock photo at render time. Suspended under
@@ -1959,6 +1941,7 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         ),
     )
     site.collections = await collections_task if collections_task else None
+    site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
 
     if payload.generation_mode == "two_page_preview" and len(site.pages) != 2:
         raise HTTPException(status_code=500, detail="Preview generation must produce exactly two pages.")
@@ -2327,6 +2310,18 @@ def _photo_walls_from_metadata(
     return walls
 
 
+def _photo_set_wall(photos: list[ImageMetadata]) -> SectionCandidate:
+    """A source's whole photo set as one rack, each tile's alt text the one the
+    reader wrote for it (a gallery tile shows its title only as alt)."""
+    return SectionCandidate(
+        heading="",
+        level=2,
+        card_kind="gallery",
+        cards=[SourceCard(title=meta.alt, body="", image_url=meta.url) for meta in photos],
+        image_urls=[meta.url for meta in photos],
+    )
+
+
 def _merge_album_walls(walls: list[SectionCandidate]) -> list[SectionCandidate]:
     """Fold walls sharing a heading into one, deduping URLs across the page.
 
@@ -2466,6 +2461,15 @@ def _inject_image_walls(
             walls = _photo_walls_from_metadata(source_page, chrome)
         if walls:
             walls_by_slug.setdefault(slug, []).extend(walls)
+
+    # A single-page source states no rack of its own, but the Gallery page it
+    # earned (`page_inference.evidence_pages`) IS its photo set — the same
+    # predicate decided both, so a page offered is a page filled.
+    earned = gallery_page().slug
+    if not source.discovered_pages and earned in gated_slugs and earned in pages_by_path:
+        photos = [meta for meta in gallery_photos(source) if meta.url not in chrome]
+        if photos:
+            walls_by_slug.setdefault(earned, []).append(_photo_set_wall(photos))
 
     for slug, walls in walls_by_slug.items():
         _place_walls(

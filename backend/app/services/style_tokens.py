@@ -21,6 +21,7 @@ from app.models.brand import ThemeTokens
 from app.services.design_schemes import DesignScheme, for_theme
 from app.services.theme import (
     _adjust_lightness,
+    _contrast,
     _ensure_contrast_against,
     _hex_to_rgb,
     _hls_to_rgb,
@@ -208,6 +209,14 @@ def eyebrow_styles(
     treatment = scheme.eyebrow_treatment
     if treatment in ("inherit", "caps-tracked"):
         return caps
+    # A decorated label (rule, chip, underline) must hug its own text and sit
+    # wherever the section aligns its copy. The catalog's eyebrow nodes carry
+    # `width: 100%`, which stretched a chip across the whole column; and a
+    # forced `alignSelf: flex-start` pinned the label to the left edge of a
+    # CENTRED intro while the heading below it sat in the middle. A fit-content
+    # box takes the parent's own alignment instead: a flex column centres it,
+    # a left column starts it, and a block parent's text-align places it.
+    hug: dict[str, Any] = {"width": "fit-content", "maxWidth": "100%"}
     if treatment == "sentence":
         return {
             **caps,
@@ -230,7 +239,7 @@ def eyebrow_styles(
             "paddingLeft": "10px",
             "display": "inline-flex",
             "alignItems": "center",
-            "alignSelf": "flex-start",
+            **hug,
         }
     if treatment == "chip":
         return {
@@ -247,7 +256,7 @@ def eyebrow_styles(
             "borderRadius": "999px",
             "display": "inline-flex",
             "alignItems": "center",
-            "alignSelf": "flex-start",
+            **hug,
         }
     if treatment == "underline":
         return {
@@ -255,7 +264,7 @@ def eyebrow_styles(
             "borderBottom": "2px solid currentColor",  # see "rule" above
             "paddingBottom": "6px",
             "display": "inline-block",
-            "alignSelf": "flex-start",
+            **hug,
         }
     return {**caps, "display": "none"}
 
@@ -464,6 +473,78 @@ def brand_ink(theme: ThemeTokens, surface: str | None = None) -> str:
     Call sites that print `palette.primary` as a `color` must go through this
     instead, exactly as accent call sites go through `emphasis_ink`."""
     return _accent_ink_for(surface or theme.palette.background, theme.palette.primary)
+
+
+# Light enough that the theme's dark ink keeps a wide WCAG margin on every tint
+# (the old fixed pastel set was Tailwind 50/100-class, L ≈ 0.93–0.97).
+_BAND_TINT_LIGHTNESS = 0.94
+# Hues a tint set is built from, as rotations off the primary and the accent:
+# the brand's own two colours first, then their neighbours, so a green-and-amber
+# brand gets mint and peach bands and a navy-and-coral one gets sky and blush.
+_TINT_ROTATIONS: tuple[tuple[str, float], ...] = (
+    ("primary", 0.0),
+    ("accent", 0.0),
+    ("primary", 40.0),
+    ("accent", -40.0),
+)
+
+
+def _hue_of(hex_color: str) -> tuple[float, float]:
+    h, _l, s = _rgb_to_hls(*_hex_to_rgb(hex_color))
+    return h, s
+
+
+def band_tints(theme: ThemeTokens) -> tuple[str, ...]:
+    """Light band fills derived from THIS site's palette hues.
+
+    The multi-tint rhythm used to be a fixed cream/sky/mint/peach/lavender/butter
+    rotation, identical on every kindergarten whatever its brand. Deriving the
+    tints from the primary and accent (and their neighbours) keeps the cheerful
+    multi-colour voice while making it this brand's colours. Ordered so adjacent
+    bands differ in hue; near-duplicate hues collapse, so a monochrome brand
+    gets fewer, still-distinct tints rather than two of the same."""
+    palette = theme.palette
+    tints: list[str] = []
+    seen_hues: list[float] = []
+    for token, rotation in _TINT_ROTATIONS:
+        hue, saturation = _hue_of(getattr(palette, token))
+        hue = (hue + rotation / 360.0) % 1.0
+        if any(min(abs(hue - h), 1 - abs(hue - h)) < 0.06 for h in seen_hues):
+            continue
+        seen_hues.append(hue)
+        tints.append(
+            _rgb_to_hex(*_hls_to_rgb(hue, _BAND_TINT_LIGHTNESS, min(0.85, max(0.55, saturation))))
+        )
+    return tuple(tints)
+
+
+def section_title_inks(theme: ThemeTokens) -> tuple[str, ...]:
+    """Saturated title inks from the site's own primary and accent hues — the
+    per-section-accent voice. Raw values: the caller holds each one to AA
+    against the band it lands on (`apply_section_title_inks`), since a tint
+    rotation can put any ink on any tint."""
+    palette = theme.palette
+    return (
+        palette.primary,
+        palette.accent,
+        _rgb_to_hex(*_hls_to_rgb(*_rotated_hls(palette.primary, 40.0))),
+        _rgb_to_hex(*_hls_to_rgb(*_rotated_hls(palette.accent, -40.0))),
+    )
+
+
+def _rotated_hls(hex_color: str, degrees: float) -> tuple[float, float, float]:
+    h, l, s = _rgb_to_hls(*_hex_to_rgb(hex_color))
+    return (h + degrees / 360.0) % 1.0, min(l, 0.42), max(s, 0.55)
+
+
+def heading_ink(secondary: str, text: str, background: str) -> str:
+    """Ink for a heading printed on the page background — the value of
+    ``--builder-color-heading``, which the section catalog inks its headings
+    with. ``secondary`` where it reads (4.5:1); on a dark palette it is the
+    darkest band colour, so ``text`` there. Derived, never stored: mirror of
+    ``headingInk`` in the builder (src/lib/builder-styles.ts) and webtree-public
+    lib/styles.ts, which emit the property."""
+    return secondary if _contrast(secondary, background) >= 4.5 else text
 
 
 def meta_ink(theme: ThemeTokens) -> str:

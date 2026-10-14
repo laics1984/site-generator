@@ -19,12 +19,13 @@ This module is pure HTTP + light validation. The push orchestrator
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -52,6 +53,14 @@ class CmsApiError(Exception):
         self.status = status
         self.response_body = response_body
 
+    @property
+    def code(self) -> str | None:
+        """The CMS's own error code (``{"error": {"code": ...}}``), e.g.
+        ``STORAGE_QUOTA_EXCEEDED`` when the site's plan has no room left."""
+        body = self.response_body
+        err = body.get("error") if isinstance(body, dict) else None
+        return str(err["code"]) if isinstance(err, dict) and err.get("code") else None
+
 
 @dataclass
 class CmsClient:
@@ -69,6 +78,10 @@ class CmsClient:
     # before the route existed. Remembered so a push against it pays one probe,
     # not one per image, and uploads as it always did.
     _media_lookup_supported: bool = field(default=True, repr=False)
+    # What login() was given, so an access token that expires mid-push can be
+    # replaced (see _RenewExpiredJwt). Never logged: repr=False.
+    _credentials: tuple[str, str] | None = field(default=None, repr=False)
+    _renew_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     # --- factory ---------------------------------------------------------------
 
@@ -115,7 +128,22 @@ class CmsClient:
                     500, f"Login response missing token: {body}", response_body=body
                 )
             self.jwt = token
+            self._credentials = (email, password)
             return token
+
+    async def _renew_jwt(self, expired: str | None) -> str | None:
+        """Log in again after TOKEN_EXPIRED; None when there is nothing to log in with.
+
+        Concurrent requests that all hit the expiry share one login: whoever
+        takes the lock second finds the token already replaced and reuses it.
+        """
+        if self._credentials is None:
+            return None
+        async with self._renew_lock:
+            if self.jwt and self.jwt != expired:
+                return self.jwt
+            email, password = self._credentials
+            return await self.login(email, password)
 
     # --- entities --------------------------------------------------------------
 
@@ -125,6 +153,7 @@ class CmsClient:
         entity_name: str,
         entity_url: str | None = None,
         builder_styles: dict[str, Any] | None = None,
+        industry: str | None = None,
     ) -> dict[str, Any]:
         """
         POST /api/entities — create a fresh entity owned by the logged-in user.
@@ -141,6 +170,8 @@ class CmsClient:
                 payload["entity_url"] = entity_url
             if builder_styles:
                 payload["builder_styles"] = builder_styles
+            if industry:
+                payload["industry"] = industry
             resp = await self._http_client().post(url, json=payload, headers=self._jwt_headers())
             body = _safe_json(resp)
             if resp.status_code >= 400:
@@ -470,7 +501,12 @@ class CmsClient:
             body = _safe_json(resp)
             # MediaController returns {t: 'p', i: <url>} on success, {t: 'f', errors: ...} on fail.
             if resp.status_code >= 400 or body.get("t") != "p":
-                errors = body.get("errors") or body.get("message") or resp.text[:300]
+                errors = (
+                    body.get("errors")
+                    or body.get("message")
+                    or _extract_error(body)
+                    or resp.text[:300]
+                )
                 raise CmsApiError(
                     resp.status_code or 500,
                     f"Media upload failed for {filename}: {errors}",
@@ -514,6 +550,63 @@ class CmsClient:
                 )
             found = body.get("i")
             return found if isinstance(found, str) and found else None
+
+    async def get_storage_usage(self, entity_token: str) -> dict[str, Any] | None:
+        """GET /api/entities/{token}/storage — the site's storage against its
+        plan (``storage.available_bytes``, ``file_limits``), or None from an API
+        that predates storage quotas. The push reads it once, before uploading,
+        to skip what will not fit instead of sending it to be refused."""
+        async with self._wrap_request("get_storage_usage"):
+            url = f"{self.base_url}/api/entities/{entity_token}/storage"
+            resp = await self._http_client().get(url, headers=self._jwt_headers())
+            body = _safe_json(resp)
+            if resp.status_code == 404 and not isinstance(body.get("error"), dict):
+                return None
+            if resp.status_code >= 400:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Storage usage failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:200]}",
+                    response_body=body,
+                )
+            data = body.get("data")
+            return data if isinstance(data, dict) else None
+
+    async def get_entity_industry(self, entity_token: str) -> str | None:
+        """GET /api/entities/{token}/profile → the entity's industry slug, or None."""
+        async with self._wrap_request("get_entity_industry"):
+            url = f"{self.base_url}/api/entities/{entity_token}/profile"
+            resp = await self._http_client().get(url, headers=self._jwt_headers())
+            body = _safe_json(resp)
+            if resp.status_code >= 400:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Read site profile failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:300]}",
+                    response_body=body,
+                )
+            industry = (body.get("data") or {}).get("industry")
+            return industry if isinstance(industry, str) and industry else None
+
+    async def set_entity_industry(self, entity_token: str, industry: str) -> None:
+        """PUT /api/entities/{token}/profile — the entity's industry slug.
+
+        The CMS validates the slug against `config/benchmarks.php`, the same
+        taxonomy as `IndustryCategory` (pinned by test_industry_taxonomy).
+        """
+        async with self._wrap_request("set_entity_industry"):
+            url = f"{self.base_url}/api/entities/{entity_token}/profile"
+            resp = await self._http_client().put(
+                url, json={"industry": industry}, headers=self._jwt_headers()
+            )
+            if resp.status_code >= 400:
+                body = _safe_json(resp)
+                raise CmsApiError(
+                    resp.status_code,
+                    f"Set site industry failed [{resp.status_code}]: "
+                    f"{_extract_error(body) or resp.text[:300]}",
+                    response_body=body,
+                )
 
     async def set_entity_favicon(
         self,
@@ -831,6 +924,10 @@ class CmsClient:
         Safe for concurrent requests. Close via aclose() when the push ends."""
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT)
+        # Attached here rather than in the constructor so a client handed in
+        # from outside (tests inject one with a MockTransport) renews too.
+        if not isinstance(self._http.auth, _RenewExpiredJwt):
+            self._http.auth = _RenewExpiredJwt(self)
         return self._http
 
     async def aclose(self) -> None:
@@ -846,6 +943,39 @@ class CmsClient:
             "Authorization": f"Bearer {self.jwt}",
             "Accept": "application/json",
         }
+
+
+class _RenewExpiredJwt(httpx.Auth):
+    """Replays a request once, with a fresh login, when the CMS answers TOKEN_EXPIRED.
+
+    The CMS issues short-lived access tokens (JWT_TTL, 15 minutes by default)
+    and a push can outlast one. The 401 comes from the auth middleware before
+    any controller runs, so the rejected request never executed and replaying it
+    cannot double-apply a write or an upload. Any other 401 is left alone.
+    """
+
+    requires_response_body = True
+
+    def __init__(self, client: "CmsClient") -> None:
+        self._client = client
+
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        response = yield request
+        if response.status_code != 401 or _auth_failure_code(response) != "TOKEN_EXPIRED":
+            return
+        sent = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        token = await self._client._renew_jwt(sent or None)
+        if not token:
+            return
+        request.headers["Authorization"] = f"Bearer {token}"
+        yield request
+
+
+def _auth_failure_code(resp: httpx.Response) -> str | None:
+    code = _safe_json(resp).get("code")
+    return code if isinstance(code, str) else None
 
 
 def _laravel_slug(value: str) -> str:

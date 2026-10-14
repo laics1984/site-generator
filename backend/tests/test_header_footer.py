@@ -1,5 +1,7 @@
 import unittest
 
+from app.config import settings
+
 from app.models.brand import BrandIdentity
 from app.services.header_footer import build_footer, build_header, built_value
 from app.services.theme import _hex_to_rgb, build_theme
@@ -522,10 +524,23 @@ class FloatingPillGeometryTest(unittest.TestCase):
     """The pill is a slim capsule that tracks the page's content column.
 
     Two things it must not do: float at its own inset width (it read as a
-    stray widget unrelated to the page below it), and inherit the industry's
+    stray widget unrelated to the page below it), and inherit a scheme's
     oversized brand mark (the logo is the tallest thing in the bar, so it — not
     the padding — sets the bar's height).
     """
+
+    @staticmethod
+    def _large_mark_theme():
+        """A theme whose scheme leads with an enlarged mark — playroom's 68px,
+        the size childcare used to force on every school."""
+        original = settings.design_schemes_enabled
+        settings.design_schemes_enabled = True
+        try:
+            return build_theme(
+                "#0284c7", mood="playful", industry="childcare", scheme_choice="playroom"
+            )
+        finally:
+            settings.design_schemes_enabled = original
 
     def _header(self, archetype, theme):
         return build_header(
@@ -537,7 +552,6 @@ class FloatingPillGeometryTest(unittest.TestCase):
             nav_items=[],
             primary_cta=("Schedule a Tour", "/contact"),
             overlay=True,
-            industry="childcare",
             archetype=archetype,
         )
 
@@ -555,25 +569,23 @@ class FloatingPillGeometryTest(unittest.TestCase):
         self.assertEqual(root["paddingRight"], "24px")
 
     def test_pill_caps_the_logo_that_other_archetypes_keep(self):
-        from app.services.header_footer import (
-            _LOGO_HEIGHT_BY_INDUSTRY,
-            _SELF_CHROME_LOGO_HEIGHT,
-        )
+        from app.services.design_schemes import by_slug
+        from app.services.header_footer import _SELF_CHROME_LOGO_HEIGHT
 
-        theme = build_theme("#0284c7", mood="playful", industry="childcare")
+        theme = self._large_mark_theme()
         pill_logo = _find(self._header("floating-pill", theme), "Brand Logo")
         classic_logo = _find(self._header("classic", theme), "Brand Logo")
 
         self.assertEqual(pill_logo.styles["height"], _SELF_CHROME_LOGO_HEIGHT)
-        # Childcare's deliberately large mark survives everywhere else — the cap
-        # is the pill's, not a downgrade of the industry brief.
-        self.assertEqual(classic_logo.styles["height"], _LOGO_HEIGHT_BY_INDUSTRY["childcare"])
+        # The scheme's deliberately large mark survives everywhere else — the
+        # cap is the pill's, not a downgrade of the scheme.
+        self.assertEqual(classic_logo.styles["height"], by_slug("playroom").logo_height)
         self.assertLess(_px(pill_logo.styles["height"]), _px(classic_logo.styles["height"]))
 
     def test_pill_is_the_most_compact_bar(self):
         from app.services.header_footer import _SELF_CHROME_LOGO_HEIGHT
 
-        theme = build_theme("#0284c7", mood="playful", industry="childcare")
+        theme = self._large_mark_theme()
         pill = self._header("floating-pill", theme).content[0].styles
         classic = self._header("classic", theme).content[0].styles
         self.assertLess(_px(pill["paddingTop"]), _px(classic["paddingTop"]))
@@ -594,7 +606,7 @@ class FloatingPillGeometryTest(unittest.TestCase):
         )
         self.assertLess(pill_stack, classic_stack)
         # And it is the LOGO CAP doing the work, not just tighter padding — the
-        # thing that stops childcare's 68px mark turning the capsule into a
+        # thing that stops a scheme's 68px mark turning the capsule into a
         # banner (see _SELF_CHROME_LOGO_HEIGHT).
         self.assertEqual(
             pill_stack, _px(_SELF_CHROME_LOGO_HEIGHT) + 2 * _px(pill["paddingTop"])

@@ -5,12 +5,13 @@ import { Checkbox } from '@/ui'
 import type {
   BrandExtractionResult,
   BrandIdentity,
-  BrandMood,
+  BrandMoodChoice,
   ColorSchemeChoice,
   HeroHeightChoice,
 } from '@/lib/types'
 
-const MOODS: { id: BrandMood; label: string; hint: string }[] = [
+const MOODS: { id: BrandMoodChoice; label: string; hint: string }[] = [
+  { id: 'auto', label: 'Auto', hint: 'From industry + brand' },
   { id: 'modern', label: 'Modern', hint: 'SaaS, fintech, tech' },
   { id: 'luxury', label: 'Luxury', hint: 'Hospitality, jewellery' },
   { id: 'friendly', label: 'Friendly', hint: 'Consumer, wellness' },
@@ -40,8 +41,8 @@ interface BrandPanelProps {
   setThemePreview: (theme: BrandExtractionResult['theme_preview'] | null) => void
   googleFonts: string[]
   setGoogleFonts: (fonts: string[]) => void
-  mood: BrandMood
-  setMood: (mood: BrandMood) => void
+  mood: BrandMoodChoice
+  setMood: (mood: BrandMoodChoice) => void
   colorScheme: ColorSchemeChoice
   setColorScheme: (scheme: ColorSchemeChoice) => void
   heroHeight: HeroHeightChoice
@@ -93,7 +94,7 @@ export function BrandPanel({
     setBusy(true)
     setError(null)
     try {
-      const result = await extractBrandFromLogo(file, brandName, mood)
+      const result = await extractBrandFromLogo(file, brandName, mood === 'auto' ? null : mood)
       setBrand(result.brand)
       setThemePreview(result.theme_preview)
       setGoogleFonts(result.google_fonts)
@@ -120,7 +121,8 @@ export function BrandPanel({
       <div>
         <div className="text-sm font-medium text-slate-700">Brand mood</div>
         <p className="mt-1 text-xs text-slate-500">
-          Drives typography, button radius, and section rhythm. Pick the closest match.
+          Drives typography, button radius, and section rhythm. Auto reads it from the
+          business's industry and brand; pick one to override.
         </p>
         <div className="mt-2 grid grid-cols-3 gap-2">
           {MOODS.map((m) => {

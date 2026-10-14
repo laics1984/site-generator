@@ -20,15 +20,36 @@ interface Fact {
   value: string | null
 }
 
+/** Distinct photos the read kept: attachment originals, the legacy
+ * full-picture fallback, and the cover. Mirrors `FacebookPage.post_photo_urls`. */
+function photoCount(facts: FacebookFacts): number {
+  const urls = new Set<string>()
+  for (const post of facts.posts ?? []) {
+    for (const photo of post.photos ?? []) urls.add(photo.url)
+    if (post.image_url) urls.add(post.image_url)
+  }
+  if (facts.cover_photo_url) urls.add(facts.cover_photo_url)
+  return urls.size
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
 function factList(facts: FacebookFacts): Fact[] {
   const hours = facts.hours ?? []
-  const posts = facts.posts ?? []
+  const captioned = (facts.posts ?? []).filter((p) => p.message?.trim()).length
   const reviews = facts.reviews ?? []
-  const photos = posts.filter((p) => p.image_url).length + (facts.cover_photo_url ? 1 : 0)
+  const photos = photoCount(facts)
+  const categories = facts.categories?.length ? facts.categories : facts.category ? [facts.category] : []
 
   return [
     { label: 'Name', value: facts.name || null },
-    { label: 'Category', value: facts.category || null },
+    { label: 'Category', value: categories.join(' · ') || null },
     {
       label: 'About',
       value: facts.about || facts.description
@@ -44,13 +65,17 @@ function factList(facts: FacebookFacts): Fact[] {
         [facts.street, facts.city, facts.state].filter(Boolean).join(', ') ||
         null,
     },
+    { label: 'Service area', value: facts.service_area || null },
     { label: 'Website', value: facts.website || null },
+    { label: 'Other profiles', value: (facts.social_profiles ?? []).map(hostOf).join(', ') || null },
     {
       label: 'Opening hours',
       value: hours.length ? `${hours.length} day${hours.length === 1 ? '' : 's'}` : null,
     },
+    { label: 'Service options', value: (facts.service_options ?? []).join(' · ') || null },
+    { label: 'Price range', value: facts.price_range || null },
     { label: 'Photos', value: photos ? `${photos}` : null },
-    { label: 'Posts', value: posts.length ? `${posts.length}` : null },
+    { label: 'Posts', value: captioned ? `${captioned}` : null },
     { label: 'Recommendations', value: reviews.length ? `${reviews.length}` : null },
     { label: 'Profile picture', value: facts.profile_picture_url ? 'Found' : null },
   ]
@@ -103,7 +128,9 @@ export function FacebookFactsPanel({ facts }: Props) {
         <p className="mt-2.5 border-t border-line pt-2 text-[11px] text-ink-muted">
           The site is written from these facts and nothing else. Sections without
           anything to say — an empty hours list, no recommendations — are left out
-          rather than filled in.
+          rather than filled in. A Page rarely states services with prices or the
+          business's story: paste them into <span className="font-medium">Paste your
+          content</span> above and they join these facts.
         </p>
       </div>
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from bs4 import Tag
 
@@ -81,6 +81,22 @@ def absolute_url(base: str, src: str) -> str | None:
     if not src or src.startswith("data:"):
         return None
     return upgrade_source_image_url(urljoin(base, src))
+
+
+def resolved_image_url(img: Tag, base_url: str) -> str | None:
+    """The one answer to "which picture does this ``<img>`` show".
+
+    The best of its ``src``/``srcset``/lazy attributes, absolutized, with a
+    known CDN placeholder upgraded to the real photo; None for a ``data:`` URI
+    or no source at all. Every reader asks this — the photo pool, a section's
+    cards, an article's images — so one picture has one URL in every list.
+
+    It used to be spelled three ways, and only the pool's upgraded. A Wix
+    page's ``src`` is a 77px ``blur_2`` blur-up placeholder; the pool held the
+    2560px photo while the section reader kept the placeholder, and a picture
+    rack placed verbatim from the section shipped every tile as a smear.
+    """
+    return absolute_url(base_url, image_src_from_tag(img) or "")
 
 
 # One `sizes` entry is "[media-condition] <source-size-value>"; the LAST carries
@@ -326,10 +342,16 @@ def best_srcset_candidate(srcset: str | None) -> tuple[str | None, float]:
 
 def image_src_from_tag(img: Tag) -> str | None:
     """Prefer real responsive image URLs over placeholders."""
-    src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-    if isinstance(src, list):
-        src = src[0] if src else None
-    src = src if isinstance(src, str) else None
+    # A lazy loader keeps a `data:` placeholder in `src` and the photo in
+    # `data-src`; the placeholder is not a source, so it never shadows one.
+    src = next(
+        (
+            value
+            for value in (img.get("src"), img.get("data-src"), img.get("data-lazy-src"))
+            if isinstance(value, str) and value.strip() and not value.strip().startswith("data:")
+        ),
+        None,
+    )
 
     srcset = (
         img.get("srcset")
@@ -391,11 +413,100 @@ if TYPE_CHECKING:  # pragma: no cover — annotation only
 # og:image on images.pexels.com and the copy on the asset host.
 _PEXELS_PHOTO_RE = re.compile(r"pexels-photo-(\d+)", re.IGNORECASE)
 
+# Facebook's CDN names every upload `<photo id>_<owner id>_<hash>_n.jpg` and
+# serves crops, thumbnails and the original under that one filename, varying
+# only the signed query. The filename is the picture; the query is a rendition.
+_FBCDN_HOSTS = (".fbcdn.net", ".fbsbx.com")
+_FBCDN_FILE_RE = re.compile(r"\d{8,}[_.]")
+# A crop token in the `stp` rendition parameter: `c0.233.1294.1294a` is a
+# 1294px square cut out of a 1294x2000 portrait. Scaled renditions
+# (`s320x320`) keep the whole picture; a crop does not.
+_FBCDN_CROP_RE = re.compile(r"(?:^|_)c\d+\.\d+\.\d+\.\d+a?(?:_|$)")
+
+
+def _fbcdn_filename(url: str) -> str | None:
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return None
+    if not (parsed.hostname or "").endswith(_FBCDN_HOSTS):
+        return None
+    filename = parsed.path.rsplit("/", 1)[-1]
+    return filename if _FBCDN_FILE_RE.match(filename) else None
+
 
 def photo_identity(url: str) -> str | None:
     """A URL-level identity for a photo whose file naming carries one, else None."""
     match = _PEXELS_PHOTO_RE.search(url or "")
-    return f"pexels:{match.group(1)}" if match else None
+    if match:
+        return f"pexels:{match.group(1)}"
+    filename = _fbcdn_filename(url)
+    return f"fbcdn:{filename}" if filename else None
+
+
+def is_cropped_photo_url(url: str) -> bool:
+    """True when a Facebook CDN URL serves a crop of the picture, not all of it."""
+    if not _fbcdn_filename(url):
+        return False
+    stp = parse_qs(urlparse(url).query).get("stp", [""])[0]
+    return bool(_FBCDN_CROP_RE.search(stp))
+
+
+# --- signed URLs -----------------------------------------------------------------
+
+# A Facebook CDN URL wherever it sits in a string: a bare `src`, or one layer of
+# a CSS background (`url('…')`), where a quote or a paren ends it.
+_FBCDN_URL_RE = re.compile(r"https?://[\w.-]+\.(?:fbcdn\.net|fbsbx\.com)/[^\s\"'()<>]+", re.I)
+
+# A link this close to its deadline is treated as already dead: a push
+# downloads every photo it re-hosts, and that takes minutes, not seconds.
+SIGNED_URL_GRACE_SECONDS = 600
+
+
+def signed_url_expiry(url: str) -> float | None:
+    """When Facebook's CDN stops serving this URL, as unix time; None for any
+    URL that carries no deadline.
+
+    Every fbcdn URL is signed, and `oe` is the signature's expiry in hex.
+    Measured on a real read: five days after it was fetched. Past it the CDN
+    refuses the request, so a photo read on Monday is a dead link by Saturday,
+    whatever the picture itself is doing.
+    """
+    if not _fbcdn_filename(url):
+        return None
+    values = parse_qs(urlparse(url).query).get("oe")
+    try:
+        return float(int(values[0], 16)) if values else None
+    except ValueError:
+        return None
+
+
+def is_expired_url(url: str, *, at: float) -> bool:
+    """True when `url`'s signature is dead (or within the grace) at `at`."""
+    expiry = signed_url_expiry(url)
+    return expiry is not None and expiry <= at + SIGNED_URL_GRACE_SECONDS
+
+
+def signed_urls_in(text: str) -> list[str]:
+    """Every signed photo URL inside `text`, in order."""
+    if "fbcdn" not in text and "fbsbx" not in text:
+        return []  # the common case, without running the pattern over a page
+    return [url for url in _FBCDN_URL_RE.findall(text) if signed_url_expiry(url) is not None]
+
+
+def renew_signed_urls(text: str, fresh: dict[str, str]) -> str:
+    """`text` with every signed photo URL swapped for the fresh rendition of
+    the same picture (`fresh` maps `photo_identity` → URL).
+
+    Each URL is matched and replaced WHOLE. A per-key `str.replace` would be
+    order-dependent and corrupt a URL that is a prefix of another — the bug
+    that shipped dead backgrounds from push_orchestrator's old rewrite loop.
+    """
+    if not fresh or ("fbcdn" not in text and "fbsbx" not in text):
+        return text
+    return _FBCDN_URL_RE.sub(
+        lambda match: fresh.get(photo_identity(match.group(0)) or "", match.group(0)), text
+    )
 
 
 def image_identity(meta: "ImageMetadata") -> str:

@@ -316,10 +316,15 @@ overlay's brand end is mixed toward the ink first.
 sheet dark enough for a bright photo's headline also flattens the ~70% of the
 frame that carries no text, which is what turns a hero into a colour block with
 a picture buried in it. So the wash is split: an all-over brand *cast*
-(α 0.14→0.34 on the luminance ramp) plus a centre *scrim* that fades to zero
-before the edges. Behind the copy the two compound back to the old single sheet
-(α 0.30→0.62), so `_SCRIM_COMPOSITE_BG` and every ink derived from it stay
-valid; outside it, coverage roughly halves and the photograph shows.
+(α 0.14→0.34 on the luminance ramp) plus a *scrim* that holds flat across the
+copy's zone and fades to zero before the edges. The scrim is **solved for the
+photo behind the copy** (`image_styling._copy_scrim`, from the photo's measured
+luminance map): the least that lets the palette's light ink clear 4.5:1 over the
+bright tail of the copy zone, never lighter than the old ramp, never past the old
+single sheet (α 0.62). The surface it leaves is recorded on the section
+(`photo_surface_hex` → `BuilderElement.paint_surface`) and every ink on it is
+chosen against that — there is no assumed backdrop. Outside the scrim, coverage
+roughly halves and the photograph shows.
 
 **"Complementary site theme" clarified:** one cohesive palette, alternating
 **luminance within it** (`surface` ↔ `secondary`, same hue family). The true

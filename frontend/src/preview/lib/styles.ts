@@ -118,11 +118,63 @@ function headingInk(secondary: string, text: string, background: string): string
   return unreadable ? text : secondary
 }
 
+// The palette's two copy inks — the only colours copy on a photo, a band or a
+// template's own fill is given, so a site's "white" copy is its brand's
+// near-white, never a stock #ffffff. Light: the most brand-tinted of the
+// palette's near-lightest neutrals (a light build's surface tint); dark: its
+// darkest. Derived, never stored, so they follow a live palette edit. Keep in
+// lockstep with builder src/lib/builder-styles.ts (neutralInks) and
+// site-generator app/services/theme.py (_neutral_inks) — same candidates, same
+// order, so a tie resolves the same way in all three.
+const LIGHT_INK_SPREAD = 0.1
+
+function chroma(hex: string): number {
+  const { r, g, b } = hexToRgb(hex)
+  return Math.max(r, g, b) - Math.min(r, g, b)
+}
+
+function neutralInks(background: string, surface: string, text: string, secondary: string): { light: string; dark: string } {
+  const neutrals = [background, surface, text, secondary].filter((c) => HEX_COLOR.test(c))
+  if (neutrals.length === 0) return { light: background, dark: text }
+  const lum = neutrals.map(relativeLuminance)
+  const lightest = Math.max(...lum)
+  let light = ''
+  let dark = neutrals[0]
+  neutrals.forEach((c, i) => {
+    if (lum[i] >= lightest - LIGHT_INK_SPREAD && (light === '' || chroma(c) > chroma(light))) light = c
+    if (lum[i] < relativeLuminance(dark)) dark = c
+  })
+  return { light, dark }
+}
+
+// How much `primary` a brand-tinted chip washes into the page background.
+const PRIMARY_TINT_WEIGHT = 0.1
+
+// A brand-tinted chip (the contact form's "Required" marker) and the ink its
+// label wears. A chip paints its own surface, so it states its own ink: the
+// tint is OPAQUE — `primary` washed into `background` — so the colour behind
+// the label is known whatever band, glow or card the chip lands on, and the
+// ink is the brand's small-text ink held to AA on that tint, not on the bare
+// background. A translucent tint under an ink chosen for the background
+// measured 2.2:1 under the form label's opacity. Keep in lockstep with builder
+// src/lib/builder-styles.ts (primaryTint).
+function primaryTint(primary: string, background: string, primaryInk: string): { tint: string; ink: string } {
+  if (!HEX_COLOR.test(primary) || !HEX_COLOR.test(background)) {
+    return { tint: background, ink: primaryInk }
+  }
+  const from = hexToRgb(background)
+  const to = hexToRgb(primary)
+  const wash = (b: number, p: number) => b + (p - b) * PRIMARY_TINT_WEIGHT
+  const tint = rgbToHex({ r: wash(from.r, to.r), g: wash(from.g, to.g), b: wash(from.b, to.b) })
+  return { tint, ink: ensureContrast(primaryInk, tint, 4.5) }
+}
+
 const DEFAULT_CSS_VARS = {
   '--wt-color-primary': '#2563eb',
   '--wt-color-text': '#111827',
   '--wt-color-bg': '#ffffff',
   '--wt-color-muted': '#6b7280',
+  '--wt-color-surface-ink': '#111827',
   '--wt-font-body': 'Inter, Arial, sans-serif',
   '--wt-font-heading': 'Inter, Arial, sans-serif'
 }
@@ -242,12 +294,21 @@ export function buildCssVars(styles?: PublicStyleTokens | null) {
   // under AA. Keep in lockstep with builder src/lib/builder-styles.ts
   // (toBuilderCssVars) and site-generator ThemeTokens.to_builder_styles.
   const primaryInkColor = getNestedStyleValue(styles, ['colors', 'primaryInk']) || directVars['--builder-color-primary-ink'] || ensureContrast(primaryColor, backgroundColor, 4.5)
+  const primaryTintPair = primaryTint(primaryColor, backgroundColor, primaryInkColor)
+  const inks = neutralInks(backgroundColor, surfaceColor, textColor, secondaryColor)
   // No palette carries a muted colour, so this was always the light theme's
   // grey — 4.1:1 on a dark page, under every archive description, form label
   // and blockquote. Every consumer sits on the page background, so the grey is
   // held to AA against it: unchanged on a light palette (4.8:1 on white),
   // lifted just enough on a dark one.
   const mutedColor = getNestedStyleValue(styles, ['colors', 'muted']) || directVars['--wt-color-muted'] || ensureContrast(DEFAULT_CSS_VARS['--wt-color-muted'], backgroundColor, 4.5)
+  // Ink for chrome that always paints its own near-white card regardless of
+  // page theme (the WhatsApp widget's roster panel).
+  // `text` is only guaranteed 7:1 against the page `background` — on a dark
+  // theme that same colour is light, and unreadable on the widget's fixed
+  // white surface. Re-derive against white so the widget stays legible no
+  // matter how dark the page theme is.
+  const surfaceInkColor = ensureContrast(textColor, '#ffffff', 4.5)
   const bodyFont = getNestedStyleValue(styles, ['fonts', 'body']) || getNestedStyleValue(styles, ['typography', 'bodyFont']) || directVars['--wt-font-body'] || DEFAULT_CSS_VARS['--wt-font-body']
   const headingFont = getNestedStyleValue(styles, ['fonts', 'heading']) || getNestedStyleValue(styles, ['typography', 'headingFont']) || directVars['--wt-font-heading'] || bodyFont
   const buttonBackground = getNestedStyleValue(styles, ['buttons', 'background']) || primaryColor
@@ -280,12 +341,17 @@ export function buildCssVars(styles?: PublicStyleTokens | null) {
     '--wt-color-text': textColor,
     '--wt-color-bg': backgroundColor,
     '--wt-color-muted': mutedColor,
+    '--wt-color-surface-ink': surfaceInkColor,
     '--wt-font-body': bodyFont,
     '--wt-font-heading': headingFont,
     '--builder-color-primary': primaryColor,
     '--builder-color-primary-ink': primaryInkColor,
+    '--builder-color-primary-tint': primaryTintPair.tint,
+    '--builder-color-primary-tint-ink': primaryTintPair.ink,
     '--builder-color-secondary': secondaryColor,
     '--builder-color-heading': headingInk(secondaryColor, textColor, backgroundColor),
+    '--builder-color-ink-light': inks.light,
+    '--builder-color-ink-dark': inks.dark,
     '--builder-color-accent': accentColor,
     '--builder-color-text': textColor,
     '--builder-color-background': backgroundColor,

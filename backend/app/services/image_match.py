@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse
 
 from app.models.content_blocks import ImageMetadata
+from app.services.facebook_photo_selection import photo_rejection_reason
 
 if TYPE_CHECKING:
     # Heavy import chain (llm -> config -> pydantic_settings/httpx). Kept lazy so
@@ -274,7 +275,10 @@ def must_show_whole(meta: ImageMetadata | None) -> bool:
     no longer scans, and a code with nothing saying what it is for is an
     instruction with the instruction missing.
     """
-    return meta is not None and (bool(meta.qr_payload) or shows_words(meta))
+    return meta is not None and (
+        meta.content_purpose in {"menu", "menu_review"}
+        or bool(meta.qr_payload) or shows_words(meta)
+    )
 
 
 def bears_text(meta: ImageMetadata | None) -> bool:
@@ -362,6 +366,7 @@ def rank_candidates(
     settle ambiguous cases.
     """
     candidates = [c for c in candidates if c.role not in _EXCLUDED_ROLES]
+    candidates = [c for c in candidates if photo_rejection_reason(c, slot_intent) is None]
     if slot_usage == "inline":
         candidates = [c for c in candidates if c.source_usage != "css_background"]
     # Portraits are OPT-IN, because almost no slot wants one. A scraped site's

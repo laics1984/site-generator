@@ -1,46 +1,66 @@
 """Childcare / kindergarten industry wiring.
 
-The childcare design brief (parent-first trust, soft pastel palette, rounded
-friendly type, authentic children-at-play photography, book-a-tour conversion
-structure) is spread across the industry-keyed registries. These tests pin
-each registry's childcare entry so the brief keeps flowing into generation.
+What the industry still owns is its CONTENT shape and its safety rules: the
+page set and landing journey parents need, the book-a-tour conversion, a light
+scheme by default, honest imagery. What it no longer owns is the LOOK. The
+pastel-band, rainbow-title, wave-seam, rounded-type, 68px-logo brief used to be
+forced on every school from ten industry-keyed tables, so ten kindergartens with
+ten logo colours shipped in three colourways and one typeface
+(docs/design-identity-plan.md). That look is now the `playroom` design scheme —
+one direction among several, chosen on evidence — and the logo leads the
+palette like everywhere else.
 """
 
 import re
 import unittest
+from contextlib import contextmanager
+from unittest import mock
 
+from app.config import settings
 from app.models.brand import BrandIdentity
 from app.models.builder_schema import BuilderElement, BuilderElementContent
 from app.models.content_blocks import (
     HeroBlock,
     PagePlan,
     industry_default_mood,
-    industry_locked_mood,
+    resolve_mood,
 )
+from app.services.design_schemes import by_slug, candidates_for
 from app.services.header_footer import build_header
+from app.services.hero_director import _MOOD_SPECS, plan_site_heroes
 from app.services.image_styling import photo_background
-from app.services.hero_director import _CHILDCARE_SPEC, plan_site_heroes
 from app.services.industry_personality import personality_for
 from app.services.industry_templates import get_template
 from app.services.landing_patterns import homepage_sections
-from app.services.media import _contextual_non_person_query, _INDUSTRY_CONTEXT_QUERIES
+from app.services.media import _INDUSTRY_CONTEXT_QUERIES, _contextual_non_person_query
 from app.services.schema_builder import (
-    _CHILDCARE_HERO_INKS,
-    _CHILDCARE_HERO_INK,
+    _NEUTRAL_PHOTO_CAST,
+    RenderContext,
     _apply_hero_typography,
     _midpoint_word_split,
     apply_section_dividers,
     make_style_tokens,
-    modernize_sections,
-    RenderContext,
 )
-from app.services.section_content import (
-    _CHILDCARE_HEADING_INKS,
-    _CHILDCARE_PASTELS,
-    apply_childcare_heading_colors,
-    apply_childcare_pastel_rhythm,
+from app.services.section_content import apply_band_tints, apply_section_title_inks
+from app.services.style_tokens import _accent_ink_for, band_tints, section_title_inks
+from app.services.theme import (
+    _CURATED_PALETTES,
+    _contrast,
+    build_theme,
+    resolve_color_scheme,
 )
-from app.services.theme import _CURATED_PALETTES, build_theme, resolve_color_scheme
+
+KINDERGARTENS = (
+    "Little Acorns", "Tadika Murni", "Sunbeam House", "Bright Harbour",
+    "Glory Fields", "Montessori House KL", "Kiddyland Lane", "Rainbow Yard",
+    "The Learning Tree", "Pelangi Studio",
+)
+
+
+@contextmanager
+def schemes_on():
+    with mock.patch.object(settings, "design_schemes_enabled", True):
+        yield
 
 
 def _find_by_name(node, name):
@@ -61,31 +81,54 @@ class ChildcarePersonalityTest(unittest.TestCase):
         self.assertNotEqual(p, personality_for("other"))
         # Parent-first tone, not child-facing.
         self.assertIn("parent", p.voice)
-        # Signature visual moves from the design brief.
-        self.assertIn("rounded", p.design)
-        self.assertIn("pastel", p.design)
+
+    def test_the_design_brief_does_not_prescribe_a_look(self):
+        """The personality line is injected into the design and copy prompts.
+        It used to name the pastel palette and rounded type outright, so the
+        model reached for the same look on every school; it now points at the
+        school's own evidence."""
+        design = personality_for("childcare").design.lower()
+        for prescription in ("pastel", "cream/sky", "rounded friendly display"):
+            self.assertNotIn(prescription, design)
+        self.assertIn("logo", design)
 
 
 class ChildcareMoodTest(unittest.TestCase):
     def test_defaults_to_friendly_not_playful(self):
-        # Joyful without being childish: the audience is parents.
+        # Joyful without being childish: the audience is parents. Still the
+        # last-resort default when nothing else is known.
         self.assertEqual(industry_default_mood("childcare"), "friendly")
 
-    def test_mood_is_locked_against_detection_noise(self):
-        # The detected mood is advisory for childcare — a stray `playful`
-        # (loud type, dramatic shadows) must not restyle a kindergarten.
-        self.assertEqual(industry_locked_mood("childcare"), "friendly")
+    def test_detection_is_no_longer_overruled(self):
+        """The industry used to LOCK the mood to friendly, overruling what the
+        source said about itself. Detection now wins over the default."""
+        self.assertEqual(
+            resolve_mood(override=None, brand_mood=None, detected="editorial", industry="childcare"),
+            "editorial",
+        )
+        self.assertEqual(
+            resolve_mood(override=None, brand_mood=None, detected=None, industry="childcare"),
+            "friendly",
+        )
 
-    def test_other_industries_leave_mood_to_detection(self):
-        self.assertIsNone(industry_locked_mood("restaurant"))
-        self.assertIsNone(industry_locked_mood(None))
+    def test_explicit_choices_still_win(self):
+        self.assertEqual(
+            resolve_mood(override="luxury", brand_mood="playful", detected="editorial", industry="childcare"),
+            "luxury",
+        )
+        self.assertEqual(
+            resolve_mood(override=None, brand_mood="playful", detected="editorial", industry="childcare"),
+            "playful",
+        )
 
 
 class ChildcareColorSchemeTest(unittest.TestCase):
+    """Light by default is legibility for a parent audience, not a look — it
+    stays an industry lean (decision recorded in the plan's Phase 1)."""
+
     def test_light_logo_never_defaults_childcare_to_dark(self):
         # The Glorykids failure: a bright logo read as "light" flipped the
-        # whole site dark, bypassing the pastel palettes. Childcare is
-        # light-only by brief.
+        # whole site dark.
         self.assertEqual(
             resolve_color_scheme(None, None, True, industry="childcare"), "light"
         )
@@ -133,19 +176,17 @@ class ChildcareLandingPatternTest(unittest.TestCase):
         sections = homepage_sections("childcare")
         self.assertEqual(sections[0], "hero")
         self.assertEqual(sections[-1], "cta")
-        # Parent-first conversion journey: why-us → philosophy → programs →
-        # social proof → book-a-tour. (Process/teachers/FAQ/gallery moved to
-        # their own pages to keep the homepage generatable in one call.)
         for kind in ("features", "about", "services", "testimonials"):
             self.assertIn(kind, sections)
 
     def test_homepage_stays_within_single_call_budget(self):
-        # The pattern plus any merged extras must never exceed the ceiling a
-        # single LLM call can generate — the root cause of the 502.
         self.assertLessEqual(len(homepage_sections("childcare")), 8)
 
 
 class ChildcareHeroDirectionTest(unittest.TestCase):
+    """No industry has a hero spec any more: a school's heroes are its mood's
+    and its scheme's (design-identity plan, Phase 4)."""
+
     def _pages(self):
         def page(slug, page_type, homepage=False):
             return PagePlan(
@@ -169,7 +210,6 @@ class ChildcareHeroDirectionTest(unittest.TestCase):
         directives = plan_site_heroes(
             self._pages(),
             mood="friendly",
-            industry="childcare",
             has_source_background=False,
             seed="Sunny Days Kindergarten",
         )
@@ -177,28 +217,19 @@ class ChildcareHeroDirectionTest(unittest.TestCase):
         self.assertEqual(directives["home"].layout, "background")
 
     def test_transactional_pages_stay_calm_and_centered_in_legacy_rotation(self):
-        # The compact-interior art direction survives behind the site-wide
-        # full-bleed policy flag (hero_fullbleed_all_pages=False).
-        from unittest import mock
-
-        from app.config import settings
-
         with mock.patch.object(settings, "hero_fullbleed_all_pages", False):
             directives = plan_site_heroes(
                 self._pages(),
                 mood="friendly",
-                industry="childcare",
                 has_source_background=False,
                 seed="Sunny Days Kindergarten",
             )
         self.assertEqual(directives["contact"].template_id, "hero-centered-minimal")
 
     def test_default_policy_directs_every_childcare_page_full_bleed(self):
-        # Site-wide transparent header: every page opens with a background hero.
         directives = plan_site_heroes(
             self._pages(),
             mood="friendly",
-            industry="childcare",
             has_source_background=False,
             seed="Sunny Days Kindergarten",
         )
@@ -206,67 +237,159 @@ class ChildcareHeroDirectionTest(unittest.TestCase):
             self.assertEqual(directive.template_id, "hero-background-bold")
 
 
-class ChildcareThemeTest(unittest.TestCase):
-    def test_curated_palette_stays_soft_and_light(self):
+class FriendlyArtDirectionTest(unittest.TestCase):
+    """What childcare and nonprofit used to pin for themselves is the friendly
+    mood's art direction now — every warm brand gets it, no industry owns it."""
+
+    def test_story_pages_lead_editorial_and_transactional_pages_stay_calm(self):
+        friendly = _MOOD_SPECS["friendly"]
+        self.assertEqual(friendly.by_page_type["about"].template_id, "hero-editorial")
+        self.assertEqual(friendly.by_page_type["team"].template_id, "hero-editorial")
+        self.assertEqual(friendly.by_page_type["contact"].template_id, "hero-centered-minimal")
+        self.assertEqual(friendly.by_page_type["faq"].template_id, "hero-centered-minimal")
+
+    def test_the_gradient_hero_is_back_in_the_rotation(self):
+        """It was excluded for childcare because white type over a PASTEL
+        primary's light end was illegible. Palettes are logo-led now and
+        enforce_fill_contrast resolves a gradient fill to AA for white ink, so
+        the exclusion guarded a failure that cannot happen."""
+        ids = {d.template_id for d in _MOOD_SPECS["friendly"].rotation}
+        self.assertIn("hero-gradient", ids)
+        self.assertIn("hero-playful-split", ids)
+
+
+class LogoLeadsThePaletteTest(unittest.TestCase):
+    """Decision Q2: a usable logo hue leads the palette for every industry,
+    childcare included. This file used to pin the opposite
+    (`test_brand_logo_hue_is_ignored_for_the_pastel_set`)."""
+
+    def _childcare_primaries(self):
+        return {c.primary.upper() for c in _CURATED_PALETTES if "childcare" in c.categories}
+
+    def test_an_orange_logo_gets_an_orange_site(self):
         theme = build_theme(
-            None,
-            mood="friendly",
-            palette_mode="auto",  # no logo colour → curated industry palette
-            font_seed="Sunny Days Kindergarten",
-            industry="childcare",
+            "#F97316", mood="friendly", palette_mode="auto",
+            font_seed="Glorykids", industry="childcare",
         )
-        # Light, warm surfaces — the brief bans dark themes.
-        self.assertEqual(theme.palette.background.lower(), "#ffffff")
-        self.assertIn(
-            theme.palette.primary.upper(), {"#0284C7", "#059669", "#8B5CF6"}
+        self.assertIsNone(theme.palette_slug)  # the logo-led snap, not a curated set
+        self.assertNotIn(theme.palette.primary.upper(), self._childcare_primaries())
+        restaurant = build_theme(
+            "#F97316", mood="friendly", palette_mode="auto",
+            font_seed="Glorykids", industry="restaurant",
         )
+        self.assertEqual(theme.palette, restaurant.palette)
 
-    def test_font_pairing_is_rounded_kids_pairing(self):
+    def test_ten_logo_colours_give_ten_kindergartens_distinct_primaries(self):
+        logos = (
+            "#e11d48", "#16a34a", "#f59e0b", "#1d4ed8", "#7c3aed",
+            "#0f766e", "#ea580c", "#db2777", "#0891b2", "#65a30d",
+        )
+        primaries = {
+            build_theme(
+                logo, mood="friendly", palette_mode="auto", font_seed=name, industry="childcare"
+            ).palette.primary
+            for name, logo in zip(KINDERGARTENS, logos)
+        }
+        self.assertGreaterEqual(len(primaries), 8)
+
+    def test_a_black_wordmark_does_not_lead_as_navy(self):
+        """`#111827` has 39% HLS saturation and ~9% chroma: it is black to any
+        visitor. It used to count as a brand hue and snap the site to blue."""
         theme = build_theme(
-            None,
-            mood="friendly",
-            palette_mode="auto",
-            font_seed="Sunny Days Kindergarten",
-            industry="childcare",
+            "#111827", mood="friendly", palette_mode="auto",
+            font_seed="The Learning Tree", industry="childcare",
         )
-        # The friendly pool's children/kids-tagged pairings are the rounded ones.
-        self.assertTrue(
-            any(
-                face in theme.typography.heading_font
-                for face in ("Fredoka", "Varela Round")
-            ),
-            theme.typography.heading_font,
-        )
+        self.assertIsNotNone(theme.palette_slug)  # curated, because there is no hue
 
-    def test_explicit_playful_mood_still_gets_a_rounded_face(self):
-        # Safety net: a kindergarten explicitly set to playful must land on
-        # the pool's child-tagged rounded pairing, not the seeded vintage
-        # serif (Abril Fatface) that produced the Glorykids look.
-        theme = build_theme(
-            None,
-            mood="playful",
-            palette_mode="auto",
-            font_seed="Glorykids",
-            industry="childcare",
-        )
-        self.assertIn("Baloo 2", theme.typography.heading_font)
+    def test_no_logo_hue_draws_from_more_than_the_pastel_set(self):
+        slugs = {
+            build_theme(
+                None, mood="friendly", palette_mode="auto", font_seed=name, industry="childcare"
+            ).palette_slug
+            for name in KINDERGARTENS
+        }
+        self.assertGreaterEqual(len(slugs), 4)
+
+    def test_a_schemes_strategy_narrows_the_curated_pick(self):
+        with schemes_on():
+            for name in KINDERGARTENS:
+                theme = build_theme(
+                    None, mood="friendly", palette_mode="auto", font_seed=name,
+                    industry="childcare", scheme_choice="nature-studio",
+                )
+                entry = next(c for c in _CURATED_PALETTES if c.slug == theme.palette_slug)
+                self.assertTrue(
+                    set(entry.strategies) & set(by_slug("nature-studio").palette_strategies),
+                    (name, entry.slug),
+                )
 
 
-class ChildcareBackgroundStrategyTest(unittest.TestCase):
-    def test_childcare_uses_pastel_bands_not_a_mono_mesh(self):
-        # "Layered backgrounds" now come from the multi-pastel section rhythm,
-        # not a single-hue mesh — so the theme strategy stays flat.
-        theme = build_theme(None, mood="friendly", industry="childcare")
-        self.assertEqual(theme.background_strategy, "flat")
+class TypeDirectionTest(unittest.TestCase):
+    def test_kindergartens_no_longer_share_one_typeface(self):
+        """Industry keywords ("children", "kids") scored Fredoka uniquely
+        highest, so every school got it. With a scheme, the type direction
+        decides, seeded per brand."""
+        with schemes_on():
+            faces = {
+                build_theme(
+                    None, mood="friendly", font_seed=name, industry="childcare"
+                ).typography.heading_font
+                for name in KINDERGARTENS
+            }
+        self.assertGreaterEqual(len(faces), 4)
 
-    def test_other_friendly_industries_stay_flat(self):
-        theme = build_theme(None, mood="friendly", industry="nonprofit")
-        self.assertEqual(theme.background_strategy, "flat")
+    def test_a_scheme_speaks_only_in_its_own_directions(self):
+        from app.services.theme import MOOD_SPECS
+
+        pairings = {
+            p.heading_font: p.direction
+            for spec in MOOD_SPECS.values()
+            for p in (*spec.font_pool, *spec.direction_pairings)
+        }
+        with schemes_on():
+            for slug in candidates_for("friendly", "childcare"):
+                for name in KINDERGARTENS[:4]:
+                    theme = build_theme(
+                        None, mood="friendly", font_seed=name,
+                        industry="childcare", scheme_choice=slug,
+                    )
+                    self.assertIn(
+                        pairings[theme.typography.heading_font],
+                        by_slug(slug).type_directions,
+                        (slug, name),
+                    )
+
+    def test_schemes_off_keeps_the_legacy_pick(self):
+        # The neutral scheme states no direction, so the mood pool's industry
+        # keyword pick stands — the byte-identical kill-switch contract.
+        theme = build_theme(None, mood="friendly", font_seed="Sunny Days", industry="childcare")
+        self.assertIn("Fredoka", theme.typography.heading_font)
+
+
+class ChildcareSchemesTest(unittest.TestCase):
+    def test_a_school_can_be_built_in_several_distinct_directions(self):
+        cell = candidates_for("friendly", "childcare")
+        self.assertGreaterEqual(len(cell), 5)
+        # Not all soft: at least one scheme spends no seams, and one sets serifs.
+        self.assertTrue(any(by_slug(s).divider_shape is None for s in cell))
+        self.assertTrue(any("editorial-serif" in by_slug(s).type_directions for s in cell))
+        # The old look is still one of them.
+        self.assertIn("playroom", cell)
+
+    def test_playroom_carries_the_former_childcare_look(self):
+        playroom = by_slug("playroom")
+        self.assertEqual(playroom.band_tint, "multi-tint")
+        self.assertEqual(playroom.heading_ink, "per-section-accent")
+        self.assertTrue(playroom.hero_title_accent)
+        self.assertEqual(playroom.photo_cast, "neutral")
+        self.assertEqual(playroom.divider_shape, "wave")
+        self.assertEqual(playroom.logo_height, "68px")
+        self.assertEqual(playroom.background_strategy, "flat")
 
 
 class ChildcareDividerTest(unittest.TestCase):
-    """Flowing wave seams are the industry's signature — guaranteed whatever
-    mood the detection LLM picked (peak/slant read sharp, luxury has none)."""
+    """No industry pins a seam shape any more: the wave is playroom's (and
+    soft-warm's) voice, and a luxury-mood school gets the mood's no-seam."""
 
     @staticmethod
     def _sections():
@@ -278,85 +401,74 @@ class ChildcareDividerTest(unittest.TestCase):
             for name in ("Hero", "Features", "CTA")
         ]
 
-    def test_wave_seams_under_any_mood(self):
+    def test_mood_decides_without_a_scheme(self):
+        sections = self._sections()
+        apply_section_dividers(sections, "luxury")
+        self.assertIsNone(sections[0].divider)  # luxury has no shaped edge
+
+    def test_playroom_seams_are_waves_under_any_mood(self):
         for mood in ("playful", "luxury", "modern", "friendly"):
             sections = self._sections()
-            apply_section_dividers(sections, mood, "childcare")
+            apply_section_dividers(sections, mood, by_slug("playroom"))
             hero, _, cta = sections
-            self.assertIsNotNone(hero.divider, mood)
             self.assertEqual(hero.divider.bottom.shape, "wave", mood)
             self.assertEqual(cta.divider.top.shape, "wave", mood)
 
-    def test_other_industries_keep_mood_shape(self):
-        sections = self._sections()
-        apply_section_dividers(sections, "luxury", "restaurant")
-        self.assertIsNone(sections[0].divider)  # luxury has no shaped edge
 
-    def test_pastel_bands_and_wave_seams_coexist(self):
-        # Real build order: pastel rhythm colours the flat sections, then the
-        # dividers read those pastel colours for their seam fill.
-        theme = build_theme(None, mood="friendly", industry="childcare")
-        page_bg = theme.page.background
-        sections = [
-            BuilderElement(
-                name=name, type="section",
-                styles={"backgroundColor": page_bg, "width": "100%"}, content=[],
-            )
-            for name in ("Hero", "Features", "About", "Testimonials", "CTA")
-        ]
-
-        apply_childcare_pastel_rhythm(sections, theme.palette.text)
-        apply_section_dividers(sections, "friendly", "childcare")
-
-        # Distinct pastels landed on the flat bands.
-        bgs = [s.styles["backgroundColor"] for s in sections]
-        self.assertEqual(len(set(bgs)), len(bgs))
-        self.assertTrue(all(bg in _CHILDCARE_PASTELS for bg in bgs))
-        # The wave seam fill reads the revealed neighbour's pastel colour.
-        self.assertEqual(sections[0].divider.bottom.shape, "wave")
-        self.assertEqual(sections[0].divider.bottom.color, sections[1].styles["backgroundColor"])
-
-
-class ChildcarePastelRhythmTest(unittest.TestCase):
-    """The multi-pastel section rhythm: what actually makes a childcare page read
-    cheerful and multi-coloured (cream/sky/mint/peach/...) instead of one hue."""
-
-    @staticmethod
-    def _flat(name):
-        return BuilderElement(
-            name=name, type="section",
-            styles={"backgroundColor": "#ffffff", "width": "100%"}, content=[],
+def _theme(logo, name="Glorykids"):
+    with schemes_on():
+        return build_theme(
+            logo, mood="friendly", palette_mode="auto", font_seed=name,
+            industry="childcare", scheme_choice="playroom",
         )
 
-    def test_flat_sections_rotate_through_distinct_pastels(self):
+
+class BandTintTest(unittest.TestCase):
+    """Multi-tint bands: light tints of THIS site's hues, not a fixed rainbow."""
+
+    @staticmethod
+    def _flat(name, bg="#ffffff"):
+        return BuilderElement(
+            name=name, type="section",
+            styles={"backgroundColor": bg, "width": "100%"}, content=[],
+        )
+
+    def test_tints_are_distinct_light_and_legible_under_the_theme_ink(self):
+        theme = _theme("#16a34a")
+        tints = band_tints(theme)
+        self.assertGreaterEqual(len(tints), 2)
+        self.assertEqual(len(set(tints)), len(tints))
+        for tint in tints:
+            self.assertGreaterEqual(_contrast(tint, theme.palette.text), 7.0, tint)
+
+    def test_two_brands_get_two_tint_sets(self):
+        self.assertNotEqual(band_tints(_theme("#16a34a")), band_tints(_theme("#7c3aed")))
+
+    def test_flat_sections_rotate_through_the_tints(self):
+        theme = _theme("#ea580c")
+        tints = band_tints(theme)
         sections = [self._flat(n) for n in ("Features", "About", "Services", "Gallery")]
-        apply_childcare_pastel_rhythm(sections, "#0c4a6e")
+        apply_band_tints(sections, tints, theme.palette.text)
         bgs = [s.styles["backgroundColor"] for s in sections]
-        self.assertEqual(bgs, list(_CHILDCARE_PASTELS[:4]))
-        self.assertEqual(len(set(bgs)), 4)  # multi-coloured, not one hue
+        self.assertEqual(bgs, [tints[i % len(tints)] for i in range(4)])
 
     def test_photo_and_gradient_sections_are_left_untouched(self):
         photo = BuilderElement(
-            name="Hero", type="section",
-            styles={"backgroundImage": "url('x.jpg')"}, content=[],
+            name="Hero", type="section", styles={"backgroundImage": "url('x.jpg')"}, content=[],
         )
         gradient = BuilderElement(
             name="CTA", type="section",
             styles={"background": "linear-gradient(#000,#111)"}, content=[],
         )
         flat = self._flat("Features")
-        apply_childcare_pastel_rhythm([photo, gradient, flat], "#0c4a6e")
-        # The designed photo/gradient moments survive; only the flat band recolours.
+        apply_band_tints([photo, gradient, flat], ("#eef6ff",), "#0c4a6e")
         self.assertNotIn("backgroundColor", photo.styles)
         self.assertEqual(gradient.styles.get("background"), "linear-gradient(#000,#111)")
-        self.assertEqual(flat.styles["backgroundColor"], _CHILDCARE_PASTELS[0])
+        self.assertEqual(flat.styles["backgroundColor"], "#eef6ff")
 
-    def test_dark_band_is_replaced_by_pastel_with_dark_ink(self):
-        # A former dark band: dark bg + light text. The pastel pass flips it to a
-        # light pastel and recolours the text dark so it stays legible.
+    def test_dark_band_is_replaced_by_a_tint_with_dark_ink(self):
         text = BuilderElement(
-            name="Heading", type="text",
-            styles={"color": "#ffffff"},
+            name="Heading", type="text", styles={"color": "#ffffff"},
             content=BuilderElementContent(innerText="Our Services"),
         )
         band = BuilderElement(
@@ -364,198 +476,13 @@ class ChildcarePastelRhythmTest(unittest.TestCase):
             styles={"backgroundColor": "#0c4a6e", "borderTop": "1px solid #222"},
             content=[text],
         )
-        apply_childcare_pastel_rhythm([band], "#0c4a6e")
-        self.assertEqual(band.styles["backgroundColor"], _CHILDCARE_PASTELS[0])
+        apply_band_tints([band], ("#eef6ff",), "#0c4a6e")
+        self.assertEqual(band.styles["backgroundColor"], "#eef6ff")
         self.assertNotIn("borderTop", band.styles)  # stray dark hairline dropped
         self.assertEqual(text.styles["color"], "#0c4a6e")  # ink flipped dark
 
-    def test_pastels_are_light_enough_for_dark_ink(self):
-        # Every pastel must clear WCAG AA (4.5:1) against the dark ink so no band
-        # ever renders low-contrast text.
-        from app.services.theme import _contrast
-        for pastel in _CHILDCARE_PASTELS:
-            self.assertGreaterEqual(_contrast(pastel, "#0c4a6e"), 4.5, pastel)
 
-
-class ChildcarePaletteColorfulnessTest(unittest.TestCase):
-    def _childcare_primaries(self):
-        return {
-            c.primary.upper()
-            for c in _CURATED_PALETTES
-            if "childcare" in c.categories
-        }
-
-    def test_brand_logo_hue_is_ignored_for_the_pastel_set(self):
-        # The Glorykids failure: an orange logo snapped to a muted mono Tailwind
-        # palette. Childcare now always uses the curated pastel set instead.
-        theme = build_theme(
-            "#F97316",  # orange logo hue — would previously drive the snap
-            mood="friendly",
-            palette_mode="auto",
-            font_seed="Glorykids",
-            industry="childcare",
-        )
-        self.assertIn(theme.palette.primary.upper(), self._childcare_primaries())
-
-    def test_secondary_is_not_the_near_black_slate(self):
-        # The dull dark bands came from secondary = slate-900. Curated pastel
-        # palettes carry a softer dark token instead.
-        theme = build_theme(
-            "#F97316", mood="friendly", palette_mode="auto",
-            font_seed="Glorykids", industry="childcare",
-        )
-        self.assertNotIn(theme.palette.secondary.upper(), {"#0F172A", "#020617"})
-
-
-class ChildcareLogoTest(unittest.TestCase):
-    def _brand(self):
-        return BrandIdentity(
-            name="Glorykids",
-            logo_data_url="data:image/png;base64,abc",
-            extracted_palette=["#F97316"],
-            logo_is_light=True,
-        )
-
-    def test_no_box_around_logo(self):
-        # The "border" the user saw was the old Logo lockup chip. The site
-        # generator no longer boxes or filters the logo for ANY industry (see
-        # header_footer._header_chrome): a same-brightness logo instead makes
-        # the WHOLE header switch to a contrasting, still on-theme background.
-        theme = build_theme("#F97316", industry="childcare")
-        header = build_header(self._brand(), theme, nav_items=[], industry="childcare")
-        self.assertIsNone(_find_by_name(header, "Logo lockup"))
-
-    def test_light_logo_switches_header_to_secondary_not_slate(self):
-        # The childcare mood already keeps `secondary` a soft, brand-hued dark
-        # tone rather than near-black slate (test_secondary_is_not_the_near_
-        # black_slate above), so switching the whole header to it for
-        # contrast stays warm and on-brief instead of harsh.
-        theme = build_theme("#F97316", industry="childcare")
-        header = build_header(self._brand(), theme, nav_items=[], industry="childcare")
-        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.secondary)
-
-    def test_logo_is_enlarged(self):
-        theme = build_theme("#F97316", industry="childcare")
-        header = build_header(self._brand(), theme, nav_items=[], industry="childcare")
-        logo = _find_by_name(header, "Brand Logo")
-        self.assertIsNotNone(logo)
-        self.assertEqual(logo.styles.get("height"), "68px")
-
-    def test_other_industries_have_no_box_either_and_default_size(self):
-        theme = build_theme("#2563eb")  # light theme, light logo
-        header = build_header(self._brand(), theme, nav_items=[], industry="restaurant")
-        self.assertIsNone(_find_by_name(header, "Logo lockup"))
-        logo = _find_by_name(header, "Brand Logo")
-        self.assertEqual(logo.styles.get("height"), "52px")
-
-
-class ChildcareHeroContrastTest(unittest.TestCase):
-    def test_white_text_gradient_hero_excluded_from_rotation(self):
-        # hero-gradient hardcodes white text; over childcare's pastel primary
-        # its light end left the copy illegible. It must not be in the rotation.
-        rotation_ids = {d.template_id for d in _CHILDCARE_SPEC.rotation}
-        self.assertNotIn("hero-gradient", rotation_ids)
-
-    def test_interior_heroes_are_light_bg_dark_text_variants(self):
-        # Every childcare interior hero should be a light-background/dark-ink
-        # variant (playful split, split-washed, centered-minimal, editorial) —
-        # never the full-bleed white-text templates reserved for the homepage.
-        allowed = {
-            "hero-playful-split",
-            "hero-modern-split",
-            "hero-centered-minimal",
-            "hero-editorial",
-        }
-        ids = {d.template_id for d in _CHILDCARE_SPEC.rotation}
-        ids |= {d.template_id for d in _CHILDCARE_SPEC.by_page_type.values()}
-        self.assertTrue(ids <= allowed, ids - allowed)
-
-
-class ChildcareHeroColorTest(unittest.TestCase):
-    """The hero title should be multi-coloured (not just white + one theme hue),
-    and the hero photo should show its real colours (no brand-tint filter)."""
-
-    def _ctx(self, industry="childcare"):
-        theme = build_theme(None, mood="friendly", palette_mode="auto",
-                            font_seed="Glorykids", industry="childcare")
-        return RenderContext(
-            theme=theme, resolver=None, styles=make_style_tokens(theme),
-            industry=industry,
-        )
-
-    @staticmethod
-    def _hero_el(headline, eyebrow=None):
-        kids = []
-        if eyebrow:
-            kids.append(BuilderElement(
-                name="Eyebrow", type="text", styles={"color": "#ffffff"},
-                content=BuilderElementContent(innerText=eyebrow),
-            ))
-        kids.append(BuilderElement(
-            name="Heading", type="text", styles={"color": "#ffffff", "textAlign": "center"},
-            content=BuilderElementContent(innerText=headline),
-        ))
-        return BuilderElement(name="Hero", type="section", styles={}, content=kids)
-
-    def _texts(self, el, out=None):
-        out = [] if out is None else out
-        if el.type == "text" and not isinstance(el.content, list):
-            out.append(el)
-        if isinstance(el.content, list):
-            for c in el.content:
-                self._texts(c, out)
-        return out
-
-    def test_scrim_constant_is_neutral_not_brand_tinted(self):
-        # The childcare hero darkens with a plain slate ink and no brand hue, so
-        # the photograph keeps its own colours. Fed as BOTH ends of the cast, the
-        # brand gradient collapses to that single neutral.
-        self.assertEqual(_CHILDCARE_HERO_INK, "#0f172a")
-        styles = photo_background(
-            "#808080", "https://x/p.jpg", _CHILDCARE_HERO_INK, _CHILDCARE_HERO_INK
-        )
-        css = styles["backgroundImage"]
-        self.assertNotIn("var(--builder", css)
-        # Every rgba() in the overlay stack is the neutral slate.
-        hues = set(re.findall(r"rgba\((\d+),(\d+),(\d+),", css.replace(" ", "")))
-        self.assertEqual(hues, {("15", "23", "42")})
-
-    def test_title_uses_multiple_bright_inks(self):
-        el = self._hero_el("Where little minds grow", eyebrow="Established 2004")
-        block = HeroBlock(headline="Where little minds grow",
-                          headline_accent="grow", eyebrow="Established 2004")
-        _apply_hero_typography(el, block, self._ctx(), template_id="hero-background-bold")
-        colors = {t.styles.get("color") for t in self._texts(el)}
-        # Butter lead, coral accent, sky eyebrow — none is white or the theme hue.
-        self.assertIn(_CHILDCARE_HERO_INKS[0], colors)  # butter lead
-        self.assertIn(_CHILDCARE_HERO_INKS[1], colors)  # coral accent
-        self.assertIn(_CHILDCARE_HERO_INKS[2], colors)  # sky eyebrow
-        self.assertNotIn("#ffffff", colors)
-
-    def test_plain_headline_is_split_into_two_colours(self):
-        # No explicit accent phrase → midpoint split still yields two colours.
-        el = self._hero_el("Welcome to Glorykids")
-        block = HeroBlock(headline="Welcome to Glorykids")
-        _apply_hero_typography(el, block, self._ctx(), template_id="hero-background-bold")
-        line_colors = [t.styles.get("color") for t in self._texts(el)]
-        self.assertIn(_CHILDCARE_HERO_INKS[0], line_colors)
-        self.assertIn(_CHILDCARE_HERO_INKS[1], line_colors)
-
-    def test_other_industries_hero_is_unchanged(self):
-        el = self._hero_el("Bread baked the slow way", eyebrow="Since 1998")
-        block = HeroBlock(headline="Bread baked the slow way",
-                          headline_accent="the slow way", eyebrow="Since 1998")
-        _apply_hero_typography(el, block, self._ctx(industry="restaurant"),
-                              template_id="hero-background-bold")
-        colors = {t.styles.get("color") for t in self._texts(el)}
-        # No childcare inks leak into other industries.
-        self.assertFalse(colors & set(_CHILDCARE_HERO_INKS))
-
-
-class ChildcareHeadingColorTest(unittest.TestCase):
-    """Section titles rotate through vivid, legible colours (rose/violet/blue/...)
-    so headings read multi-coloured, not one dark theme hue."""
-
+class SectionTitleInkTest(unittest.TestCase):
     @staticmethod
     def _section(name, *, heading=None, bg="#FFF7ED", card_title=False):
         kids = []
@@ -569,49 +496,135 @@ class ChildcareHeadingColorTest(unittest.TestCase):
                 name="Feature title", type="text", styles={"color": "#0c4a6e"},
                 content=BuilderElementContent(innerText="A card title"),
             ))
-        return BuilderElement(name=name, type="section",
-                              styles={"backgroundColor": bg}, content=kids)
+        return BuilderElement(name=name, type="section", styles={"backgroundColor": bg}, content=kids)
 
-    def _heading_color(self, section):
-        for c in section.content:
-            if c.name == "Heading":
-                return c.styles.get("color")
-        return None
+    @staticmethod
+    def _heading_color(section):
+        return next(c.styles.get("color") for c in section.content if c.name == "Heading")
 
-    def test_each_section_title_gets_a_distinct_vivid_colour(self):
+    def test_titles_take_distinct_brand_inks_each_aa_on_its_band(self):
+        theme = _theme("#0891b2")
+        bands = ("#FFF7ED", "#EAF6FB", "#FDF2F8")
         secs = [
-            self._section("Features", heading="Why Parents Choose Us"),
-            self._section("About", heading="Our Philosophy"),
-            self._section("Services", heading="Programs by Age"),
+            self._section(n, heading=n, bg=bg)
+            for n, bg in zip(("Features", "About", "Services"), bands)
         ]
-        apply_childcare_heading_colors(secs)
+        apply_section_title_inks(secs, section_title_inks(theme))
         colors = [self._heading_color(s) for s in secs]
-        self.assertEqual(colors, list(_CHILDCARE_HEADING_INKS[:3]))
-        self.assertEqual(len(set(colors)), 3)  # multi-coloured
+        self.assertGreaterEqual(len(set(colors)), 3)
+        for color, bg in zip(colors, bands):
+            self.assertGreaterEqual(_contrast(color, bg), 4.5, (color, bg))
 
-    def test_card_titles_and_body_are_left_dark(self):
+    def test_card_titles_are_left_alone(self):
         sec = self._section("Features", heading="Why Us", card_title=True)
-        apply_childcare_heading_colors([sec])
+        apply_section_title_inks([sec], ("#be123c",))
         card = next(c for c in sec.content if c.name == "Feature title")
-        self.assertEqual(card.styles.get("color"), "#0c4a6e")  # untouched
+        self.assertEqual(card.styles.get("color"), "#0c4a6e")
 
     def test_hero_and_photo_sections_are_skipped(self):
         hero = self._section("Hero", heading="Welcome")
         photo = BuilderElement(
-            name="CTA", type="section",
-            styles={"backgroundImage": "url('x.jpg')"},
+            name="CTA", type="section", styles={"backgroundImage": "url('x.jpg')"},
             content=[BuilderElement(name="Heading", type="text", styles={"color": "#fff"},
                                     content=BuilderElementContent(innerText="Join Us"))],
         )
-        apply_childcare_heading_colors([hero, photo])
-        self.assertEqual(self._heading_color(hero), "#0c4a6e")  # hero untouched
-        self.assertEqual(self._heading_color(photo), "#fff")    # photo title stays
+        apply_section_title_inks([hero, photo], ("#be123c",))
+        self.assertEqual(self._heading_color(hero), "#0c4a6e")
+        self.assertEqual(self._heading_color(photo), "#fff")
 
-    def test_heading_inks_clear_wcag_on_every_pastel(self):
-        from app.services.theme import _contrast
-        for ink in _CHILDCARE_HEADING_INKS:
-            for pastel in _CHILDCARE_PASTELS:
-                self.assertGreaterEqual(_contrast(ink, pastel), 4.5, (ink, pastel))
+
+class HeroTitleAccentTest(unittest.TestCase):
+    """A scheme with `hero_title_accent` two-tones a plain headline in the
+    BRAND's colours; it used to be childcare-only, in a fixed butter/coral set."""
+
+    @staticmethod
+    def _hero_el(headline):
+        heading = BuilderElement(
+            name="Heading", type="text", styles={"color": "#ffffff", "textAlign": "center"},
+            content=BuilderElementContent(innerText=headline),
+        )
+        return BuilderElement(name="Hero", type="section", styles={}, content=[heading])
+
+    def _texts(self, el, out=None):
+        out = [] if out is None else out
+        if el.type == "text" and not isinstance(el.content, list):
+            out.append(el)
+        if isinstance(el.content, list):
+            for c in el.content:
+                self._texts(c, out)
+        return out
+
+    def _ctx(self, theme):
+        return RenderContext(theme=theme, resolver=None, styles=make_style_tokens(theme))
+
+    def test_playroom_splits_a_plain_headline_into_the_brands_two_inks(self):
+        """The accent line is the brand accent lifted for the surface the photo
+        hero MEASURED (its painted surface), not an assumed backdrop; the lead
+        line keeps the template's neutral ink for the ink pass to restate."""
+        from app.services.section_content import enforce_text_contrast
+        from app.services.theme import ink_css, ink_on
+
+        theme = _theme("#7c3aed")
+        ctx = self._ctx(theme)
+        el = self._hero_el("Welcome to Glorykids")
+        el.paint_surface("#2b2e36")  # what the photo's solved scrim left
+        _apply_hero_typography(el, HeroBlock(headline="Welcome to Glorykids"), ctx,
+                               template_id="hero-background-bold")
+        lines = [t for t in self._texts(el) if t.content.innerText]
+        self.assertEqual([t.content.innerText for t in lines], ["Welcome to", "Glorykids"])
+        self.assertEqual(lines[1].styles["color"], _accent_ink_for("#2b2e36", theme.palette.accent))
+        enforce_text_contrast([el], theme)
+        self.assertEqual(
+            lines[0].styles["color"], ink_css(theme.palette, ink_on(theme.palette, "#2b2e36"))
+        )
+        self.assertNotIn("#ffffff", lines[0].styles["color"].lower())
+
+    def test_without_the_scheme_a_plain_headline_stays_one_line(self):
+        theme = build_theme("#7c3aed", mood="friendly", industry="childcare")
+        el = self._hero_el("Welcome to Glorykids")
+        _apply_hero_typography(el, HeroBlock(headline="Welcome to Glorykids"), self._ctx(theme),
+                               template_id="hero-background-bold")
+        self.assertEqual(len(self._texts(el)), 1)
+
+    def test_neutral_cast_constant_does_not_tint_the_photo(self):
+        styles = photo_background(
+            "#808080", "https://x/p.jpg", _NEUTRAL_PHOTO_CAST, _NEUTRAL_PHOTO_CAST
+        )
+        css = styles["backgroundImage"]
+        self.assertNotIn("var(--builder", css)
+        hues = set(re.findall(r"rgba\((\d+),(\d+),(\d+),", css.replace(" ", "")))
+        self.assertEqual(hues, {("15", "23", "42")})
+
+
+class ChildcareLogoTest(unittest.TestCase):
+    def _brand(self):
+        return BrandIdentity(
+            name="Glorykids",
+            logo_data_url="data:image/png;base64,abc",
+            extracted_palette=["#F97316"],
+            logo_is_light=True,
+        )
+
+    def test_no_box_around_logo(self):
+        theme = build_theme("#F97316", industry="childcare")
+        header = build_header(self._brand(), theme, nav_items=[])
+        self.assertIsNone(_find_by_name(header, "Logo lockup"))
+
+    def test_light_logo_switches_header_to_secondary_not_slate(self):
+        theme = build_theme("#F97316", industry="childcare")
+        header = build_header(self._brand(), theme, nav_items=[])
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.secondary)
+
+    def test_logo_size_is_the_schemes_not_the_industrys(self):
+        default = _find_by_name(
+            build_header(self._brand(), build_theme("#F97316", industry="childcare"), nav_items=[]),
+            "Brand Logo",
+        )
+        self.assertEqual(default.styles.get("height"), "52px")
+        playroom = _find_by_name(
+            build_header(self._brand(), _theme("#F97316"), nav_items=[]), "Brand Logo"
+        )
+        self.assertEqual(playroom.styles.get("height"), "68px")
 
 
 class ChildcareMidpointSplitTest(unittest.TestCase):
@@ -632,10 +645,49 @@ class ChildcareImageryTest(unittest.TestCase):
         self.assertIn("children", _INDUSTRY_CONTEXT_QUERIES["childcare"])
 
     def test_childcare_tokens_prefer_children_over_empty_classrooms(self):
-        # The brief bans empty classrooms — kindergarten queries must resolve
-        # to candid children-at-play imagery, not the generic school bucket.
         q = _contextual_non_person_query("kindergarten classroom activities")
         self.assertIn("children", q)
+
+
+class PlayroomIsAChoiceNotADefaultTest(unittest.TestCase):
+    """End to end through plan_to_site: the multi-tint look appears when the
+    scheme is playroom and not otherwise, whatever the industry."""
+
+    def _build(self, scheme_slug, industry="childcare"):
+        import asyncio
+
+        from scripts.measure_design_diversity import fixture_brand, fixture_plan, offline_generation
+        from app.services import design_schemes
+        from app.services.design_fingerprint import fingerprint_of
+        from app.services.schema_builder import plan_to_site
+
+        original = design_schemes.select_scheme
+        design_schemes.select_scheme = lambda **_kw: by_slug(scheme_slug)
+        try:
+            with offline_generation(schemes=True, history=False):
+                site = asyncio.run(plan_to_site(
+                    fixture_plan("Sunbeam House", industry),
+                    brand=fixture_brand("Sunbeam House", "#0891b2", industry),
+                ))
+        finally:
+            design_schemes.select_scheme = original
+        return fingerprint_of(site)
+
+    def test_playroom_paints_tints_and_coloured_titles(self):
+        fp = self._build("playroom")
+        self.assertTrue(all(b in ("tint", "photo") for b in fp.bands), fp.bands)
+        self.assertGreaterEqual(fp.title_inks, 2)
+        self.assertEqual(fp.divider, "wave")
+
+    def test_another_childcare_scheme_does_not(self):
+        fp = self._build("civic-trust")
+        self.assertIn("light", fp.bands)
+        self.assertEqual(fp.title_inks, 0)
+        self.assertNotEqual(fp.divider, "wave")
+
+    def test_playroom_is_not_childcare_property(self):
+        fp = self._build("playroom", industry="nonprofit")
+        self.assertGreaterEqual(fp.title_inks, 2)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,8 @@
 
 import unittest
 
-from app.services.facebook_render import (
+from app.services.facebook_dom import (
     FacebookRenderError,
-    _candidate_urls,
     _scan_hours,
     _scan_labelled,
     _split_og_description,
@@ -12,6 +11,7 @@ from app.services.facebook_render import (
     is_login_wall,
     parse_public_html,
 )
+from app.services.facebook_render import _candidate_urls
 from app.services.facebook_urls import FacebookRef
 
 REF = FacebookRef(

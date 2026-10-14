@@ -289,7 +289,7 @@ _SOCIAL_DOMAINS: list[tuple[str, str]] = [
 _SOCIAL_SHARE_HINTS = ("/sharer", "/share", "/intent", "/plugins/", "shareArticle")
 
 
-def _social_link_for_href(href: str, base_url: str) -> NavLink | None:
+def social_link_for_href(href: str, base_url: str) -> NavLink | None:
     """The social profile an anchor's href points at, if any.
 
     Shared by the page-wide and card-scoped extractors below so the platform
@@ -328,7 +328,7 @@ def extract_social_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
     for a in soup.find_all("a", href=True):
         if not isinstance(a, Tag):
             continue
-        link = _social_link_for_href(str(a.get("href") or ""), base_url)
+        link = social_link_for_href(str(a.get("href") or ""), base_url)
         if link is not None and link.label not in found:
             found[link.label] = link
         if len(found) >= 6:
@@ -347,7 +347,7 @@ def social_links_from_anchors(anchors: list[Tag], base_url: str) -> list[NavLink
         href = a.get("href")
         if not isinstance(href, str):
             continue
-        link = _social_link_for_href(href, base_url)
+        link = social_link_for_href(href, base_url)
         if link is not None and link.label not in found:
             found[link.label] = link
         if len(found) >= 4:

@@ -28,7 +28,7 @@ from app.models.content_blocks import (
     SourceContent,
 )
 from app.models.industry import IndustryCategory, PageScaffold
-from app.services.industry_templates import get_template
+from app.services.industry_templates import gallery_page, get_template, menu_page
 from app.services.landing_patterns import homepage_sections
 from app.services.locale import (
     AMBIGUOUS_LOCALE_SEGMENTS,
@@ -38,7 +38,9 @@ from app.services.locale import (
 from app.services.nav_extraction import find_repeated_cluster_keys
 from app.services.source_path import is_record_url, normalize_source_slug
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
+from app.services.menu_assets import read_menu_image, serves_menus
 from app.services.record_pages import mark_record_sets
+from app.services.source_router import gallery_photos
 
 logger = logging.getLogger(__name__)
 
@@ -481,6 +483,21 @@ def _tree_is_image_led(tree: list[SectionCandidate]) -> bool:
     return all(section.card_kind in _IMAGE_GRID_CARD_KINDS for section in carded)
 
 
+def source_section_kinds(tree: list[SectionCandidate]) -> list[SectionType]:
+    """One block kind per source group; shared by inference and landing ordering."""
+    body: list[SectionType] = []
+    offerings_seen = 0
+    for section in tree:
+        if not section.cards:
+            body.append("about")
+        elif section.card_kind == "offerings":
+            body.append("services" if offerings_seen % 2 == 0 else "features")
+            offerings_seen += 1
+        else:
+            body.append(_CARD_KIND_SECTIONS.get(section.card_kind, "about"))
+    return body
+
+
 def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
     """The section list the SOURCE dictates, or None to fall back to the recipe.
 
@@ -503,16 +520,7 @@ def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
     if len(tree) < _TREE_MIN_SECTIONS and not _tree_is_image_led(tree):
         return None
 
-    body: list[SectionType] = []
-    offerings_seen = 0
-    for section in tree:
-        if not section.cards:
-            body.append("about")
-        elif section.card_kind == "offerings":
-            body.append("services" if offerings_seen % 2 == 0 else "features")
-            offerings_seen += 1
-        else:
-            body.append(_CARD_KIND_SECTIONS.get(section.card_kind, "about"))
+    body = source_section_kinds(tree)
 
     # hero and cta bracket the page; the source's own sections are trimmed to
     # fit between them rather than displacing them.
@@ -1103,6 +1111,35 @@ def _subnav_edges(
 
 _CORE_SLUGS = {"", "about", "contact"}
 
+# A Gallery page is worth a page only when its set fills a gallery: below that,
+# the homepage's own gallery section shows everything there is.
+GALLERY_PAGE_MIN_PHOTOS = 12
+
+
+def evidence_pages(source: SourceContent, industry: IndustryCategory) -> list[PageScaffold]:
+    """Pages a single-page source has earned with material of its own.
+
+    A Facebook Page (or a one-page document) carries one homepage's worth of
+    TEXT, which is why it gets no template fan-out. Material is a different
+    question: a full set of the business's own photos is a Gallery page, and a
+    restaurant's menu sheets are a Menu page. Both are filled from the source
+    verbatim — the photos by `routers.generate._inject_image_walls`, the
+    sheets by `menu_assets.inject_menu_assets` — so neither asks the model to
+    write anything it can't see. Each gate asks the same predicate its filler
+    uses, so an earned page is never empty.
+    """
+    pages: list[PageScaffold] = []
+    if len(gallery_photos(source)) >= GALLERY_PAGE_MIN_PHOTOS:
+        pages.append(gallery_page())
+    if serves_menus(industry) and any(
+        (reading := read_menu_image(meta)) and reading.purpose == "menu"
+        for meta in source.image_metadata
+    ):
+        # The sheets are the page; a text menu would be a model guessing at
+        # dishes and prices from pictures it never saw.
+        pages.append(menu_page().model_copy(update={"sections": ["hero", "cta"]}))
+    return pages
+
 
 def infer_page_scaffolds(
     source: SourceContent,
@@ -1139,12 +1176,13 @@ def infer_page_scaffolds(
         home = _home_scaffold(source, industry, seed=site_name).model_copy(
             update={"sections": sections}
         )
+        earned = evidence_pages(source, industry)
         legal = [s for s in template.core_pages if s.is_legal]
         logger.info(
-            "Single-page source — homepage (%d sections) + %d legal page(s)",
-            len(sections), len(legal),
+            "Single-page source — homepage (%d sections) + %s + %d legal page(s)",
+            len(sections), [s.slug for s in earned] or "no earned pages", len(legal),
         )
-        return [home, *legal]
+        return [home, *earned, *legal]
 
     if not source.discovered_pages:
         # Thin site or crawl disabled: return the industry template's
@@ -1651,4 +1689,36 @@ def core_pages_not_in_inferred(
     return [
         c for c in core
         if c.is_legal or (c.slug not in inferred_slugs and c.page_type not in inferred_types)
+    ]
+
+
+def defer_home_contact(scaffolds: list[PageScaffold]) -> list[PageScaffold]:
+    """The homepage hands its contact form to a selected Contact page.
+
+    A recipe is drawn before the user picks pages, so a homepage can carry a
+    `contact` section on the assumption it is the site's only one — a Facebook
+    Page's homepage always does (`homepage_sections_for`), with Contact offered
+    unticked beside it. Once the user ticks a Contact page that renders the form
+    itself, the homepage's copy is the same form twice, one click apart: every
+    "get in touch" action already resolves to that page
+    (`schema_builder._resolve_contact_href`).
+
+    Only a Contact page that carries a `contact` section takes the form over —
+    one without it leaves the homepage's as the site's only form — and only in
+    the homepage's own locale, since a translated Contact page serves a
+    different reader. Asked of the whole planned set, never of the pages built
+    in one pass: a two-page preview of Home + About still has Contact coming.
+    Mirrored for display only in the frontend's page picker.
+    """
+    desk_locales = {
+        s.locale
+        for s in scaffolds
+        if s.page_type == "contact" and "contact" in s.sections
+        and not (s.is_homepage or s.is_legal)
+    }
+    return [
+        s.model_copy(update={"sections": [k for k in s.sections if k != "contact"]})
+        if s.is_homepage and s.locale in desk_locales and "contact" in s.sections
+        else s
+        for s in scaffolds
     ]

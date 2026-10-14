@@ -36,6 +36,108 @@ PageWidthMode = Literal["contained", "full"]
 # "off" disables motion site-wide.
 MotionIntensity = Literal["off", "subtle", "balanced", "expressive"]
 
+# How a palette spends its colour — the axis a design scheme picks palettes on,
+# independent of industry and mood (services/theme.py tags curated palettes with
+# it; services/design_schemes.py states which ones a scheme is built for). An
+# industry used to imply one answer here — every kindergarten was "pastel".
+PaletteStrategy = Literal[
+    "pastel",         # light, multi-hue, cheerful
+    "earth",          # terracotta, olive, clay
+    "warm-neutral",   # oat/paper pages, one deep brand colour
+    "soft-natural",   # muted greens/teals, calm
+    "muted",          # desaturated, quiet, professional
+    "mono",           # near-monochrome; the accent is spent sparingly
+    "bold-accent",    # one strong, saturated brand colour leads
+    "high-contrast",  # deep ink against white, crisp
+]
+
+# --- brand personality ------------------------------------------------------
+#
+# Six axes a brand's personality is read on, each named by its two poles so the
+# sign documents itself: -2 is fully the first pole, +2 fully the second, 0 the
+# middle. They are DESIGN INPUTS, never categories — a brand is a point, not a
+# preset — and they come from the source, not the industry: two kindergartens
+# can sit at opposite ends of every axis. Read once, in the existing brand
+# detection call (services/planner.detect_brand), and grounded by
+# services/brand_brief.ground_brief.
+PERSONALITY_AXES: tuple[str, ...] = (
+    "playful_sophisticated",
+    "traditional_contemporary",
+    "minimal_expressive",
+    "calm_energetic",
+    "organic_structured",
+    "premium_accessible",
+)
+
+
+class AxisReading(BaseModel):
+    """One axis of a brand's personality.
+
+    ``value`` None is UNKNOWN — the source said nothing either way, and every
+    consumer ignores the axis rather than assuming a middle. ``evidence`` is the
+    verbatim source span the reading rests on; grounding clears it when the span
+    is not actually in the source, which leaves an INFERRED reading (a value
+    with no evidence) rather than a fabricated quote."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    value: int | None = Field(default=None, ge=-2, le=2)
+    evidence: str | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _heal_value(cls, v: object) -> object:
+        # A model answers "1.5", 1.5 or "+1" as readily as 1. A reading that
+        # cannot be a number on the scale is unknown, not a failed detection.
+        if v is None or isinstance(v, bool):
+            return None
+        try:
+            number = float(str(v).strip())
+        except ValueError:
+            return None
+        return max(-2, min(2, round(number)))
+
+    @property
+    def evidenced(self) -> bool:
+        return self.value is not None and bool(self.evidence)
+
+
+class BrandPersonality(BaseModel):
+    """The brand's position on the six PERSONALITY_AXES."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    playful_sophisticated: AxisReading = Field(default_factory=AxisReading)
+    traditional_contemporary: AxisReading = Field(default_factory=AxisReading)
+    minimal_expressive: AxisReading = Field(default_factory=AxisReading)
+    calm_energetic: AxisReading = Field(default_factory=AxisReading)
+    organic_structured: AxisReading = Field(default_factory=AxisReading)
+    premium_accessible: AxisReading = Field(default_factory=AxisReading)
+
+    def readings(self) -> dict[str, AxisReading]:
+        return {axis: getattr(self, axis) for axis in PERSONALITY_AXES}
+
+    def known(self) -> dict[str, int]:
+        """The axes the source spoke to, as values. Unknown axes are absent."""
+        return {
+            axis: reading.value
+            for axis, reading in self.readings().items()
+            if reading.value is not None
+        }
+
+
+# The typographic voice of a font pairing, as a designer would file it — the
+# axis a design scheme picks type on, so a kindergarten is no longer handed a
+# rounded face because of the word "children" in a tag list.
+TypeDirection = Literal[
+    "editorial-serif",  # serif display headings over a clean sans
+    "geometric",        # geometric sans: circles, even strokes
+    "humanist",         # humanist sans: warm, readable, calligraphic roots
+    "rounded",          # rounded terminals: soft, friendly
+    "grotesk-minimal",  # neo-grotesk: neutral, precise
+    "mono",             # monospace headings: technical
+]
+
 # Default motion personality per brand mood. Reserved moods (technical,
 # editorial) get quieter reveals; playful brands get showier ones. Sites can
 # always change this in the builder's Styles tab afterwards.
@@ -148,6 +250,9 @@ INDUSTRY_HERO_HEIGHT: dict[str, HeroBackgroundHeight] = {
     "professional-services": "banded",
     "consultancy": "banded",
     "ecommerce": "banded",  # the product grid below the fold is the shop
+    "real-estate": "full",  # the property is the pitch
+    "health-wellness": "banded",
+    "home-services": "banded",
 }
 
 
@@ -191,6 +296,11 @@ class ThemeTokens(BaseModel):
     # reads it off the theme it was already handed rather than taking a new
     # parameter. NOT part of BuilderStyles — the CMS wire payload is unchanged.
     design_scheme: str | None = None
+    # How the design direction was chosen — the concepts weighed, their scores,
+    # and what decided (services/design_direction.py). Internal, like the two
+    # slugs above: it becomes the manifest's `scheme` rationale and is not part
+    # of BuilderStyles.
+    design_rationale: str | None = None
     # The ui-ux-pro-max style this mood embodies (design lineage / debug metadata).
     style: str = ""
     # Section background rotation drives visual rhythm (avoid wall-of-white).

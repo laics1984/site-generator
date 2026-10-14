@@ -127,6 +127,30 @@ async def recent_choices(area: str, *, site_key: str, window: int = 6) -> set[st
         return set()
 
 
+async def recent_records(area: str, *, window: int) -> list[str]:
+    """The last `window` choices recorded for `area` across ALL sites, newest
+    first, duplicates kept — for an area whose choice is a whole record (the
+    design fingerprint) rather than one token to avoid. Fail-open like
+    recent_choices: any DB trouble → no history."""
+    if not settings.diversity_engine_enabled:
+        return []
+    try:
+        from app.services import db
+
+        await _ensure_schema()
+        async with db.connect() as conn:
+            cursor = await conn.execute(
+                "SELECT choice FROM design_choices WHERE area = ? "
+                "ORDER BY chosen_at DESC LIMIT ?",
+                (area, window),
+            )
+            rows = await cursor.fetchall()
+        return [r["choice"] for r in rows]
+    except Exception as exc:  # noqa: BLE001 — advisory signal, never blocks
+        logger.debug("diversity history unavailable (%s); proceeding without", exc)
+        return []
+
+
 async def record_choice(area: str, choice: str, *, site_key: str) -> None:
     """Append one pick to the history. Fail-open like recent_choices."""
     if not settings.diversity_engine_enabled:

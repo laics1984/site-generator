@@ -905,3 +905,34 @@ class UnboundGalleryItemsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EarnedGalleryPageTest(unittest.TestCase):
+    """A single-page source's earned Gallery page is its photo set, placed by
+    the same predicate that earned it — so a page offered is a page filled."""
+
+    def _source(self, count: int) -> SourceContent:
+        from app.models.content_blocks import ImageMetadata
+
+        photos = [
+            ImageMetadata(url=f"https://cdn.example/{i}.jpg", role="content", width=1600,
+                          height=1200, alt=f"Grilled platter {i}")
+            for i in range(count)
+        ]
+        photos.append(ImageMetadata(url="https://cdn.example/menu.jpg", role="content",
+                                    width=1200, height=1700, ocr_has_text=True))
+        return SourceContent(source_kind="facebook", source_ref="https://www.facebook.com/x",
+                             raw_text="x", image_metadata=photos)
+
+    def test_the_whole_set_lands_on_the_gallery_page_minus_words_in_pixels(self):
+        home = PagePlan(title="Home", slug="", page_type="home", blocks=[
+            HeroBlock(headline="Hi", subheadline="", image_query="food")])
+        gallery = _gallery_page(slug="gallery")
+        _inject_image_walls([home, gallery], self._source(14), gallery_section_slugs={"gallery"})
+        blocks = [b for b in gallery.blocks if b.kind == "gallery"]
+        self.assertEqual(len(blocks), 1)
+        urls = [item.image_url for item in blocks[0].items]
+        self.assertEqual(len(urls), 14)
+        self.assertNotIn("https://cdn.example/menu.jpg", urls)
+        self.assertEqual(blocks[0].items[0].title, "Grilled platter 0")
+        self.assertFalse([b for b in home.blocks if b.kind == "gallery"])

@@ -96,7 +96,7 @@ async def run_facebook_job(job_id: str) -> None:
         if cancelled():
             await mgr.mark_cancelled(job_id)
             return
-        await emit_progress(70, "Reading the profile picture")
+        await emit_progress(70, "Checking the Page's photos")
         payload: dict[str, Any] = await to_preview_payload(page)
         payload["fetched_at"] = time.time()
     except (FacebookUrlError, FacebookSourceError) as exc:

@@ -301,11 +301,14 @@ class Settings(BaseSettings):
     # it is always a safe no-op: generation falls back to the deterministic
     # mood-ordered template selection that ran before this pass existed.
     design_brain_enabled: bool = True
-    # Off switch for the design-language pass (services/design_brain.py): the
-    # LLM picking a curated palette + font pairing before theme construction.
-    # Disabling is a safe no-op — build_theme falls back to the deterministic
-    # industry/hue/seed pickers that ran before this pass existed.
+    # Off switch for the concept pick (services/design_direction.py): ONE
+    # reasoning call choosing, by index, among the top scored design concepts
+    # (and stating the hero height). Disabling is a safe no-op — the
+    # best-scored concept is taken, which is every caller's fallback anyway.
     design_language_enabled: bool = True
+    # How many scored concepts the pick weighs: 1 = fast (best score, no call),
+    # 3 = standard. More gives the model more range for a longer prompt.
+    design_concept_candidates: int = Field(default=3, ge=1, le=6)
     # Off switch for the design director (services/design_director.py): the
     # manifest pass that varies header/footer chrome archetypes per brand.
     # Disabling is a safe no-op — every site gets the legacy "classic" header
@@ -322,8 +325,10 @@ class Settings(BaseSettings):
     # defers to the per-mood tables that were the sole authority before it
     # (MOOD_SPECS, _MOOD_LAYOUT_PREFERENCE, _DIVIDER_SHAPE_BY_MOOD, the
     # hero-director specs), so output is byte-identical to the pre-scheme
-    # generator. Ships off; flipped on once verified against real sources.
-    design_schemes_enabled: bool = False
+    # generator. On since the design-identity plan's Phase 1, which measured it
+    # (scripts/measure_design_diversity.py) and checked it in the preview: with
+    # it off, ten kindergartens shared one typeface and three palettes.
+    design_schemes_enabled: bool = True
 
     # Full-bleed photo/abstract background hero on EVERY page (not just the
     # homepage), so the transparent floating header engages site-wide. Imagery
@@ -439,6 +444,9 @@ class Settings(BaseSettings):
     ocr_text_detection_enabled: bool = True
     ocr_max_images: int = 48  # screening cap per generation
     ocr_input_px: int = 512  # matches the vision thumbnail, so downloads are shared
+    # A PDF with no text layer (a scan) is read page by page with the same OCR
+    # engine instead of refused. Bounded: ~1-2s per page on CPU.
+    ocr_document_max_pages: int = Field(default=10, ge=0, le=50)
     ocr_fetch_concurrency: int = 3
     # How many legible candidates a single slot may reject before giving up and
     # falling through to stock. Each rejection costs a download plus an
@@ -456,10 +464,14 @@ class Settings(BaseSettings):
     graphic_max_images: int = 12  # screening cap per generation
     graphic_fetch_concurrency: int = 3
 
+    # Read each photo painted behind copy (services/image_sampling): its colour,
+    # its focal row, and how bright it is WHERE — what the copy scrim is solved
+    # from (image_styling._copy_scrim). Off, every scrim falls back to the
+    # frame-average ramp, exactly as before measuring existed.
     photo_sampling_enabled: bool = True
     # Deliberately tighter than the vision fetch: a hero's dressing is an
-    # enhancement, never worth stalling a build for. On timeout the photo just
-    # keeps the old defaults.
+    # enhancement, never worth stalling a build for. A photo that cannot be read
+    # in time is assumed as bright as a photo can be, so its copy still reads.
     photo_sample_timeout_seconds: float = 4.0
 
     cms_api_base_url: str = "http://localhost:8000"
@@ -617,12 +629,32 @@ class Settings(BaseSettings):
     # Public-page render when no token is available. Fragile by nature (Facebook
     # changes its markup without notice); set false to require a token.
     facebook_render_fallback_enabled: bool = True
+    # After the About read, the render opens the timeline, the Photos tab and
+    # the recommendations in the same browser, all inside this one budget. Each
+    # view only fills gaps, so running out of time costs the views not yet
+    # read, never the facts already in hand.
+    facebook_views_timeout_seconds: float = Field(default=30, ge=1, le=90)
+    # Lazy-load scrolls per view. Each waits at most 1.2s for new images.
+    facebook_view_scroll_steps: int = Field(default=2, ge=0, le=5)
+    # Distinct photos a read keeps. Originals come from the page's own inline
+    # data, so the cost of a higher cap is the photo pass's downloads and CPU
+    # checks, not page loads.
+    facebook_photo_max_images: int = Field(default=24, ge=0, le=100)
+    # How those photos are screened: measured CPU checks plus caption hints
+    # (`metadata`), or the opt-in vision model (`vision`).
+    facebook_photo_review_mode: Literal["metadata", "vision"] = "metadata"
+    # Facebook photo links carry a signed deadline (~5 days after the read).
+    # Generating a site whose links die within this many hours re-reads the
+    # Page first and renews them (services/photo_url_expiry.py), so a site is
+    # never built — or published — on links about to stop working.
+    facebook_photo_url_refresh_hours: float = Field(default=24, ge=0, le=96)
     # Let that render reuse a signed-in session captured by
-    # `scripts/facebook_login.py`. Logged out, Facebook serves og: tags and
-    # little else; signed in, the About panel (address, hours, phone, category)
-    # renders too. Set false to keep every read anonymous — the render still
-    # works, it just sees less. Refused outright under DEPLOYMENT=hosted, where
-    # one person's cookies would be shared by every user (deployment/guards.py).
+    # `scripts/facebook_login.py` — a rescue for a Page that refuses a
+    # logged-out visitor. Measured, a signed-in render reads LESS of a Page that
+    # loads logged out (`facebook_source.default_fetchers`), so it only runs
+    # when the anonymous one fails. Set false to keep every read anonymous.
+    # Refused outright under DEPLOYMENT=hosted, where one person's cookies would
+    # be shared by every user (deployment/guards.py).
     facebook_session_enabled: bool = True
     # Ask the vision judge whether the profile picture is a real mark or a
     # photograph, and demote it to palette-only when it's a photo. No-op unless

@@ -1,8 +1,21 @@
-"""Graph payload → FacebookPage. Pure mapping; no network anywhere."""
+"""Graph payload → FacebookPage. Pure mapping, plus the retry rule over a mock
+transport; no network anywhere."""
 
+import asyncio
 import unittest
 
-from app.services.facebook_graph import _parse_hours, _parse_reviews, build_page
+import httpx
+
+from app.services.facebook_graph import (
+    FacebookGraphError,
+    _get,
+    _parse_attachments,
+    _parse_hours,
+    _parse_posts,
+    _parse_reviews,
+    build_page,
+)
+from app.services.facebook_source import build_raw_text
 from app.services.facebook_urls import FacebookRef
 
 REF = FacebookRef(
@@ -153,6 +166,117 @@ class TokenRedactionTest(unittest.TestCase):
         message = "Bad request for access_token=SECRET123 on node"
         self.assertNotIn("SECRET123", _redact(message, "SECRET123"))
         self.assertIn("***", _redact(message, "SECRET123"))
+
+
+
+# --- videos, captioned uploads, events, retry -------------------------------------
+
+FB_PHOTO = "https://scontent.xx.fbcdn.net/v/t39.30808-6/111111111_222_n.jpg?oe=6AD05AB1"
+FB_FRAME = "https://scontent.xx.fbcdn.net/v/t15.5256-10/333333333_444_n.jpg?oe=6AD05AB1"
+
+
+class VideoAttachmentTest(unittest.TestCase):
+    def test_a_page_video_keeps_its_permalink_and_frame(self):
+        photos, videos = _parse_attachments({"data": [{
+            "type": "video_inline", "url": "https://www.facebook.com/reel/42/",
+            "target": {"id": "42", "url": "https://www.facebook.com/reel/42/"},
+            "media": {"image": {"src": FB_FRAME, "width": 720, "height": 1280}},
+        }]})
+        self.assertEqual(photos, [])
+        self.assertEqual([(v.url, v.video_id, v.thumbnail_url) for v in videos],
+                         [("https://www.facebook.com/reel/42/", "42", FB_FRAME)])
+
+    def test_a_shared_youtube_link_is_someone_elses_video(self):
+        _, videos = _parse_attachments({"data": [{
+            "type": "video_share_youtube", "url": "https://www.youtube.com/watch?v=abc",
+            "media": {"image": {"src": FB_FRAME}},
+        }]})
+        self.assertEqual(videos, [])
+
+    def test_a_video_posts_full_picture_is_not_a_second_photo(self):
+        posts = _parse_posts({"data": [{
+            "id": "1_2", "message": "Splash day!", "full_picture": FB_FRAME,
+            "attachments": {"data": [{"type": "video_inline",
+                                      "target": {"id": "42", "url": "https://www.facebook.com/reel/42/"},
+                                      "media": {"image": {"src": FB_FRAME}}}]},
+        }]}, 10)
+        self.assertIsNone(posts[0].image_url)
+        self.assertEqual([p.url for p in posts[0].pictures], [FB_FRAME])
+
+
+class UploadsAndEventsTest(unittest.TestCase):
+    def _page(self, uploads, events=None):
+        posts = {"data": [{"id": "1_2", "message": "Our new classroom",
+                           "attachments": {"data": [{"type": "photo", "media": {"image": {"src": FB_PHOTO}}}]}}]}
+        optional = {"posts": posts, "uploads": {"photos": {"data": uploads}}}
+        if events is not None:
+            optional["events"] = {"events": {"data": events}}
+        return build_page(REF, CORE, optional, [])
+
+    def test_an_upload_of_a_photo_already_held_is_not_a_second_post(self):
+        page = self._page([{"name": "Our new classroom", "link": "https://www.facebook.com/photo/?fbid=1",
+                            "images": [{"source": FB_PHOTO + "&s=big", "width": 2048, "height": 1365}]}])
+        self.assertEqual(len(page.posts), 1)
+
+    def test_a_captioned_album_photo_arrives_with_its_words(self):
+        other = "https://scontent.xx.fbcdn.net/v/t39.30808-6/555555555_666_n.jpg"
+        page = self._page([{"name": "Lantern making for Mid-Autumn", "created_time": "2025-09-12T03:00:00+0000",
+                            "images": [{"source": other, "width": 960, "height": 640},
+                                       {"source": other + "?big", "width": 2048, "height": 1365}]}])
+        upload = page.posts[1]
+        self.assertEqual(upload.message, "Lantern making for Mid-Autumn")
+        self.assertEqual((upload.photos[0].width, upload.photos[0].height), (2048, 1365))
+
+    def test_events_are_grounding_in_the_digest(self):
+        page = self._page([], events=[
+            {"id": "77", "name": "Sports Day", "start_time": "2025-07-12T09:00:00+0800",
+             "description": "Races and games for every class.", "place": {"name": "Taman Tasik"}},
+            {"id": "78", "name": "  "},
+        ])
+        self.assertEqual([(e.name, e.place, e.url) for e in page.events],
+                         [("Sports Day", "Taman Tasik", "https://www.facebook.com/events/77")])
+        digest = build_raw_text(page)
+        self.assertIn("Events from the Page:\n  Sports Day (2025-07-12)\n  Races and games for every class.", digest)
+
+
+class _NoWait:
+    async def back_off(self, attempt):
+        return None
+
+
+def _client(responses):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return responses[min(len(calls), len(responses)) - 1]
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler)), calls
+
+
+class RetryTest(unittest.TestCase):
+    def test_a_throttled_read_is_retried(self):
+        client, calls = _client([
+            httpx.Response(400, json={"error": {"message": "Application request limit reached", "code": 4}}),
+            httpx.Response(200, json={"id": "1", "name": "Acme"}),
+        ])
+        result = asyncio.run(_get(client, "acme", "id,name", "SECRET", _NoWait()))
+        self.assertEqual(result["name"], "Acme")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_missing_permission_fails_at_once(self):
+        client, calls = _client([
+            httpx.Response(400, json={"error": {"message": "(#10) Requires pages_read_engagement", "code": 10}}),
+        ])
+        with self.assertRaises(FacebookGraphError):
+            asyncio.run(_get(client, "acme", "emails", "SECRET", _NoWait()))
+        self.assertEqual(len(calls), 1)
+
+    def test_retries_are_bounded(self):
+        client, calls = _client([httpx.Response(503, text="busy")])
+        with self.assertRaises(FacebookGraphError):
+            asyncio.run(_get(client, "acme", "id", "SECRET", _NoWait()))
+        self.assertEqual(len(calls), 3)
 
 
 if __name__ == "__main__":

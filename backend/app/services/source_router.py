@@ -380,6 +380,14 @@ MAX_PROMPT_IMAGES = 12
 _UNPROMPTABLE_ROLES = frozenset({"logo", "decoration", "portrait"})
 
 
+def is_content_photo(meta: ImageMetadata) -> bool:
+    """A photograph a content slot may show at all: not a mark, an ornament or
+    a stranger's headshot, and not too small to read."""
+    if meta.role in _UNPROMPTABLE_ROLES or meta.intent == "logo":
+        return False
+    return not ((meta.width and meta.width < 200) or (meta.height and meta.height < 120))
+
+
 def promptable_images(source: SourceContent) -> list[ImageMetadata]:
     """The page's content-grade photos, in a DETERMINISTIC order.
 
@@ -388,20 +396,32 @@ def promptable_images(source: SourceContent) -> list[ImageMetadata]:
     to URLs, so the filter and ordering must stay pure functions of the
     source's ``image_metadata``.
     """
-    out: list[ImageMetadata] = []
-    for meta in source.image_metadata or []:
-        if meta.role in _UNPROMPTABLE_ROLES or meta.intent == "logo":
-            continue
-        if (meta.width and meta.width < 200) or (meta.height and meta.height < 120):
-            continue
-        out.append(meta)
-        if len(out) >= MAX_PROMPT_IMAGES:
-            break
-    return out
+    return [meta for meta in source.image_metadata or [] if is_content_photo(meta)][:MAX_PROMPT_IMAGES]
+
+
+def gallery_photos(source: SourceContent) -> list[ImageMetadata]:
+    """The source's own photos a gallery can show as a set, in source order.
+
+    A gallery tile crops, so a picture whose words are its content (a menu, a
+    poster, a payment code) is left to the passes that show it whole. Asked by
+    the gate that offers a single-page source a Gallery page AND by the pass
+    that fills it, so a page is never offered that would then be empty.
+    """
+    from app.services.facebook_photo_selection import photo_rejection_reason
+    from app.services.image_match import must_show_whole
+
+    return [
+        meta for meta in source.image_metadata or []
+        if is_content_photo(meta)
+        and not must_show_whole(meta)
+        and photo_rejection_reason(meta, "gallery") is None
+    ]
 
 
 def _image_prompt_entry(ref: int, meta: ImageMetadata) -> dict[str, object]:
     entry: dict[str, object] = {"ref": ref}
+    if meta.content_purpose:
+        entry["content_purpose"] = meta.content_purpose
     if meta.alt:
         entry["alt"] = meta.alt[:80]
     elif meta.caption:
@@ -410,7 +430,33 @@ def _image_prompt_entry(ref: int, meta: ImageMetadata) -> dict[str, object]:
         entry["role"] = meta.role
     if meta.context_heading:
         entry["near"] = meta.context_heading[:60]
+    if meta.selection_context:
+        from app.services.facebook_photo_selection import photo_rejection_reason
+
+        entry["hero_candidate"] = photo_rejection_reason(meta, "hero") is None
+        review = meta.facebook_photo_review
+        if review:
+            entry["assessment_method"] = review.method
+            # Only what the review actually says: an empty field is tokens in
+            # every batch for no evidence at all.
+            for name, value in (
+                ("subjects", review.classification),
+                ("recommended_sections", review.recommended_sections),
+                ("lighting", review.lighting),
+                ("palette", review.palette),
+            ):
+                if value:
+                    entry[name] = value
+            if review.method == "metadata" and meta.caption:
+                entry["source_caption"] = meta.caption[:240]
+        if meta.platform_alt:
+            entry["platform_alt"] = meta.platform_alt[:120]
     return entry
+
+
+def image_prompt_payload(source: SourceContent) -> list[dict[str, object]]:
+    """Shared ref ordering and compact evidence for planning and token budgets."""
+    return [_image_prompt_entry(ref, meta) for ref, meta in enumerate(promptable_images(source))]
 
 
 # Per-section caps for the prompt tree. A section is a summary of the source's
@@ -421,7 +467,8 @@ _PROMPT_CARD_BODY_CHARS = 200
 _PROMPT_SECTION_PROSE_CHARS = 400
 
 
-def _section_prompt_entry(section: SectionCandidate) -> dict[str, object]:
+def section_prompt_entry(section: SectionCandidate) -> dict[str, object]:
+    """Shared bounded section evidence for source trees and conversion bindings."""
     entry: dict[str, object] = {
         "heading": section.heading,
         "level": section.level,
@@ -480,14 +527,20 @@ def excerpt_for_prompt(
         "raw_text": body,
         "raw_text_char_count": len(raw_text),
     }
+    if source.links:
+        # Destinations are source evidence, not URLs for the model to invent.
+        payload["links"] = source.links[:15]
     sections = source.section_candidates or []
     if sections:
-        payload["sections"] = [
-            _section_prompt_entry(s) for s in sections[:_PROMPT_MAX_SECTIONS]
-        ]
-    images = promptable_images(source)
+        payload["sections"] = [section_prompt_entry(s) for s in sections[:_PROMPT_MAX_SECTIONS]]
+    images = image_prompt_payload(source)
     if images:
-        payload["images"] = [
-            _image_prompt_entry(i, meta) for i, meta in enumerate(images)
-        ]
+        payload["images"] = images
+    menu_assets = [
+        {"purpose": meta.content_purpose, "heading": meta.menu_heading,
+         "evidence": meta.menu_evidence}
+        for meta in source.image_metadata if meta.content_purpose
+    ][:12]
+    if menu_assets:
+        payload["menu_assets"] = menu_assets
     return payload

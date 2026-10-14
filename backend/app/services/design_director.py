@@ -11,8 +11,9 @@ Selection model (deliberate, never random):
   0. OVERRIDE — an explicit caller pin (e.g. a generation request that names
      the archetype) wins over everything below and bypasses the fit list, so a
      user can choose a chrome the fit table would never surface. Confidence 1.0.
-  1. FIT — an ordered candidate list per industry (hard override) or mood.
-     Only archetypes that suit the brand ever enter the list.
+  1. FIT — an ordered candidate list per mood, narrowed by the design
+     scheme's chrome affinity. Only archetypes that suit the brand ever enter
+     the list; no industry pins one.
   2. SEEDED ROTATION — the brand name picks a stable index into the list, so
      one brand regenerates identically while different brands diverge.
   3. DIVERSITY — the diversity engine's recent-usage history bends the pick
@@ -31,6 +32,7 @@ from __future__ import annotations
 import logging
 
 from app.models.brand import BrandMood
+from app.models.builder_schema import GeneratedSite
 from app.models.design_manifest import (
     OVERLAY_CAPABLE_HEADERS,
     SELF_CHROME_HEADERS,
@@ -69,17 +71,10 @@ _FOOTER_FIT: dict[BrandMood, list[FooterArchetype]] = {
     "friendly": ["mega", "cta-banner", "minimal-centered"],
 }
 
-# Industry pins override the mood table — these express a researched brief
-# (childcare's bright, simple chrome; nonprofit's trust-first classic bar)
-# rather than a taste rotation, hence the higher confidence they carry.
-_HEADER_FIT_BY_INDUSTRY: dict[str, list[HeaderArchetype]] = {
-    "childcare": ["classic", "floating-pill"],
-    "nonprofit": ["classic", "glass-blur", "centered-stack"],
-}
-_FOOTER_FIT_BY_INDUSTRY: dict[str, list[FooterArchetype]] = {
-    "childcare": ["mega", "cta-banner"],
-    "nonprofit": ["cta-banner", "mega"],
-}
+# No industry pins the chrome. Childcare and nonprofit once did ("bright,
+# simple chrome", "trust-first classic bar"), which handed every school the
+# same two headers and two footers; a scheme that wants that chrome says so
+# through its affinity, and the mood table decides the rest.
 
 _DEFAULT_MOOD: BrandMood = "modern"
 
@@ -115,17 +110,13 @@ def _apply_affinity(candidates: list, affinity: tuple) -> list:
 
 def _fit_candidates(
     mood: BrandMood | None,
-    industry: str | None,
     mood_table: dict[BrandMood, list],
-    industry_table: dict[str, list],
     affinity: tuple = (),
-) -> tuple[list, bool]:
-    """(ordered candidates, industry_pinned) for one chrome area."""
-    norm_industry = (industry or "").strip().lower()
-    if norm_industry in industry_table:
-        return _apply_affinity(list(industry_table[norm_industry]), affinity), True
+) -> list:
+    """Ordered candidates for one chrome area: the mood's fit list, narrowed by
+    the scheme's affinity."""
     base = list(mood_table.get(mood or _DEFAULT_MOOD, mood_table[_DEFAULT_MOOD]))
-    return _apply_affinity(base, affinity), False
+    return _apply_affinity(base, affinity)
 
 
 async def compose_design_manifest(
@@ -137,6 +128,7 @@ async def compose_design_manifest(
     header_override: HeaderArchetype | None = None,
     footer_override: FooterArchetype | None = None,
     scheme: DesignScheme | None = None,
+    scheme_rationale: str | None = None,
 ) -> DesignManifest:
     """Compose the site's DesignManifest. Pure decision-making — no rendering.
 
@@ -153,12 +145,8 @@ async def compose_design_manifest(
     decisions: list[DesignDecision] = []
 
     scheme = scheme or NEUTRAL_SCHEME
-    header_candidates, header_pinned = _fit_candidates(
-        mood, industry, _HEADER_FIT, _HEADER_FIT_BY_INDUSTRY, scheme.header_affinity
-    )
-    footer_candidates, footer_pinned = _fit_candidates(
-        mood, industry, _FOOTER_FIT, _FOOTER_FIT_BY_INDUSTRY, scheme.footer_affinity
-    )
+    header_candidates = _fit_candidates(mood, _HEADER_FIT, scheme.header_affinity)
+    footer_candidates = _fit_candidates(mood, _FOOTER_FIT, scheme.footer_affinity)
 
     header_avoid = await recent_choices("header", site_key=seed)
     footer_avoid = await recent_choices("footer", site_key=seed)
@@ -174,23 +162,19 @@ async def compose_design_manifest(
         area: str,
         choice: str,
         candidates: list,
-        pinned: bool,
         avoided: set[str],
         overridden: bool,
     ) -> DesignDecision:
         if overridden:
             rationale = (
                 f"explicit generation override pinned '{choice}' — bypasses the "
-                f"{'industry pin' if pinned else 'mood fit list'}"
+                "mood fit list"
             )
             return DesignDecision(
                 area=area, choice=choice, rationale=rationale, confidence=1.0
             )
         seeded = candidates[seeded_index(seed, area, len(candidates))]
-        if pinned:
-            rationale = f"industry '{industry}' pins the {area} vocabulary; seeded rotation chose '{choice}'"
-            confidence = 0.9
-        elif choice != seeded and choice in candidates:
+        if choice != seeded and choice in candidates:
             rationale = (
                 f"mood '{mood or _DEFAULT_MOOD}' fit list; diversity engine steered off "
                 f"recently-used {sorted(avoided & set(candidates))} to '{choice}'"
@@ -203,14 +187,14 @@ async def compose_design_manifest(
 
     decisions.append(
         _decision(
-            "header", header, header_candidates, header_pinned,
-            header_avoid, header_override is not None,
+            "header", header, header_candidates, header_avoid,
+            header_override is not None,
         )
     )
     decisions.append(
         _decision(
-            "footer", footer, footer_candidates, footer_pinned,
-            footer_avoid, footer_override is not None,
+            "footer", footer, footer_candidates, footer_avoid,
+            footer_override is not None,
         )
     )
 
@@ -244,7 +228,10 @@ async def compose_design_manifest(
             DesignDecision(
                 area="scheme",
                 choice=scheme.slug,
-                rationale=(
+                # The design direction's own account (concepts weighed, scores,
+                # what decided) when it ran; the fit-list account otherwise.
+                rationale=scheme_rationale
+                or (
                     f"{scheme.label} — {scheme.rationale}; fit list for mood "
                     f"'{mood or _DEFAULT_MOOD}' / industry '{industry or 'any'}', "
                     f"seeded rotation for brand '{seed}'"
@@ -289,11 +276,9 @@ def demote_self_chrome_header(manifest: DesignManifest, *, reason: str) -> bool:
         return False
     from app.services.design_schemes import by_slug
 
-    candidates, _pinned = _fit_candidates(
+    candidates = _fit_candidates(
         manifest.mood,  # type: ignore[arg-type]
-        manifest.industry,
         _HEADER_FIT,
-        _HEADER_FIT_BY_INDUSTRY,
         # Same affinity ordering the pill was chosen under, so the fallback is
         # the scheme's own next choice rather than the mood's — the site keeps
         # one coherent visual language even when its first pick is unreachable.
@@ -336,6 +321,49 @@ def demote_self_chrome_header(manifest: DesignManifest, *, reason: str) -> bool:
 # single choice on the site: two consecutive sites sharing one is exactly the
 # convergence this history exists to break.
 _RECORDED_DECISION_AREAS = frozenset({"palette", "hero-homepage", "scheme"})
+
+
+async def report_and_record_fingerprint(site: GeneratedSite, manifest: DesignManifest) -> None:
+    """How alike this finished site is to the recent ones, then remember it.
+
+    The comparison is recorded on the manifest as a ``distinctiveness`` decision
+    (1 − the highest similarity to any of the last FINGERPRINT_WINDOW sites,
+    and which tokens they share), so a near-repeat is on the record —
+    `GeneratedSite.design_manifest`, which also rides `builderStyles` into the
+    CMS — rather than discovered by a customer. It names NO
+    other site: the manifest rides into this site's CMS payload, and another
+    customer's brand has no business there. Then the fingerprint joins the
+    history the next site's design direction is steered by. Fail-open."""
+    from app.services.design_fingerprint import (
+        FINGERPRINT_WINDOW,
+        field_similarity,
+        fingerprint_of,
+        nearest,
+        parse_all,
+    )
+    from app.services.diversity import recent_records, record_choice
+
+    fingerprint = fingerprint_of(site)
+    recent = parse_all(await recent_records("fingerprint", window=FINGERPRINT_WINDOW))
+    score, match = nearest(fingerprint, recent)
+    if match is not None:
+        shared = [name for name, value in field_similarity(fingerprint, match).items() if value == 1.0]
+        manifest.decisions.append(
+            DesignDecision(
+                area="distinctiveness",
+                choice=f"{1.0 - score:.2f}",
+                rationale=(
+                    f"the most similar of the last {len(recent)} generated sites is "
+                    f"{score:.0%} alike (shares: {', '.join(shared) or 'nothing'})"
+                ),
+                # Low when the site is a near-repeat: the decision most worth revisiting.
+                confidence=round(max(0.0, min(1.0, 1.0 - score)), 2),
+            )
+        )
+        site.design_manifest = manifest.model_dump()
+        if site.builder_styles and "designManifest" in site.builder_styles:
+            site.builder_styles["designManifest"] = site.design_manifest
+    await record_choice("fingerprint", fingerprint.to_json(), site_key=manifest.seed)
 
 
 async def record_manifest_choices(manifest: DesignManifest) -> None:

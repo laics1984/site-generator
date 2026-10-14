@@ -35,6 +35,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.models.facebook_photos import FacebookPhotoReview
+
 
 SectionType = Literal[
     "hero",
@@ -387,6 +389,7 @@ class FeaturesBlock(BaseModel):
 
 
 class ServiceItem(BaseModel):
+    catalogue_kind: Literal["product", "service"] = "service"
     title: str
     description: str
     audience: str | None = Field(
@@ -1427,6 +1430,9 @@ BrandMood = Literal[
 ]
 
 
+# The site industry taxonomy. webtree-cms-api's `config/benchmarks.php`
+# validates `entities.industry` against the same slugs, and
+# `tests/test_industry_taxonomy.py` fails when the two drift.
 IndustryCategoryLiteral = Literal[
     "restaurant",
     "agency",
@@ -1437,6 +1443,9 @@ IndustryCategoryLiteral = Literal[
     "nonprofit",
     "childcare",
     "personal",
+    "home-services",
+    "health-wellness",
+    "real-estate",
     "other",
 ]
 
@@ -1459,6 +1468,11 @@ INDUSTRY_MOOD: dict[str, str] = {
     # design must build trust and warmth first — joyful without being childish.
     "childcare": "friendly",
     "personal": "editorial",
+    # Trades are hired on trust and responsiveness; a clinic or a spa reads
+    # clean and calm; a property listing is a product shot first.
+    "home-services": "friendly",
+    "health-wellness": "modern",
+    "real-estate": "modern",
     "other": "modern",
 }
 
@@ -1468,18 +1482,37 @@ def industry_default_mood(industry: object) -> str:
     return INDUSTRY_MOOD.get(str(industry or "").strip().lower(), "modern")
 
 
-# Industries whose design brief pins the visual language: the detected mood is
-# advisory only. Explicit user choices still win — callers insert this between
-# the explicit overrides and the LLM-detected fallback. Childcare is friendly
-# by brief ("joyful without being childish"): a detected `playful` would swap
-# in loud type/dramatic shadows aimed at entertainment brands, not parents.
-INDUSTRY_LOCKED_MOOD: dict[str, str] = {"childcare": "friendly"}
+def resolve_mood(
+    *,
+    override: str | None,
+    brand_mood: str | None,
+    detected: str | None,
+    industry: object,
+) -> str:
+    """The one precedence for a site's mood: the user's explicit choice, else a
+    mood stored on the brand, else what detection read from the source, else
+    the industry's default.
+
+    No industry LOCKS a mood. Childcare used to be pinned to `friendly`, which
+    overruled the source's own evidence for every kindergarten and is half of
+    why they all looked alike; the industry is only the last-resort default
+    now, the same place `industry_default_mood` always sat."""
+    return override or brand_mood or detected or industry_default_mood(industry)
 
 
-def industry_locked_mood(industry: object) -> str | None:
-    """The mood an industry's design brief locks in, or None when the industry
-    leaves mood to detection."""
-    return INDUSTRY_LOCKED_MOOD.get(str(industry or "").strip().lower())
+def resolve_industry(explicit: str | None, declared: str | None, detected: str | None) -> str:
+    """The user's choice, else what the source says about itself, else what a
+    model guessed. "other" is never an answer while a later one has more to
+    say: the frontend sends it when the user never touched the dropdown, and a
+    Page filed under "Nursery" outranks a detector reading its About text.
+
+    One answer for the page recipe and for generation, so the industry the
+    picker shows is the one the site is built for.
+    """
+    for value in (explicit, declared, detected):
+        if value and value != "other":
+            return value
+    return "other"
 
 
 class SitePlan(BaseModel):
@@ -1553,6 +1586,10 @@ class SourceContent(BaseModel):
     # reads like a document, so it splits into pages the same way one does.
     source_kind: Literal["url", "pdf", "docx", "facebook", "paste"]
     source_ref: str
+    # The industry the source states about ITSELF — a Facebook Page's own
+    # category, say. Outranks a model's guess and yields to the user's choice;
+    # see `resolve_industry`. None when the source states nothing usable.
+    declared_industry: IndustryCategoryLiteral | None = None
     title: str | None = None
     description: str | None = None
     raw_text: str
@@ -1659,6 +1696,14 @@ class SourceContent(BaseModel):
             "URLs excluded. Feeds the generated site's menu-social."
         ),
     )
+    source_conflicts: list["SourceConflict"] = Field(
+        default_factory=list,
+        description=(
+            "Facts two combined sources state differently (services/"
+            "source_conflicts.py) — reported, never silently resolved. The site "
+            "uses the first source's value; the preview says so."
+        ),
+    )
     subject_name: str | None = Field(
         default=None,
         description=(
@@ -1671,10 +1716,35 @@ class SourceContent(BaseModel):
     )
 
 
+class ConflictingValue(BaseModel):
+    source: str  # which reader said it: "website", "Facebook Page", "document", "pasted text"
+    value: str  # as that source wrote it
+
+
+class SourceConflict(BaseModel):
+    """One fact two combined sources disagree on (services/source_conflicts.py)."""
+
+    field: Literal["phone", "email"]
+    kept: str  # the value the site uses — the first source's
+    values: list[ConflictingValue]
+
+
+# Which `facebook_photo_profiles` row a Facebook photo was read under. A row of
+# its own per industry that needs one; "facebook" for the rest.
+PhotoContext = Literal["facebook", "facebook_childcare"]
+
+
 class ImageMetadata(BaseModel):
     """Per-image hints from the extractor — used by the resolver's scorer."""
 
     url: str
+    content_purpose: Literal["menu", "menu_review"] | None = None
+    menu_heading: str = ""
+    menu_evidence: str = ""
+    ocr_text: str = ""  # bounded classification evidence; never a text-menu transcript
+    selection_context: PhotoContext | None = None
+    facebook_photo_review: FacebookPhotoReview | None = None
+    facebook_photo_hash: str | None = None  # measured thumbnail dHash, never LLM-derived
     alt: str = ""
     intent: Literal["hero", "about", "logo", "generic"] = "generic"
     # Visual role measured from rendered geometry (services/image_evidence.py).
@@ -1698,6 +1768,11 @@ class ImageMetadata(BaseModel):
     context_heading: str = ""
     # <figcaption> text when the image sat inside a <figure>.
     caption: str = ""
+    # The source platform's own automatic description of the picture —
+    # Facebook's `accessibility_caption`, "May be an image of child, gelato and
+    # text". Evidence about the pixels for matching and screening; machine-made
+    # and hedged, so never alt text or copy.
+    platform_alt: str = ""
     # Vision-pass annotations (services/image_vision.py). All None until the
     # opt-in pass runs. vision_caption feeds the matcher's lexical scoring so
     # alt-less, hash-named images can still be ranked against slot queries.

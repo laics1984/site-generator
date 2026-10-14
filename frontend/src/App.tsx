@@ -27,12 +27,12 @@ import {
   uploadDocumentPreview,
   type GenerateWithPagesPayload,
 } from '@/lib/api'
-import { isFacebookUrl } from '@/lib/sourceDetect'
+import { companionPageUrl, isFacebookUrl } from '@/lib/sourceDetect'
 import { combineSourcePreviews } from '@/lib/sourceCombine'
 import { withPastedContent } from '@/lib/sourcePaste'
 import type {
   BrandIdentity,
-  BrandMood,
+  BrandMoodChoice,
   ColorSchemeChoice,
   BuilderStylesShape,
   CrawlJob,
@@ -70,7 +70,10 @@ export default function App() {
   const [brand, setBrand] = useState<BrandIdentity | null>(null)
   const [manualBrand, setManualBrand] = useState(false)
   const [brandName, setBrandName] = useState('')
-  const [mood, setMood] = useState<BrandMood>('modern')
+  // 'auto' leaves mood to the backend (industry lock, then detection); a
+  // clicked mood is the user's and wins everywhere it is sent.
+  const [mood, setMood] = useState<BrandMoodChoice>('auto')
+  const chosenMood = mood === 'auto' ? null : mood
   // 'auto' → send null so the backend decides from the logo (light logo ⇒ dark).
   const [colorScheme, setColorScheme] = useState<ColorSchemeChoice>('auto')
   // Hero photo-background height, site-wide. 'full' = full-screen hero (default).
@@ -87,6 +90,9 @@ export default function App() {
   // local state there would be lost the moment a crawl needs to pause or
   // fails.
   const [sourceUrl, setSourceUrl] = useState('')
+  // A website's Facebook Page, read alongside it (decision Q3,
+  // docs/design-identity-plan.md). Only offered when the main link is a website.
+  const [sourceFbUrl, setSourceFbUrl] = useState('')
   const [sourceCrawl, setSourceCrawl] = useState(true)
   const [sourceFbToken, setSourceFbToken] = useState('')
   const [sourceFile, setSourceFile] = useState<File | null>(null)
@@ -239,36 +245,38 @@ export default function App() {
   }
 
   /**
-   * Combine whichever of {URL, document} landed into one SourceContent, then
-   * layer the paste on top — one rule for "everything the user provided feeds
-   * one context", however many of the three were filled in.
+   * Fold every read that landed — website, its Facebook Page, document — into
+   * one SourceContent, base first, then layer the paste on top: one rule for
+   * "everything the user provided feeds one context", however many were
+   * filled in.
    *
-   * URL outranks Document when both landed (lib/sourceCombine.ts). The paste
-   * always merges last, on top of whichever of those is richest, through the
-   * same `base` mechanism a paste has always used
-   * (services/source_merge.merge_sources on the backend).
+   * Each addition joins through the backend merge
+   * (services/source_merge.merge_sources, which also reports the facts two
+   * sources disagree on), and the base outranks it (lib/sourceCombine.ts). The
+   * paste always merges last, through the same `base` mechanism a paste has
+   * always used.
    */
   async function composeSources(
-    urlPreview: ScrapePreviewType | null,
-    docPreview: ScrapePreviewType | null,
+    reads: Array<{ preview: ScrapePreviewType | null; label: string }>,
   ): Promise<ScrapePreviewType | null> {
-    let rich = urlPreview ?? docPreview
-    if (urlPreview && docPreview) {
+    let rich: ScrapePreviewType | null = null
+    for (const { preview, label } of reads) {
+      if (!preview) continue
+      if (!rich) {
+        rich = preview
+        continue
+      }
       try {
-        const merged = await mergeSourceContents(
-          urlPreview.source_content,
-          docPreview.source_content,
-        )
-        rich = combineSourcePreviews(urlPreview, docPreview, merged)
+        const merged = await mergeSourceContents(rich.source_content, preview.source_content)
+        rich = combineSourcePreviews(rich, preview, merged)
       } catch (err) {
-        // The website read worked — keep it rather than losing everything
-        // because the document couldn't be folded in.
+        // The earlier reads worked — keep them rather than losing everything
+        // because one addition couldn't be folded in.
         setError(
-          `Your document couldn't be combined with the website: ${
+          `Your ${label} couldn't be combined with the rest: ${
             err instanceof Error ? err.message : 'unknown error'
           }`,
         )
-        rich = urlPreview
       }
     }
 
@@ -301,19 +309,32 @@ export default function App() {
     }
   }
 
-  /** Runs the URL crawl (if planned) and the document parse (if a file is
+  /** Runs the URL reads (if planned) and the document parse (if a file is
    *  staged) concurrently, combines whatever lands, then hands the result to
    *  `scrapeResult`. What every Continue click — and a resumed ScopeChoice —
-   *  ultimately calls. */
+   *  ultimately calls.
+   *
+   *  A website and its Facebook Page are read one after the other, not side by
+   *  side: both are crawl jobs and share the one progress display, and the
+   *  Page's own read is short beside a crawl. */
   async function runComposed(urlPlan: UrlPlan | null) {
     setError(null)
     setScrapeResult(null)
 
     const file = sourceFile
     if (file) setUploadBusy(true)
+    const pageUrl = companionPageUrl(sourceUrl, sourceFbUrl)
 
-    const [urlPreview, docPreview] = await Promise.all([
-      urlPlan ? runScrape(sourceUrl.trim(), urlPlan) : Promise.resolve(null),
+    async function readUrls(): Promise<[ScrapePreviewType | null, ScrapePreviewType | null]> {
+      const website = urlPlan ? await runScrape(sourceUrl.trim(), urlPlan) : null
+      const page = pageUrl
+        ? await runScrape(pageUrl, { crawl: false, maxPages: 0, accessToken: sourceFbToken })
+        : null
+      return [website, page]
+    }
+
+    const [[urlPreview, pagePreview], docPreview] = await Promise.all([
+      readUrls(),
       file
         ? uploadDocumentPreview(file).catch((err) => {
             setError(err instanceof Error ? err.message : 'Document parse failed')
@@ -323,7 +344,11 @@ export default function App() {
     ])
     if (file) setUploadBusy(false)
 
-    const landed = await composeSources(urlPreview, docPreview)
+    const landed = await composeSources([
+      { preview: urlPreview, label: 'website' },
+      { preview: pagePreview, label: 'Facebook Page' },
+      { preview: docPreview, label: 'document' },
+    ])
     if (!landed) return
     setScrapeResult(landed)
     if (!brandName && landed.brand_candidate?.name) {
@@ -443,15 +468,21 @@ export default function App() {
   function applyScrapedBrand() {
     if (!scrapeResult?.brand_candidate || manualBrand) return
     const candidate = scrapeResult.brand_candidate
-    setBrand({ ...candidate, mood })
+    setBrand({ ...candidate, mood: chosenMood })
     setBrandName(candidate.name || brandName)
     // Reset themePreview so BrandPanel can refresh it when needed.
     setThemePreview(null)
   }
 
   function effectiveBrand(): BrandIdentity | null {
-    if (brand) return { ...brand, name: brand.name || brandName || 'Untitled', mood }
-    if (brandName) return { name: brandName, extracted_palette: [], mood }
+    const candidate = scrapeResult?.source_content.source_kind === 'facebook'
+      ? scrapeResult.brand_candidate
+      : null
+    const resolved = brand?.logo_url || brand?.logo_data_url || manualBrand
+      ? brand
+      : candidate ?? brand
+    if (resolved) return { ...resolved, name: brandName || resolved.name || 'Untitled', mood: chosenMood }
+    if (brandName) return { name: brandName, extracted_palette: [], mood: chosenMood }
     return null
   }
 
@@ -490,7 +521,7 @@ export default function App() {
         : null,
       industry: industryOverride || 'other',
       brand: effectiveBrand(),
-      mood_override: mood,
+      mood_override: chosenMood,
       color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
       hero_height: heroHeight === 'auto' ? null : heroHeight,
       stock_images_only: stockImagesOnly,
@@ -610,6 +641,14 @@ export default function App() {
           <div className="px-4 pt-3 sm:px-6">
             <Banner tone="danger" title="Something went wrong">
               {error}
+            </Banner>
+          </div>
+        )}
+
+        {!!site.generation_warnings?.length && (
+          <div className="px-4 pt-3 sm:px-6">
+            <Banner tone="warn" title="Menu images need review">
+              {site.generation_warnings.map((warning, index) => <p key={index}>{warning}</p>)}
             </Banner>
           </div>
         )}
@@ -793,6 +832,8 @@ export default function App() {
                   <SourcePanel
                     url={sourceUrl}
                     onUrlChange={setSourceUrl}
+                    pageUrl={sourceFbUrl}
+                    onPageUrlChange={setSourceFbUrl}
                     crawl={sourceCrawl}
                     onCrawlChange={setSourceCrawl}
                     fbToken={sourceFbToken}

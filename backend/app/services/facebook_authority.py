@@ -82,8 +82,13 @@ def _testimonials(
     return block.model_copy(update={"items": items})
 
 
-def _stats(block: StatsBlock, page: FacebookPage) -> StatsBlock | None:
-    """Only the counts Facebook actually reports."""
+def stat_items(page: FacebookPage) -> list[StatItem]:
+    """Only the counts Facebook actually reports.
+
+    Asked by `facebook_source.homepage_sections_for` to decide whether a stats
+    section is requested at all, and by `_stats` to write it — one answer, so
+    the gate can never ask for a section the rewrite would then drop.
+    """
     items: list[StatItem] = []
     if page.fan_count is not None:
         items.append(StatItem(value=f"{page.fan_count:,}", label="Followers on Facebook"))
@@ -96,9 +101,12 @@ def _stats(block: StatsBlock, page: FacebookPage) -> StatsBlock | None:
         )
     if page.founded:
         items.append(StatItem(value=page.founded, label="Established"))
-    if not items:
-        return None
-    return block.model_copy(update={"items": items[:6]})
+    return items[:6]
+
+
+def _stats(block: StatsBlock, page: FacebookPage) -> StatsBlock | None:
+    items = stat_items(page)
+    return block.model_copy(update={"items": items}) if items else None
 
 
 def enforce_facebook_facts(

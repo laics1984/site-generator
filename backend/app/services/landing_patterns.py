@@ -67,13 +67,24 @@ _LANDING_PATTERNS: tuple[LandingPattern, ...] = (
                    ("hero", "features", "about", "services", "testimonials", "cta")),
     LandingPattern("day-in-the-life", ("childcare",),
                    ("hero", "about", "services", "gallery", "testimonials", "cta")),
+    # Trades: what we fix → how a job runs → neighbours vouch → common
+    # questions → get a quote.
+    LandingPattern("quote-led", ("home-services",),
+                   ("hero", "services", "process", "testimonials", "faq", "cta")),
+    # Clinics and studios: treatments → the practice → the qualified people →
+    # patients vouch → book.
+    LandingPattern("care-booking", ("health-wellness",),
+                   ("hero", "services", "about", "team", "testimonials", "cta")),
+    # Property: the listings are the product, shown before anything is claimed.
+    LandingPattern("listings-led", ("real-estate",),
+                   ("hero", "gallery", "services", "testimonials", "cta")),
     LandingPattern("portfolio-grid", ("personal", "agency"),
                    ("hero", "gallery", "about", "cta")),
-    LandingPattern("visual-gallery", ("ecommerce", "restaurant", "agency", "personal"),
+    LandingPattern("visual-gallery", ("ecommerce", "restaurant", "agency", "personal", "real-estate"),
                    ("hero", "gallery", "testimonials", "cta")),
-    LandingPattern("trust-authority", ("consultancy", "nonprofit", "professional-services"),
+    LandingPattern("trust-authority", ("consultancy", "nonprofit", "professional-services", "health-wellness"),
                    ("hero", "about", "services", "testimonials", "cta")),
-    LandingPattern("social-proof", ("professional-services", "consultancy", "personal"),
+    LandingPattern("social-proof", ("professional-services", "consultancy", "personal", "home-services", "real-estate"),
                    ("hero", "about", "testimonials", "cta")),
     LandingPattern("features-led", ("saas", "agency", "ecommerce", "other"),
                    ("hero", "features", "testimonials", "cta")),

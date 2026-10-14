@@ -97,14 +97,23 @@ class ComposeManifestTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(a.header_archetype, b.header_archetype)
         self.assertEqual(a.footer_archetype, b.footer_archetype)
 
-    async def test_industry_pin_restricts_vocabulary_and_raises_confidence(self):
-        manifest = await compose_design_manifest(
-            brand_name="Little Sprouts", mood="playful", industry="childcare"
-        )
-        self.assertIn(manifest.header_archetype, ("classic", "floating-pill"))
-        decision = manifest.decision_for("header")
-        self.assertIsNotNone(decision)
-        self.assertGreaterEqual(decision.confidence, 0.9)
+    async def test_no_industry_pins_the_chrome(self):
+        """Childcare and nonprofit used to pin their chrome vocabulary (two
+        headers, two footers each), so every school shared it. The industry no
+        longer narrows anything: a childcare site draws from its MOOD's fit list
+        exactly as any other industry in that mood does
+        (docs/design-identity-plan.md, Phase 1)."""
+        names = ("Little Sprouts", "Tadika Murni", "Glory Fields", "Pelangi", "Acorn House")
+        for name in names:
+            childcare = await compose_design_manifest(
+                brand_name=name, mood="playful", industry="childcare"
+            )
+            neutral = await compose_design_manifest(
+                brand_name=name, mood="playful", industry=None
+            )
+            self.assertEqual(childcare.header_archetype, neutral.header_archetype)
+            self.assertEqual(childcare.footer_archetype, neutral.footer_archetype)
+            self.assertNotIn("industry", childcare.decision_for("header").rationale)
 
     async def test_every_choice_carries_a_decision(self):
         manifest = await compose_design_manifest(
@@ -679,10 +688,10 @@ class PaletteAvoidanceTest(unittest.TestCase):
         self.assertNotEqual(shifted.palette_slug, base.palette_slug)
 
     def test_saturated_avoidance_falls_back_to_base_pick(self):
-        from app.services.theme import curated_palette_options
+        from app.services.theme import _curated_candidates
 
         base = build_theme(None, palette_mode="curated", font_seed="Acme")
-        every_slug = {str(o["slug"]) for o in curated_palette_options(None)}
+        every_slug = {c.slug for c in _curated_candidates(None)}
         saturated = build_theme(
             None, palette_mode="curated", font_seed="Acme", avoid_palettes=every_slug
         )
@@ -694,19 +703,6 @@ class PaletteAvoidanceTest(unittest.TestCase):
             avoid_palettes={"any-slug"},
         )
         self.assertIsNone(theme.palette_slug)
-
-    def test_explicit_design_language_pick_is_never_overridden(self):
-        from app.services.theme import curated_palette_options
-
-        slug = str(curated_palette_options(None)[0]["slug"])
-        theme = build_theme(
-            None,
-            palette_mode="curated",
-            font_seed="Acme",
-            palette_choice=slug,
-            avoid_palettes={slug},  # history says avoid — the LLM pick still wins
-        )
-        self.assertEqual(theme.palette_slug, slug)
 
     def test_dark_avoidance_rotates_within_the_dark_set(self):
         """Dark builds now take part in diversity at all.
@@ -729,13 +725,10 @@ class PaletteAvoidanceTest(unittest.TestCase):
         self.assertTrue(str(shifted.palette_slug).startswith("dark-"))
 
     def test_dark_saturated_avoidance_falls_back_to_base_pick(self):
-        from app.services.theme import curated_palette_options
+        from app.services.theme import _curated_candidates
 
         base = build_theme(None, color_scheme="dark", industry="saas", font_seed="Acme")
-        every = {
-            str(o["slug"])
-            for o in curated_palette_options("saas", mood="modern", scheme="dark")
-        }
+        every = {c.slug for c in _curated_candidates("saas", "modern", "dark")}
         saturated = build_theme(
             None,
             color_scheme="dark",

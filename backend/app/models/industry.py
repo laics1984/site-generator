@@ -8,25 +8,32 @@ ours, so every site has the page rhythm a designer would lay out.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
-from app.models.content_blocks import PageType, SectionType
+from app.models.content_blocks import (
+    IndustryCategoryLiteral,
+    PageType,
+    SectionCandidate,
+    SectionType,
+)
 
 
-IndustryCategory = Literal[
-    "restaurant",
-    "agency",
-    "saas",
-    "professional-services",
-    "ecommerce",
-    "consultancy",
-    "nonprofit",
-    "childcare",
-    "personal",
-    "other",
-]
+# One spelling: the literal lives beside the rest of the vocabulary in
+# content_blocks; this name is what the industry modules import.
+IndustryCategory = IndustryCategoryLiteral
+
+
+@dataclass(frozen=True)
+class ConversionSection:
+    """Private planning evidence bound to one occurrence in a page's recipe."""
+
+    role: Literal["problem", "solution", "proof", "action"]
+    kind: SectionType
+    source: SectionCandidate
+    index: int
 
 
 class PageScaffold(BaseModel):
@@ -67,6 +74,9 @@ class PageScaffold(BaseModel):
     # LLM — its layout is chosen once per set and each page is filled verbatim
     # from its own source (services/record_pages.py).
     record_set: str | None = None
+    # Prepared only for Facebook/PDF conversion flows. PrivateAttr survives
+    # internal model_copy calls but never changes the picker/API/site schemas.
+    _conversion_journey: tuple[ConversionSection, ...] = PrivateAttr(default=())
 
 
 class IndustryTemplate(BaseModel):

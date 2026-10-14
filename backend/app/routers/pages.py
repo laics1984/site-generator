@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from app.models.content_blocks import (
     IndustryCategoryLiteral,
     SourceContent,
-    industry_default_mood,
+    resolve_industry,
+    resolve_mood,
 )
 from app.models.industry import IndustryTemplate, PageRecipeResponse, PageScaffold
 from app.services.industry_templates import all_industries_summary, get_template
@@ -26,7 +27,7 @@ from app.services.page_inference import (
     optional_pool_for,
 )
 from app.services.planner import detect_brand_cached
-from app.services.theme import build_theme
+from app.services.design_direction import ContentProfile, resolve_direction
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
 
@@ -60,16 +61,18 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
     strip_chrome_lines(payload.source)
 
     detected = None
-    if payload.industry_override:
-        industry = payload.industry_override
-    else:
+    if not payload.industry_override:
         try:
             detected = await detect_brand_cached(payload.source)
-            industry = detected.industry_category
         except LlmError as exc:
             raise HTTPException(
                 status_code=502, detail=f"Brand detection failed: {exc}"
             ) from exc
+    industry = resolve_industry(
+        payload.industry_override,
+        payload.source.declared_industry,
+        detected.industry_category if detected else None,
+    )
 
     inferred = infer_page_scaffolds(
         payload.source,
@@ -84,27 +87,43 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
     # emptied since the inferred tree replaces it; core pages only appear if
     # the inferred tree didn't already include them (avoids duplicate About).
     base = get_template(industry)
+    core = core_pages_not_in_inferred(base.core_pages, inferred)
+    offered: list[PageScaffold] = []
+    if payload.single_page:
+        # A single-page source carries one homepage's worth of text, so a
+        # template About or Contact page would only restate it. Still offered,
+        # never pre-ticked; the pages it EARNED arrive as inferred pages.
+        offered = [page for page in core if not page.is_legal]
+        core = [page for page in core if page.is_legal]
     picker_template = IndustryTemplate(
         industry=base.industry,
         label=base.label,
         description=base.description,
-        core_pages=core_pages_not_in_inferred(base.core_pages, inferred),
+        core_pages=core,
         suggested_pages=[],
-        optional_pages=optional_pool_for(industry, inferred),
+        optional_pages=[*offered, *optional_pool_for(industry, inferred)],
     )
 
-    # Industry-aware preview theme so the picker can show the tailored fonts/colours
-    # up front. Uses the same inputs as /generate/with-pages (industry + site name +
-    # mood), so the previewed typography matches the generated site. No logo palette
-    # exists yet here → palette_mode="auto" yields a curated industry palette unless
-    # the LLM surfaced a colour hint.
-    preview = build_theme(
-        detected.primary_color_hint if detected else None,
-        mood=(detected.brand_mood if detected else industry_default_mood(industry)),  # type: ignore[arg-type]
-        font_seed=detected.site_name if detected else None,
-        industry=industry,
-        palette_mode="auto",
-    )
+    # Preview theme for the picker: the same design direction /generate/with-pages
+    # resolves (brief, content, history), minus the model's pick — a preview must
+    # not spend a round-trip, and the best-scored concept is the pick's fallback.
+    # No logo palette exists yet here, so the detection's colour hint stands in.
+    preview = (
+        await resolve_direction(
+            brand_name=(detected.site_name if detected else None) or payload.source.title or "site",
+            mood=resolve_mood(  # type: ignore[arg-type]
+                override=None,
+                brand_mood=None,
+                detected=detected.brand_mood if detected else None,
+                industry=industry,
+            ),
+            industry=industry,
+            logo_hex=detected.primary_color_hint if detected else None,
+            personality=detected.personality if detected else None,
+            content=ContentProfile.of(payload.source),
+            use_model=False,
+        )
+    ).theme
 
     return PageRecipeResponse(
         industry=industry,

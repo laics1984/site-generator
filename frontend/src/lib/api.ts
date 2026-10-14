@@ -348,11 +348,12 @@ export async function exportSiteDocument(
 export async function extractBrandFromLogo(
   file: File,
   name: string,
-  mood: BrandMood,
+  mood: BrandMood | null,
 ): Promise<BrandExtractionResult> {
   const form = new FormData()
   form.append('file', file)
-  const url = `/api/brand/extract-from-upload?name=${encodeURIComponent(name)}&mood=${mood}`
+  const query = new URLSearchParams({ name, ...(mood ? { mood } : {}) })
+  const url = `/api/brand/extract-from-upload?${query}`
   const response = await fetch(url, { method: 'POST', body: form })
   if (!response.ok) {
     const text = await response.text().catch(() => '')

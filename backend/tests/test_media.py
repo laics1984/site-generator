@@ -739,3 +739,30 @@ class StockOnlyResolverTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(photo.source, "scraped")
         self.assertEqual(photo.url, "https://source.example/our-cafe.jpg")
+
+
+class PhotoToneTest(unittest.TestCase):
+    """The tone word stock people-photography is searched with is the design
+    direction's (DesignScheme.photo_tone), not the industry's."""
+
+    def test_the_schemes_tone_replaces_the_industry_rule(self):
+        from app.services.media import _stock_query_chain
+
+        legacy = _stock_query_chain("teacher reading with children", "about", "", "childcare")
+        self.assertIn("teacher reading with children joyful", legacy)
+        calm = _stock_query_chain("teacher reading with children", "about", "", "childcare", tone="calm")
+        self.assertIn("teacher reading with children calm", calm)
+        self.assertFalse(any("joyful" in q for q in calm))
+
+    def test_an_empty_tone_searches_with_no_tone_word(self):
+        from app.services.media import _stock_query_chain
+
+        chain = _stock_query_chain("teacher reading with children", "about", "", "childcare", tone="")
+        self.assertFalse(any(q.endswith(("joyful", "calm")) for q in chain))
+        self.assertIn("teacher reading with children", chain)
+
+    def test_every_scheme_states_a_tone(self):
+        from app.services.design_schemes import DESIGN_SCHEMES
+
+        for scheme in DESIGN_SCHEMES:
+            self.assertIsNotNone(scheme.photo_tone, scheme.slug)

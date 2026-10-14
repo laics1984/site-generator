@@ -10,8 +10,15 @@ from app.models.builder_schema import (
     GeneratedSite,
     PageSeo,
 )
-from app.services.theme import build_theme
+from app.services.theme import _contrast, _relative_luminance, build_theme, ink_css, ink_on
 from app.services.ux_audit import audit_site, summarize
+
+
+def _hex(color, theme):
+    """A written colour (hex, rgba or a `var(--builder-*)` token) as the hex it paints."""
+    from app.services.section_content import _parse_color, _to_hex
+
+    return _to_hex(_parse_color(color, theme)[0])
 
 
 def _text(name, inner, **styles):
@@ -155,6 +162,15 @@ class TextContrastTest(unittest.TestCase):
         n = enforce_text_contrast([tree], theme)
         return tree, n
 
+    @staticmethod
+    def _light_ink(theme, surface="var(--builder-color-secondary)"):
+        """The palette's ink for a dark surface, as the ink pass WRITES it —
+        its token when un-nudged (`theme.ink_on` → `theme.ink_css`), never a
+        literal white."""
+        from app.services.theme import ink_css, ink_on
+
+        return ink_css(theme.palette, ink_on(theme.palette, _hex(surface, theme)))
+
     def test_dark_secondary_text_on_dark_band_flips_to_light(self):
         theme = build_theme("#d55d62", color_scheme="dark")
         tree = _container(
@@ -164,7 +180,7 @@ class TextContrastTest(unittest.TestCase):
         )
         tree, n = self._run(tree, theme)
         self.assertEqual(n, 1)
-        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+        self.assertEqual(tree.content[0].styles["color"], self._light_ink(theme))
 
     def test_dark_text_on_dark_literal_band_with_mesh_flips(self):
         # The exact observed bug: a literal dark band carrying a decorative mesh
@@ -178,7 +194,8 @@ class TextContrastTest(unittest.TestCase):
         )
         tree, n = self._run(tree, theme)
         self.assertEqual(n, 1)
-        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+        color = _hex(tree.content[0].styles["color"], theme)
+        self.assertGreater(_contrast(color, "#332424"), 7.0)  # the palette's light ink
         self.assertEqual(tree.content[0].styles.get("opacity"), "68%")  # alpha preserved
 
     def test_light_text_on_light_band_flips_to_dark(self):
@@ -191,7 +208,7 @@ class TextContrastTest(unittest.TestCase):
         )
         tree, n = self._run(tree, theme)
         self.assertEqual(n, 1)
-        self.assertEqual(tree.content[0].styles["color"], "#0f172a")
+        self.assertEqual(tree.content[0].styles["color"], "var(--builder-color-ink-dark, #0f172a)")
 
     def test_text_on_photo_untouched(self):
         theme = build_theme("#2563eb", color_scheme="dark")
@@ -222,9 +239,11 @@ class TextContrastTest(unittest.TestCase):
         tree, n = self._run(tree, theme)
         self.assertEqual(n, 1)
         cta = tree.content[0]
-        self.assertEqual(cta.styles["color"], "#ffffff")
+        self.assertEqual(cta.styles["color"], self._light_ink(theme))
         # Colour restated, the author's weight (1px solid, 0.14) preserved.
-        self.assertEqual(cta.styles["border"], "1px solid rgba(255,255,255,0.14)")
+        ink = _hex(cta.styles["color"], theme)
+        r, g, b = (int(ink[i : i + 2], 16) for i in (1, 3, 5))
+        self.assertEqual(cta.styles["border"], f"1px solid rgba({r},{g},{b},0.14)")
 
     def test_solid_button_label_is_measured_against_its_own_fill(self):
         """The primary CTA's token pair is contrast-guaranteed by the theme; it
@@ -249,9 +268,9 @@ class TextContrastTest(unittest.TestCase):
 
     def test_a_translucent_chip_on_a_gradient_keeps_the_bands_ink(self):
         """The gradient hero's ghost CTA: `rgba(255,255,255,0.12)` over an
-        opaque brand ramp. Only an OPAQUE fill hides what it sits on — treating
-        this one as the surface composites white over a backdrop nobody can
-        read and flips the CTA's white label to near-black."""
+        opaque brand ramp. The chip lightens the ramp by a tint, not to a light
+        surface — it must not flip the label to near-black. The literal white
+        label becomes the palette's light ink for that surface."""
         theme = build_theme("#2563eb", color_scheme="light")
         tree = _container(
             "hero",
@@ -267,9 +286,10 @@ class TextContrastTest(unittest.TestCase):
                 "var(--builder-color-primary, #2563eb))"
             ),
         )
-        tree, n = self._run(tree, theme)
-        self.assertEqual(n, 0)
-        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+        tree, _ = self._run(tree, theme)
+        label = _hex(tree.content[0].styles["color"], theme)
+        self.assertGreater(_relative_luminance(label), 0.8)  # still a LIGHT ink
+        self.assertNotEqual(label.lower(), "#ffffff")  # …the palette's, not a literal
 
     def test_a_sheen_layer_does_not_hide_the_opaque_fill_beneath_it(self):
         """`cta-gradient`'s shape: a translucent radial sheen stacked ON TOP of
@@ -286,9 +306,10 @@ class TextContrastTest(unittest.TestCase):
                 "var(--builder-color-primary, #2563eb), var(--builder-color-secondary, #0f172a))"
             ),
         )
-        tree, n = self._run(tree, theme)
-        self.assertEqual(n, 0)
-        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+        tree, _ = self._run(tree, theme)
+        heading = _hex(tree.content[0].styles["color"], theme)
+        self.assertGreater(_relative_luminance(heading), 0.8)  # never near-black
+        self.assertNotEqual(heading.lower(), "#ffffff")
 
     def test_a_computed_border_colour_is_left_alone(self):
         """A `color-mix()` / `var()` outline is brand-hued by construction, and
@@ -309,14 +330,15 @@ class TextContrastTest(unittest.TestCase):
         )
         tree, n = self._run(tree, theme)
         self.assertEqual(n, 1)
-        self.assertEqual(tree.content[0].styles["color"], "#ffffff")  # ink still fixed
+        self.assertEqual(tree.content[0].styles["color"], self._light_ink(theme))  # ink still fixed
         self.assertEqual(tree.content[0].styles["border"], mix)  # outline untouched
 
     def test_measured_surface_overrides_the_photo_bail_out(self):
-        """`surface=` is a caller saying "I painted this and measured it" — the
-        photo rule (which exists because a photo's luminance is unknowable from
-        the styles) then has nothing left to protect, and the node's own
-        declared fill is a colour the wash covered, so neither is read."""
+        """A painted surface (`BuilderElement.paint_surface`) is a painter
+        saying "I painted this and measured it" — the photo rule (which exists
+        because a photo's luminance is unknowable from the styles) then has
+        nothing left to protect, and the node's own declared fill is a colour
+        the wash covered, so neither is read."""
         theme = build_theme("#2563eb", color_scheme="dark")
         tree = _container(
             "hero",
@@ -327,12 +349,13 @@ class TextContrastTest(unittest.TestCase):
         from app.services.section_content import enforce_text_contrast
 
         self.assertEqual(enforce_text_contrast([tree], theme), 0)  # unmeasured: hands off
-        self.assertEqual(enforce_text_contrast([tree], theme, surface="#0a0f1f"), 1)
-        self.assertEqual(tree.content[0].styles["color"], "#ffffff")
+        tree.paint_surface("#0a0f1f")
+        self.assertEqual(enforce_text_contrast([tree], theme), 1)
+        self.assertEqual(tree.content[0].styles["color"], self._light_ink(theme, "#0a0f1f"))
 
     def test_a_photo_nested_under_a_measured_surface_still_owns_its_ink(self):
-        """The override is for the elements passed in, not their subtrees: a
-        photo tile inside the section is a fill nobody measured."""
+        """The record is the painted node's, not its subtree's: a photo tile
+        inside the section is a fill nobody measured."""
         theme = build_theme("#2563eb", color_scheme="dark")
         tile = _container(
             "tile",
@@ -340,9 +363,10 @@ class TextContrastTest(unittest.TestCase):
             backgroundImage="url(tile.jpg)",
         )
         tree = _container("hero", [tile], backgroundImage="url(photo.jpg)")
+        tree.paint_surface("#0a0f1f")
         from app.services.section_content import enforce_text_contrast
 
-        self.assertEqual(enforce_text_contrast([tree], theme, surface="#0a0f1f"), 0)
+        self.assertEqual(enforce_text_contrast([tree], theme), 0)
 
     def test_dark_text_on_light_card_untouched(self):
         # Dark scheme, but a light glass card keeps its dark text (correct side).
@@ -445,6 +469,118 @@ class ColorMixParsingTest(unittest.TestCase):
         )
         self.assertIsNone(self._parse(v, theme))
 
+    def test_mix_over_transparent_is_the_colour_at_that_alpha(self):
+        # The catalog's muted ink: the theme text, translucent — read the way
+        # the `rgba(15,23,42,0.68)` literal it replaced was.
+        from app.services.theme import _hex_to_rgb
+
+        theme = build_theme("#2563eb", color_scheme="dark")
+        rgb, a = self._parse(
+            "color-mix(in srgb, var(--builder-color-text, #111827) 68%, transparent)", theme,
+        )
+        self.assertEqual(rgb, _hex_to_rgb(theme.palette.text))
+        self.assertAlmostEqual(a, 0.68)
+
+    def test_muted_ink_over_transparent_flips_on_a_wrong_side_band(self):
+        from app.services.section_content import enforce_text_contrast
+
+        theme = build_theme("#2563eb", color_scheme="light")
+        body = _text("body", "x", color="color-mix(in srgb, var(--builder-color-text, #111827) 68%, transparent)")
+        band = _container("band", [body], backgroundColor="var(--builder-color-secondary)")
+        self.assertEqual(enforce_text_contrast([band], theme), 1)
+        # The palette's light ink (its brand-tinted near-white) as its token,
+        # never a literal.
+        self.assertEqual(
+            body.styles["color"],
+            ink_css(theme.palette, ink_on(theme.palette, theme.palette.secondary)),
+        )
+        self.assertEqual(body.styles.get("opacity"), "68%")  # alpha preserved
+
+
+class HeadingInkTokenTest(unittest.TestCase):
+    """`--builder-color-heading`: `secondary` where it reads on the page, `text`
+    where it doesn't (a dark palette's secondary is its darkest band colour)."""
+
+    def test_light_palette_inks_headings_with_secondary(self):
+        from app.services.section_content import _token_hex
+
+        theme = build_theme("#2563eb", color_scheme="light")
+        self.assertEqual(_token_hex("--builder-color-heading", theme), theme.palette.secondary)
+
+    def test_dark_palette_inks_headings_with_text(self):
+        from app.services.section_content import _token_hex
+
+        theme = build_theme("#2563eb", color_scheme="dark")
+        self.assertEqual(_token_hex("--builder-color-heading", theme), theme.palette.text)
+
+    def test_a_heading_already_on_the_right_side_keeps_its_token(self):
+        from app.services.section_content import enforce_text_contrast
+
+        theme = build_theme("#2563eb", color_scheme="dark")
+        heading = _text("h", "Title", color="var(--builder-color-heading, #0f172a)")
+        self.assertEqual(enforce_text_contrast([_container("sec", [heading])], theme), 0)
+        self.assertEqual(heading.styles["color"], "var(--builder-color-heading, #0f172a)")
+
+    def test_audit_resolves_the_derived_token_not_its_fallback(self):
+        colors = {"secondary": "#05080f", "text": "#e5e9ee", "background": "#090d16"}
+        tree = [_container(
+            "band",
+            [_text("h", "Welcome", color="var(--builder-color-heading, #0f172a)")],
+            backgroundColor="var(--builder-color-background)",
+        )]
+        site = _site(tree, builder_styles={"colors": colors})
+        self.assertNotIn("color-contrast", _rules(audit_site(site)))
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GenericHeadlineTest(unittest.TestCase):
+    """Stock headings are reported (advisory) from the same list the copy
+    prompt names, so the rule and its check cannot drift apart."""
+
+    @staticmethod
+    def _site(*headings: BuilderElement):
+        from app.models.builder_schema import BodySchema, GeneratedPage, GeneratedSite, PageSeo
+
+        section = BuilderElement(name="Section", type="container", content=list(headings))
+        page = GeneratedPage(slug="", title="Home", is_homepage=True,
+                             body_schema=BodySchema(elements=[section]), seo=PageSeo())
+        return GeneratedSite(site_name="x", pages=[page])
+
+    @staticmethod
+    def _heading(text: str, tag: str = "h2") -> BuilderElement:
+        return BuilderElement(name="Heading", type="text", htmlTag=tag,
+                              content=BuilderElementContent(innerText=text))
+
+    def test_a_stock_phrase_is_reported_and_a_specific_heading_is_not(self):
+        from app.services.ux_audit import audit_copy
+
+        stock = audit_copy(self._site(self._heading("Where Little Minds Grow!")))
+        self.assertEqual([f.rule for f in stock], ["generic-headline"])
+        specific = audit_copy(self._site(self._heading("Forest Fridays, every week of the year")))
+        self.assertEqual(specific, [])
+
+    def test_a_split_headline_group_is_read_whole(self):
+        from app.services.ux_audit import audit_copy
+
+        group = BuilderElement(name="Heading group", type="container", htmlTag="h1", content=[
+            BuilderElement(name="Heading", type="text", content=BuilderElementContent(innerText="Building bright")),
+            BuilderElement(name="Heading accent", type="text", content=BuilderElementContent(innerText="futures")),
+        ])
+        self.assertEqual(len(audit_copy(self._site(group))), 1)
+
+    def test_body_text_is_not_a_heading(self):
+        from app.services.ux_audit import audit_copy
+
+        body = BuilderElement(name="Body", type="text",
+                              content=BuilderElementContent(innerText="We believe in learning through play."))
+        self.assertEqual(audit_copy(self._site(body)), [])
+
+    def test_the_copy_prompt_quotes_examples_from_the_same_list(self):
+        from app.services.prompts import GENERIC_HEADLINES, WEBSITE_COPY_GUIDANCE
+
+        quoted = [p for p in GENERIC_HEADLINES if f'"{p}"' in WEBSITE_COPY_GUIDANCE]
+        self.assertGreaterEqual(len(quoted), 3)
+        self.assertIn("brand.differentiators", WEBSITE_COPY_GUIDANCE)

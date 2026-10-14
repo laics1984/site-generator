@@ -34,6 +34,7 @@ from app.models.content_blocks import (
 )
 from app.services.browser import render_url
 from app.services.fast_fetch import FastFetchResult, try_fast_fetch
+from app.services.image_urls import resolved_image_url
 from app.services.page_inference import _infer_page_type
 from app.services.site_url import crawl_key, is_same_site
 
@@ -280,18 +281,18 @@ def _sanitize_body(container: Tag, base_url: str) -> str:
         if tag.name not in _BODY_KEEP_TAGS:
             tag.unwrap()
             continue
+        # Resolved BEFORE the attributes go: the real picture is often only in
+        # `srcset` or a lazy `data-src`, with a placeholder in `src`.
+        image = resolved_image_url(tag, base_url) if tag.name == "img" else None
+        if tag.name == "img" and image is None:
+            tag.decompose()
+            continue
         keep = _KEEP_ATTRS.get(tag.name, set())
         for attr in list(tag.attrs):
             if attr not in keep:
                 del tag.attrs[attr]
-        if tag.name == "img":
-            src = tag.get("src") or ""
-            if not src or src.startswith("data:"):
-                tag.decompose()
-                continue
-            if src.startswith("/"):
-                parsed = urlparse(base_url)
-                tag["src"] = f"{parsed.scheme}://{parsed.netloc}{src}"
+        if image is not None:
+            tag["src"] = image
         if tag.name == "a":
             href = tag.get("href") or ""
             if href.startswith("/"):
@@ -331,13 +332,8 @@ def _first_content_image(container: Tag | None, base_url: str) -> str | None:
     if container is None:
         return None
     for img in container.find_all("img"):
-        src = img.get("src") or ""
-        if not src or src.startswith("data:"):
-            continue
-        if src.startswith("/"):
-            parsed = urlparse(base_url)
-            src = f"{parsed.scheme}://{parsed.netloc}{src}"
-        return src
+        if isinstance(img, Tag) and (url := resolved_image_url(img, base_url)):
+            return url
     return None
 
 

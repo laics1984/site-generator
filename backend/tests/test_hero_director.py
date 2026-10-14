@@ -68,7 +68,6 @@ class NonprofitDirectionTest(_LegacyRotationCase):
         return plan_site_heroes(
             _nonprofit_site(),
             mood="friendly",
-            industry="nonprofit",
             has_source_background=has_source_background,
             seed=seed,
         )
@@ -115,7 +114,6 @@ class MoodFallbackTest(_LegacyRotationCase):
         directives = plan_site_heroes(
             _nonprofit_site(),
             mood="modern",
-            industry="saas",
             has_source_background=False,
             seed="Acme",
         )
@@ -128,7 +126,6 @@ class MoodFallbackTest(_LegacyRotationCase):
         directives = plan_site_heroes(
             _nonprofit_site(),
             mood=None,
-            industry=None,
             has_source_background=False,
             seed="Acme",
         )
@@ -142,8 +139,7 @@ class MoodFallbackTest(_LegacyRotationCase):
                 _page(f"p{i}") for i in range(6)
             ]
             directives = plan_site_heroes(
-                pages, mood=mood, industry=None,
-                has_source_background=False, seed="Acme",
+                pages, mood=mood, has_source_background=False, seed="Acme",
             )
             for slug, d in directives.items():
                 if slug != "home":
@@ -158,7 +154,6 @@ class FullBleedEverywhereTest(unittest.TestCase):
         return plan_site_heroes(
             _nonprofit_site(),
             mood="friendly",
-            industry="childcare",
             has_source_background=has_source_background,
             seed="GloryKids",
         )
@@ -197,7 +192,6 @@ class BandedIsAPhotoBandTest(_LegacyRotationCase):
         return plan_site_heroes(
             _nonprofit_site(),
             mood="modern",
-            industry="saas",
             has_source_background=has_source_background,
             seed="Acme",
             hero_height=hero_height,
@@ -224,8 +218,7 @@ class BandedIsAPhotoBandTest(_LegacyRotationCase):
     def test_full_is_the_default_so_existing_callers_are_unchanged(self):
         self.assertEqual(
             plan_site_heroes(
-                _nonprofit_site(), mood="modern", industry="saas",
-                has_source_background=False, seed="Acme",
+                _nonprofit_site(), mood="modern", has_source_background=False, seed="Acme",
             ),
             self._plan(hero_height="full"),
         )
@@ -249,8 +242,7 @@ class BandedIsAPhotoBandTest(_LegacyRotationCase):
 class DirectiveShapeTest(_LegacyRotationCase):
     def test_imageless_ids_never_pin_or_wash(self):
         directives = plan_site_heroes(
-            _nonprofit_site(), mood="friendly", industry="nonprofit",
-            has_source_background=True, seed="Hope",
+            _nonprofit_site(), mood="friendly", has_source_background=True, seed="Hope",
         )
         for d in directives.values():
             if d.template_id in IMAGELESS_HERO_IDS:
@@ -320,8 +312,7 @@ class ProfilePageInheritsParentHeroTest(_LegacyRotationCase):
 
     def _directives(self):
         return plan_site_heroes(
-            self._pages(), mood="friendly", industry="nonprofit",
-            has_source_background=False, seed="Hope Foundation",
+            self._pages(), mood="friendly", has_source_background=False, seed="Hope Foundation",
         )
 
     def test_profile_pages_copy_the_parent_roster_directive(self):
@@ -339,8 +330,7 @@ class ProfilePageInheritsParentHeroTest(_LegacyRotationCase):
             _page("orphan", "landing", parent_slug="nonexistent", menu_hidden=True)
         ]
         directives = plan_site_heroes(
-            pages, mood="friendly", industry="nonprofit",
-            has_source_background=False, seed="Hope Foundation",
+            pages, mood="friendly", has_source_background=False, seed="Hope Foundation",
         )
         self.assertIn("orphan", directives)
 

@@ -33,6 +33,7 @@ from typing import Literal, TypeVar
 from app.config import settings
 from app.models.brand import HeroBackgroundHeight
 from app.models.content_blocks import BrandMood, PagePlan
+from app.services.design_schemes import NEUTRAL_SCHEME, DesignScheme
 from app.services.image_styling import HeroAnchor
 
 # Hero templates that render no image slot (see app/templates/section_catalog.json).
@@ -77,21 +78,6 @@ class _MoodSpec:
     rotation: tuple[HeroDirective, ...]
 
 
-# Nonprofit is the fully art-directed set (2026 lean: emotional immersive
-# homepage, editorial storytelling, oversized-type minimal for transactional
-# pages). Other industries fall back to their mood's spec below.
-_NONPROFIT_SPEC = _MoodSpec(
-    homepage=_BACKGROUND,
-    by_page_type={
-        "about": _EDITORIAL,
-        "services": _SPLIT_WASHED,
-        "contact": _CENTERED,
-        "team": _EDITORIAL,
-        "faq": _CENTERED,
-    },
-    rotation=(_EDITORIAL, _SPLIT_WASHED, _GRADIENT),
-)
-
 # Per-mood specs. Homepage keeps each mood's CURRENT lead treatment (see
 # _apply_hero_photo_policy: modern/technical read split as on-brand, everything
 # else leads photo-forward full-bleed); interiors rotate 2–3 compact variants
@@ -124,34 +110,49 @@ _MOOD_SPECS: dict[BrandMood, _MoodSpec] = {
         by_page_type={"contact": _CENTERED},
         rotation=(_PLAYFUL_SPLIT, _BENTO, _GRADIENT),
     ),
+    # The friendly art direction absorbed what nonprofit and childcare used to
+    # pin for themselves alone (editorial about/team pages, calm centred
+    # transactional pages, the playful split in the rotation): it was good art
+    # direction for every warm brand, and an INDUSTRY owning it is what made
+    # those industries' sites alike. The white-on-gradient hero stays in the
+    # rotation — enforce_fill_contrast resolves its fill to AA for white ink,
+    # which is what the old childcare exclusion was working around.
     "friendly": _MoodSpec(
         homepage=_BACKGROUND,
-        by_page_type={"contact": _CENTERED},
-        rotation=(_SPLIT_WASHED, _EDITORIAL, _GRADIENT),
+        by_page_type={
+            "about": _EDITORIAL,
+            "team": _EDITORIAL,
+            "services": _SPLIT_WASHED,
+            "contact": _CENTERED,
+            "faq": _CENTERED,
+        },
+        rotation=(_SPLIT_WASHED, _EDITORIAL, _PLAYFUL_SPLIT, _GRADIENT),
     ),
 }
 
-# Childcare art direction: the homepage leads with large authentic photography
-# (children learning/playing — emotional connection for parents), interiors stay
-# soft and compact and — critically — LIGHT-BACKGROUND WITH DARK TEXT to match
-# the bright Scandinavian brief. The gradient hero (hardcoded white text over a
-# secondary→primary gradient) is deliberately excluded: with childcare's pastel
-# primary the gradient's light end left white text illegible, so interiors use
-# washed splits, centered-minimal, and editorial — all dark ink on a light band.
-_CHILDCARE_SPEC = _MoodSpec(
-    homepage=_BACKGROUND,
-    by_page_type={
-        "about": _EDITORIAL,
-        "team": _EDITORIAL,
-        "contact": _CENTERED,
-        "faq": _CENTERED,
-    },
-    rotation=(_PLAYFUL_SPLIT, _SPLIT_WASHED, _CENTERED, _EDITORIAL),
-)
+# A hero by its scheme vocabulary name (design_schemes.HeroLead).
+_LEADS: dict[str, HeroDirective] = {
+    "background": _BACKGROUND,
+    "split-washed": _SPLIT_WASHED,
+    "editorial": _EDITORIAL,
+    "bento": _BENTO,
+    "playful-split": _PLAYFUL_SPLIT,
+    "gradient": _GRADIENT,
+    "centered": _CENTERED,
+    "minimal": _MINIMAL,
+    "asymmetric": _ASYMMETRIC,
+}
 
-_INDUSTRY_SPECS: dict[str, _MoodSpec] = {
-    "nonprofit": _NONPROFIT_SPEC,
-    "childcare": _CHILDCARE_SPEC,
+# The type-led opening a mood takes when the source has no photograph and the
+# scheme names none: display type for the moods that sell restraint, a calm
+# centred statement for warm ones, the brand gradient for loud ones.
+_TYPE_LED_BY_MOOD: dict[BrandMood, HeroDirective] = {
+    "modern": _MINIMAL,
+    "technical": _MINIMAL,
+    "luxury": _ASYMMETRIC,
+    "editorial": _ASYMMETRIC,
+    "friendly": _CENTERED,
+    "playful": _GRADIENT,
 }
 
 _DEFAULT_SPEC = _MOOD_SPECS["friendly"]
@@ -279,12 +280,12 @@ def plan_site_heroes(
     pages: list[PagePlan],
     *,
     mood: BrandMood | None,
-    industry: str | None,
     has_source_background: bool,
     seed: str,
     hero_height: HeroBackgroundHeight = "full",
     force_background: bool = False,
-    hero_policy: str = "inherit",
+    scheme: DesignScheme | None = None,
+    has_hero_photo: bool | None = None,
 ) -> dict[str, HeroDirective]:
     """Assign every page a HeroDirective, keyed by slug.
 
@@ -294,11 +295,19 @@ def plan_site_heroes(
     ``hero_height``: the site-wide photo-hero height (theme.hero_background_height).
     "banded" is a SHORTER PHOTO HERO, so it selects the background treatment —
     see the policy branch below.
-    ``hero_policy``: the design scheme's hero language — "fullbleed-all",
-    "hero-led" (full-bleed homepage, compact interiors) or "editorial-mix" (the
-    mood's rotation everywhere). "inherit" defers to
-    ``settings.hero_fullbleed_all_pages``, which is what every site got before
-    schemes existed and is still the default.
+    ``scheme``: the design scheme. Its ``hero_policy`` is the site's hero
+    language — "fullbleed-all", "hero-led" (full-bleed homepage, compact
+    interiors) or "editorial-mix" (the mood's rotation everywhere); "inherit"
+    defers to ``settings.hero_fullbleed_all_pages``. Its ``homepage_hero``
+    replaces the mood's homepage lead, and its ``type_led_hero`` is the opening
+    when there is no photograph (below).
+    ``has_hero_photo``: whether the SOURCE has a photograph a hero can open
+    on — True, False, or None when that cannot be told (sizes unmeasured, or
+    the caller asked for stock on purpose). Only an explicit False changes
+    anything: every page then opens on a type-led hero, so a stock picture never
+    stands in for the business on its own pages. No industry has a hero spec of
+    its own any more; nonprofit's and childcare's art direction is the friendly
+    mood's now.
     ``force_background``: the site's chrome REQUIRES a photo hero on every page
     (the floating-pill header: it floats over the first section with its own
     chrome, and only a full-screen or banded photo hero gives it something to
@@ -306,11 +315,17 @@ def plan_site_heroes(
     the caller demotes the header archetype if a page still can't resolve a
     genuine photo. See schema_builder's self-chrome audit.
     """
-    spec = _INDUSTRY_SPECS.get((industry or "").strip().lower())
-    if spec is None:
-        spec = _MOOD_SPECS.get(mood) if mood else None  # type: ignore[arg-type]
-    if spec is None:
-        spec = _DEFAULT_SPEC
+    spec = (_MOOD_SPECS.get(mood) if mood else None) or _DEFAULT_SPEC  # type: ignore[arg-type]
+    scheme = scheme or NEUTRAL_SCHEME
+    hero_policy = scheme.hero_policy
+    # No photograph to open on, and nothing (the pill) that needs one: lead
+    # with type. A source background IS a photograph, whatever was measured.
+    type_led = has_hero_photo is False and not force_background and not has_source_background
+    type_led_hero = (
+        _LEADS[scheme.type_led_hero]
+        if scheme.type_led_hero
+        else _TYPE_LED_BY_MOOD.get(mood or "friendly", _CENTERED)  # type: ignore[arg-type]
+    )
 
     # Site-wide full-bleed policy: EVERY page opens with a background hero —
     # a real/stock photo or the colour-matched abstract — so the transparent
@@ -350,17 +365,38 @@ def plan_site_heroes(
     elif hero_policy in ("hero-led", "editorial-mix"):
         fullbleed_everywhere = False
 
-    if fullbleed_everywhere or hero_height == "banded" or force_background:
-        directives = {
-            page.slug: (
-                HeroDirective(
+    if force_background or (
+        (fullbleed_everywhere or hero_height == "banded") and not type_led
+    ):
+        # The scheme's stated homepage opening holds under the site-wide
+        # policy too: that policy is about every page engaging the transparent
+        # header, and a language built on, say, a washed split says so on the
+        # page that sets its tone. The pill (it cannot float over a split) and
+        # a source that led with its own background photo still win.
+        # Under "banded" only a lead that SHOWS a photo qualifies: banded means
+        # a shorter photo opening, and a type-led lead would quietly turn it
+        # into a colour band — the bug the banded comment above records.
+        scheme_lead = (
+            _LEADS[scheme.homepage_hero]
+            if scheme.homepage_hero
+            and not force_background
+            and (
+                hero_height != "banded"
+                or _LEADS[scheme.homepage_hero].template_id not in IMAGELESS_HERO_IDS
+            )
+            else None
+        )
+
+        def opening(page: PagePlan) -> HeroDirective:
+            if not (page.is_homepage or page.page_type == "home"):
+                return _BACKGROUND
+            if has_source_background:
+                return HeroDirective(
                     "hero-background-bold", "background", pin_source_background=True
                 )
-                if (page.is_homepage or page.page_type == "home") and has_source_background
-                else _BACKGROUND
-            )
-            for page in pages
-        }
+            return scheme_lead or _BACKGROUND
+
+        directives = {page.slug: opening(page) for page in pages}
         _inherit_from_parent(pages, directives)
         return directives
 
@@ -368,7 +404,10 @@ def plan_site_heroes(
     interior_seen: list[str] = []
     for page in pages:
         if page.is_homepage or page.page_type == "home":
-            directive = spec.homepage
+            if type_led:
+                directives[page.slug] = type_led_hero
+                continue
+            directive = _LEADS[scheme.homepage_hero] if scheme.homepage_hero else spec.homepage
             # "hero-led": the homepage still opens on the full-bleed photo — the
             # first impression is the one place atmosphere always pays — while
             # interiors take the mood's compact rotation below. "editorial-mix"
@@ -385,13 +424,24 @@ def plan_site_heroes(
             continue
 
         directive = spec.by_page_type.get(page.page_type)
+        if type_led and directive is not None and directive.template_id not in IMAGELESS_HERO_IDS:
+            directive = None
         if directive is None:
-            start = _rotation_index(seed, page.slug, len(spec.rotation))
+            # With no photograph, an interior rotates only among the heroes
+            # that render none; with none in the mood's rotation, the
+            # scheme's type-led opening serves.
+            rotation = (
+                tuple(d for d in spec.rotation if d.template_id in IMAGELESS_HERO_IDS)
+                or (type_led_hero,)
+                if type_led
+                else spec.rotation
+            )
+            start = _rotation_index(seed, page.slug, len(rotation))
             # Nudge consecutive rotation picks apart: if the seeded pick equals
             # the previous rotation page's template, step to the next variant.
-            directive = spec.rotation[start]
+            directive = rotation[start]
             if interior_seen and interior_seen[-1] == directive.template_id:
-                directive = spec.rotation[(start + 1) % len(spec.rotation)]
+                directive = rotation[(start + 1) % len(rotation)]
             interior_seen.append(directive.template_id)
         directives[page.slug] = directive
     _inherit_from_parent(pages, directives)

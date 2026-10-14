@@ -40,6 +40,18 @@ export function isFacebookUrl(value: string): boolean {
 }
 
 /**
+ * The Facebook Page to read ALONGSIDE a website, or null. Only when the main
+ * link is a website (a Page's own link has no companion) and the second field
+ * holds a Facebook link — anything else typed there is ignored rather than
+ * crawled as a second website.
+ */
+export function companionPageUrl(mainUrl: string, pageUrl: string): string | null {
+  const page = pageUrl.trim()
+  if (!page || !mainUrl.trim() || isFacebookUrl(mainUrl)) return null
+  return isFacebookUrl(page) ? page : null
+}
+
+/**
  * Shapes that are Facebook links but not business Pages. Used only to warn
  * early — the backend re-checks and owns the real error message.
  */

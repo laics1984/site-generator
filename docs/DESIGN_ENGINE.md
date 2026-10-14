@@ -355,15 +355,12 @@ from the logo hue. Three changes in `theme.py`:
   page rather than falling back to a fixed cool slate — which on a warm
   parchment page read as a bug.
 
-`_curated_candidates` / `curated_palette_by_slug` / `curated_palette_options`
-take `mood` and `scheme` and **must stay in lockstep** (pinned by
-`test_options_and_lookup_mirror_the_candidate_set`); a slug can never resolve
-across schemes. `curated_palette_options` quotes the **mapped** palette, not the
-source tokens — a curated `dark` of `#0F172A` ships as `#171a22` once
-`_brand_ink` has capped it, so the old menu showed the model colours the page
-never painted. `resolve_color_scheme` is now called *before*
-`generate_design_language` in both generate paths, so the model is offered the
-menu for the scheme the site will actually be built with.
+`_curated_candidates` takes `mood`, `scheme` and (since the design-identity
+plan) the design scheme's `strategies`; a slug can never resolve across
+schemes. The palette menu the design-language LLM used to pick from — and the
+`curated_palette_by_slug` / `curated_palette_options` lockstep it needed — is
+gone: the model now chooses among complete scored concepts
+(`services/design_direction.py`), so it can no longer bypass the history.
 
 ## Design schemes (implemented) — several visual languages per mood × industry
 
@@ -380,10 +377,17 @@ every site. Two sites in one cell could only differ by colour.
 `services/design_schemes.py` is a **style pack**: a frozen `DesignScheme`
 bundling shape, density, composition and colour-expression variables, chosen by
 the machinery the chrome archetypes already use — fit list → seeded md5
-rotation → diversity history. Sixteen are authored; mood and `industries` are
+rotation → diversity history. Eighteen are authored; mood and `industries` are
 hard gates in the catalog's own vocabulary (empty = neutral wildcard) and
-`industry_affinity` is the soft rank on top, so **every one of the 60 (mood,
-industry) cells offers at least three** without a 60-row table.
+`industry_affinity` is the soft rank on top, so **every one of the 78 (mood,
+industry) cells offers at least four** without a 78-row table.
+
+Since the design-identity plan's Phase 1 a scheme also owns how colour is spent
+(`palette_strategies`, `band_tint`, `heading_ink`, `hero_title_accent`,
+`photo_cast`) and the typographic voice (`type_directions`, `logo_height`), so
+no industry pins a look any more — the former childcare brief is the `playroom`
+scheme. See "No industry owns a look" in CLAUDE.md and
+[design-identity-plan.md](design-identity-plan.md).
 
 Two rules keep it maintainable:
 
@@ -401,9 +405,9 @@ Two rules keep it maintainable:
 
 ### One threading seam
 
-The scheme must be known before `build_theme`, so it takes the shape the palette
-already uses: `build_theme(scheme_choice=…, avoid_schemes=…)`, mirroring
-`palette_choice`/`avoid_palettes` at the same three generation call sites. The
+The scheme must be known before `build_theme`, so it rides in as
+`build_theme(scheme_choice=…)`, set by `design_direction.resolve_direction` —
+the one caller that decides it (it scores the fit list; see CLAUDE.md). The
 slug lands on `ThemeTokens.design_scheme` — **internal, exactly like
 `palette_slug`, and absent from `to_builder_styles()`**, so the CMS wire payload
 is unchanged. Every downstream pass reads it back with

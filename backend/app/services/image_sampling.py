@@ -7,17 +7,22 @@ photos have no such field — `ImageMetadata.dominant_color` was declared for th
 but never written — so every scraped hero fell back to `photo_background`'s
 blind mid-cast: a dark interior shot and a bright beach got the identical wash.
 
-This module closes that gap for the one slot where it shows most, the full-bleed
-hero, by downloading the photo once and reading two numbers off it:
+This module closes that gap for the slots where it shows most — a photo painted
+BEHIND copy (a full-bleed hero, a photo CTA, a photo tile) — by downloading the
+photo once and reading three things off it:
 
-  * `dominant_hex` — feeds the existing `overlay_alpha` ramp, so the scrim
-    finally adapts to the photograph instead of guessing.
+  * `dominant_hex` — feeds the existing `overlay_alpha` ramp, so the cast
+    adapts to the photograph instead of guessing.
   * `focal_y` — where the subject actually sits vertically, so a 100dvh hero
     crops around it instead of hard-centering and slicing off heads.
+  * `luminance_map` — how bright the photo is WHERE, so the copy scrim is sized
+    for the region the copy sits on, not the frame's average
+    (`image_styling._copy_scrim`). Stock photography puts its brightest region
+    in the middle of the frame, which is where the copy goes.
 
-Deliberately NOT a general pass over the image pool: one download per page, on
-the slot whose framing the visitor sees first. Everything degrades to None, and
-every caller must treat None as "carry on exactly as before".
+Deliberately NOT a general pass over the image pool: one download per photo
+painted behind copy. Everything degrades to None, and every caller must treat
+None as "carry on exactly as before".
 """
 
 from __future__ import annotations
@@ -30,7 +35,11 @@ from io import BytesIO
 import httpx
 
 from app.config import settings
-from app.services.image_styling import band_for_luminance, relative_luminance
+from app.services.image_styling import (
+    PhotoLuminance,
+    band_for_luminance,
+    relative_luminance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +49,10 @@ logger = logging.getLogger(__name__)
 # "horizon across the middle" without paying for real saliency detection.
 _COLOR_PX = 16
 _FOCAL_ROWS = 32
+# The luminance map's grid. 24 cells across puts ~14 inside a centred copy
+# column: fine enough that a white shirt behind half a sentence registers, and
+# each cell is still an area average, so a stray specular highlight does not.
+_LUMINANCE_GRID = 24
 
 # Clamp for the focal point. A background-position outside this band stops
 # reading as framing and starts reading as a mistake — the top of the frame
@@ -56,6 +69,8 @@ class PhotoSample:
     luminance: float
     #: 0..1 down the frame, where the visually busiest band sits.
     focal_y: float
+    #: How bright the photo is where: what the copy scrim is sized from.
+    luminance_map: PhotoLuminance | None = None
 
     @property
     def band(self) -> str:
@@ -104,8 +119,10 @@ def _measure(raw: bytes, url: str = "") -> PhotoSample | None:
             rgb = img.convert("RGB")
             colour = rgb.resize((_COLOR_PX, _COLOR_PX))
             grey = rgb.convert("L").resize((_COLOR_PX, _FOCAL_ROWS))
+            grid = rgb.resize((_LUMINANCE_GRID, _LUMINANCE_GRID), Image.BOX)
             pixels = list(colour.getdata())
             flat = list(grey.getdata())
+            cells = list(grid.getdata())
             rows = [
                 flat[r * _COLOR_PX : (r + 1) * _COLOR_PX] for r in range(_FOCAL_ROWS)
             ]
@@ -125,6 +142,11 @@ def _measure(raw: bytes, url: str = "") -> PhotoSample | None:
         dominant_hex=dominant_hex,
         luminance=round(lum, 4),
         focal_y=_focal_y(rows),
+        luminance_map=PhotoLuminance(
+            _LUMINANCE_GRID,
+            _LUMINANCE_GRID,
+            tuple(round(relative_luminance("#%02x%02x%02x" % cell), 4) for cell in cells),
+        ),
     )
 
 

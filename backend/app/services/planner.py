@@ -21,7 +21,9 @@ import logging
 import re
 import time
 from collections import Counter
+from dataclasses import replace
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import (
     BaseModel,
@@ -30,6 +32,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 from app.models.content_blocks import (
     DETERMINISTIC_SECTION_KINDS,
@@ -46,9 +49,13 @@ from app.models.content_blocks import (
     industry_default_mood,
 )
 from app.config import settings
+from app.models.brand import BrandPersonality
 from app.models.industry import PageScaffold
+from app.services.brand_brief import ground_brief
 from app.services import llm_choice
 from app.services.industry_personality import personality_prompt_lines
+from app.services.generation_guidance import guidance_for_page, legacy_page_guidance
+from app.services.landing_order import prepare_landing_pages
 from app.services.llm import (
     LlmClient,
     LlmError,
@@ -58,6 +65,8 @@ from app.services.llm import (
 )
 from app.services.polite import HostPoliteness
 from app.services.prompts import (
+    CHILDCARE_VISUAL_PROMPT,
+    RESTAURANT_MENU_CONTENT_PROMPT,
     DETECT_BRAND_PROMPT,
     LEGACY_SYSTEM_PROMPT,
     _SCAFFOLD_BLOCK_SCHEMAS,
@@ -65,8 +74,9 @@ from app.services.prompts import (
 )
 from app.services.source_router import (
     excerpt_for_prompt,
+    image_prompt_payload,
     match_scaffolds_to_pages,
-    promptable_images,
+    section_prompt_entry,
     split_raw_text,
 )
 
@@ -99,6 +109,14 @@ def _build_user_prompt(source: SourceContent, max_chars: int | None = None) -> s
             "sample_links": source.links[:30],
             "sample_image_alts": source.images[:20],
             "raw_text": truncated_text,
+            "menu_assets": [
+                {"purpose": meta.content_purpose, "heading": meta.menu_heading}
+                for meta in source.image_metadata if meta.content_purpose
+            ][:12],
+            **(
+                {"facebook_photos": image_prompt_payload(source)}
+                if source.source_kind == "facebook" else {}
+            ),
         },
         ensure_ascii=False,
     )
@@ -108,7 +126,14 @@ async def plan_site(source: SourceContent, llm: LlmClient | None = None) -> Site
     """Legacy: LLM chooses pages and sections freely."""
     client = llm or get_llm()
     return await client.chat_json(
-        system_prompt=LEGACY_SYSTEM_PROMPT,
+        system_prompt=(
+            LEGACY_SYSTEM_PROMPT
+            + "\n" + legacy_page_guidance()
+            + "\n\nApply the following brief ONLY when industry_category is childcare.\n"
+            + CHILDCARE_VISUAL_PROMPT
+            + "\n\nApply the following brief ONLY when industry_category is restaurant.\n"
+            + RESTAURANT_MENU_CONTENT_PROMPT
+        ),
         user_prompt=_build_user_prompt(source),
         schema=SitePlan,
         temperature=settings.plan_temperature,
@@ -119,7 +144,10 @@ async def plan_site(source: SourceContent, llm: LlmClient | None = None) -> Site
 
 
 class DetectedBrand(BaseModel):
-    """Compact brand summary used to populate the page picker."""
+    """Compact brand summary used to populate the page picker — and the brand
+    BRIEF the design engine reads (services/brand_brief.py): personality axes
+    with evidence, audience, positioning, verbatim differentiators, unknowns.
+    Grounded by `brand_brief.ground_brief` before anything reads it."""
 
     site_name: str
     tagline: str | None = None
@@ -127,6 +155,42 @@ class DetectedBrand(BaseModel):
     brand_mood: BrandMood | None = None
     industry_category: IndustryCategoryLiteral = "other"
     primary_color_hint: str | None = None
+    audience: str | None = None
+    positioning: str | None = None
+    differentiators: list[str] = Field(default_factory=list)
+    personality: BrandPersonality = Field(default_factory=BrandPersonality)
+    unknowns: list[str] = Field(default_factory=list)
+    # Where `brand_mood` came from. Computed, never asked of the model (kept
+    # out of the schema it is sent): "personality" when derived from enough
+    # known axes, "detected" when the model named it, "industry" for the
+    # industry default.
+    mood_basis: SkipJsonSchema[Literal["personality", "detected", "industry"] | None] = None
+
+    def copy_payload(self) -> dict:
+        """What the COPY planner may see of the brief. The identity fields as
+        before, plus the grounded differentiators (facts it can build headings
+        from instead of generic praise) and the unknowns (gaps it must not fill
+        with invented specifics). Personality, audience and positioning are
+        design inputs and inferences: handed to a copywriter they would be
+        written up as claims."""
+        return self.model_dump(
+            include={
+                "site_name", "tagline", "brand_summary", "brand_mood",
+                "industry_category", "primary_color_hint",
+                "differentiators", "unknowns",
+            }
+        )
+
+    @field_validator("differentiators", "unknowns", mode="before")
+    @classmethod
+    def heal_string_lists(cls, v: object) -> object:
+        # A null or a bare string is the model's usual slip on a list field;
+        # neither is worth failing brand detection over.
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        return [item for item in v if isinstance(item, str)] if isinstance(v, list) else []
 
     # A null site_name/brand_summary is the model's most common schema slip and
     # it used to cost a whole repair call. Heal it here; every consumer already
@@ -153,6 +217,8 @@ class DetectedBrand(BaseModel):
     def _mood_from_industry(self):
         # No usable mood from the LLM → derive one from the industry instead of a
         # blanket "modern". An explicit, valid mood is always kept.
+        if self.mood_basis is None:
+            self.mood_basis = "detected" if self.brand_mood is not None else "industry"
         if self.brand_mood is None:
             self.brand_mood = industry_default_mood(self.industry_category)
         return self
@@ -165,7 +231,7 @@ async def detect_brand(
     # the lean cap keeps this FIRST call's prefill inside the read timeout —
     # large PDFs were the trigger for the ReadTimeout 502 here.
     client = llm or get_reasoning_llm()
-    return await client.chat_json(
+    detected = await client.chat_json(
         system_prompt=DETECT_BRAND_PROMPT,
         user_prompt=_build_user_prompt(
             source, max_chars=settings.brand_detection_max_chars
@@ -173,6 +239,10 @@ async def detect_brand(
         schema=DetectedBrand,
         temperature=settings.plan_temperature,
     )
+    # The model reads; code decides what the reading may mean. Differentiators
+    # must be source text, evidence spans must be real, and the mood is derived
+    # from the personality when enough of it is known.
+    return ground_brief(detected, source.raw_text)
 
 
 # In-process cache for detect_brand. The recipe endpoint and the generate
@@ -339,7 +409,20 @@ def _scaffolds_to_prompt_payload(
             "required_sections": [
                 k for k in s.sections if k not in DETERMINISTIC_SECTION_KINDS
             ],
+            "copy_guidance": guidance_for_page(
+                s.page_type, tuple(s.sections), conversion_journey=bool(s._conversion_journey),
+            ),
         }
+        if s._conversion_journey:
+            entry["conversion_journey"] = [
+                {
+                    "section_index": binding.index,
+                    "section_kind": binding.kind,
+                    "role": binding.role,
+                    **section_prompt_entry(binding.source),
+                }
+                for binding in s._conversion_journey
+            ]
         if s.parent_slug is not None:
             entry["parent_slug"] = s.parent_slug
             if parent_context and s.parent_slug in parent_context:
@@ -416,13 +499,9 @@ def _scaffold_num_ctx() -> int:
 #                       tailored prompt varies with the batch's section kinds
 #   _TOK_BRAND_SOURCE   brand dict + entry-page text  ≈ 600 tokens
 #
-# Per-page input overhead (added once per page in the batch):
-#   _TOK_PER_PAGE_STUB    slug + title + requested-sections list ≈ 100 tokens
-#   _TOK_PER_SOURCE_SECTION  the source's own section tree, per section
-#   page source           estimated from the page's ACTUAL text length, capped at
-#                         settings.multipass_max_chars_per_call, at _CHARS_PER_TOKEN
-#                         chars/token (small pages cost less; large pages are
-#                         chunked, not batched)
+# Per-page input is measured from the same serialized payload sent to the model,
+# including guidance, source sections/cards, image metadata and real links.
+# _TOK_PER_PAGE_STUB is a conservative floor for tiny unsourced pages.
 #
 # Per-section output (multiplied by section count for the page):
 #   _TOK_PER_SECTION_OUT  ≈ 230 tokens (hero ~120, features ~280, process ~250,
@@ -434,15 +513,6 @@ def _scaffold_num_ctx() -> int:
 _TOK_BRAND_SOURCE = 600
 _TOK_PER_PAGE_STUB = 100
 _TOK_PER_SECTION_OUT = 230
-# One page_source.images entry ({ref, alt, role, near}) costs ~30 tokens.
-_TOK_PER_IMAGE = 30
-# One page_source.sections entry — heading + level + capped prose + up to a
-# dozen cards ({title, body, meta}). Bigger than an image entry by an order of
-# magnitude, so it has to be costed: source_router caps the tree at 12 sections
-# with 12 cards each, which is exactly the shape that would otherwise overflow
-# num_ctx and buy a truncation retry.
-_TOK_PER_SOURCE_SECTION = 120
-_MAX_COSTED_SOURCE_SECTIONS = 12
 _INPUT_SHARE = 0.48          # fraction of num_ctx reserved for input tokens
 _CHARS_PER_TOKEN = 4          # rough English chars→tokens ratio for estimates
 # CJK text has no spaces and tokenises far denser — roughly one token per
@@ -523,25 +593,12 @@ def _build_batches(
     cur_input = cur_output = cur_sections = 0
 
     for s in scaffolds:
-        has_source = source_map is not None and s.slug in source_map
-        # Estimate this page's source tokens from its ACTUAL text length (capped at
-        # the per-call budget — larger pages are chunked elsewhere, never batched).
-        # This lets tiny pages pack several-per-batch instead of all costing a flat
-        # estimate. Only small pages (<= the per-call budget) reach this function.
-        src_text = (
-            (source_map[s.slug].raw_text or "")[: settings.multipass_max_chars_per_call]
-            if has_source
-            else ""
-        )
-        image_count = len(promptable_images(source_map[s.slug])) if has_source else 0
-        section_count = (
-            len(source_map[s.slug].section_candidates or []) if has_source else 0
-        )
-        page_input = (
-            _TOK_PER_PAGE_STUB
-            + _estimate_tokens(src_text)
-            + image_count * _TOK_PER_IMAGE
-            + min(section_count, _MAX_COSTED_SOURCE_SECTIONS) * _TOK_PER_SOURCE_SECTION
+        page_input = max(
+            _TOK_PER_PAGE_STUB,
+            _estimate_tokens(json.dumps(
+                _scaffolds_to_prompt_payload([s], source_map=source_map),
+                ensure_ascii=False,
+            )),
         )
         page_output = len(s.sections) * _TOK_PER_SECTION_OUT
         page_sections = len(s.sections)
@@ -619,13 +676,22 @@ def _build_scaffolded_user_prompt(
     return json.dumps(
         {
             "source": source_payload,
-            "brand": brand.model_dump() if brand else None,
+            "brand": brand.copy_payload() if brand else None,
             # 2026 art-direction brief for this industry — the DESIGN INTENT
             # section of the system prompt tells the model how to apply it.
             # Injected here (not in the system prompt) so the lru-cached
             # system prompt stays industry-independent.
             "industry_personality": personality_prompt_lines(
                 brand.industry_category if brand else None
+            ),
+            **(
+                {"industry_visual_direction": CHILDCARE_VISUAL_PROMPT}
+                if brand and brand.industry_category == "childcare"
+                else {}
+            ),
+            **(
+                {"industry_menu_direction": RESTAURANT_MENU_CONTENT_PROMPT}
+                if brand and brand.industry_category == "restaurant" else {}
             ),
             "pages_requested": _scaffolds_to_prompt_payload(
                 scaffolds, parent_context, source_map, text_overrides
@@ -959,8 +1025,20 @@ async def _generate_page_section_chunks(
 
     chunk_plans: list[PagePlan] = []
     first_result: ScaffoldedSitePlan | None = None
+    section_offset = 0
     for idx, group in enumerate(groups):
         sub = scaffold.model_copy(update={"sections": group})
+        if scaffold._conversion_journey:
+            # Groups share a hero and partition the body in order. Rebase only
+            # this group's bindings so repeated about sections receive their
+            # own problem/solution/proof evidence in every small call.
+            end = section_offset + len(group) - 1
+            sub._conversion_journey = tuple(
+                replace(binding, index=binding.index - section_offset)
+                for binding in scaffold._conversion_journey
+                if section_offset < binding.index <= end
+            )
+            section_offset = end
         result = await chat_json_cached(
             client,
             system_prompt=_scaffold_system_prompt(_batch_kinds([sub])),
@@ -1058,6 +1136,8 @@ async def plan_site_with_scaffolds(
     brand: DetectedBrand | None,
     scaffolds: list[PageScaffold],
     llm: LlmClient | None = None,
+    *,
+    source_map: dict[str, SourceContent] | None = None,
 ) -> tuple[ScaffoldedSitePlan, dict[str, SourceContent]]:
     """Scaffold-driven planning with parent-aware batching + per-page source routing.
 
@@ -1085,7 +1165,9 @@ async def plan_site_with_scaffolds(
     client = llm or get_llm()
 
     # 1. Route each scaffold to its best-matching scraped page.
-    source_map = match_scaffolds_to_pages(scaffolds, source)
+    if source_map is None:
+        source_map = match_scaffolds_to_pages(scaffolds, source)
+        scaffolds, source_map = prepare_landing_pages(scaffolds, source_map)
     logger.info(
         "Source routing: %d scaffolds mapped (%d to specific discovered pages, %d to entry)",
         len(source_map),

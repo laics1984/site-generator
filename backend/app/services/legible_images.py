@@ -98,6 +98,8 @@ def inject_legible_images(
 
 
 def _placeable(meta: ImageMetadata) -> bool:
+    if meta.content_purpose in {"menu", "menu_review"}:
+        return False  # menu routing owns these, including gallery-role scans
     if not must_show_whole(meta) or meta.role in _UNPLACEABLE_ROLES:
         return False
     if meta.role == "logo" and not meta.qr_payload:
@@ -131,7 +133,7 @@ def _identities(metas: list[ImageMetadata], urls: set[str]) -> set[str]:
 
 def _place(page: PagePlan, metas: list[ImageMetadata], exclude: set[str]) -> None:
     posters = [
-        PosterBlock(heading=heading, items=[_poster_item(meta, heading) for meta in group])
+        PosterBlock(heading=heading, items=[poster_item(meta, heading) for meta in group])
         for heading, group in group_by_heading(
             (meta for meta in metas if not _is_code(meta)),
             key_of=image_identity,
@@ -182,7 +184,7 @@ def _qr_item(meta: ImageMetadata) -> QrItem:
     )
 
 
-def _poster_item(meta: ImageMetadata, heading: str) -> PosterItem:
+def poster_item(meta: ImageMetadata, heading: str) -> PosterItem:
     purpose = purpose_of(meta.qr_payload) if meta.qr_payload else None
     return PosterItem(
         image_url=meta.url,

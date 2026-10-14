@@ -29,9 +29,11 @@ from typing import TYPE_CHECKING, Literal
 
 import httpx
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
+from app.models.facebook_photos import FacebookPhotoReview
 from app.services.url_guard import is_public_url
 
 if TYPE_CHECKING:
@@ -57,6 +59,9 @@ class VisionAnnotation(BaseModel):
     # drawn on top. Distinct from `kind`: a real photograph of a shopfront can
     # carry a signboard full of text, and a plain illustration can carry none.
     has_text: bool = False
+    facebook_photo_review: FacebookPhotoReview | None = None
+    # Internal measurement, omitted from the LLM's requested JSON schema.
+    photo_hash: SkipJsonSchema[str | None] = None
 
 
 _JUDGE_SYSTEM = """You describe one website image for an image-matching system.
@@ -78,6 +83,20 @@ _THUMBNAIL_PX = 512
 # server processing many distinct images can't grow it without limit.
 _ANNOTATION_CACHE: dict[str, VisionAnnotation] = {}
 _ANNOTATION_CACHE_MAX = 512
+
+
+def _reviewer_prompt(selection_context: str | None) -> str | None:
+    """The photo profile's own reviewer prompt, when it has one."""
+    from app.services.facebook_photo_profiles import profile_for
+
+    profile = profile_for(selection_context)
+    return profile.vision_prompt if profile else None
+
+
+def _annotation_key(url: str, meta: ImageMetadata | None) -> str:
+    # A generic annotation must never satisfy a profile's stronger review.
+    context = meta.selection_context if meta else None
+    return f"{context}:{url}" if _reviewer_prompt(context) else url
 
 
 def _cache_annotation(url: str, annotation: VisionAnnotation) -> None:
@@ -133,8 +152,9 @@ async def prefetch_image_pool(
     `prefetched=`. URLs already in the annotation cache are skipped."""
     if not vision_enabled():
         return {}
-    candidates, _ = _vision_candidates(metadata, extra_urls, max_images)
-    to_fetch = [u for u in candidates if u not in _ANNOTATION_CACHE]
+    candidates, by_url = _vision_candidates(metadata, extra_urls, max_images)
+    to_fetch = [u for u in candidates if _annotation_key(u, by_url.get(u)) not in _ANNOTATION_CACHE
+                and not (by_url.get(u) and by_url[u].facebook_photo_review is not None)]
     if not to_fetch:
         return {}
 
@@ -181,7 +201,11 @@ async def annotate_image_pool(
         return {}
 
     client = llm
-    if client is None and any(u not in _ANNOTATION_CACHE for u in candidates):
+    if client is None and any(
+        _annotation_key(u, by_url.get(u)) not in _ANNOTATION_CACHE
+        and not (by_url.get(u) and by_url[u].facebook_photo_review is not None)
+        for u in candidates
+    ):
         from app.services.llm import active_vision_model, get_llm  # lazy: heavy import chain
 
         client = get_llm(model=active_vision_model())
@@ -191,7 +215,18 @@ async def annotate_image_pool(
     async def _resolve(
         url: str, http_client: httpx.AsyncClient
     ) -> tuple[str, VisionAnnotation | None]:
-        cached = _ANNOTATION_CACHE.get(url)
+        meta = by_url.get(url)
+        key = _annotation_key(url, meta)
+        cached = _ANNOTATION_CACHE.get(key)
+        if meta and meta.facebook_photo_review is not None:
+            # Reviews survive source-preview persistence and round-tripping.
+            return url, VisionAnnotation(
+                caption=meta.vision_caption or "", kind=meta.vision_kind or "other",
+                people_count=meta.vision_people or 0,
+                is_portrait=bool(meta.vision_portrait), has_text=bool(meta.vision_has_text),
+                facebook_photo_review=meta.facebook_photo_review,
+                photo_hash=meta.facebook_photo_hash,
+            )
         if cached is not None:
             return url, cached
         async with sem:
@@ -200,9 +235,10 @@ async def annotate_image_pool(
                 client,  # type: ignore[arg-type]
                 http_client,
                 image_b64=(prefetched or {}).get(url),
+                selection_context=meta.selection_context if meta else None,
             )
         if annotation is not None:
-            _cache_annotation(url, annotation)
+            _cache_annotation(key, annotation)
         return url, annotation
 
     async with httpx.AsyncClient(
@@ -224,6 +260,8 @@ async def annotate_image_pool(
             item.vision_people = annotation.people_count
             item.vision_portrait = annotation.is_portrait
             item.vision_has_text = annotation.has_text
+            item.facebook_photo_review = annotation.facebook_photo_review
+            item.facebook_photo_hash = annotation.photo_hash
 
     return annotations
 
@@ -234,6 +272,7 @@ async def _annotate_one(
     http_client: httpx.AsyncClient | None = None,
     *,
     image_b64: str | None = None,
+    selection_context: str | None = None,
 ) -> VisionAnnotation | None:
     """Fetch + downscale + judge one image. None on any failure.
     A prefetched `image_b64` skips the download entirely."""
@@ -244,16 +283,37 @@ async def _annotate_one(
 
     from app.services.llm import LlmError  # lazy: heavy import chain
 
+    reviewer = _reviewer_prompt(selection_context)
     try:
-        return await llm.chat_json(
-            system_prompt=_JUDGE_SYSTEM,
+        annotation = await llm.chat_json(
+            system_prompt=reviewer or _JUDGE_SYSTEM,
             user_prompt="Describe this image.",
             schema=VisionAnnotation,
             temperature=settings.judge_temperature,
             images=[image_b64],
         )
+        annotation.photo_hash = (
+            await asyncio.to_thread(_thumbnail_hash, image_b64) if reviewer else None
+        )
+        return annotation
     except LlmError as exc:
         logger.warning("Vision annotation failed for %s: %s", url[:120], exc)
+        return None
+
+
+def _thumbnail_hash(payload: bytes | str) -> str | None:
+    """Conservative resized/burst-photo fingerprint using already downloaded pixels."""
+    from PIL import Image
+
+    try:
+        raw = payload if isinstance(payload, bytes) else base64.b64decode(payload)
+        with Image.open(BytesIO(raw)) as image:
+            pixels = list(image.convert("L").resize((9, 8), Image.Resampling.LANCZOS).getdata())
+        if max(pixels) - min(pixels) < 12:
+            return None  # nearly flat artwork is not reliable duplicate evidence
+        bits = [pixels[y * 9 + x] > pixels[y * 9 + x + 1] for y in range(8) for x in range(8)]
+        return f"{sum(int(bit) << i for i, bit in enumerate(bits)):016x}"
+    except Exception:
         return None
 
 

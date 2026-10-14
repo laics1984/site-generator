@@ -33,6 +33,8 @@ import docx as python_docx  # python-docx
 import fitz  # PyMuPDF — `import fitz` is correct for the pymupdf package
 from docx.oxml.ns import qn
 
+from app.config import settings
+
 # The parsed-source shape is shared with the paste reader — see source_outline.
 from app.services.source_outline import DocImage, OutlineBlock, ParsedDocument
 
@@ -59,6 +61,26 @@ _HEADING_MIN_LEN = 2
 _HEADING_MAX_LEN = 200
 
 
+def _ocr_pages(doc: fitz.Document) -> str:
+    """The text of a scanned PDF's first `ocr_document_max_pages` pages, read
+    with the OCR engine the image screen already loads. Pages render at 2x
+    (≈144 dpi): enough for body type, and the reader caps the long side anyway.
+    No headings come back — a scan states no font sizes — so the document
+    lands as one page of prose, which is honest about what was read."""
+    from app.services.text_detection import read_document_page
+
+    pages: list[str] = []
+    for index, page in enumerate(doc):
+        if index >= settings.ocr_document_max_pages:
+            break
+        text = read_document_page(page.get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png"))
+        if text is None:
+            return ""  # OCR unavailable: nothing to gain from the other pages
+        if text.strip():
+            pages.append(text.strip())
+    return "\n\n".join(pages)
+
+
 def parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
     """Extract text + headings + images from a PDF. Requires a text layer —
     image-only / scanned PDFs raise. Callers should check raw_text length and
@@ -81,14 +103,17 @@ def parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
                         sizes.append(round(size))
 
     if not sizes:
-        # PDF has no text layer (image-only / scanned). Caller decides how to surface.
+        # No text layer: a scan. Read its pages with OCR rather than refuse the
+        # upload; empty when OCR is off or unavailable, and the caller then
+        # says so (parse_document's minimum-text check).
         title = _pdf_title(doc)
+        raw_text = _ocr_pages(doc)
         doc.close()
         return ParsedDocument(
             source_kind="pdf",
             source_ref=filename,
             title=title,
-            raw_text="",
+            raw_text=raw_text,
             headings=[],
             images=[],
         )
@@ -403,8 +428,8 @@ def parse_document(file_bytes: bytes, filename: str) -> ParsedDocument:
     if not parsed.raw_text.strip() or len(parsed.raw_text.strip()) < 80:
         raise DocParseError(
             "Could not extract enough text content from that file. "
-            "If it's a scanned PDF, the generator needs a text layer — "
-            "OCR isn't supported. Paste the content into the URL tab's textarea instead.",
+            "A scanned PDF is read with OCR, but this one gave too little "
+            "readable text. Paste its content into the paste box instead.",
             status=422,
         )
 

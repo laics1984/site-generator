@@ -19,6 +19,7 @@ from typing import Literal
 import httpx
 
 from app.config import settings
+from app.services.image_styling import PhotoLuminance
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,12 @@ class PhotoResult:
     # genuine Pexels photo, so `source` can't distinguish it — but it carries no
     # subject, which changes how a hero may be composed around it.
     is_abstract: bool = False
+    # How bright the photo is where (services/image_sampling), when already
+    # known — a placeholder knows its own colour, and a scraped background slot
+    # was read on resolve. Otherwise measured on demand by the one caller that
+    # needs it: whoever paints the photo behind copy
+    # (ImageResolver.photo_luminance).
+    luminance_map: PhotoLuminance | None = None
 
     @property
     def attribution(self) -> str | None:

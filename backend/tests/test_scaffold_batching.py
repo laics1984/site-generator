@@ -87,7 +87,10 @@ def test_measured_fixed_envelope_shrinks_the_budget():
         _scaffold("b", ["hero", "cta"]),
         _scaffold("c", ["hero", "cta"]),
     ]
-    num_ctx = 8192
+    # Roomy enough that the default guess fits every stub in one batch: at
+    # 8192 the measured system prompt alone left the default case one page
+    # per batch too, and the comparison stopped testing the envelope.
+    num_ctx = 16384
     default_batches = planner._build_batches(scaffolds, None, num_ctx)
     # Leave room for barely one page stub beyond the system prompt.
     huge = (

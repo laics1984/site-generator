@@ -87,6 +87,7 @@ from app.services.design_director import (
     compose_design_manifest,
     demote_self_chrome_header,
     record_manifest_choices,
+    report_and_record_fingerprint,
 )
 from app.services.hero_director import (
     IMAGELESS_HERO_IDS,
@@ -109,45 +110,47 @@ from app.services.section_content import (
     _SURFACE_BG,
     Band,
     SectionVisualInput,
-    _composite,
-    _has_opaque_gradient,
     _has_real_photo,
-    _parse_color,
     apply_about_zigzag,
-    apply_childcare_heading_colors,
-    apply_childcare_pastel_rhythm,
+    apply_band_tints,
     apply_luminance_rhythm,
     apply_section_rhythm,
+    apply_section_title_inks,
     enforce_fill_contrast,
     polish_inset_panels,
     assign_visual_policies,
     block_to_section,
     enforce_text_contrast,
     hero_scroll_anchor,
+    band_of_surface,
+    painted_band,
+    painted_surface_of,
     section_visual_input_for,
     style_whatsapp_links,
+    surface_of,
 )
 from app.services.template_filler import PhotoComposition, fill_template
 from app.services.image_styling import (
     _split_layers,
-    band_for_color,
     edge_fade_gradient,
+    HeroAnchor,
+    PhotoLuminance,
     is_edge_fade_layer,
     photo_background,
+    photo_surface_hex,
     washed_photo_background,
     washed_surface_hex,
 )
 from app.services.theme import (
     _adjust_lightness,
     _contrast,
-    _ensure_contrast_against,
-    _hex_to_rgb,
-    _rgb_to_hex,
     band_colors,
-    build_theme,
     color_family_name,
-    resolve_color_scheme,
+    ink_css,
+    ink_on,
+    light_ink,
 )
+from app.services.design_direction import ContentProfile
 from app.services.design_schemes import (
     NEUTRAL_SCHEME,
     DesignScheme,
@@ -165,6 +168,7 @@ from app.services.style_tokens import (
     _hairline,
     _muted,
     apply_section_decoration,
+    band_tints,
     brand_ink,
     emphasis_ink,
     eyebrow_styles,
@@ -173,6 +177,7 @@ from app.services.style_tokens import (
     make_style_tokens,
     meta_ink,
     mesh_gradient,
+    section_title_inks,
     section_background_image,
     shadow,
     type_ramp_for,
@@ -198,7 +203,7 @@ class RenderContext:
     theme: ThemeTokens
     resolver: ImageResolver
     styles: StyleTokens
-    industry: str | None = None  # site industry — steers per-industry render passes (e.g. childcare hero colours)
+    industry: str | None = None  # site industry — feeds template gates (catalog `industries`) and imagery queries
     section_index: int = 0  # incremented as we lay sections down — drives rotation
     current_page_slug: str | None = None  # slug of the page being rendered
     current_parent_slug: str | None = None  # set when rendering a sub-page (for breadcrumbs)
@@ -223,6 +228,10 @@ class RenderContext:
     # can reuse its parent's exact hero instead of re-resolving one. Reset per
     # block; None for non-hero blocks or when served from cache.
     resolved_hero_photo: tuple[PhotoResult | None, PhotoResult | None, str] | None = None
+    # The layout family (catalog `layoutVariant`) of the section just built on
+    # this page, so the next one can avoid repeating it (section_content.
+    # _rhythm_alternative). A RenderContext is per page, so it starts empty.
+    previous_layout_family: str | None = None
 
 
 # --- generation-time modernization pass -----------------------------------------
@@ -353,6 +362,7 @@ def _walk_modernize(
     *,
     plan: _ModernizePlan,
     headings: list[tuple[BuilderElement, float]],
+    surface: str | None = None,
 ) -> None:
     styles = node.styles
     name = (node.name or "").strip()
@@ -380,10 +390,16 @@ def _walk_modernize(
             styles["fontWeight"] = plan.scheme.heading_weight
         # The catalogue names its section labels "Eyebrow" on 44 nodes, so the
         # scheme's treatment reaches the templated path through the same name
-        # the alignment and childcare passes already key on. "Sticker Eyebrow"
+        # the alignment and band passes already key on. "Sticker Eyebrow"
         # is a deliberate one-off variant and is left alone.
         if name == "Eyebrow" and plan.scheme.eyebrow_treatment != "inherit":
             styles.update(plan.eyebrow)
+            # The treatment's ink is the accent for the PAGE. On a section that
+            # paints its own surface (a photo hero, a gradient band) no later
+            # pass may recolour a brand ink, so it is chosen for that surface
+            # here — a page-tuned red chip on a photo hero measured 1.2:1.
+            if surface is not None:
+                styles["color"] = emphasis_ink(plan.theme, surface)
 
     elif (
         node.type in ("container", "2Col", "3Col")
@@ -396,16 +412,22 @@ def _walk_modernize(
         and any(k in styles for k in ("borderRadius", "border", "backgroundColor"))
     ):
         _modernize_card(styles, plan)
+        # A surfaceless card (the flat and outline treatments) states that it
+        # carries no texture either. Every renderer resolves an unparseable fill
+        # — `transparent` included — to white, reads that as a plain page band
+        # and paints the theme's grain/mesh onto the card; with the catalogue's
+        # `backgroundRepeat: no-repeat` that is one grey tile behind the copy.
+        # Same one declarative line the floating pill's bar carries.
+        if styles.get("backgroundColor") == "transparent":
+            node.backgroundTexture = "flat"
 
     content = node.content
     if isinstance(content, list):
         for child in content:
-            _walk_modernize(child, plan=plan, headings=headings)
+            _walk_modernize(child, plan=plan, headings=headings, surface=surface)
 
 
-def modernize_sections(
-    sections: list[BuilderElement], theme: ThemeTokens, industry: str | None = None
-) -> None:
+def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> None:
     """Apply per-mood 2025/26 treatments to an assembled page's section list,
     in place. Idempotent: skips already-fluid type and sections that already
     carry a background image."""
@@ -433,7 +455,7 @@ def modernize_sections(
     # flattens them as a safety net) — the accent then lands on a non-neighbour
     # band instead of being textured now and stripped later.
     divider_neighbours = _shaped_divider_neighbours(
-        sections, getattr(theme, "mood", None), industry, scheme
+        sections, getattr(theme, "mood", None), scheme
     )
     decorated = False
     for idx, section in enumerate(sections):
@@ -466,6 +488,7 @@ def modernize_sections(
                 else _plan_without_glass(plan)
             ),
             headings=headings,
+            surface=painted_surface_of(section, theme),
         )
 
         # The mood's display face goes on the section's largest heading (its H1).
@@ -777,10 +800,6 @@ _DIVIDER_SHAPE_BY_MOOD: dict[str, str | None] = {
     "playful": "peak",
 }
 
-# Industry overrides mood: a childcare site must keep soft flowing seams
-# whatever mood the LLM picked (peak/slant read sharp; the brief wants curves).
-_DIVIDER_SHAPE_BY_INDUSTRY: dict[str, str | None] = {"childcare": "wave"}
-
 _DEFAULT_DIVIDER_COLOR = "var(--builder-page-background, #ffffff)"
 
 # The header's (and footer cta-banner's) primary CTA label, by industry —
@@ -788,34 +807,33 @@ _DEFAULT_DIVIDER_COLOR = "var(--builder-page-background, #ffffff)"
 # the generic "Get in touch" for every site. Falls back to "Get in touch" for
 # "other" and any industry without a sharper fit.
 _CTA_LABEL_BY_INDUSTRY: dict[str, str] = {
-    "restaurant": "Reserve a Table",
+    "restaurant": "Request a Table",
     "agency": "Start a Project",
     "saas": "Get Started",
-    "professional-services": "Schedule a Consultation",
-    "ecommerce": "Shop Now",
-    "consultancy": "Book a Consultation",
+    "professional-services": "Request a Consultation",
+    "ecommerce": "Enquire About Products",
+    "consultancy": "Request a Consultation",
     "nonprofit": "Get Involved",
-    "childcare": "Schedule a Tour",
+    "childcare": "Request a Tour",
+    "home-services": "Get a Free Quote",
+    "health-wellness": "Book an Appointment",
+    "real-estate": "Book a Viewing",
 }
 
 
 def _divider_shape(
     mood: BrandMood | None,
-    industry: str | None,
     scheme: DesignScheme | None = None,
 ) -> str | None:
     """The shaped-edge to use for this site.
 
-    Precedence: the industry's signature shape (a researched brief — childcare
-    keeps soft seams whatever else is chosen) → the design scheme's declared
-    shape → the mood's default. ``None`` means no divider, and a scheme SAYING
-    ``None`` is a real choice, distinct from the ``"inherit"`` sentinel that
-    means "let the mood decide" — which is why the check is against the
-    sentinel rather than falsiness.
+    Precedence: the design scheme's declared shape → the mood's default. No
+    industry pins a shape any more — childcare once forced a wave on every
+    school; a wave is now the voice of the schemes that choose it. ``None``
+    means no divider, and a scheme SAYING ``None`` is a real choice, distinct
+    from the ``"inherit"`` sentinel that means "let the mood decide" — which is
+    why the check is against the sentinel rather than falsiness.
     """
-    norm = (industry or "").strip().lower()
-    if norm in _DIVIDER_SHAPE_BY_INDUSTRY:
-        return _DIVIDER_SHAPE_BY_INDUSTRY[norm]
     if scheme is not None and scheme.divider_shape != "inherit":
         return scheme.divider_shape
     return _DIVIDER_SHAPE_BY_MOOD.get(mood or "modern")
@@ -884,12 +902,11 @@ def _boundary_edge(
 def _shaped_divider_plan(
     sections: list[BuilderElement],
     mood: BrandMood | None,
-    industry: str | None = None,
     scheme: DesignScheme | None = None,
 ) -> list[tuple[int, str, int]]:
     """The shaped-divider boundaries a page will get: ``(carrier_index, side,
     revealed_index)`` where side is "bottom"/"top". Empty when the resolved
-    shape (industry override, else mood) is None or there are fewer than two
+    shape (scheme, else mood) is None or there are fewer than two
     sections.
 
     Candidate boundaries are still the hero→content and content→CTA handoffs;
@@ -900,7 +917,7 @@ def _shaped_divider_plan(
     Single source of truth for both apply_section_dividers and the modernize
     pass's "keep divider neighbours flat" rule, so the two never disagree about
     which sections border a shaped seam."""
-    shape = _divider_shape(mood, industry, scheme)
+    shape = _divider_shape(mood, scheme)
     if shape is None or len(sections) < 2:
         return []
 
@@ -933,13 +950,12 @@ def _shaped_divider_plan(
 def _shaped_divider_neighbours(
     sections: list[BuilderElement],
     mood: BrandMood | None,
-    industry: str | None = None,
     scheme: DesignScheme | None = None,
 ) -> set[int]:
     """Indices of every section that will border a shaped divider (the section
     carrying the edge plus the one it reveals)."""
     out: set[int] = set()
-    for carrier, _side, revealed in _shaped_divider_plan(sections, mood, industry, scheme):
+    for carrier, _side, revealed in _shaped_divider_plan(sections, mood, scheme):
         out.add(carrier)
         out.add(revealed)
     return out
@@ -948,7 +964,6 @@ def _shaped_divider_neighbours(
 def apply_section_dividers(
     sections: list[BuilderElement],
     mood: BrandMood | None,
-    industry: str | None = None,
     scheme: DesignScheme | None = None,
 ) -> None:
     """Add a shaped edge at the hero→content and content→CTA handoffs — the two
@@ -965,7 +980,7 @@ def apply_section_dividers(
     a flat band and put the edge on the picture side; the flatten calls here are
     the enforcing safety net for the decorative layer modernize_sections may
     have added since. Mutates in place."""
-    shape = _divider_shape(mood, industry, scheme)
+    shape = _divider_shape(mood, scheme)
     # Height is the scheme's only other say here. Omitting it (the neutral case)
     # leaves the field absent so every renderer keeps its per-shape default,
     # which is what every site built before schemes existed carries.
@@ -974,7 +989,7 @@ def apply_section_dividers(
         if scheme is not None and scheme.divider_height is not None
         else None
     )
-    for carrier, side, revealed in _shaped_divider_plan(sections, mood, industry, scheme):
+    for carrier, side, revealed in _shaped_divider_plan(sections, mood, scheme):
         color = _section_edge_color(sections[revealed])
         if color is None:
             continue  # unreachable via the plan; never guess a fill
@@ -1038,7 +1053,7 @@ def retune_photo_edge_fades(sections: list[BuilderElement], theme: ThemeTokens) 
     background)` so a hero doesn't stop on a ruled horizontal line. That layer
     is written while the section is being built, before the page is assembled,
     so it cannot know what comes next — and it is wrong whenever the next band
-    isn't the page background. Against a dark band or a childcare pastel it
+    isn't the page background. Against a dark band or a multi-tint band it
     paints a pale haze between the photo and the section below: the "extra
     background colour" seam.
 
@@ -1204,7 +1219,7 @@ def _flatten_to_solid_band(section: BuilderElement, theme: ThemeTokens) -> None:
                 styles.pop(key, None)
         if is_root:
             styles["backgroundColor"] = bg
-            styles["color"] = text
+            styles["color"] = ink_css(theme.palette, text)
         el.styles = styles
         for child in _children(el):
             strip(child, is_root=False)
@@ -1551,31 +1566,27 @@ def _band_class_for(el: BuilderElement, theme: ThemeTokens) -> str:
 
     Read off the section's FINAL styles rather than its `SectionBandPlan.band`:
     that plan leaves `band is None` for every non-participant, and five later
-    passes (section rhythm, modernize, gradient caps, childcare pastels, edge
+    passes (section rhythm, modernize, gradient caps, band tints, edge
     fades) rewrite `backgroundColor` after it runs. The final styles are the
     only value that matches what the visitor — and the floating pill hovering
     over this section — actually sees.
     """
-    styles = el.styles or {}
     # A full-bleed photo hero carries a darkening legibility scrim; that scrim,
     # not the backgroundColor underneath it, is the surface the header sits on.
     if getattr(el, "headerOverlaySafe", None) is True:
         return _BAND_CLASSES["dark"]
-    # Same rule as enforce_text_contrast: a photo or an opaque gradient paints
-    # over whatever backgroundColor the node also declares, and the generator
-    # always casts those darker for white ink.
-    if _has_real_photo(styles) or _has_opaque_gradient(styles):
-        return _BAND_CLASSES["dark"]
-    parsed = _parse_color(styles.get("backgroundColor"), theme) or _parse_color(
-        styles.get("background"), theme
-    )
-    page_rgb = _hex_to_rgb(theme.palette.background)
-    if parsed is not None:
-        rgb, alpha = parsed
-        if alpha < 0.999:
-            rgb = _composite(rgb, alpha, page_rgb)
-        return _BAND_CLASSES[band_for_color(_rgb_to_hex(*rgb))]
-    return _BAND_CLASSES[band_for_color(theme.palette.background)]
+    # The same surface the copy is inked for (`surface_of`: a measured photo, a
+    # gradient's ramp, a `background` shorthand over the colour it resets), by
+    # the same rule (`band_of_surface`), so a marker can never call a light
+    # template gradient "dark" again. A photo nobody measured keeps the old
+    # assumption: the generator casts those dark.
+    surface = surface_of(el, theme)
+    if surface is None:
+        styles = el.styles or {}
+        if _has_real_photo(styles):
+            return _BAND_CLASSES["dark"]
+        surface = theme.palette.background
+    return _BAND_CLASSES[band_of_surface(surface, theme)]
 
 
 def _stamp_band_markers(elements: list[BuilderElement], theme: ThemeTokens) -> None:
@@ -1675,8 +1686,6 @@ def _section(
     *,
     name: str,
     surface_override: str | None = None,
-    background_image: str | None = None,
-    overlay: str | None = None,
     extra_styles: dict[str, Any] | None = None,
     inverted: bool = False,
 ) -> BuilderElement:
@@ -1709,16 +1718,8 @@ def _section(
         "fontFamily": ctx.theme.typography.body_font,
         **(extra_styles or {}),
     }
-    if background_image:
-        layers = []
-        if overlay:
-            layers.append(f"linear-gradient({overlay}, {overlay})")
-        layers.append(f"url('{background_image}')")
-        styles["backgroundImage"] = ", ".join(layers)
-        styles["backgroundSize"] = "cover"
-        styles["backgroundPosition"] = "center"
-        styles["backgroundRepeat"] = "no-repeat"
-    # Decorative mesh/grain is applied centrally in modernize_sections (the
+    # A photo section paints through `extra_styles` (`_photo_backdrop`) and
+    # records the surface it leaves. Decorative mesh/grain is applied centrally in modernize_sections (the
     # single authority for the one-accent-per-page clean-UI policy), which runs
     # over the assembled tree — so this builder no longer decorates surface
     # bands itself (that produced texture on every surface section).
@@ -1779,37 +1780,52 @@ def _image_from_photo(
 # --- section builders -----------------------------------------------------------
 
 
-# Effective backdrop for contrast math on photo heroes: the legibility scrim
-# rgba(15,23,42,0.55) composited over a mid-grey photo (#808080). Real photos
-# vary, but text also carries a shadow; this target keeps every ink very light
-# without demanding the impossible (even pure white only reaches ~4:1 against
-# the scrim over a fully white photo).
-_SCRIM_COMPOSITE_BG = "#424651"
-
-# Childcare hero title inks: bright, cheerful, but all LIGHT enough to read on
-# the neutral scrim with the hero's text-shadow — so the title is multi-coloured
-# (butter/coral/sky/mint/lavender) instead of just white + the one theme hue.
-# Order is (lead line, accent phrase, eyebrow); the rest cycle for extra lines.
-_CHILDCARE_HERO_INKS: tuple[str, ...] = (
-    "#FDE68A",  # butter — lead line
-    "#FCA5A5",  # coral — accent phrase
-    "#BAE6FD",  # sky — eyebrow
-    "#A7F3D0",  # mint
-    "#DDD6FE",  # lavender
-)
-
-# A neutral (not theme-tinted) ink for childcare photo heroes: the brief wants
-# the real photo colours, not a brand-colour wash. Fed to photo_background as
-# BOTH ends of the cast, so the overlay darkens without tinting, and the layer
-# stack (grain, vignette, edge fade, framing) is identical to every other hero.
-_CHILDCARE_HERO_INK = "#0f172a"
+# The cast for a scheme whose photography keeps its own colours
+# (`DesignScheme.photo_cast == "neutral"`): fed to photo_background as BOTH ends
+# of the cast, so the overlay darkens without tinting, and the layer stack
+# (grain, vignette, edge fade, framing) is identical to every other hero.
+_NEUTRAL_PHOTO_CAST = "#0f172a"
 
 # How much of the whole-frame brand cast + vignette survives on the homepage's
 # full-bleed hero (see the `is_homepage` block in block_to_element). The text
-# scrim is untouched — legibility doesn't depend on this layer — so this only
-# lets the resolved photo's own colours read through more clearly on the page
-# that matters most for a first impression.
+# scrim is solved for the copy either way — a lighter cast just means the scrim
+# makes up the difference behind the copy — so this only lets the resolved
+# photo's own colours read through more clearly on the page that matters most
+# for a first impression.
 _HOMEPAGE_HERO_WASH_SCALE = 0.45
+
+
+async def _photo_backdrop(
+    photo: PhotoResult,
+    ctx: RenderContext,
+    *,
+    anchor: HeroAnchor = "center",
+    cast_hex: str | None = None,
+    wash_alpha_scale: float = 1.0,
+) -> tuple[dict[str, str], str]:
+    """(background styles, surface) for painting `photo` behind copy.
+
+    The photo is measured (`ImageResolver.photo_luminance`), its copy scrim
+    solved for the palette's light ink, and the surface that leaves behind the
+    copy returned for the painter to record (`BuilderElement.paint_surface`) —
+    the ink pass reads that, never an assumed backdrop. The catalog filler does
+    the same with the same two functions; this is the path for everything that
+    paints a photo outside it. ``cast_hex`` replaces both ends of the brand cast
+    (a neutral-cast scheme's documentary treatment)."""
+    palette = ctx.theme.palette
+    scrim = cast_hex or palette.secondary
+    luminance = await ctx.resolver.photo_luminance(photo)
+    ink = light_ink(palette)
+    styles = photo_background(
+        photo.avg_color, photo.url, scrim, cast_hex or palette.primary,
+        anchor=anchor, focal_y=photo.focal_y, page_bg_hex=palette.background,
+        wash_alpha_scale=wash_alpha_scale, luminance=luminance, ink_hex=ink,
+    )
+    surface = photo_surface_hex(
+        photo.avg_color, scrim, anchor=anchor, luminance=luminance, ink_hex=ink,
+        wash_alpha_scale=wash_alpha_scale,
+    )
+    return styles, surface
 
 
 def _split_headline(headline: str, accent: str | None) -> tuple[str, str] | None:
@@ -1833,8 +1849,9 @@ def _split_headline(headline: str, accent: str | None) -> tuple[str, str] | None
 
 def _midpoint_word_split(headline: str) -> tuple[str, str] | None:
     """Split `headline` into two halves at the space nearest the middle — used to
-    two-tone a childcare title when no explicit accent phrase was given. None when
-    there's no interior space to break on (a single word stays one colour)."""
+    two-tone a title (a scheme's `hero_title_accent`) when no explicit accent
+    phrase was given. None when there's no interior space to break on (a single
+    word stays one colour)."""
     head = " ".join((headline or "").split())
     spaces = [i for i, ch in enumerate(head) if ch == " "]
     if not spaces:
@@ -1844,11 +1861,10 @@ def _midpoint_word_split(headline: str) -> tuple[str, str] | None:
     return head[:at], head[at + 1:]
 
 
-def _hero_accent_styles(base: dict, ctx: RenderContext, *, on_photo: bool) -> dict:
+def _hero_accent_styles(base: dict, ctx: RenderContext, *, surface: str) -> dict:
     """Styles for the highlighted headline line: brand accent colour lifted to
-    AA contrast against the actual surface; luxury/editorial moods get the 2026
-    italic display treatment (the display serif is already the heading font)."""
-    surface = _SCRIM_COMPOSITE_BG if on_photo else ctx.theme.palette.background
+    AA contrast against the surface it sits on; luxury/editorial moods get the
+    2026 italic display treatment (the display serif is already the heading font)."""
     color = _accent_ink_for(surface, ctx.theme.palette.accent)
     styles = {**base, "color": color}
     if getattr(ctx.theme, "mood", None) in ("luxury", "editorial"):
@@ -1862,7 +1878,7 @@ def _headline_lines(
     *,
     lead_styles: dict,
     mobile: dict | None,
-    on_photo: bool,
+    surface: str,
     centered: bool = False,
 ) -> BuilderElement:
     """The hero headline: a single text element, or — when headline_accent
@@ -1874,7 +1890,7 @@ def _headline_lines(
     if split is None:
         return _text(block.headline, name="Headline", styles=lead_styles, mobile=mobile)
     lead, accent = split
-    accent_styles = _hero_accent_styles(lead_styles, ctx, on_photo=on_photo)
+    accent_styles = _hero_accent_styles(lead_styles, ctx, surface=surface)
     container_styles: dict = {"flexDirection": "column", "gap": "0px", "width": "100%"}
     if centered:
         container_styles["alignItems"] = "center"
@@ -1886,36 +1902,6 @@ def _headline_lines(
         name="Headline group",
         styles=container_styles,
     )
-
-
-def _photo_hero_ink(ctx: RenderContext) -> str:
-    """Near-white headline ink for photo heroes, tinted by the brand instead of
-    hardcoded #ffffff: the palette surface lifted until it clears the scrim
-    backdrop by a wide margin (light-scheme surfaces usually already do)."""
-    return _ensure_contrast_against(
-        _SCRIM_COMPOSITE_BG, ctx.theme.palette.surface, min_ratio=8.0
-    )
-
-
-def _mix_hex(a: str, b: str, t: float = 0.5) -> str:
-    ra, ga, ba = _hex_to_rgb(a)
-    rb, gb, bb = _hex_to_rgb(b)
-    return _rgb_to_hex(
-        round(ra + (rb - ra) * t), round(ga + (gb - ga) * t), round(ba + (bb - ba) * t)
-    )
-
-
-def _hero_surface_for_template(template_id: str, ctx: RenderContext) -> str:
-    """The colour the hero's text actually sits on, per template family — the
-    contrast target for accent/ink corrections."""
-    if template_id in _FULLBLEED_HERO_IDS:
-        return _SCRIM_COMPOSITE_BG  # photo behind a dark scrim
-    if template_id == "hero-gradient":
-        # The catalog gradient runs secondary → primary; the centred heading
-        # sits around the midpoint. Targeting primary alone over-lightens the
-        # accent into near-white (losing the highlight).
-        return _mix_hex(ctx.theme.palette.secondary, ctx.theme.palette.primary)
-    return ctx.theme.palette.background  # split/editorial/minimal sit on page bg
 
 
 def _find_text_by_inner(
@@ -2011,6 +1997,45 @@ def _merge_mobile(element: BuilderElement, mobile: dict[str, str]) -> None:
     responsive.mobile = {**(responsive.mobile or {}), **mobile}
 
 
+def apply_mobile_usability(elements: list[BuilderElement]) -> None:
+    """Shared safety net for catalog and fallback text/buttons, including chrome.
+
+    Keeps authored tablet rules and large touch targets. Only styled leaf buttons
+    get button sizing; ordinary inline links and card containers keep their layout.
+    """
+    for element in elements:
+        if isinstance(element.content, list):
+            apply_mobile_usability(element.content)
+            continue
+        content = element.content
+        if not isinstance(content, BuilderElementContent) or not content.innerText:
+            continue
+        styles = element.styles or {}
+        if element.type == "text":
+            # Long names, email addresses and unbroken words may wrap rather than
+            # forcing a narrow-screen column beyond the viewport.
+            styles.setdefault("overflowWrap", "anywhere")
+            element.styles = styles
+        is_button = (
+            element.type == "link"
+            and styles.get("display") in {"flex", "inline-flex"}
+            and any(key in styles for key in ("padding", "paddingTop", "minHeight", "backgroundColor"))
+        )
+        if not is_button:
+            continue
+        responsive = element.responsiveStyles
+        effective = {**styles, **(responsive.mobile or {} if responsive else {})}
+        minimum = _parse_px(effective.get("minHeight"))
+        mobile = {
+            "maxWidth": "100%", "boxSizing": "border-box",
+            "whiteSpace": "normal", "overflowWrap": "anywhere",
+            "textAlign": "center",
+        }
+        if minimum is not None or not effective.get("minHeight"):
+            mobile["minHeight"] = f"{max(44, minimum or 0):g}px"
+        _merge_mobile(element, mobile)
+
+
 def _apply_hero_typography(
     element: BuilderElement,
     block: HeroBlock,
@@ -2025,39 +2050,35 @@ def _apply_hero_typography(
       real surface; italic display treatment for luxury/editorial moods).
       Separate block-level text elements, NOT HTML in innerText — the builder
       editor renders innerText literally.
-    - Full-bleed photo heroes: headline ink becomes a brand-tinted near-white
-      (was hardcoded white in the catalog) and the eyebrow carries the lifted
-      brand accent, both AA against the scrim-composited backdrop.
-    - Childcare photo heroes: the title is multi-coloured instead — butter lead,
-      coral accent, sky eyebrow (all light, legible on the neutral scrim), and a
-      plain headline is split at its midpoint so it still carries two colours.
+    - Full-bleed photo heroes: the eyebrow carries the brand accent, lifted to
+      AA against the backdrop the photo's scrim actually leaves. The neutral
+      copy (headline, body) is the ink pass's: `enforce_text_contrast` gives it
+      the palette's ink for that same surface.
+    - A scheme with ``hero_title_accent`` two-tones the title even when the copy
+      named no accent phrase: a plain headline is split at its midpoint so it
+      still carries the brand's two colours. (This was childcare-only, in a
+      fixed butter/coral set; the inks are the site's own now.)
+
+    Every brand ink here is judged against the hero's MEASURED surface
+    (`surface_of`: the photo's solved scrim, the gradient's ramp, the split's
+    own fill) — never an assumed backdrop.
     """
-    surface = _hero_surface_for_template(template_id, ctx)
-    on_photo = template_id in _FULLBLEED_HERO_IDS
-    childcare = on_photo and ctx.industry == "childcare"
+    surface = surface_of(element, ctx.theme) or ctx.theme.palette.background
+    always_two_tone = bool(for_theme(ctx.theme).hero_title_accent)
 
-    lead_ink = _CHILDCARE_HERO_INKS[0] if childcare else _photo_hero_ink(ctx)
-    eyebrow_ink = (
-        _CHILDCARE_HERO_INKS[2]
-        if childcare
-        else _accent_ink_for(_SCRIM_COMPOSITE_BG, ctx.theme.palette.accent)
-    )
-
-    if on_photo:
-        found = _find_text_by_inner(element, block.headline)
+    if template_id in _FULLBLEED_HERO_IDS and block.eyebrow:
+        found = _find_text_by_inner(element, block.eyebrow)
         if found is not None:
             node, _, _ = found
-            node.styles = {**(node.styles or {}), "color": lead_ink}
-        if block.eyebrow:
-            found = _find_text_by_inner(element, block.eyebrow)
-            if found is not None:
-                node, _, _ = found
-                node.styles = {**(node.styles or {}), "color": eyebrow_ink}
+            node.styles = {
+                **(node.styles or {}),
+                "color": _accent_ink_for(surface, ctx.theme.palette.accent),
+            }
 
     split = _split_headline(block.headline, block.headline_accent)
-    if split is None and childcare:
-        # No explicit accent phrase → split the title so it still reads in two
-        # cheerful colours rather than one flat butter line.
+    if split is None and always_two_tone:
+        # No explicit accent phrase → split the title so it still reads in the
+        # brand's two colours rather than one flat line.
         split = _midpoint_word_split(block.headline)
     if split is None:
         return
@@ -2067,11 +2088,7 @@ def _apply_hero_typography(
     node, parent, index = found
     lead, accent = split
 
-    accent_color = (
-        _CHILDCARE_HERO_INKS[1]
-        if childcare
-        else _accent_ink_for(surface, ctx.theme.palette.accent)
-    )
+    accent_color = _accent_ink_for(surface, ctx.theme.palette.accent)
     accent_styles: dict[str, Any] = {**(node.styles or {}), "color": accent_color}
     if getattr(ctx.theme, "mood", None) in ("luxury", "editorial"):
         accent_styles["fontStyle"] = "italic"
@@ -2109,7 +2126,7 @@ async def _build_hero(block: HeroBlock, ctx: RenderContext) -> BuilderElement:
         alt_fallback=block.image_alt or block.headline,
     )
     if block.layout == "background":
-        return _build_hero_background(block, photo, ctx)
+        return await _build_hero_background(block, photo, ctx)
     return _build_hero_split(block, photo, ctx)
 
 
@@ -2126,7 +2143,7 @@ def _build_hero_split(
             ctx,
             lead_styles=s.heading_xl,
             mobile=s.heading_mobile,
-            on_photo=False,
+            surface=ctx.theme.palette.background,
         )
     )
     if block.subheadline:
@@ -2164,10 +2181,14 @@ def _build_hero_split(
     return _section(ctx, [_two_col(left, right)], name="Hero")
 
 
-def _build_hero_background(
+async def _build_hero_background(
     block: HeroBlock, photo: PhotoResult, ctx: RenderContext
 ) -> BuilderElement:
     s = ctx.styles
+    # Paint first: every ink below is the one for the surface the photo's
+    # solved scrim actually leaves behind the copy.
+    backdrop, surface = await _photo_backdrop(photo, ctx)
+    ink = ink_on(ctx.theme.palette, surface)
     inner: list[BuilderElement] = []
     if block.eyebrow:
         inner.append(
@@ -2177,11 +2198,8 @@ def _build_hero_background(
                 styles={
                     **s.eyebrow,
                     # The eyebrow is the accent voice on photo heroes — the
-                    # brand accent as a hue-true pastel, AA against the scrim
-                    # backdrop (was a flat near-white).
-                    "color": _accent_ink_for(
-                        _SCRIM_COMPOSITE_BG, ctx.theme.palette.accent
-                    ),
+                    # brand accent as a hue-true pastel, AA against the scrim.
+                    "color": _accent_ink_for(surface, ctx.theme.palette.accent),
                     "textAlign": "center",
                 },
             )
@@ -2192,13 +2210,12 @@ def _build_hero_background(
             ctx,
             lead_styles={
                 **s.heading_xl,
-                # Brand-tinted near-white instead of hardcoded #ffffff.
-                "color": _photo_hero_ink(ctx),
+                "color": ink_css(ctx.theme.palette, ink),
                 "textAlign": "center",
                 "textShadow": "0 2px 16px rgba(0,0,0,0.35)",
             },
             mobile={"fontSize": "36px"},
-            on_photo=True,
+            surface=surface,
             centered=True,
         )
     )
@@ -2209,7 +2226,7 @@ def _build_hero_background(
                 name="Subheadline",
                 styles={
                     **s.subhead,
-                    "color": "rgba(255,255,255,0.92)",
+                    "color": _hairline(ink, 0.92),
                     "textAlign": "center",
                     "marginLeft": "auto",
                     "marginRight": "auto",
@@ -2227,9 +2244,9 @@ def _build_hero_background(
                 ctx=ctx,
                 primary=False,
                 extra={
-                    "color": "#ffffff",
-                    "backgroundColor": "rgba(255,255,255,0.10)",
-                    "border": "1px solid rgba(255,255,255,0.45)",
+                    "color": ink_css(ctx.theme.palette, ink),
+                    "backgroundColor": _hairline(ink, 0.10),
+                    "border": f"1px solid {_hairline(ink, 0.45)}",
                 },
             )
         )
@@ -2246,13 +2263,12 @@ def _build_hero_background(
         )
     )
 
-    return _section(
+    section = _section(
         ctx,
         inner,
         name="Hero",
-        background_image=photo.url,
-        overlay="rgba(15, 23, 42, 0.55)",
         extra_styles={
+            **backdrop,
             "paddingTop": "140px",
             "paddingBottom": "140px",
             # Site-wide var so the builder's "Hero height" toggle (Styles tab)
@@ -2263,6 +2279,8 @@ def _build_hero_background(
             "justifyContent": "center",
         },
     )
+    section.paint_surface(surface)
+    return section
 
 
 async def _build_features(
@@ -2598,7 +2616,7 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
         block.background_query,
         intent="cta_bg",
         alt_fallback=block.headline,
-        # The result becomes `background_image` below — full-bleed, with this
+        # The result is painted behind the copy below — full-bleed, with this
         # block's headline drawn over it. That is a background slot in every
         # sense, so it has to declare itself one: slot_usage drives the
         # text-in-image screen (scraped AND stock) and the minimum long edge.
@@ -2606,6 +2624,10 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
         # builder with no guard against a photo that carries its own wording.
         slot_usage="background",
     )
+    # Paint first, so every ink below is the one for the surface the photo's
+    # solved scrim leaves behind the copy.
+    backdrop, surface = await _photo_backdrop(photo, ctx)
+    ink = ink_on(ctx.theme.palette, surface)
 
     children: list[BuilderElement] = [
         _text(
@@ -2613,9 +2635,7 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
             name="Headline",
             styles={
                 **s.heading_lg,
-                # Brand-tinted near-white over the CTA scrim (same ink as the
-                # photo hero) instead of hardcoded #ffffff.
-                "color": _photo_hero_ink(ctx),
+                "color": ink_css(ctx.theme.palette, ink),
                 "textAlign": "center",
                 "textShadow": "0 2px 16px rgba(0,0,0,0.35)",
             },
@@ -2629,7 +2649,7 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
                 name="Subheadline",
                 styles={
                     **s.subhead,
-                    "color": "rgba(255,255,255,0.92)",
+                    "color": _hairline(ink, 0.92),
                     "textAlign": "center",
                     "marginLeft": "auto",
                     "marginRight": "auto",
@@ -2644,9 +2664,12 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
                     block.cta_href,
                     ctx=ctx,
                     primary=True,
+                    # The button is filled with the copy's own ink, so it reads
+                    # as the strongest thing on the photo; its label is the
+                    # brand ink for that fill.
                     extra={
-                        "backgroundColor": "#ffffff",
-                        "color": brand_ink(ctx.theme, "#ffffff"),
+                        "backgroundColor": ink,
+                        "color": brand_ink(ctx.theme, ink),
                     },
                 )
             ],
@@ -2654,18 +2677,19 @@ async def _build_cta(block: CtaBlock, ctx: RenderContext) -> BuilderElement:
             styles={"flexDirection": "row", "justifyContent": "center"},
         )
     )
-    return _section(
+    section = _section(
         ctx,
         children,
         name="CTA",
-        background_image=photo.url,
-        overlay="rgba(15, 23, 42, 0.6)",
         extra_styles={
+            **backdrop,
             "alignItems": "center",
             "paddingTop": "120px",
             "paddingBottom": "120px",
         },
     )
+    section.paint_surface(surface)
+    return section
 
 
 async def _build_contact(
@@ -3207,12 +3231,18 @@ async def _build_gallery(block: GalleryBlock, ctx: RenderContext) -> BuilderElem
                         f"/{matched.slug}",
                         ctx=ctx,
                         primary=False,
+                        # A caption chip over a photo states its own surface
+                        # (the palette's ink neutral) and the ink for it — a
+                        # translucent chip's backdrop is whatever the photo is.
                         extra={
                             "position": "absolute",
                             "left": "16px",
                             "bottom": "16px",
-                            "backgroundColor": "rgba(0,0,0,0.55)",
-                            "color": "#ffffff",
+                            "backgroundColor": ctx.theme.palette.secondary,
+                            "color": ink_css(
+                                ctx.theme.palette,
+                                ink_on(ctx.theme.palette, ctx.theme.palette.secondary),
+                            ),
                             "padding": "8px 14px",
                             "borderRadius": f"{ctx.theme.buttons.radius}px",
                         },
@@ -4087,11 +4117,10 @@ def _apply_hero_washed_background(
     for and wrong the moment this repaints the section — in a DARK scheme the
     wash is the theme's near-black secondary, so headline, body and secondary
     button all shipped black on black. `enforce_text_contrast`, the pass that
-    exists to catch exactly that, cannot: a real photo in the fill means it
-    can't know the surface, so it hands the subtree back untouched. Here we DO
-    know it — we just painted it — so the surface is measured
-    (`washed_surface_hex`) and handed to the same pass rather than a second
-    colour rule growing beside it.
+    exists to catch exactly that, cannot read a photo off the styles — but we
+    just painted it, so the surface is measured (`washed_surface_hex`) and
+    recorded on the section, where that pass (and every other that asks
+    `surface_of`) reads it, rather than a second colour rule growing beside it.
     """
     scheme = getattr(ctx.theme, "color_scheme", "light")
     styles = dict(element.styles or {})
@@ -4107,16 +4136,15 @@ def _apply_hero_washed_background(
     styles["backgroundPosition"] = "center"
     styles["backgroundRepeat"] = "no-repeat"
     element.styles = styles
-    enforce_text_contrast(
-        [element],
-        ctx.theme,
-        surface=washed_surface_hex(
+    element.paint_surface(
+        washed_surface_hex(
             scheme=scheme,
             surface_hex=ctx.theme.palette.surface,
             secondary_hex=ctx.theme.palette.secondary,
             avg_hex=bg.avg_color,
-        ),
+        )
     )
+    enforce_text_contrast([element], ctx.theme)
 
 
 async def block_to_element(
@@ -4124,6 +4152,7 @@ async def block_to_element(
     ctx: RenderContext,
     *,
     is_homepage: bool = True,
+    conversion_hero: bool = False,
     hero_scroll_target_kind: str | None = None,
     explicit_template_id: str | None = None,
     hero_directive: HeroDirective | None = None,
@@ -4184,15 +4213,18 @@ async def block_to_element(
         mood=ctx.theme.mood,
         industry=ctx.industry,
         is_homepage=is_homepage,
+        conversion_hero=conversion_hero,
         hero_scroll_target_kind=hero_scroll_target_kind,
         explicit_id=explicit_template_id,
         variety_seed=ctx.variety_seed or None,
         # The scheme rides on the theme, so no new RenderContext field: the
         # style vocabulary already resolved it once for this site.
         layout_bias=(ctx.styles.scheme or NEUTRAL_SCHEME).layout_bias,
+        previous_family=ctx.previous_layout_family,
     )
     if mapped is not None:
         template, content = mapped
+        ctx.previous_layout_family = template.get("layoutVariant")
         intent = _IMAGE_INTENT.get(block.kind, "generic")
         # These kinds render their catalog image slots as in-flow <img>-style
         # visuals — a photo the source used as a CSS background must not be
@@ -4216,6 +4248,11 @@ async def block_to_element(
             getattr(block, "image_url", None) if block.kind in {"about", "cta"} else None
         )
 
+        # Every photo this section resolved, by URL, so the filler's
+        # measurement of a photo it paints behind copy reaches the result that
+        # already knows its own luminance (a placeholder) instead of re-reading.
+        resolved: dict[str, PhotoResult] = {}
+
         async def resolve_image(query: str) -> tuple[str, str | None]:
             # Reuse the hero photo already resolved by the policy above; for every
             # other slot, resolve normally.
@@ -4237,7 +4274,11 @@ async def block_to_element(
             # items) don't override the dominant one.
             if ctx.section_image_band is None and photo.band is not None:
                 ctx.section_image_band = photo.band
+            resolved[photo.url] = photo
             return photo.url, photo.avg_color
+
+        async def measure_photo(url: str) -> PhotoLuminance | None:
+            return await ctx.resolver.photo_luminance(resolved.get(url) or url)
 
         element = await fill_template(
             template,
@@ -4246,14 +4287,17 @@ async def block_to_element(
             # Empty content: the builder's contact-form renderer applies its own
             # field defaults, so the generator need not embed them.
             content_factories={"contactFormDefault": lambda: {}},
-            # Brand-tinted, luminance-adaptive overlay for photo backgrounds.
+            # Brand-tinted overlay for photo backgrounds, its copy scrim solved
+            # for the photo as measured and the light ink the copy will wear.
             theme={
                 "primary": ctx.theme.palette.primary,
                 "secondary": ctx.theme.palette.secondary,
                 # Lets a full-bleed photo dissolve into the page below it
                 # instead of ending on a ruled line.
                 "background": ctx.theme.palette.background,
+                "ink": light_ink(ctx.theme.palette),
             },
+            measure_photo=measure_photo,
             # Art-direct the photo treatment: which way the scrim runs off the
             # copy, and where in the frame the subject is. Only for the
             # full-bleed hero — a bento tile or a CTA band is not composed
@@ -4270,57 +4314,50 @@ async def block_to_element(
         # Split hero: wash the whole section with the abstract theme background.
         if hero_washed_bg is not None:
             _apply_hero_washed_background(element, hero_washed_bg, ctx)
-        # Childcare: drop the brand-colour tint over the hero photo — the brief
-        # wants the real image colours, not a theme wash. Rebuild the stack with
-        # a neutral ink instead of the palette's, so the photo keeps its own
-        # colours while grain, vignette, edge fade and framing all survive.
-        # (Replacing backgroundImage outright would leave the other three layer
-        # lists describing layers that no longer exist.)
+        # A neutral-cast scheme drops the brand-colour tint over the hero photo:
+        # documentary photography keeps its own colours, not a theme wash.
+        # Rebuild the stack with a neutral ink instead of the palette's, so
+        # grain, vignette, edge fade and framing all survive. (Replacing
+        # backgroundImage outright would leave the other three layer lists
+        # describing layers that no longer exist.)
+        neutral_cast = for_theme(ctx.theme).photo_cast == "neutral"
+        hero_anchor: HeroAnchor = hero_comp.anchor if hero_comp else "center"
         if (
             block.kind == "hero"
-            and ctx.industry == "childcare"
+            and neutral_cast
             and template["id"] in _FULLBLEED_HERO_IDS
             and hero_photo is not None
         ):
-            element.styles = {
-                **(element.styles or {}),
-                **photo_background(
-                    hero_photo.avg_color, hero_photo.url,
-                    _CHILDCARE_HERO_INK, _CHILDCARE_HERO_INK,
-                    anchor=hero_comp.anchor if hero_comp else "center",
-                    focal_y=hero_photo.focal_y,
-                    page_bg_hex=ctx.theme.palette.background,
-                ),
-            }
+            backdrop, surface = await _photo_backdrop(
+                hero_photo, ctx, anchor=hero_anchor, cast_hex=_NEUTRAL_PHOTO_CAST
+            )
+            element.styles = {**(element.styles or {}), **backdrop}
+            element.paint_surface(surface)
         # Homepage: the first-impression hero deserves a vivid photo, not a
         # slate-tinted one. The whole-frame brand cast + vignette get lightened
-        # (never the text scrim, which is what actually buys copy contrast) so
-        # a genuinely attractive resolved photo reads as a photo. Childcare
-        # already gets an even stronger treatment above, so it's excluded here.
+        # so a genuinely attractive resolved photo reads as a photo; the copy
+        # scrim is solved for the copy either way. A neutral cast already gets
+        # an even stronger treatment above, so it's excluded.
         if (
             block.kind == "hero"
             and is_homepage
-            and ctx.industry != "childcare"
+            and not neutral_cast
             and template["id"] in _FULLBLEED_HERO_IDS
             and hero_photo is not None
             and hero_photo.source in _GENUINE_PHOTO_SOURCES
         ):
-            element.styles = {
-                **(element.styles or {}),
-                **photo_background(
-                    hero_photo.avg_color, hero_photo.url,
-                    ctx.theme.palette.secondary, ctx.theme.palette.primary,
-                    anchor=hero_comp.anchor if hero_comp else "center",
-                    focal_y=hero_photo.focal_y,
-                    page_bg_hex=ctx.theme.palette.background,
-                    wash_alpha_scale=_HOMEPAGE_HERO_WASH_SCALE,
-                ),
-            }
+            backdrop, surface = await _photo_backdrop(
+                hero_photo, ctx, anchor=hero_anchor,
+                wash_alpha_scale=_HOMEPAGE_HERO_WASH_SCALE,
+            )
+            element.styles = {**(element.styles or {}), **backdrop}
+            element.paint_surface(surface)
         # Composition: anchor the copy block and let the scrim (built above)
         # run off that edge. Same template, different photograph per page.
         if block.kind == "hero" and hero_comp is not None and template["id"] in _FULLBLEED_HERO_IDS:
             _apply_hero_composition(element, hero_comp)
-        # Hero typography pass: accent headline line + photo-hero ink retint.
+        # Hero typography pass: accent headline line + the photo hero's accent
+        # eyebrow, both against the surface the hero measured above.
         if block.kind == "hero":
             _apply_hero_typography(element, block, ctx, template_id=template["id"])
         # Full-bleed heroes carry a dark legibility overlay, so a transparent
@@ -4627,6 +4664,15 @@ def _resolve_block_cta_hrefs(
             setattr(target, field, resolved)
             if resolved is None and hasattr(target, label_field):
                 setattr(target, label_field, "")
+            elif resolved == contact_href and label:
+                # A fallback enquiry destination cannot complete direct payment
+                # or booking. Preserve requests/quotes; soften only direct claims.
+                if re.match(r"^(book|reserve|schedule)\b", label, re.I):
+                    setattr(target, label_field, re.sub(
+                        r"^(book|reserve|schedule)\b", "Request", label, flags=re.I,
+                    ))
+                elif re.match(r"^(buy|pay|checkout|shop now)\b", label, re.I):
+                    setattr(target, label_field, "Enquire")
 
 
 # Height of a hero prepended to a page outside the plan (privacy / terms). The
@@ -4755,41 +4801,25 @@ async def plan_to_site(
         mood="modern",
     )
     if theme is None:
-        seed = (
-            effective_brand.extracted_palette[0]
-            if effective_brand.extracted_palette
-            else plan.primary_color_hint
-        )
-        from app.services.diversity import recent_choices
+        # The same direction service the generate endpoints use, without the
+        # model's pick: this path serves tests, scripts and callers that hand
+        # over no theme, and none of them should spend a round-trip on one.
+        from app.services.design_direction import resolve_direction
 
-        theme = build_theme(
-            seed,
+        direction = await resolve_direction(
+            brand_name=effective_brand.name or plan.site_name,
             mood=effective_brand.mood or "modern",
-            # Stable per-site seed → same-mood sites get distinct-but-on-brand
-            # type from the mood's font pool, while one brand stays idempotent.
-            font_seed=effective_brand.name,
-            # Industry steers the pick toward the best-fitting pairing in the pool
-            # (e.g. a wellness site → calmer faces); the seed only breaks ties.
             industry=plan.industry_category,
-            # "auto": brands with a real logo hue keep the brand-driven Tailwind
-            # snap; brands with no usable hue get a curated industry palette
-            # instead of the generic-blue fallback.
-            palette_mode="auto",
-            color_scheme=resolve_color_scheme(
-                None,
-                effective_brand.color_scheme,
-                effective_brand.logo_is_light,
-                industry=plan.industry_category,
+            logo_hex=(
+                effective_brand.extracted_palette[0]
+                if effective_brand.extracted_palette
+                else plan.primary_color_hint
             ),
-            # Diversity: steer the curated pick off palettes recent sites used
-            # (rotates within the fit group only; fail-open empty set).
-            avoid_palettes=await recent_choices(
-                "palette", site_key=effective_brand.name or plan.site_name
-            ),
-            avoid_schemes=await recent_choices(
-                "scheme", site_key=effective_brand.name or plan.site_name
-            ),
+            brand_color_scheme=effective_brand.color_scheme,
+            logo_is_light=effective_brand.logo_is_light,
+            use_model=False,
         )
+        theme = direction.theme
 
     # Design manifest: the recorded chrome/decision layer composed BEFORE any
     # page is built (see services/design_director.py). Disabled → the default
@@ -4804,9 +4834,10 @@ async def plan_to_site(
             color_scheme=getattr(theme, "color_scheme", "light"),
             header_override=header_override,
             footer_override=footer_override,
-            # The scheme was resolved during build_theme and rides on the theme;
-            # its chrome affinity reorders the fit list rather than adding to it.
+            # The scheme was resolved by the design direction and rides on the
+            # theme; its chrome affinity narrows the fit list, never adds to it.
             scheme=for_theme(theme),
+            scheme_rationale=getattr(theme, "design_rationale", None),
         )
     else:
         manifest = DesignManifest(seed=effective_brand.name or plan.site_name)
@@ -4835,6 +4866,7 @@ async def plan_to_site(
         place_cue=place_cue,
         primary_hex=theme.palette.primary,
         secondary_hex=theme.palette.secondary,
+        photo_tone=for_theme(theme).photo_tone,
     )
     # Photos already bound to specific sections by the image_ref pass must not
     # be re-picked by free ranking for other slots (pinned resolution itself
@@ -4912,7 +4944,6 @@ async def plan_to_site(
     hero_directives = plan_site_heroes(
         plan.pages,
         mood=effective_brand.mood,
-        industry=plan.industry_category,
         has_source_background=resolver.strongest_source_background() is not None,
         seed=effective_brand.name or plan.site_name,
         # A banded site is a shorter PHOTO hero, not a colour one — the height
@@ -4922,7 +4953,13 @@ async def plan_to_site(
         # The design scheme's hero language. Loses to force_background below —
         # a pill that has nothing to float over is broken chrome, which outranks
         # any scheme's preference.
-        hero_policy=for_theme(theme).hero_policy,
+        scheme=for_theme(theme),
+        # A source with no photograph opens on type, not on a stock picture
+        # standing in for the business. Unknown under stock-only on purpose:
+        # the operator asked for stock.
+        has_hero_photo=(
+            None if stock_only else ContentProfile.of_images(scraped_metadata).has_hero_photo
+        ),
         # The floating pill needs something to float over on EVERY page, so it
         # overrides the per-mood interior rotation (which leads with compact
         # splits) even when the site-wide full-bleed policy is off.
@@ -4949,9 +4986,9 @@ async def plan_to_site(
                 # identity for the diversity history); primary hex otherwise.
                 choice=getattr(theme, "palette_slug", None) or theme.palette.primary,
                 rationale=(
-                    "build_theme palette (design-language LLM pick upstream when "
-                    "enabled, else deterministic industry/hue/seed selection; "
-                    "curated picks steer off recently-used palettes)"
+                    "the logo's own hue when it has one (theme.has_brand_hue); "
+                    "otherwise a curated palette within the design scheme's "
+                    "colour strategies, steered off recently-used palettes"
                 ),
                 confidence=0.7,
             )
@@ -4960,7 +4997,10 @@ async def plan_to_site(
             DesignDecision(
                 area="typography",
                 choice=theme.typography.heading_font.split(",")[0].strip("'\" "),
-                rationale="build_theme font pairing (same upstream pass as palette)",
+                rationale=(
+                    "seeded pick within the design scheme's type directions "
+                    "(the mood pool's industry fit when schemes are off)"
+                ),
                 confidence=0.7,
             )
         )
@@ -5091,6 +5131,7 @@ async def plan_to_site(
                 block,
                 ctx,
                 is_homepage=page_plan.is_homepage,
+                conversion_hero=page_plan.page_type == "landing",
                 hero_scroll_target_kind=hero_target_kind,
                 explicit_template_id=design_recipe.template_for(block_index),
                 hero_directive=(
@@ -5120,7 +5161,13 @@ async def plan_to_site(
             if contact_element is None and block.kind == "contact":
                 contact_element = element
             visual_inputs.append(
-                section_visual_input_for(block, image_band=ctx.section_image_band)
+                section_visual_input_for(
+                    block,
+                    image_band=ctx.section_image_band,
+                    # The band the RENDERED section is, when it paints its own
+                    # surface — the block's policy predates the template.
+                    painted=painted_band(element, theme),
+                )
             )
         # If the hero rendered a scroll cue, tag its target section with a
         # matching anchor so the href resolves (webtree-public renders `anchorId`
@@ -5138,8 +5185,11 @@ async def plan_to_site(
         ):
             contact_element.anchorId = CONTACT_ANCHOR
         # Story pages: alternate the image side of consecutive about splits so
-        # the photos zigzag down the page instead of stacking on one side.
-        apply_about_zigzag(elements)
+        # the photos zigzag down the page instead of stacking on one side — the
+        # scheme's call, since a restrained language reads better holding one
+        # side (and the zigzag is the most recognisable template tell there is).
+        if for_theme(theme).alternate_splits is not False:
+            apply_about_zigzag(elements)
         apply_luminance_rhythm(elements, visual_inputs, theme.palette)
         # Legacy color-blocking rhythm: alternates the remaining (non-policy)
         # plain sections between page-bg and surface tint. Sections the luminance
@@ -5149,7 +5199,7 @@ async def plan_to_site(
         # surface backgrounds — applied per-mood over the assembled sections.
         # Runs BEFORE apply_section_dividers and already steers the texture
         # accent away from sections that will border a shaped divider.
-        modernize_sections(elements, theme, plan.industry_category)
+        modernize_sections(elements, theme)
         # Vertical rhythm: scale every section's own padding to the design
         # scheme's density. After modernize_sections (which reads the paddings
         # for nothing, but whose texture accent is chosen off the section list)
@@ -5168,25 +5218,26 @@ async def plan_to_site(
         # dark fill). Runs AFTER the pass above, which is what turns the fill's
         # tokens into the real hexes this one reads to judge the fill's darkness.
         polish_inset_panels(elements)
-        # Childcare: recolour flat sections through the cheerful pastel set
-        # (cream/sky/mint/peach/lavender/butter) so the page reads multi-coloured
-        # rather than one hue plus a dark band. Runs after the rhythm/modernize
-        # passes (overrides their flat colours) and before dividers (so seam
-        # fills read the final pastels). Photo/gradient sections are untouched.
+        # A multi-tint scheme recolours flat sections through light tints of the
+        # site's own hues, so the page reads multi-coloured rather than one hue
+        # plus a dark band — a scheme's voice, never an industry's. Runs after
+        # the rhythm/modernize passes (overrides their flat colours) and before
+        # dividers (so seam fills read the final tints). Photo/gradient
+        # sections are untouched; a dark build has no light tints to give.
+        page_scheme = for_theme(theme)
         if (
-            plan.industry_category == "childcare"
+            page_scheme.band_tint == "multi-tint"
             and getattr(theme, "color_scheme", "light") != "dark"
         ):
-            apply_childcare_pastel_rhythm(elements, theme.palette.text)
-            # Each pastel section's title gets its own vivid colour (runs after
-            # the pastel pass so its dark-ink recolour doesn't overwrite them).
-            apply_childcare_heading_colors(elements)
+            apply_band_tints(elements, band_tints(theme), theme.palette.text)
+        # Per-section title inks run after the tint pass so its dark-ink
+        # recolour doesn't overwrite them; each is held to AA on its own band.
+        if page_scheme.heading_ink == "per-section-accent":
+            apply_section_title_inks(elements, section_title_inks(theme))
         # Shaped section dividers — the picture section carries the edge and the
         # fill is the flat neighbour's exact colour; a boundary with a picture on
         # both sides gets no divider at all, since no flat fill could match it.
-        apply_section_dividers(
-            elements, effective_brand.mood, plan.industry_category, for_theme(theme)
-        )
+        apply_section_dividers(elements, effective_brand.mood, page_scheme)
         # A full-bleed photo's bottom dissolve was written against the THEME page
         # background before the page existed. Now that the neighbour (and any
         # shaped edge) is known, re-point it at the real surface below or drop
@@ -5369,7 +5420,6 @@ async def plan_to_site(
         primary_cta=primary_cta,
         page_tree=chrome_tree,
         overlay=header_overlay,
-        industry=plan.industry_category,
         archetype=manifest.header_archetype,
         social_links=social_links,
     )
@@ -5384,7 +5434,19 @@ async def plan_to_site(
         social_links=social_links,
         archetype=manifest.footer_archetype,
         primary_cta=primary_cta,
+        cta_headline=next((
+            block.headline
+            for page in plan.pages if page.is_homepage
+            for block in reversed(page.blocks)
+            if isinstance(block, CtaBlock) and block.cta_href == base_contact_href
+        ), None),
     )
+
+    for page in [*pages, *outside_pages]:
+        apply_mobile_usability(page.body_schema.elements)
+    for chrome in (header, footer):
+        if isinstance(chrome, BuilderElement):
+            apply_mobile_usability([chrome])
 
     # Symmetric contrast safety net (both schemes): catalogue sections hard-code a
     # single dark text token (often `secondary`) that vanishes on a same-luminance
@@ -5400,7 +5462,7 @@ async def plan_to_site(
     # only — header/footer chrome keeps its own compact link treatments). After
     # the contrast pass, which must not retint the white-on-green ink.
     for _page in pages:
-        style_whatsapp_links(_page.body_schema.elements)
+        style_whatsapp_links(_page.body_schema.elements, theme.palette)
 
     # The manifest rides builderStyles into the CMS (flexible JSON — the same
     # channel googleFonts/brandMood use, no migration). The builder's
@@ -5439,6 +5501,7 @@ async def plan_to_site(
     # Feed the diversity history so the NEXT generation rotates away from this
     # site's chrome picks (fail-open; see services/diversity.py).
     if settings.design_engine_enabled:
+        await report_and_record_fingerprint(site, manifest)
         await record_manifest_choices(manifest)
 
     # Advisory UX/accessibility + SEO audit. Logged only; never mutates or
@@ -5446,14 +5509,20 @@ async def plan_to_site(
     try:
         import logging
 
-        from app.services.ux_audit import audit_seo, audit_site, summarize
+        from app.services.ux_audit import (
+            audit_copy,
+            audit_design,
+            audit_seo,
+            audit_site,
+            summarize,
+        )
 
-        findings = audit_site(site)
+        findings = audit_site(site) + audit_design(site) + audit_copy(site)
         if settings.seo_audit_enabled:
             findings += audit_seo(site)
         if findings:
             logging.getLogger(__name__).info(
-                "UX+SEO audit: %d finding(s) %s", len(findings), summarize(findings)
+                "UX+SEO+design audit: %d finding(s) %s", len(findings), summarize(findings)
             )
     except Exception:  # noqa: BLE001 — an advisory check must never break a build
         pass

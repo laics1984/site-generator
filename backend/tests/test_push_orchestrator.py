@@ -988,7 +988,7 @@ def _create_entity_req() -> PushRequest:
     )
 
 
-def _push_with_create_entity(create_entity: AsyncMock) -> object:
+def _push_with_create_entity(create_entity: AsyncMock, req: PushRequest | None = None) -> object:
     with (
         patch.object(CmsClient, "login", new=AsyncMock(return_value="jwt")),
         patch.object(CmsClient, "create_entity", new=create_entity),
@@ -1010,7 +1010,7 @@ def _push_with_create_entity(create_entity: AsyncMock) -> object:
             CmsClient, "save_page_draft", new=AsyncMock(return_value={"draftVersion": 2})
         ),
     ):
-        return asyncio.run(push_site(_create_entity_req()))
+        return asyncio.run(push_site(req or _create_entity_req()))
 
 
 def _step(report, name: str):
@@ -1041,7 +1041,7 @@ def test_duplicate_entity_url_retries_without_it_and_warns():
     # Retried once, with the URL dropped and nothing else changed.
     assert create_entity.await_count == 2
     assert create_entity.await_args_list[0].kwargs["entity_url"] == "https://acme.example"
-    assert create_entity.await_args_list[1].kwargs["entity_url"] is None
+    assert "entity_url" not in create_entity.await_args_list[1].kwargs
     assert create_entity.await_args_list[1].kwargs["entity_name"] == "Acme"
 
 
@@ -1091,8 +1091,8 @@ def test_create_entity_step_tolerates_a_cms_that_omits_the_public_url():
 
 
 def test_other_create_entity_failures_still_abort_the_push():
-    """Only the entity_url clash is recoverable — detected on the errors KEY, never
-    on Laravel's (translatable) message text."""
+    """Only a rejected OPTIONAL field is recoverable — detected on the errors KEY,
+    never on Laravel's (translatable) message text."""
     create_entity = AsyncMock(
         side_effect=CmsApiError(
             422, "Create entity failed", response_body={"errors": {"entity_name": ["required"]}}
@@ -1338,3 +1338,105 @@ def test_an_archive_failure_does_not_fail_the_push():
     step = next(s for s in report.steps if s.name == "archive_pages")
     assert not step.ok
     assert "/careers" in step.detail
+
+
+# --- the site's industry reaches the CMS -----------------------------------------
+#
+# The generator settles an industry (resolve_industry) that the CMS stores on
+# `entities.industry`: set on create, filled on an update only into a gap, so a
+# choice the owner made in Site settings is never overwritten.
+
+
+def _with_industry(site: GeneratedSite, industry: str | None) -> GeneratedSite:
+    # A dict brand, as on every real push (the frontend posts the site back).
+    return site.model_copy(update={"brand": {"name": "Acme", "industry": industry}})
+
+
+def test_a_created_entity_carries_the_sites_industry():
+    create_entity = AsyncMock(return_value={"entity_api_token": "tok", "entity_id": 7})
+    req = _create_entity_req()
+    req.site = _with_industry(req.site, "childcare")
+    report = _push_with_create_entity(create_entity, req)
+
+    assert report.success, report.error
+    assert create_entity.await_args.kwargs["industry"] == "childcare"
+    # The create carried it, so no profile round trip follows.
+    assert all(step.name != "industry" for step in report.steps)
+
+
+def test_a_cms_that_refuses_the_industry_still_creates_the_site():
+    """A CMS that has not deployed the shared taxonomy refuses an unknown slug;
+    the site lands without one and the report says where to set it."""
+    create_entity = AsyncMock(
+        side_effect=[
+            CmsApiError(422, "Create entity failed",
+                        response_body={"errors": {"industry": ["invalid"]}}),
+            {"entity_api_token": "tok", "entity_id": 7},
+        ]
+    )
+    req = _create_entity_req()
+    req.site = _with_industry(req.site, "real-estate")
+    report = _push_with_create_entity(create_entity, req)
+
+    assert report.success, report.error
+    retry = create_entity.await_args_list[1].kwargs
+    assert "industry" not in retry
+    assert retry["entity_url"] == "https://acme.example"
+    assert "real-estate" in _step(report, "create_entity").warning
+
+
+def _sync_industry(industry: str | None, current: str | None):
+    get_industry = AsyncMock(return_value=current)
+    set_industry = AsyncMock(return_value=None)
+    req = PushRequest(
+        site=_with_industry(_update_site(), industry),
+        cms_email="u@e.com", cms_password="s", entity_token="tok",
+    )
+    with (
+        _SyncStubs(_existing_rows()),
+        patch.object(CmsClient, "get_entity_industry", new=get_industry),
+        patch.object(CmsClient, "set_entity_industry", new=set_industry),
+    ):
+        report = asyncio.run(push_site(req))
+    return report, get_industry, set_industry
+
+
+def test_an_update_fills_an_entity_with_no_industry():
+    report, _, set_industry = _sync_industry("health-wellness", None)
+
+    assert report.success, report.error
+    set_industry.assert_awaited_once_with("tok", "health-wellness")
+    assert _step(report, "industry").data == {"industry": "health-wellness"}
+
+
+def test_an_update_keeps_the_owners_industry():
+    report, _, set_industry = _sync_industry("health-wellness", "real-estate")
+
+    assert report.success, report.error
+    set_industry.assert_not_awaited()
+    assert "Kept" in _step(report, "industry").detail
+
+
+def test_other_is_never_pushed():
+    """`other` is "nothing fits": pushing it would silence the admin's
+    "set your industry" prompt for a site nobody classified."""
+    report, get_industry, set_industry = _sync_industry("other", None)
+
+    assert report.success, report.error
+    get_industry.assert_not_awaited()
+    set_industry.assert_not_awaited()
+
+
+def test_an_industry_failure_never_fails_the_push():
+    get_industry = AsyncMock(side_effect=CmsApiError(403, "Forbidden"))
+    req = PushRequest(
+        site=_with_industry(_update_site(), "childcare"),
+        cms_email="u@e.com", cms_password="s", entity_token="tok",
+    )
+    with _SyncStubs(_existing_rows()), patch.object(
+        CmsClient, "get_entity_industry", new=get_industry
+    ):
+        report = asyncio.run(push_site(req))
+
+    assert report.success, report.error
+    assert not _step(report, "industry").ok

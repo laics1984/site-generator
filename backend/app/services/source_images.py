@@ -30,26 +30,56 @@ the note in `without_source_imagery`.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Collection
+
 from app.models.content_blocks import SectionCandidate, SourceContent
 
+# Answers "may this photo stay?" for one URL.
+_Keep = Callable[[str], bool]
 
-def _section_without_images(section: SectionCandidate) -> SectionCandidate:
-    """A section candidate stripped of its card photography.
+
+def _section_keeping(section: SectionCandidate, keep: _Keep) -> SectionCandidate:
+    """A section candidate keeping only the card photography `keep` allows.
 
     Both fields feed `routers/generate._inject_image_walls`, which reads
     `section.image_urls` FIRST and only falls back to the image_metadata scan.
     Clearing `image_metadata` alone would leave the photo walls standing.
     `cards[].image_url` also drives the `has_image` hint in the planner prompt
-    (services/source_router._section_prompt_entry).
+    (services/source_router.section_prompt_entry).
     """
     return section.model_copy(
         update={
-            "image_urls": [],
+            "image_urls": [url for url in section.image_urls if keep(url)],
             "cards": [
-                card.model_copy(update={"image_url": None}) for card in section.cards
+                card if card.image_url is None or keep(card.image_url)
+                else card.model_copy(update={"image_url": None})
+                for card in section.cards
             ],
         }
     )
+
+
+def _keeping(source: SourceContent, keep: _Keep) -> SourceContent:
+    """`source` carrying only the content photography `keep` allows, in every
+    field a photo reaches the site through, recursively. Never mutates."""
+    return source.model_copy(
+        update={
+            "images": [url for url in source.images if keep(url)],
+            "image_metadata": [meta for meta in source.image_metadata if keep(meta.url)],
+            "section_candidates": [
+                _section_keeping(section, keep) for section in source.section_candidates
+            ],
+            "discovered_pages": [_keeping(page, keep) for page in source.discovered_pages],
+        }
+    )
+
+
+def without_images(source: SourceContent, urls: Collection[str]) -> SourceContent:
+    """A copy of `source` without these particular photos — a link that is
+    known dead (`services/photo_url_expiry`) must not be generated around.
+    Same scope and the same `profile_candidates` exemption as below."""
+    gone = set(urls)
+    return _keeping(source, lambda url: url not in gone) if gone else source
 
 
 def without_source_imagery(source: SourceContent) -> SourceContent:
@@ -67,16 +97,4 @@ def without_source_imagery(source: SourceContent) -> SourceContent:
     to `_drop_hollow_team_pages`, which deletes it. Portraits are cut one layer
     later, on the finished plan, by `routers/generate._drop_person_photos`.
     """
-    return source.model_copy(
-        update={
-            "images": [],
-            "image_metadata": [],
-            "section_candidates": [
-                _section_without_images(section)
-                for section in source.section_candidates
-            ],
-            "discovered_pages": [
-                without_source_imagery(page) for page in source.discovered_pages
-            ],
-        }
-    )
+    return _keeping(source, lambda _url: False)

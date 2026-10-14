@@ -26,6 +26,7 @@ from typing import Callable, TypeVar
 from app.models.content_blocks import ImageMetadata, SourceContent
 from app.services.doc_contract import classify_page_title, slug_for_title
 from app.services.doc_structure import MAX_DISCOVERED_PAGES
+from app.services.source_conflicts import conflicts_between
 
 T = TypeVar("T")
 
@@ -76,6 +77,13 @@ def merge_sources(base: SourceContent, addition: SourceContent) -> SourceContent
             "title": base.title or addition.title,
             "description": base.description or addition.description,
             "discovered_pages": pages,
+            # What the two disagree on is reported, never silently resolved:
+            # base's value stands, and the preview says so.
+            "source_conflicts": [
+                *base.source_conflicts,
+                *addition.source_conflicts,
+                *conflicts_between(base, addition),
+            ],
         }
     )
 

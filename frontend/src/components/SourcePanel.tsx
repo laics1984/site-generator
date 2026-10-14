@@ -13,6 +13,9 @@ import { Button, Checkbox, Field, Input } from '@/ui'
 interface SourcePanelProps {
   url: string
   onUrlChange: (url: string) => void
+  /** The website's Facebook Page, read alongside it (only offered for a website). */
+  pageUrl: string
+  onPageUrlChange: (url: string) => void
   crawl: boolean
   onCrawlChange: (crawl: boolean) => void
   fbToken: string
@@ -34,6 +37,8 @@ interface SourcePanelProps {
 export function SourcePanel({
   url,
   onUrlChange,
+  pageUrl,
+  onPageUrlChange,
   crawl,
   onCrawlChange,
   fbToken,
@@ -59,6 +64,11 @@ export function SourcePanel({
   // App's state above, and the session is server-side.
   const [pageExtrasOpen, setPageExtrasOpen] = useState(false)
   const warning = facebookLinkWarning(url)
+  const pageWarning = pageUrl.trim()
+    ? isFacebookUrl(pageUrl)
+      ? facebookLinkWarning(pageUrl)
+      : 'That isn’t a Facebook link — only a Facebook Page can be added here.'
+    : null
   const canSubmit = Boolean(url.trim() || file || pastedText.trim()) && !busy
 
   function submit() {
@@ -176,13 +186,38 @@ export function SourcePanel({
                 )}
               </details>
             ) : (
-              <Checkbox
-                checked={crawl}
-                onChange={(e) => onCrawlChange(e.target.checked)}
-                disabled={busy}
-                label="Discover sub-pages from the site"
-                description="We follow same-domain links up to 3 clicks away from the homepage (max ~20 extra pages). Adds roughly 15–30 seconds. Uncheck for a fast single-page read."
-              />
+              <>
+                <Checkbox
+                  checked={crawl}
+                  onChange={(e) => onCrawlChange(e.target.checked)}
+                  disabled={busy}
+                  label="Discover sub-pages from the site"
+                  description="We follow same-domain links up to 3 clicks away from the homepage (max ~20 extra pages). Adds roughly 15–30 seconds. Uncheck for a fast single-page read."
+                />
+                <div className="mt-3 border-t border-line pt-3">
+                  <label htmlFor="source-page-url" className="text-xs font-semibold text-ink-soft">
+                    The business's Facebook Page{' '}
+                    <span className="font-normal text-ink-faint">optional</span>
+                  </label>
+                  <Input
+                    id="source-page-url"
+                    type="text"
+                    placeholder="facebook.com/yourpage"
+                    value={pageUrl}
+                    onChange={(e) => onPageUrlChange(e.target.value)}
+                    disabled={busy}
+                    className="mt-1.5 w-full"
+                  />
+                  <p className="mt-1.5 text-xs text-ink-muted">
+                    Read after the website and combined with it: recent posts,
+                    photos and reviews. If the two disagree on a phone number or
+                    email, the preview says so and the website's is used.
+                  </p>
+                  {pageWarning && (
+                    <p className="mt-1.5 text-xs font-medium text-amber-700">{pageWarning}</p>
+                  )}
+                </div>
+              </>
             )}
           </div>
         )}

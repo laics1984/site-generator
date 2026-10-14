@@ -27,17 +27,21 @@ from __future__ import annotations
 
 import logging
 import re
+from textwrap import indent
 from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 from app.config import settings
 from app.models.brand import BrandIdentity
 from app.models.content_blocks import ImageMetadata, NavLink, SectionType, SourceContent
-from app.models.facebook import FacebookPage
+from app.models.facebook import FacebookPage, FactLabel
 from app.models.industry import IndustryCategory
 from app.services.brand_candidate import build_brand_candidate
+from app.services.facebook_photo_profiles import context_for
 from app.services.facebook_urls import FacebookRef
 from app.services.logo_extraction import LogoCandidate
-from app.services.source_preview import ImageCandidate, source_preview_payload
+from app.services.nav_extraction import social_link_for_href
+from app.services.source_preview import ImageCandidate, candidates_from_source, source_preview_payload
+from app.services.source_router import gallery_photos
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +102,29 @@ class _RenderFetcher:
         from app.services.facebook_render import fetch_page
 
         return await fetch_page(ref, storage_state=self._storage_state)
+
+
+# Bump when a change alters what a read collects, so `/api/scrape` stops
+# serving reads cached under the old rules. 4: inline-payload originals, full
+# captions, Intro facts, recommendations. 5: the Page's own posts read whole from
+# its feeds' data (About-page reels included), videos, Facebook's alt text.
+READER_VERSION = 5
+
+
+def reader_options() -> dict[str, Any]:
+    """Everything that changes what a read of a Page yields — the Facebook half
+    of `routers.scrape.job_options`, the read cache's reuse key. Kept beside the
+    readers so a new knob lands here with them rather than being remembered at
+    the router."""
+    return {
+        "reader_version": READER_VERSION,
+        "max_posts": settings.facebook_max_posts,
+        "max_reviews": settings.facebook_max_reviews,
+        "photo_limit": settings.facebook_photo_max_images,
+        "views_timeout": settings.facebook_views_timeout_seconds,
+        "view_scroll_steps": settings.facebook_view_scroll_steps,
+        "photo_review_mode": settings.facebook_photo_review_mode,
+    }
 
 
 def saved_session() -> dict | None:
@@ -202,7 +229,7 @@ _CATEGORY_MAP: tuple[tuple[tuple[str, ...], IndustryCategory], ...] = (
     (
         (
             "restaurant*", "cafe", "café", "coffee", "bakery", "bar", "pub",
-            "bistro", "food", "pizza*", "diner", "catering", "brewery", "dessert*",
+            "bistro", "food", "pizza*", "diner", "cater*", "brewery", "dessert*",
             "juice", "ice cream", "steakhouse", "sushi", "eatery", "grill",
         ),
         "restaurant",
@@ -216,10 +243,34 @@ _CATEGORY_MAP: tuple[tuple[tuple[str, ...], IndustryCategory], ...] = (
     ),
     (
         (
+            "clinic", "dentist*", "dental", "doctor", "medical", "physiotherap*",
+            "optometr*", "hospital", "pharmac*", "chiropract*", "health*",
+            "wellness", "spa", "salon", "beauty", "massage", "gym", "fitness",
+            "yoga", "pilates",
+        ),
+        "health-wellness",
+    ),
+    (
+        (
+            "real estate", "realtor*", "property", "properties", "estate agent*",
+            "property management", "property developer*",
+        ),
+        "real-estate",
+    ),
+    (
+        (
+            "plumb*", "electrician*", "contractor*", "renovation*", "cleaning",
+            "cleaner*", "handyman", "roofing", "roofer*", "landscap*",
+            "pest control", "home improvement", "locksmith*", "moving",
+            "air conditioning", "aircon", "home service*", "home repair*",
+        ),
+        "home-services",
+    ),
+    (
+        (
             "lawyer*", "law firm", "legal", "accountant*", "accounting", "tax",
-            "insurance", "financial", "clinic", "dentist*", "doctor", "medical",
-            "veterinar*", "notary", "architect*", "engineer*", "real estate",
-            "physiotherap*", "optometr*",
+            "insurance", "financial", "veterinar*", "notary", "architect*",
+            "engineer*",
         ),
         "professional-services",
     ),
@@ -309,7 +360,8 @@ def build_raw_text(page: FacebookPage) -> str:
     This is the single most consequential output of the whole feature. It is the
     haystack `scaffold_enforcement.is_grounded_in_source` matches LLM claims
     against, so a fact absent here cannot survive into the site, and a sentence
-    that isn't a fact should never be added here.
+    that isn't a fact should never be added here. Every label is a `FactLabel`,
+    because `landing_source` splits this text back into sections at them.
     """
     lines: list[str] = []
 
@@ -319,48 +371,70 @@ def build_raw_text(page: FacebookPage) -> str:
     lines.append(headline)
 
     for label, value in (
-        ("About", page.about),
-        ("", page.description),
-        ("Mission", page.mission),
-        ("Products and services", page.products),
-        ("Founded", page.founded),
-        ("Price range", page.price_range),
-    ):
-        if not value:
-            continue
-        lines.append(f"{label}: {value}" if label else value)
-
-    address = page.address_line
-    for label, value in (
-        ("Address", address),
-        ("Phone", page.phone),
-        ("Email", ", ".join(page.emails) if page.emails else None),
-        ("Website", page.website),
+        (FactLabel.ABOUT, page.about),
+        (None, page.description),
+        (FactLabel.CATEGORIES, " · ".join(page.categories) if len(page.categories) > 1 else None),
+        (FactLabel.MISSION, page.mission),
+        (FactLabel.PRODUCTS, page.products),
+        (FactLabel.SERVICE_OPTIONS, " · ".join(page.service_options)),
+        (FactLabel.FOUNDED, page.founded),
+        (FactLabel.PRICE_RANGE, page.price_range),
+        (FactLabel.ADDRESS, page.address_line),
+        (FactLabel.SERVICE_AREA, page.service_area),
+        (FactLabel.PHONE, page.phone),
+        (FactLabel.EMAIL, ", ".join(page.emails)),
+        (FactLabel.WEBSITE, page.website),
+        (FactLabel.ALSO_ON, ", ".join(_profile_labels(page))),
     ):
         if value:
-            lines.append(f"{label}: {value}")
+            lines.append(f"{label}: {value}" if label else value)
 
     if page.hours:
-        lines.append("Opening hours:")
+        lines.append(f"{FactLabel.HOURS}:")
         lines.extend(f"  {h.as_line()}" for h in page.hours)
 
+    # Indented as a block, every line of it: a multi-line caption is one fact,
+    # and an unindented "Price: RM10" inside it would read as a label of the
+    # digest's own to `landing_source`.
     posts = page.posts_with_text
     if posts:
-        lines.append("Updates from the Page:")
-        lines.extend(f"  {(p.message or '').strip()}" for p in posts)
+        lines.append(f"{FactLabel.UPDATES}:")
+        lines.extend(indent((p.message or "").strip(), "  ") for p in posts)
 
-    if page.reviews:
-        lines.append("What customers say:")
-        lines.extend(f'  "{r.text}" — {r.author}' for r in page.reviews)
-
-    if page.fan_count is not None:
-        lines.append(f"Followers on Facebook: {page.fan_count:,}")
-    if page.rating_count is not None and page.overall_star_rating is not None:
-        lines.append(
-            f"Rating: {page.overall_star_rating:.1f} from {page.rating_count:,} reviews"
+    if page.events:
+        lines.append(f"{FactLabel.EVENTS}:")
+        lines.extend(
+            indent("\n".join(part for part in (
+                f"{event.name} ({event.start_time[:10]})" if event.start_time else event.name,
+                (event.description or "").strip(),
+            ) if part), "  ")
+            for event in page.events
         )
 
+    if page.reviews:
+        lines.append(f"{FactLabel.REVIEWS}:")
+        lines.extend(indent(f'"{r.text}" — {r.author}', "  ") for r in page.reviews)
+
+    if page.fan_count is not None:
+        lines.append(f"{FactLabel.FOLLOWERS}: {page.fan_count:,}")
+    if page.rating_count is not None and page.overall_star_rating is not None:
+        lines.append(
+            f"{FactLabel.RATING}: {page.overall_star_rating:.1f} from {page.rating_count:,} reviews"
+        )
+    elif page.rating_count:
+        lines.append(f"{FactLabel.RATING}: {page.rating_count:,} reviews on Facebook")
+
     return "\n".join(lines).strip()
+
+
+def _profile_labels(page: FacebookPage) -> list[str]:
+    """Platform names for the Page's other profiles, from the one classifier."""
+    return [link.label for link in social_profile_links(page)]
+
+
+def social_profile_links(page: FacebookPage) -> list[NavLink]:
+    links = (social_link_for_href(url, page.canonical_url) for url in page.social_profiles)
+    return [link for link in links if link is not None]
 
 
 def build_headings(page: FacebookPage) -> list[str]:
@@ -373,17 +447,17 @@ def build_headings(page: FacebookPage) -> list[str]:
     if page.about or page.description or page.mission:
         headings.append(f"About {page.name}")
     if page.products:
-        headings.append("Products and services")
+        headings.append(FactLabel.PRODUCTS.value)
     if page.category:
         headings.append(page.category)
     if page.hours:
-        headings.append("Opening hours")
+        headings.append(FactLabel.HOURS.value)
     if page.address_line:
         headings.append("Where to find us")
     if page.phone or page.emails:
         headings.append("Get in touch")
     if page.reviews:
-        headings.append("What customers say")
+        headings.append(FactLabel.REVIEWS.value)
     return headings
 
 
@@ -391,9 +465,22 @@ def build_headings(page: FacebookPage) -> list[str]:
 
 _MIN_POSTS_FOR_FEATURES = 3
 _MIN_PHOTOS_FOR_GALLERY = 4
+# One number is a fact; a stats band needs at least two to read as one.
+_MIN_STATS = 2
+
+# The order sections appear in, and — separately — the order they are KEPT in
+# when the Page grounds more than a homepage holds. Contact comes first in the
+# second: its values come from the authority pass, not the model, so it is the
+# one section that can never be padded and the one a visitor most needs.
+_DISPLAY_ORDER: tuple[SectionType, ...] = (
+    "about", "features", "stats", "gallery", "testimonials", "locations", "contact",
+)
+_KEEP_ORDER: tuple[SectionType, ...] = (
+    "contact", "about", "testimonials", "gallery", "features", "locations", "stats",
+)
 
 
-def homepage_sections_for(page: FacebookPage) -> list[SectionType]:
+def homepage_sections_for(page: FacebookPage, *, photo_count: int | None = None) -> list[SectionType]:
     """The landing page's sections, each gated on its own evidence.
 
     This is the structural half of the no-fabrication guarantee: rather than
@@ -402,28 +489,26 @@ def homepage_sections_for(page: FacebookPage) -> list[SectionType]:
     with no reviews never gets a testimonials slot to fill.
 
     Capped by landing_patterns._MAX_HOMEPAGE_SECTIONS (8) — a homepage is one
-    LLM call and overflowing its token budget fails the whole generation.
+    LLM call and overflowing its token budget fails the whole generation. The
+    cap drops by `_KEEP_ORDER`, never by position: a tail cut used to take
+    contact first.
     """
+    from app.services.facebook_authority import stat_items
     from app.services.landing_patterns import _MAX_HOMEPAGE_SECTIONS
 
-    body: list[SectionType] = []
-    if page.about or page.description or page.mission:
-        body.append("about")
-    if page.products or len(page.posts_with_text) >= _MIN_POSTS_FOR_FEATURES:
-        body.append("features")
-    photo_count = len(page.post_photo_urls) + (1 if page.cover_photo_url else 0)
-    if photo_count >= _MIN_PHOTOS_FOR_GALLERY:
-        body.append("gallery")
-    if page.reviews:
-        body.append("testimonials")
-    if page.address_line:
-        body.append("locations")
-    # contact is unconditional: its values come from the authority pass, not
-    # the model, so it can't be fabricated even on a Page with no details.
-    body.append("contact")
-
-    body = body[: max(0, _MAX_HOMEPAGE_SECTIONS - 2)]
-    return ["hero", *body, "cta"]
+    if photo_count is None:
+        photo_count = len(page.post_photo_urls) + (1 if page.cover_photo_url else 0)
+    grounded = {
+        "about": bool(page.about or page.description or page.mission),
+        "features": bool(page.products) or len(page.posts_with_text) >= _MIN_POSTS_FOR_FEATURES,
+        "stats": len(stat_items(page)) >= _MIN_STATS,
+        "gallery": photo_count >= _MIN_PHOTOS_FOR_GALLERY,
+        "testimonials": bool(page.reviews),
+        "locations": bool(page.address_line),
+        "contact": True,
+    }
+    kept = [kind for kind in _KEEP_ORDER if grounded[kind]][: max(0, _MAX_HOMEPAGE_SECTIONS - 2)]
+    return ["hero", *(kind for kind in _DISPLAY_ORDER if kind in kept), "cta"]
 
 
 # --- images ---------------------------------------------------------------------
@@ -442,35 +527,54 @@ def _post_alt(message: str | None, fallback: str) -> str:
 
 
 def to_image_metadata(page: FacebookPage) -> list[ImageMetadata]:
-    """Cover as the hero, post photos as content. The profile picture is NOT
-    here — it is the brand mark, handled by `build_brand`."""
+    """The cover and the post photos, as the Page's own content photos.
+
+    Each carries its industry's `facebook_photo_profiles` context, so one
+    measured review screens them all and the profile alone says how. None is
+    a hero by position: a cover is a banner as often as a photograph, and only
+    measurement (`facebook_photo_selection`) promotes a photo to hero. The role
+    is `content`, never `gallery` — a Page's photos are pictures of their own,
+    not cells of a source rack, and the gallery role is what makes the poster,
+    QR and screening passes skip an image.
+
+    The profile picture is NOT here — it is the brand mark, handled by
+    `build_brand`.
+    """
+    context = context_for(industry_for(page))
+    childcare = context == "facebook_childcare"
     out: list[ImageMetadata] = []
     if page.cover_photo_url:
         out.append(
             ImageMetadata(
                 url=page.cover_photo_url,
+                selection_context=context,
                 alt=f"{page.name} cover photo",
-                intent="hero",
-                role="hero",
+                role="content",
                 source_usage="inline",
                 context_heading=page.name,
             )
         )
     seen: set[str] = {page.cover_photo_url or ""}
     for post in page.posts:
-        if not post.image_url or post.image_url in seen:
-            continue
-        seen.add(post.image_url)
-        out.append(
-            ImageMetadata(
-                url=post.image_url,
-                alt=_post_alt(post.message, f"{page.name} photo"),
-                intent="generic",
-                role="gallery",
-                source_usage="inline",
-                context_heading=_post_alt(post.message, ""),
+        # A video's frame is a picture of the business like any photo, and it
+        # illustrates the same caption: measured on a Page that posts reels
+        # only, the frames were the only pictures any caption described.
+        for photo in post.pictures:
+            if not photo.url or photo.url in seen:
+                continue
+            seen.add(photo.url)
+            out.append(
+                ImageMetadata(
+                    url=photo.url, width=photo.width, height=photo.height,
+                    selection_context=context,
+                    alt=f"{page.name} activity photo" if childcare else _post_alt(post.message, f"{page.name} photo"),
+                    role="content", source_usage="inline",
+                    context_heading="" if childcare else _post_alt(post.message, ""),
+                    # Caption evidence for the existing text-model planning call.
+                    caption=(post.message or "")[:500],
+                    platform_alt=photo.auto_alt or "",
+                )
             )
-        )
     return out
 
 
@@ -532,15 +636,21 @@ def to_source_content(page: FacebookPage) -> SourceContent:
             status=422,
         )
 
-    social: list[NavLink] = [NavLink(label="Facebook", href=page.canonical_url)]
+    social: list[NavLink] = [
+        NavLink(label="Facebook", href=page.canonical_url),
+        *social_profile_links(page),
+    ]
     if page.website:
         social.append(NavLink(label="Website", href=page.website))
 
     images = to_image_metadata(page)
 
+    industry = industry_for(page)
     return SourceContent(
         source_kind="facebook",
         source_ref=page.canonical_url,
+        # The Page's own category outranks a model reading its About text.
+        declared_industry=None if industry == "other" else industry,
         title=page.name,
         # The About blurb. A prompt input the document path leaves empty —
         # free grounding at no extra token cost.
@@ -630,22 +740,29 @@ async def to_preview_payload(page: FacebookPage) -> dict[str, Any]:
     so the frontend can round-trip it into /generate, where the authority pass
     needs the verified values.
     """
+    from app.services.facebook_photo_selection import review_photo_library
+
     source_content = to_source_content(page)
     brand = await build_brand(page)
+    photo_review = await review_photo_library(source_content, page)
 
     return source_preview_payload(
         url=page.canonical_url,
         final_url=page.canonical_url,
         source_content=source_content,
         brand_candidate=brand,
-        image_candidates=to_image_candidates(page),
+        image_candidates=candidates_from_source(source_content),
         fetched_at=None,  # set by the orchestrator
         # No frontier — a Page is one landing page, so the preview's
         # "crawl N more" affordance stays hidden without asking.
         extra={
             "facebook_facts": page.model_dump(mode="json"),
             "facebook_contact": to_contact_dict(page),
-            "facebook_industry": industry_for(page),
-            "facebook_sections": homepage_sections_for(page),
+            # Counted by the gallery's own predicate, after the photo review:
+            # a menu sheet or a poster is a photo a gallery tile can't show.
+            "facebook_sections": homepage_sections_for(
+                page, photo_count=len(gallery_photos(source_content))
+            ),
+            **({"facebook_photo_selection": photo_review} if photo_review else {}),
         },
     )
