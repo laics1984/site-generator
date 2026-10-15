@@ -19,8 +19,20 @@ from fastapi import APIRouter, HTTPException
 
 from app.models.builder_schema import GeneratedSite
 from app.services.menu_builder import build_layout_payload
+from app.services.palette_updates import PaletteRequest, PalettePatch, palette_patch, save_preview_palette
 
 router = APIRouter(prefix="/api/preview", tags=["preview"])
+
+
+@router.post("/palette", response_model=PalettePatch)
+async def preview_palette(payload: PaletteRequest) -> PalettePatch:
+    try:
+        patch = palette_patch(payload.site, payload.palette)
+        if payload.save:
+            await save_preview_palette(payload.site, patch)
+        return patch
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/layout")

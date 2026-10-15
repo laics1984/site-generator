@@ -140,8 +140,8 @@ def _extract_palette_from_svg_bytes(
         # No literal colors declared (currentColor / CSS classes we can't
         # resolve) — fall back to the same neutral default as the raster path.
         return LogoExtraction(
-            palette=["#2563eb"],
-            seed_hex="#2563eb",
+            palette=[],
+            seed_hex=None,
             logo_data_url=logo_data_url,
             logo_is_light=False,
             is_vector=True,
@@ -170,8 +170,8 @@ def _extract_palette_from_svg_bytes(
 
     if not candidates:
         return LogoExtraction(
-            palette=["#2563eb"],
-            seed_hex="#2563eb",
+            palette=[],
+            seed_hex=None,
             logo_data_url=logo_data_url,
             logo_is_light=logo_is_light,
             is_vector=True,
@@ -244,8 +244,8 @@ def extract_palette_from_image_bytes(
     if not keep_rgb:
         # Logo was just white/black — return a neutral default.
         return LogoExtraction(
-            palette=["#2563eb"],
-            seed_hex="#2563eb",
+            palette=[],
+            seed_hex=None,
             logo_data_url=_to_data_url(image_bytes, img.format or "PNG"),
             logo_is_light=logo_is_light,
             size=decoded_size,
@@ -274,7 +274,7 @@ def extract_palette_from_image_bytes(
 
     candidates.sort(reverse=True)
     palette = [c[2] for c in candidates]
-    seed = palette[0] if palette else "#2563eb"
+    seed = palette[0] if palette else None
 
     return LogoExtraction(
         palette=palette,

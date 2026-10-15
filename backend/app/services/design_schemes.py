@@ -58,13 +58,12 @@ CardTreatment = Literal[
     "outline",    # heavier 2px border in the brand ink, no shadow
 ]
 
-# How the small label above a section heading is set. All six are pure style —
+# How the small label above a section heading is set. All five are pure style —
 # none of them changes what the label says.
 EyebrowTreatment = Literal[
     "inherit",
     "caps-tracked",  # today: 13px, 0.14em tracking, uppercase, accent ink
     "sentence",      # sentence case, normal tracking, muted ink
-    "rule",          # short accent rule to the left of the label
     "chip",          # filled pill in a tint of the accent
     "underline",     # accent hairline beneath the label
     "hidden",        # the section leads with its heading alone
@@ -294,7 +293,7 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         container_max_width=1180,
         heading_weight=600,
         heading_tracking="-0.015em",
-        eyebrow_treatment="rule",
+        eyebrow_treatment="caps-tracked",
         layout_bias=("minimal", "centered", "grid"),
         header_affinity=("minimal-line", "centered-stack"),
         footer_affinity=("minimal-centered", "editorial"),
@@ -466,7 +465,7 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         type_scale_ratio=1.2,
         heading_weight=650,
         heading_tracking="-0.01em",
-        eyebrow_treatment="rule",
+        eyebrow_treatment="caps-tracked",
         layout_bias=("grid", "minimal", "split"),
         hero_policy="hero-led",
         header_affinity=("minimal-line", "classic"),
@@ -803,7 +802,7 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         type_scale_ratio=1.26,
         heading_weight=650,
         heading_tracking="-0.015em",
-        eyebrow_treatment="rule",
+        eyebrow_treatment="caps-tracked",
         layout_bias=("split", "narrative", "grid", "editorial"),
         hero_policy="hero-led",
         header_affinity=("classic", "minimal-line"),
@@ -878,7 +877,7 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         type_scale_ratio=1.4,
         heading_weight=600,
         heading_tracking="-0.02em",
-        eyebrow_treatment="rule",
+        eyebrow_treatment="caps-tracked",
         layout_bias=("editorial", "narrative", "split", "single"),
         hero_policy="editorial-mix",
         header_affinity=("minimal-line", "centered-stack", "classic"),

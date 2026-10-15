@@ -28,6 +28,7 @@ export interface SourceConflict {
 }
 
 export interface SourceContent {
+  reference_colors?: string[]
   source_kind: SourceKind
   source_ref: string
   /** The industry the source states about itself (a Facebook Page's own
@@ -189,6 +190,8 @@ export interface BrandIdentity {
 }
 
 export interface BuilderStylesShape {
+  colorSystemVersion?: 2
+  brand?: BuilderStylesShape['colors']
   colors: {
     primary: string
     secondary: string
@@ -220,6 +223,7 @@ export interface BrandExtractionResult {
 }
 
 export interface GeneratedSite {
+  palette_brief?: Record<string, unknown> | null
   generation_warnings?: string[]
   site_name: string
   tagline?: string | null
@@ -247,6 +251,14 @@ export interface GeneratedSite {
   header_overlay?: boolean
   /** (label, url) pairs — source the footer's social menu. */
   social_links?: Array<[string, string]>
+}
+
+export type CreativePalette = Pick<BuilderStylesShape['colors'], 'primary' | 'secondary' | 'accent' | 'surface'>
+export interface PalettePatch {
+  theme: unknown
+  builder_styles: BuilderStylesShape
+  primary_color: string
+  secondary_color: string
 }
 
 // --- preview layout (POST /api/preview/layout) --------------------------------

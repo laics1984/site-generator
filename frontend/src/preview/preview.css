@@ -430,7 +430,51 @@ a {
 }
 
 /* --- from app/assets/css/main.css (@layer components) --- */
-.wt-ui-card {
+/* New generated outputs opt in; stored legacy styles keep their cascade. */
+.wt-color-system-v2 :is(.wt-theme-action, .wt-contact-form__submit):hover {
+  background-color: var(--builder-action-hover) !important;
+  color: var(--builder-action-on-hover) !important;
+}
+.wt-color-system-v2 :is(.wt-theme-action, .wt-contact-form__submit):active {
+  background-color: var(--builder-action-active) !important;
+  color: var(--builder-action-on-active) !important;
+}
+.wt-color-system-v2 :is(a, button, input, textarea, select):focus-visible {
+  outline: 2px solid var(--builder-local-focus, var(--builder-color-border-strong)) !important;
+  outline-offset: 3px;
+}
+.wt-color-system-v2 .wt-contact-form__control {
+  color: var(--builder-color-on-background) !important;
+  background: var(--builder-color-background) !important;
+}
+.wt-color-system-v2 .wt-contact-form__control:not([aria-invalid="true"]) {
+  border-color: var(--builder-color-border-strong) !important;
+}
+.wt-color-system-v2 .wt-contact-form__control::placeholder {
+  color: var(--builder-color-text-muted) !important;
+  opacity: 1 !important;
+}
+.wt-color-system-v2 :is(.wt-contact-form__label-text, .wt-contact-form__help) {
+  color: var(--builder-local-ink, var(--builder-color-text)) !important;
+  opacity: 1 !important;
+}
+.wt-color-system-v2 .wt-contact-form__error {
+  color: var(--builder-local-error, #dc2626) !important;
+}
+.wt-color-system-v2 .wt-contact-form__submit {
+  --builder-action-hover: var(--builder-button-hover);
+  --builder-action-on-hover: var(--builder-button-on-hover);
+  --builder-action-active: var(--builder-button-active);
+  --builder-action-on-active: var(--builder-button-on-active);
+  border: 1px solid var(--builder-local-focus, var(--builder-color-border-strong)) !important;
+}
+.wt-color-system-v2 :is(.wt-contact-form__success-heading, .wt-contact-form__success-body) {
+  color: var(--builder-local-ink, var(--builder-color-text)) !important;
+}
+.wt-color-system-v2 :is(.wt-footer-columns__list, .wt-mobile-menu-link--secondary, .wt-mobile-menu-section__title, .wt-contact-form__success-body) {
+  opacity: 1 !important;
+}
+  .wt-ui-card {
     border: 1px solid rgba(148, 163, 184, 0.18);
     border-radius: 1.5rem;
     background: var(--builder-color-surface, #ffffff);
@@ -1465,7 +1509,6 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  opacity: 0.7;
   color: var(--builder-color-text, #111827);
 }
 
@@ -1477,6 +1520,14 @@ body {
   }
 }
 
+/* The label recedes; its Required chip does not. Opacity on the whole label
+   faded the chip's ink and fill back toward the band with it (2.2:1), so it
+   sits on the two parts meant to recede. */
+.wt-contact-form__icon,
+.wt-contact-form__label-text {
+  opacity: 0.7;
+}
+
 .wt-contact-form__icon {
   width: 0.875rem;
   height: 0.875rem;
@@ -1484,13 +1535,16 @@ body {
   color: var(--builder-color-primary, #2563eb);
 }
 
+/* A chip that paints its own surface states its own ink (lib/styles.ts): an
+   opaque brand tint, so the colour behind the label is known on any band,
+   and the brand ink held to AA on that tint. */
 .wt-contact-form__required {
   border-radius: 999px;
   padding: 0.125rem 0.5rem;
   font-size: 10px;
   letter-spacing: 0.12em;
-  color: var(--builder-color-primary, #2563eb);
-  background: color-mix(in srgb, var(--builder-color-primary, #2563eb) 10%, transparent);
+  color: var(--builder-color-primary-tint-ink, var(--builder-color-primary-ink, #2563eb));
+  background: var(--builder-color-primary-tint, var(--builder-color-background, #ffffff));
 }
 
 .wt-contact-form__control {
@@ -1897,9 +1951,12 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.12em;
   border: 1px solid color-mix(in srgb, var(--wt-color-primary, #2563eb) 24%, transparent);
-  background: color-mix(in srgb, var(--wt-color-primary, #2563eb) 8%, transparent);
-  /* Small text in the brand hue takes the AA-corrected primary (lib/styles.ts). */
-  color: var(--builder-color-primary-ink, var(--wt-color-primary, #2563eb));
+  /* A chip paints its own surface, so it states its own ink: the opaque brand
+     tint of the card's background, and the brand ink held to AA on that tint
+     (lib/styles.ts primaryTint). primary-ink is AA only on the bare background;
+     on a translucent tint it measured 4.1:1. */
+  background: var(--builder-color-primary-tint, var(--wt-color-bg, #ffffff));
+  color: var(--builder-color-primary-tint-ink, var(--builder-color-primary-ink, var(--wt-color-primary, #2563eb)));
 }
 
 .wt-cms-card__meta {

@@ -39,7 +39,11 @@ from app.models.content_blocks import (
     TimelineBlock,
 )
 from app.models.industry import PageScaffold
-from app.services.profile_text import clean_team_bio, looks_like_team_role
+from app.services.profile_text import (
+    clean_team_bio,
+    has_sentence_punctuation,
+    looks_like_team_role,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +186,7 @@ def looks_like_team_member_name(value: str | None) -> bool:
     # A name is one person; "&" and "/" join things. Mirrors the same rule in
     # `scraper._looks_like_person_name` — unlike `_NON_PERSON_NAME_TOKENS` below
     # it carries no industry vocabulary, so it holds on any site.
-    if "&" in text or "/" in text:
+    if "&" in text or "/" in text or has_sentence_punctuation(text):
         return False
     tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
     if len(tokens) < 2 or len(tokens) > 7:

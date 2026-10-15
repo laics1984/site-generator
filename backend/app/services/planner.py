@@ -105,6 +105,7 @@ def _build_user_prompt(source: SourceContent, max_chars: int | None = None) -> s
             "source_ref": source.source_ref,
             "source_title": source.title,
             "source_description": source.description,
+            "observed_website_colors": source.reference_colors,
             "headings": source.headings[:50],
             "sample_links": source.links[:30],
             "sample_image_alts": source.images[:20],

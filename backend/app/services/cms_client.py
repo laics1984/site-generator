@@ -849,7 +849,7 @@ class CmsClient:
                 )
 
     async def update_builder_styles(
-        self, builder_styles: dict[str, Any]
+        self, builder_styles: dict[str, Any], *, expected_layout_version_id: str | None = None
     ) -> dict[str, Any]:
         """PUT /api/builder/styles — entity-scoped, uses the builder-session cookie."""
         if not self._builder_cookies:
@@ -863,7 +863,10 @@ class CmsClient:
             async with httpx.AsyncClient(
                 timeout=_DEFAULT_TIMEOUT, cookies=self._builder_cookies
             ) as client:
-                resp = await client.put(url, json={"builder_styles": builder_styles})
+                payload: dict[str, Any] = {"builder_styles": builder_styles}
+                if expected_layout_version_id is not None:
+                    payload["expectedLayoutVersionId"] = expected_layout_version_id
+                resp = await client.put(url, json=payload)
             body = _safe_json(resp)
             if resp.status_code >= 400:
                 raise CmsApiError(
@@ -871,6 +874,17 @@ class CmsClient:
                     f"Update builder_styles failed: {body.get('message') or resp.text[:300]}",
                     response_body=body,
                 )
+            return body
+
+    async def get_builder_styles(self) -> dict[str, Any]:
+        if not self._builder_cookies:
+            raise CmsApiError(500, "A builder session is required.")
+        async with self._wrap_request("get_builder_styles"):
+            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT, cookies=self._builder_cookies) as client:
+                resp = await client.get(f"{self.base_url}/api/builder/styles")
+            body = _safe_json(resp)
+            if resp.status_code >= 400:
+                raise CmsApiError(resp.status_code, "Could not read the site's current colors.", response_body=body)
             return body
 
     async def update_whatsapp_widget(

@@ -64,7 +64,12 @@ from app.services.image_urls import (
     image_src_from_tag,
     resolved_image_url,
 )
-from app.services.source_outline import is_text_block
+from app.services.nav_extraction import social_link_for_href
+from app.services.source_outline import (
+    is_text_block,
+    list_marker_number,
+    strip_list_marker,
+)
 
 _HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
@@ -97,6 +102,9 @@ _MAX_CARD_BODY_CHARS = 600
 _MAX_META_LEN = 60
 # A heading longer than this is a sentence a page-builder styled as a heading.
 _MAX_CARD_TITLE_LEN = 90
+# Under this a card's body is a caption, not copy: the card is its picture
+# (a gallery tile) or its link (a contact channel).
+_MAX_CAPTION_BODY = 40
 
 # An explicit ordinal marker — "1.", "Step 2", "03)". Deliberately NOT any
 # leading digit: "18 months to 3 years old" is an age group, not step 18.
@@ -156,6 +164,57 @@ def _has_contact_link(card: Tag) -> bool:
         href = anchor.get("href")
         if isinstance(href, str) and href.strip().lower().startswith(("mailto:", "tel:")):
             return True
+    return False
+
+
+def _is_contact_channel(href: str) -> bool:
+    """True when an href reaches the business rather than a page: a phone,
+    an inbox, a chat, or a social profile (``social_link_for_href``, the one
+    platform table — it already knows ``wa.me`` and ``t.me``)."""
+    raw = href.strip()
+    if raw.lower().startswith(("mailto:", "tel:")):
+        return True
+    return social_link_for_href(raw, "") is not None
+
+
+def _only_contact_channels(scope: list[Tag]) -> bool:
+    """True when a card links somewhere, and everywhere it links is a contact
+    channel. One page link among them makes it an offering with a CTA."""
+    hrefs = [
+        href
+        for el in scope
+        for anchor in ([el] if el.name == "a" else el.find_all("a", href=True))
+        if isinstance(anchor, Tag) and isinstance(href := anchor.get("href"), str)
+    ]
+    return bool(hrefs) and all(_is_contact_channel(href) for href in hrefs)
+
+
+# A page builder that paints a box's background as an ``<img>`` says so in its
+# markup. Wix stamps the layer's motion part — ``BG_IMG`` on the ``wow-image``,
+# inside ``BG_MEDIA`` inside ``BG_LAYER`` — on every section, strip and column
+# fill. The picture is the box's surface (often Wix's own stock textures,
+# "Textured Blue Surface", "Smooth Blue Forms"), not a photograph the page
+# shows, and read as an ``<img>`` it was competing for featured slots.
+_BACKGROUND_LAYER_PARTS = frozenset({"BG_IMG", "BG_MEDIA", "BG_LAYER"})
+_BACKGROUND_LAYER_DEPTH = 3
+
+
+def is_background_layer(img: Tag) -> bool:
+    """True when an ``<img>`` is a declared background layer.
+
+    THE one answer, asked by the photo pool (which files it as a
+    ``css_background``, so the matcher keeps it to full-bleed slots — what the
+    source used it for) and by the card builder (a card's backdrop is not the
+    card's picture).
+    """
+    node: Tag | None = img
+    for _ in range(_BACKGROUND_LAYER_DEPTH + 1):
+        if not isinstance(node, Tag):
+            return False
+        part = node.get("data-motion-part")
+        if isinstance(part, str) and part.split(" ", 1)[0] in _BACKGROUND_LAYER_PARTS:
+            return True
+        node = node.parent
     return False
 
 
@@ -322,12 +381,36 @@ def is_decorative_image(
     either side re-stating the rule.
     """
     width, height = declared_image_size(tag) if size is None else size
+    if _is_channel_button(tag, width, height):
+        return True
     undersized = (width is not None and width < _MIN_CONTENT_IMAGE_W) or (
         height is not None and height < _MIN_CONTENT_IMAGE_H
     )
     if not undersized:
         return False
     return not (in_repeated_image_group(tag) if in_grid is None else in_grid)
+
+
+# A button is wide and short; a photo linked to a post (an Instagram feed tile)
+# is not, and stays content.
+_BUTTON_MIN_ASPECT = 2.5
+
+
+def _is_channel_button(tag: Tag, width: int | None, height: int | None) -> bool:
+    """A platform's "Chat on WhatsApp" / "Find us on Facebook" graphic: an
+    image whose link is a contact channel, drawn button-shaped. Its words are
+    in its pixels, so the legible-image pass placed uniquekindies' three as
+    full-width posters; the channel itself reaches the site as a social link
+    and a contact fact. Exempt from the rack rule — a row of them is still
+    buttons."""
+    anchor = tag.find_parent("a", href=True)
+    href = anchor.get("href") if anchor is not None else None
+    if not isinstance(href, str) or not _is_contact_channel(href):
+        return False
+    undersized = (width is not None and width < _MIN_CONTENT_IMAGE_W) or (
+        height is not None and height < _MIN_CONTENT_IMAGE_H
+    )
+    return undersized or bool(width and height and width / height >= _BUTTON_MIN_ASPECT)
 
 
 def _has_document_link(card: Tag) -> bool:
@@ -367,6 +450,64 @@ class _Node:
         self.is_card = False
 
 
+# A numbered title styled as body copy is still a title, but only this short:
+# past it the "item" is a numbered sentence of prose.
+_MAX_NUMBERED_TITLE_LEN = 120
+_SENTENCE_END = (".", "!", "?", "。", "！", "？")
+
+
+def _numbered_title(tag: Tag) -> int | None:
+    """The author's list number when this element reads as a numbered TITLE."""
+    text = _text(tag)
+    if not text or len(text) > _MAX_NUMBERED_TITLE_LEN or text.endswith(_SENTENCE_END):
+        return None
+    return list_marker_number(text)
+
+
+def _numbered_runs(body: Tag, heads: list[Tag]) -> dict[int, int]:
+    """Rank for every member of a numbered run, keyed by element id.
+
+    A tag's rank is the author's styling, and a page builder lets them style
+    each item of one list differently: uniquekindies' "How we teach" is
+    1. p, 2) h2, 3) p, 4) h2, 5) p and its enrichment list is h4, h5, h4. Read
+    by rank, the paragraphs vanish into the previous item's prose and the h5
+    nests under its own predecessor — and the page then opens on item 2 or 4.
+    The numbering is what states that these are siblings, so a run of
+    consecutive numbers (1, 2, 3 …) shares ONE rank: the highest any real
+    heading in it holds. A run needs a real heading among its members — numbered
+    paragraphs alone are a list in body copy, not a section outline.
+    """
+    head_ids = {id(h) for h in heads}
+    members: list[tuple[Tag, int]] = []
+    for tag in body.find_all([*_HEADING_TAGS, "p", "div"]):
+        if not isinstance(tag, Tag) or _in_chrome(tag):
+            continue
+        if id(tag) not in head_ids and (tag.name in _HEADING_TAGS or not is_text_block(tag)):
+            continue
+        number = _numbered_title(tag)
+        if number is not None:
+            members.append((tag, number))
+
+    ranks: dict[int, int] = {}
+    run: list[Tag] = []
+
+    def close() -> None:
+        levels = [int(t.name[1]) for t in run if t.name in _HEADING_TAGS]
+        if len(run) >= 2 and levels:
+            for tag in run:
+                ranks[id(tag)] = min(levels)
+
+    previous: int | None = None
+    for tag, number in members:
+        if previous is None or number != previous + 1:
+            close()
+            run = []
+        run.append(tag)
+        previous = number
+    close()
+    return ranks
+
+
 def _segment(soup: BeautifulSoup) -> list[_Node]:
     """Headings → nodes, nested by rank. Returns roots in document order."""
     body = soup.body or soup
@@ -378,10 +519,24 @@ def _segment(soup: BeautifulSoup) -> list[_Node]:
         if text and 2 <= len(text) <= _MAX_HEADING_LEN:
             heads.append(tag)
 
+    ranks = _numbered_runs(body, heads)
+    if ranks:
+        # A numbered paragraph joins the outline at its run's rank, in document
+        # order — `find_all` over the union yields exactly that order.
+        head_ids = {id(h) for h in heads}
+        heads = [
+            tag
+            for tag in body.find_all([*_HEADING_TAGS, "p", "div"])
+            if id(tag) in head_ids or id(tag) in ranks
+        ]
+
+    def rank(tag: Tag) -> int:
+        return ranks.get(id(tag)) or int(tag.name[1])
+
     nodes: list[_Node] = []
     for i, head in enumerate(heads):
-        level = int(head.name[1])
-        stop = next((n for n in heads[i + 1:] if int(n.name[1]) <= level), None)
+        level = rank(head)
+        stop = next((n for n in heads[i + 1:] if rank(n) <= level), None)
         nodes.append(_Node(head, level, stop))
 
     roots: list[_Node] = []
@@ -398,13 +553,24 @@ def _segment(soup: BeautifulSoup) -> list[_Node]:
 
 
 def _scope(node: _Node) -> list[Tag]:
-    """Elements between a heading and its stop heading, chrome excluded."""
+    """Elements between a heading and its stop heading, chrome excluded.
+
+    A container that ENCLOSES the stop heading opens before it in document
+    order, but it is the next section's wrapper: every reader here calls
+    ``find_all`` on scope elements, so admitting it hands this section the next
+    one's pictures (Wix: "Enrichment Classes" took the Testimonials column's
+    background and its parents' photo). Its children before the stop still
+    arrive one by one.
+    """
     out: list[Tag] = []
     seen: set[int] = set()
+    encloses_stop = (
+        {id(parent) for parent in node.stop.parents} if node.stop is not None else set()
+    )
     for el in node.tag.next_elements:
         if node.stop is not None and el is node.stop:
             break
-        if not isinstance(el, Tag) or id(el) in seen:
+        if not isinstance(el, Tag) or id(el) in seen or id(el) in encloses_stop:
             continue
         seen.add(id(el))
         if el.name in _CHROME_TAGS:
@@ -543,7 +709,7 @@ def _build_card(
         for img in el.find_all("img") if el.name != "img" else [el]:
             if not isinstance(img, Tag) or image_url is not None:
                 continue
-            if is_decorative_image(img):
+            if is_decorative_image(img) or is_background_layer(img):
                 continue
             image_url = resolved_image_url(img, base_url)
             if image_url is not None:
@@ -655,10 +821,15 @@ def _assign_cards(node: _Node, base_url: str) -> None:
         # and no prose, so the body test alone rejected it and the page lost
         # its only content. A schedule row carries no image, so admitting a
         # picture-dominated group leaves the original guard intact.
+        # So is a rack of contact channels ("Find us on Facebook" → a link),
+        # whose only picture was the platform's button.
         with_body = sum(1 for card, _ in kept_c if card.body)
         with_image = sum(1 for card, _ in kept_c if card.image_url)
+        channels = sum(1 for _, scope in kept_c if _only_contact_channels(scope))
         if len(kept_c) >= _MIN_GROUP_CARDS and (
-            with_body >= len(kept_c) * 0.6 or with_image >= len(kept_c) * 0.8
+            with_body >= len(kept_c) * 0.6
+            or with_image >= len(kept_c) * 0.8
+            or channels >= len(kept_c) * 0.8
         ):
             node.cards = [card for card, _ in kept_c]
             node.card_scopes = [scope for _, scope in kept_c]
@@ -712,7 +883,14 @@ def _first_image(scope: list[Tag]) -> Tag | None:
     for el in scope:
         if el.name == "img":
             return el
-        img = next((i for i in el.find_all("img") if isinstance(i, Tag)), None)
+        img = next(
+            (
+                i
+                for i in el.find_all("img")
+                if isinstance(i, Tag) and not is_background_layer(i)
+            ),
+            None,
+        )
         if img is not None:
             return img
     return None
@@ -760,12 +938,22 @@ def _classify(
     if sum(1 for c in cards if _STEP_RE.match(c.title)) >= total * 0.6:
         return "steps"
 
+    # Cards that only say how to reach the business — "Call or WhatsApp us",
+    # "Find us on Facebook" — are contact channels. Their pictures are the
+    # platform's button, so the gallery test below would file them as photos
+    # and replay them as a lightbox rack, giant icons whose links no longer go
+    # anywhere. A card carrying copy is an offering with a CTA, not a channel.
+    if sum(1 for scope in scopes if _only_contact_channels(scope)) >= total * 0.6 and all(
+        len(c.body) < _MAX_CAPTION_BODY for c in cards
+    ):
+        return "contact"
+
     # Almost entirely picture — a title and nothing else — is a gallery, not an
     # offering list. Beyond that no further split is attempted: whether a card
     # carries a photo is already in `image_urls`, and a "facilities" kind keyed
     # on that alone drew a line the markup does not actually draw.
     with_image = sum(1 for c in cards if c.image_url)
-    if with_image >= total * 0.8 and all(len(c.body) < 40 for c in cards):
+    if with_image >= total * 0.8 and all(len(c.body) < _MAX_CAPTION_BODY for c in cards):
         return "gallery"
     return "offerings"
 
@@ -819,12 +1007,20 @@ def extract_section_candidates(
             child_scope.add(_text(child.tag))
             prose_parts = [p for p in prose_parts if p not in child_scope]
 
+        # Classified on the titles as the author numbered them (the numbers
+        # are what say "steps"), then published without them — see
+        # `source_outline.LIST_MARKER_RE`.
+        card_kind = _classify(node.cards, node.card_scopes, person_name)
+        cards = [
+            card.model_copy(update={"title": strip_list_marker(card.title)})
+            for card in node.cards
+        ]
         section = SectionCandidate(
-            heading=_text(node.tag)[:_MAX_HEADING_LEN],
+            heading=strip_list_marker(_text(node.tag))[:_MAX_HEADING_LEN],
             level=node.level,
             prose=" ".join(prose_parts)[:_MAX_PROSE_CHARS],
-            cards=node.cards,
-            card_kind=_classify(node.cards, node.card_scopes, person_name),
+            cards=cards,
+            card_kind=card_kind,
             image_urls=[c.image_url for c in node.cards if c.image_url][:_MAX_GROUP_CARDS],
         )
         if section.cards or section.prose:

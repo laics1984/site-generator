@@ -29,7 +29,8 @@ class LogoExtractionTest(unittest.TestCase):
         extraction = extract_palette_from_image_bytes(image_bytes)
 
         self.assertTrue(extraction.logo_is_light)
-        self.assertEqual(extraction.palette, ["#2563eb"])
+        self.assertEqual(extraction.palette, [])
+        self.assertIsNone(extraction.seed_hex)
 
 
 class SvgLogoExtractionTest(unittest.TestCase):
@@ -84,6 +85,7 @@ class SvgLogoExtractionTest(unittest.TestCase):
 
         extraction = extract_palette_from_image_bytes(svg)
 
-        self.assertEqual(extraction.palette, ["#2563eb"])
+        self.assertEqual(extraction.palette, [])
+        self.assertIsNone(extraction.seed_hex)
         self.assertFalse(extraction.logo_is_light)
         self.assertTrue(extraction.logo_data_url.startswith("data:image/svg+xml;base64,"))

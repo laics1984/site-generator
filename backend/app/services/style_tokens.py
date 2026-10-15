@@ -190,7 +190,7 @@ def eyebrow_styles(
 ) -> dict[str, Any]:
     """The small label above a section heading, per the scheme's treatment.
 
-    All six are pure presentation — none changes what the label says, so the
+    All five are pure presentation — none changes what the label says, so the
     treatment can vary freely without touching content or grounding. ``hidden``
     sets ``display: none`` rather than dropping the node, so the builder's user
     can bring it back and the tree stays comparable across schemes.
@@ -209,7 +209,7 @@ def eyebrow_styles(
     treatment = scheme.eyebrow_treatment
     if treatment in ("inherit", "caps-tracked"):
         return caps
-    # A decorated label (rule, chip, underline) must hug its own text and sit
+    # A decorated label (chip, underline) must hug its own text and sit
     # wherever the section aligns its copy. The catalog's eyebrow nodes carry
     # `width: 100%`, which stretched a chip across the whole column; and a
     # forced `alignSelf: flex-start` pinned the label to the left edge of a
@@ -225,29 +225,15 @@ def eyebrow_styles(
             "textTransform": "none",
             "color": meta_ink(theme),
         }
-    if treatment == "rule":
-        return {
-            **caps,
-            # currentColor, not the accent hex: the rule has to track whatever
-            # ink this label ends up with, and that is not knowable here. The
-            # accent is AA-corrected against the PAGE background, but a section
-            # can resolve to the opposite band, and `enforce_text_contrast`
-            # fixes `color` per band afterwards — it does not know about
-            # borders. Inheriting means the rule is corrected for free; a hex
-            # would have been a pale rule on a pale band on half the sites.
-            "borderLeft": "3px solid currentColor",
-            "paddingLeft": "10px",
-            "display": "inline-flex",
-            "alignItems": "center",
-            **hug,
-        }
     if treatment == "chip":
         return {
             **caps,
-            # A translucent tint rather than a solid fill, for the same reason:
-            # 13% of the accent over a light band is a pale wash and over a dark
+            # A translucent tint rather than a solid fill: the band under it is
+            # not knowable here. 13% of the accent over a light band is a pale wash and over a dark
             # one a faint lift, so the chip reads on either without knowing
-            # which it landed on. Its own ink is corrected per band downstream.
+            # which it landed on. The wash is also the surface the label sits
+            # on, so `enforce_text_contrast` holds the label's ink to the chip
+            # over whatever band it landed on, keeping the accent's hue.
             "backgroundColor": _hairline(theme.palette.accent, alpha=0.13),
             "paddingTop": "6px",
             "paddingBottom": "6px",
@@ -261,7 +247,10 @@ def eyebrow_styles(
     if treatment == "underline":
         return {
             **caps,
-            "borderBottom": "2px solid currentColor",  # see "rule" above
+            # currentColor, not the accent hex: the hairline has to track
+            # whatever ink this label ends up with, and `enforce_text_contrast`
+            # fixes `color` per band afterwards — it does not know about borders.
+            "borderBottom": "2px solid currentColor",
             "paddingBottom": "6px",
             "display": "inline-block",
             **hug,
@@ -316,7 +305,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
     # every palette constructor WCAG-guards against `background` specifically
     # for this job (see ColorPalette docstring), so the dark scheme reads from
     # it instead.
-    ink = palette.text if getattr(theme, "color_scheme", "light") == "dark" else palette.secondary
+    ink = palette.text if theme.color_system_version == 2 or getattr(theme, "color_scheme", "light") == "dark" else palette.secondary
 
     # Fluid type: ceilings scale with the mood's type-scale ratio (1.25 = the
     # previous fixed look), and every tier is a clamp() so it breathes across
@@ -456,6 +445,9 @@ def emphasis_ink(theme: ThemeTokens, surface: str | None = None) -> str:
     accent, AA-corrected against `surface` (defaults to the page background).
     NOT for full section/card backgrounds — accent is banned there by
     SECTION_VISUAL_POLICY_SPEC §7; text/border/shadow-tint call sites only."""
+    if theme.color_system_version == 2:
+        from app.services.color_system import ensure_contrast
+        return ensure_contrast(theme.palette.accent, surface or theme.palette.background)
     return _accent_ink_for(surface or theme.palette.background, theme.palette.accent)
 
 
@@ -472,6 +464,9 @@ def brand_ink(theme: ThemeTokens, surface: str | None = None) -> str:
     safety net deliberately leaves alone (brand colour is assumed intentional).
     Call sites that print `palette.primary` as a `color` must go through this
     instead, exactly as accent call sites go through `emphasis_ink`."""
+    if theme.color_system_version == 2:
+        from app.services.color_system import ensure_contrast
+        return ensure_contrast(theme.palette.primary, surface or theme.palette.background)
     return _accent_ink_for(surface or theme.palette.background, theme.palette.primary)
 
 
@@ -504,6 +499,10 @@ def band_tints(theme: ThemeTokens) -> tuple[str, ...]:
     bands differ in hue; near-duplicate hues collapse, so a monochrome brand
     gets fewer, still-distinct tints rather than two of the same."""
     palette = theme.palette
+    if theme.color_system_version == 2:
+        from app.services.color_system import derive
+        colors = derive(palette.model_dump())
+        return tuple(colors[f"band-{i}"] for i in range(1, 5))
     tints: list[str] = []
     seen_hues: list[float] = []
     for token, rotation in _TINT_ROTATIONS:
@@ -524,6 +523,8 @@ def section_title_inks(theme: ThemeTokens) -> tuple[str, ...]:
     against the band it lands on (`apply_section_title_inks`), since a tint
     rotation can put any ink on any tint."""
     palette = theme.palette
+    if theme.color_system_version == 2:
+        return (palette.primary, palette.accent)
     return (
         palette.primary,
         palette.accent,
@@ -553,7 +554,7 @@ def meta_ink(theme: ThemeTokens) -> str:
     already used for body copy, so meta text reads calmly instead of as a
     miniature CTA."""
     palette = theme.palette
-    ink = palette.text if getattr(theme, "color_scheme", "light") == "dark" else palette.secondary
+    ink = palette.text if theme.color_system_version == 2 or getattr(theme, "color_scheme", "light") == "dark" else palette.secondary
     return _muted(ink)
 
 

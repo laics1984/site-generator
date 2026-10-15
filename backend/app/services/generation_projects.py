@@ -94,3 +94,30 @@ async def mark_complete(project_id: str) -> None:
             (project_id,),
         )
         await db.commit()
+
+
+async def save_project_palette(project_id: str, patch, *, unpublished_only: bool = False) -> None:
+    from app.models.brand import CreativePalette
+    from app.services.palette_updates import current_theme, palette_patch, patched_site
+    async with connect() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        cursor = await db.execute("SELECT * FROM generation_projects WHERE id=?", (project_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            raise ValueError("This saved preview no longer exists.")
+        if unpublished_only and row["status"] != "generated":
+            # A local preview may be edited, but its published extension theme
+            # is changed only after an explicit, successful palette publish.
+            return
+        stored = GeneratedSite.model_validate_json(row["preview_site_json"])
+        current_theme(stored)
+        # The posted preview may be stale. Reapply only its four colors to the
+        # current saved theme so this color-only action cannot restore older
+        # typography, component settings or brand metadata from another tab.
+        current_patch = palette_patch(stored, CreativePalette(**patch.theme.palette.model_dump()))
+        site = patched_site(stored, current_patch)
+        request = json.loads(row["request_json"])
+        request["palette_override"] = {key: getattr(patch.theme.palette, key) for key in ("primary", "secondary", "accent", "surface")}
+        await db.execute("UPDATE generation_projects SET preview_site_json=?, request_json=?, updated_at=strftime('%s','now') WHERE id=?",
+                         (site.model_dump_json(), json.dumps(request), project_id))
+        await db.commit()

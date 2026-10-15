@@ -22,6 +22,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -83,6 +84,7 @@ from app.services.map_embed import ParsedMap, parse_map_src
 from app.services.video_embed import ParsedVideo, parse_video_src
 from app.services.profile_text import (
     has_contact_token,
+    has_sentence_punctuation,
     is_boilerplate_line,
     roster_is_people,
     truncate_bio,
@@ -100,6 +102,7 @@ from app.services.nav_extraction import (
 from app.services.section_extraction import (
     extract_section_candidates,
     in_repeated_image_group as _in_repeated_image_group,
+    is_background_layer as _is_background_layer,
     is_decorative_image as _is_decorative_image,
 )
 from app.services.platform_routes import is_template_page_path
@@ -111,7 +114,10 @@ logger = logging.getLogger(__name__)
 # serving crawls cached under the old rules (`routers.scrape.job_options`).
 # 1: every image URL resolved by `image_urls.resolved_image_url` — a cached
 # crawl still carries Wix blur-up placeholders in its section racks.
-EXTRACTION_VERSION = 1
+# 3: a page builder's declared background layer (Wix `BG_IMG`) is a
+# css_background, never a card's picture; contact-channel cards are `contact`
+# and their platform buttons are furniture.
+EXTRACTION_VERSION = 4
 
 
 # --- public types ---------------------------------------------------------------
@@ -237,6 +243,19 @@ async def _stamp_render_evidence(page) -> None:
             () => {
               const vw = Math.max(1, window.innerWidth);
               const vh = Math.max(1, window.innerHeight);
+              // Reuse this rendered-page pass: observe representative brand
+              // actions/chrome, not every unrelated color in a stylesheet.
+              const colors = [];
+              for (const el of Array.from(document.querySelectorAll('header, nav, button, a[class*="btn"], a[class*="button"]')).slice(0, 40)) {
+                const style = getComputedStyle(el);
+                for (const value of [style.backgroundColor, style.color]) {
+                  const m = value.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)$/);
+                  if (!m || (m[4] && Number(m[4]) < 1)) continue;
+                  const hex = '#' + [m[1], m[2], m[3]].map(c => Number(c).toString(16).padStart(2, '0')).join('');
+                  if (!colors.includes(hex)) colors.push(hex);
+                }
+              }
+              document.documentElement.setAttribute('data-webtree-reference-colors', JSON.stringify(colors.slice(0, 8)));
               const extractUrl = (value) => {
                 if (!value || value === 'none') return null;
                 const match = value.match(/url\\(["']?([^"')]+)["']?\\)/);
@@ -762,6 +781,11 @@ def _extract_images(
                 url=abs_url, alt=alt, width=width, height=height,
                 intent=intent, role=role, evidence=evidence,
                 context_heading=context_heading, caption=caption,
+                # A page builder's background layer is a CSS background drawn
+                # as an <img>: a surface, kept out of featured slots like one.
+                source_usage=(
+                    "css_background" if _is_background_layer(img) else "inline"
+                ),
             )
         )
         seen.add(abs_url)
@@ -1133,7 +1157,7 @@ def _looks_like_person_name(value: str) -> bool:
     # A name is one person. "&" and "/" join things — "Spill Control & Absorbent",
     # "Parking Lock, Wheel Chock/Clamp & Fender". Unlike the tail-token denylist
     # below this carries no industry vocabulary, so it holds on any site.
-    if "&" in text or "/" in text:
+    if "&" in text or "/" in text or has_sentence_punctuation(text):
         return False
     tokens = [t for t in re.findall(r"[A-Za-z][A-Za-z'.-]*", text) if t]
     if len(tokens) < 2 or len(tokens) > 7:
@@ -1227,7 +1251,8 @@ def _nearest_profile_container(img: Tag) -> tuple[Tag | None, bool]:
 
 
 def _in_profile_chrome(img: Tag) -> bool:
-    """True when a portrait sits in site chrome rather than page content.
+    """True when a portrait (or the h1 naming one) sits in site chrome rather
+    than page content.
 
     ``_nearest_profile_container`` stops at ``_PROFILE_CHROME_TAGS`` on the way
     up; the sibling walk below has no such stop, and a footer's link column
@@ -1541,12 +1566,22 @@ def _page_subject_profile(
     The h1 is the whole claim: this page is ABOUT that person. A name-shaped h2
     is a section heading inside a page about something else ("Rahman Wellness"
     over a clinic's story), which is why the card walk distrusts h2 as well.
+
+    So the h1 must be THIS page's: Wix sets the site title as an h1 in the
+    header of every page, and "UNIQUE KINDIES" is as name-shaped as any person.
+    Read as a subject, the brand became a person on every page without cards,
+    photographed by the one stock banner they shared — three pages published as
+    a profile of the business. An h1 in site chrome, or one that just states the
+    site's own name, names the site, not the page.
     """
+    site_name = (_extract_meta_string(soup, "og:site_name") or "").casefold()
     name = None
     for heading in soup.find_all("h1"):
-        if not isinstance(heading, Tag):
+        if not isinstance(heading, Tag) or _in_profile_chrome(heading):
             continue
         text = _clean_line(heading.get_text(" ", strip=True))
+        if site_name and " ".join(text.split()).casefold() == " ".join(site_name.split()):
+            continue
         if _looks_like_person_name(text):
             name = text
             break
@@ -2270,6 +2305,15 @@ class _ParsedPage:
     favicon: str | None = None
 
 
+def _observed_colors(soup: BeautifulSoup) -> list[str]:
+    root = soup.find("html")
+    try:
+        values = json.loads(root.get("data-webtree-reference-colors", "[]")) if root else []
+    except (ValueError, TypeError):
+        return []
+    return [v.lower() for v in values if isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v)][:8] if isinstance(values, list) else []
+
+
 def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True) -> _ParsedPage:
     """HTML → SourceContent + image candidates + logo URL.
 
@@ -2362,6 +2406,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
     source_content = SourceContent(
         source_kind="url",
         source_ref=final_url,
+        reference_colors=_observed_colors(soup),
         title=title,
         description=description,
         raw_text=extracted_text,

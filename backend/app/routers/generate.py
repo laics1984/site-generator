@@ -121,6 +121,9 @@ from app.services.image_vision import (
 from app.services.locale import detect_market, image_query_cue, place_query_cue
 from app.services.content_collections import extract_collections
 from app.services.schema_builder import plan_to_site
+from app.models.brand import CreativePalette
+from app.services.theme import apply_creative_palette
+from app.services.palette_updates import design_inputs
 from app.services.timing import stage
 from app.services.generation_projects import create_project, get_project, list_projects
 from app.services.scraper import ScrapeError, extend_crawl
@@ -137,6 +140,7 @@ class GenerateRequest(BaseModel):
     """Source content plus optional brand. Brand drives logo + palette + mood."""
 
     source: SourceContent
+    palette_override: CreativePalette | None = None
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
     color_scheme_override: str | None = None  # "light" | "dark"; overrides the logo-based default
@@ -724,13 +728,23 @@ def _rostered_names(source: SourceContent) -> set[str]:
     (scraper._page_subject_profile), and on its own would read a photo under an
     "Annual General Meeting" heading as a person. A 2+ page is always real card
     extraction — the positional fallback never emits more than one.
+
+    Only a card that names someone counts. Normalising keeps Latin tokens, so a
+    sentence a source (or a crawl cached before the scraper learned better)
+    filed as a name — "Unique Kindies 创立于 2006 年，…。" — reduces to the BRAND,
+    and two of them made a "roster" listing the business: every page titled
+    with the site's name then published as that business's profile.
     """
     names: set[str] = set()
     for page in (source, *source.discovered_pages):
         candidates = page.profile_candidates or []
         if len(candidates) < 2:
             continue
-        names |= {_normalized_person_name(p.name) for p in candidates}
+        names |= {
+            _normalized_person_name(p.name)
+            for p in candidates
+            if looks_like_team_member_name(p.name)
+        }
     names.discard("")
     return names
 
@@ -1357,8 +1371,11 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         logo_is_light=brand.logo_is_light if brand else None,
         content=ContentProfile.of(payload.source),
         hero_height=payload.hero_height,
+        **design_inputs(payload.source, brand),
     )
     theme = direction.theme
+    if payload.palette_override is not None:
+        theme = apply_creative_palette(theme, payload.palette_override)
 
     scraped_images, scraped_metadata = _image_pool_for(payload.source)
     await _screen_source_images_for_graphics(scraped_metadata)
@@ -1392,6 +1409,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         stock_only=payload.stock_images_only,
     )
     site.collections = await collections_task
+    site.palette_brief = {"business": site.site_name, "industry": plan.industry_category, **design_inputs(payload.source, brand)}
     site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
     return site
 
@@ -1409,6 +1427,7 @@ class GenerateWithPagesRequest(BaseModel):
     """
 
     source: SourceContent
+    palette_override: CreativePalette | None = None
     selected_pages: list[PageScaffold] = Field(min_length=1)
     generation_mode: Literal["full", "two_page_preview", "remaining"] = "full"
     preview_second_slug: str | None = None
@@ -1648,10 +1667,13 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
                 positioning=detected.positioning,
                 content=ContentProfile.of(payload.source),
                 hero_height=payload.hero_height,
+                **design_inputs(payload.source, brand, detected),
             )
         theme = direction.theme
     else:
         theme = ThemeTokens.model_validate(payload.frozen_site.theme)
+    if payload.palette_override is not None and payload.frozen_site is None:
+        theme = apply_creative_palette(theme, payload.palette_override)
 
     # Announcement/quick-links strap: claim it BEFORE planning so its text is
     # out of raw_text (the LLM must not also narrate it into a paragraph);
@@ -1947,6 +1969,7 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         raise HTTPException(status_code=500, detail="Preview generation must produce exactly two pages.")
 
     site.generation_mode = payload.generation_mode
+    site.palette_brief = {"business": site.site_name, "industry": industry, "positioning": detected.positioning, "personality": detected.personality.model_dump(), **design_inputs(payload.source, brand, detected)}
     site.planned_page_count = len(planned_scaffolds)
     if payload.generation_mode == "two_page_preview":
         request = payload.model_dump(mode="json", exclude={"frozen_site", "available_scaffolds"})

@@ -187,6 +187,23 @@ def looks_like_founder_role(value: str | None) -> bool:
     return any(phrase in low for phrase in _FOUNDER_ROLE_PHRASES)
 
 
+# Punctuation that only ever sits INSIDE a sentence. Latin "." and "," are not
+# here — "Dr. Lee", "Jane Doe, MD" — but the full-width forms are never part of
+# a name in any script.
+_SENTENCE_PUNCTUATION = frozenset("，。！？；：")
+
+
+def has_sentence_punctuation(text: str) -> bool:
+    """True when ``text`` is punctuated as a sentence, so it cannot be a name.
+
+    Both name tests count only Latin-letter tokens, so a bilingual sentence —
+    "Unique Kindies 创立于 2006 年，致力于……。" — reads to them as the two-word
+    name "Unique Kindies". The punctuation is what gives it away, in any
+    language, without a word of vocabulary.
+    """
+    return any(char in _SENTENCE_PUNCTUATION for char in text)
+
+
 def has_contact_token(text: str) -> bool:
     """True when a line carries an email, URL or phone number.
 

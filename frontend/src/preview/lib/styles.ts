@@ -1,6 +1,7 @@
 // Vendored from webtree-public/lib/styles.ts — near-verbatim, only the
 // import path changed (`~/types/public` → `./public`).
 import type { JsonPrimitive, PublicStyleTokens } from './public'
+import { semanticColorVars, type ThemeColors } from './colorSystem'
 
 // --- AA contrast safety net for brand-primary text ------------------------
 // Small, self-contained port of builder src/lib/color-utils.ts's
@@ -365,7 +366,11 @@ export function buildCssVars(styles?: PublicStyleTokens | null) {
     '--builder-button-radius': buttonRadius,
     ...(heroMinHeight ? { '--builder-hero-min-height': heroMinHeight } : {}),
     ...(heroHeadingSize ? { '--builder-hero-heading-size': heroHeadingSize } : {}),
-    ...(heroBodySize ? { '--builder-hero-body-size': heroBodySize } : {})
+    ...(heroBodySize ? { '--builder-hero-body-size': heroBodySize } : {}),
+    ...(styles?.colorSystemVersion === 2 ? semanticColorVars({
+      primary: primaryColor, secondary: secondaryColor, accent: accentColor,
+      text: textColor, background: backgroundColor, surface: surfaceColor,
+    } as ThemeColors, { background: buttonBackground, text: buttonText }) : {})
   }
 }
 

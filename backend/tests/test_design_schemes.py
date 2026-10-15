@@ -639,22 +639,30 @@ class ContrastSurvivesEverySchemeTest(unittest.TestCase):
                 self.assertLessEqual(len(h1s), 1, f"{scheme.slug} has {len(h1s)} h1s")
 
     def test_accent_rules_inherit_their_ink_instead_of_pinning_a_hex(self):
-        # An eyebrow's rule/underline is decoration, and `enforce_text_contrast`
+        # An eyebrow's underline is decoration, and `enforce_text_contrast`
         # only retargets `color`. A hex computed against the page background
-        # would be a pale rule on a pale band wherever a section resolves to the
+        # would be a pale line on a pale band wherever a section resolves to the
         # opposite one; currentColor gets corrected along with the text.
-        for slug in ("swiss-quiet", "poster-display", "studio-mono", "consult-formal"):
+        for slug in ("poster-display", "gallery-first", "studio-mono"):
             site = _build(f"Brand {slug}", "modern", "saas", scheme_slug=slug)
             found = False
             for element in _walk(_sections(site)):
                 if (element.name or "") != "Eyebrow":
                     continue
-                for key in ("borderLeft", "borderBottom"):
-                    value = (element.styles or {}).get(key)
-                    if value:
-                        found = True
-                        self.assertIn("currentColor", value, f"{slug}: {key}={value}")
-            self.assertTrue(found, f"{slug} produced no ruled eyebrow to check")
+                value = (element.styles or {}).get("borderBottom")
+                if value:
+                    found = True
+                    self.assertIn("currentColor", value, f"{slug}: {value}")
+            self.assertTrue(found, f"{slug} produced no underlined eyebrow to check")
+
+    def test_no_eyebrow_carries_a_mark_before_its_label(self):
+        # Nothing sits in front of a section's title: no scheme draws a bar
+        # (or any other mark) to the left of its eyebrow.
+        for scheme in DESIGN_SCHEMES:
+            site = _build(f"Brand {scheme.slug}", "modern", "saas", scheme_slug=scheme.slug)
+            for element in _walk(_sections(site)):
+                if (element.name or "") == "Eyebrow":
+                    self.assertNotIn("borderLeft", element.styles or {}, scheme.slug)
 
     def test_a_flat_card_scheme_leaves_no_invisible_filled_card(self):
         # "flat" removes the fill AND the frame together. A card that kept its

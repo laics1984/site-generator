@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 
 import {
   listCmsTargets,
+  readLivePalette,
+  publishPalette,
   planCmsPush,
   pushToCms,
   testCmsConnection,
@@ -33,6 +35,7 @@ interface PublishDrawerProps {
   open: boolean
   onClose: () => void
   site: GeneratedSite
+  paletteOnly?: boolean
   onPublished?: () => void
 }
 
@@ -75,7 +78,7 @@ function siteLabel(site: CmsSite): string {
  * credential form with a destination choice and a plan — it needs the width,
  * and it should not push the preview off screen to get it.
  */
-export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawerProps) {
+export function PublishDrawer({ open, onClose, site, onPublished, paletteOnly = false }: PublishDrawerProps) {
   const operation = site.generation_mode === 'two_page_preview'
     ? 'preview' : site.generation_mode === 'remaining' ? 'extend' : 'sync'
   // Which CMS this lands in. The backend owns the list; an install that never
@@ -86,13 +89,18 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
   // The account's sites once Connect succeeds; null = not connected.
   const [sites, setSites] = useState<CmsSite[] | null>(null)
   const [sitesError, setSitesError] = useState<string | null>(null)
-  const [mode, setMode] = useState<Mode>(operation === 'preview' ? 'create' : 'update')
+  const [mode, setMode] = useState<Mode>(!paletteOnly && operation === 'preview' ? 'create' : 'update')
   // The site to update — picked from the list, or typed when there is no list.
   const [siteToken, setSiteToken] = useState('')
   const [newEntity, setNewEntity] = useState({
     name: site.site_name ?? '',
     url: '',
   })
+  const [livePalette, setLivePalette] = useState<Awaited<ReturnType<typeof readLivePalette>> | null>(null)
+  const [paletteNotice, setPaletteNotice] = useState<string | null>(null)
+  const [publication, setPublication] = useState<Awaited<ReturnType<typeof readLivePalette>>['publication']>()
+  const [verifying, setVerifying] = useState(false)
+  const [contextAttempt, setContextAttempt] = useState(0)
   const [plan, setPlan] = useState<CmsSyncPlan | null>(null)
   const [planBusy, setPlanBusy] = useState(false)
   const [planError, setPlanError] = useState<string | null>(null)
@@ -116,6 +124,9 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
   const epoch = useRef(0)
   function invalidate(): number {
     epoch.current += 1
+    setPaletteNotice(null)
+    setPublication(undefined)
+    setVerifying(false)
     return epoch.current
   }
 
@@ -192,6 +203,18 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
       return
     }
     let cancelled = false
+    if (paletteOnly) {
+      setPaletteNotice(null); setPublication(undefined)
+      setLivePalette(null); setPlanError(null); setPlanBusy(true)
+      readLivePalette(login, siteToken, targetName ?? undefined).then(res => {
+        if (!cancelled) {
+          if (res.builder_styles?.colorSystemVersion !== 2) setPlanError("This live site uses older colors. Its existing design will be kept.")
+          else setLivePalette(res)
+        }
+      }).catch(err => { if (!cancelled) setPlanError(String(err.message || err)) })
+        .finally(() => { if (!cancelled) setPlanBusy(false) })
+      return () => { cancelled = true }
+    }
     setPlan(null)
     setPlanError(null)
     setPlanBusy(true)
@@ -213,7 +236,7 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
     return () => {
       cancelled = true
     }
-  }, [connected, mode, siteToken, targetName, site, login, operation])
+  }, [connected, mode, siteToken, targetName, site, login, operation, paletteOnly, contextAttempt])
 
   async function handleConnect() {
     const requested = invalidate()
@@ -233,10 +256,10 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
         setSiteToken(boundSite.entity_api_token)
       } else if (operation === 'extend') {
         setError('The account does not have access to the CMS site used for this preview.')
-      } else if (res.sites.length === 1 && operation !== 'preview') {
+      } else if (res.sites.length === 1 && (paletteOnly || operation !== 'preview')) {
         // One site: nothing to choose, so don't ask.
         setSiteToken(res.sites[0].entity_api_token)
-      } else if (res.sites.length === 0 && !res.sites_error) {
+      } else if (!paletteOnly && res.sites.length === 0 && !res.sites_error) {
         // Nothing to update yet — the only thing this account can do is create.
         switchMode('create')
       }
@@ -254,6 +277,13 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
     setError(null)
     setReport(null)
     try {
+      if (paletteOnly) {
+        if (!livePalette?.layout.versionId) throw new Error("Read the live palette before publishing.")
+        const result = await publishPalette(site, login, siteToken, livePalette.layout.versionId, targetName ?? undefined)
+        if (epoch.current !== requested) return
+        setPaletteNotice(result.warning || "Colors published. Cached public pages will update as their caches refresh.")
+        setLivePalette(null); onPublished?.(); return
+      }
       const res = await pushToCms({
         site,
         login,
@@ -287,19 +317,36 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
     }
   }
 
+  async function verifyPublication() {
+    const requested = epoch.current
+    const colors = site.builder_styles?.colors
+    if (!colors) return
+    setVerifying(true)
+    try {
+      const result = await readLivePalette(login, siteToken, targetName ?? undefined, {
+        primary: colors.primary, secondary: colors.secondary, accent: colors.accent, surface: colors.surface,
+      })
+      if (epoch.current === requested) setPublication(result.publication)
+    } catch {
+      if (epoch.current === requested) setPublication({ state: 'unavailable', message: 'The public result could not be checked. Try again shortly.' })
+    } finally {
+      if (epoch.current === requested) setVerifying(false)
+    }
+  }
+
   const loginComplete = Boolean(login.email.trim() && login.password.trim())
   const canPush =
     connected &&
     !busy &&
     (mode === 'create'
       ? newEntity.name.trim().length > 0
-      : Boolean(siteToken && plan && (operation !== 'extend' || chosenSite?.entity_id === site.cms_entity_id)))
+      : Boolean(siteToken && (paletteOnly ? livePalette?.layout.versionId : plan && (operation !== 'extend' || chosenSite?.entity_id === site.cms_entity_id))))
 
   const pageCount = site.pages.length
   const pagesWord = `${pageCount} page${pageCount === 1 ? '' : 's'}`
   const whereWord = targets.length > 1 && target ? ` to ${targetKind(target)}` : ''
   const pushLabel =
-    mode === 'create'
+    paletteOnly ? `Publish colors to ${chosenSite?.entity_name ?? 'site'}` : mode === 'create'
       ? `Create site & push ${pagesWord}${whereWord}`
       : operation === 'extend'
         ? `Add ${pagesWord} to ${chosenSite?.entity_name ?? 'the preview site'}${whereWord}`
@@ -309,8 +356,8 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
     <Drawer
       open={open}
       onClose={onClose}
-      title="Publish to webtree"
-      description={operation === 'extend'
+      title={paletteOnly ? "Publish colors only" : "Publish to webtree"}
+      description={paletteOnly ? 'Updates the color palette on an existing site.' : operation === 'extend'
         ? 'Adds the remaining pages to the existing preview site.'
         : 'Sends pages, header, footer, theme and images to a webtree site.'}
       widthClassName="max-w-xl"
@@ -343,8 +390,8 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
             )}
             {target?.is_remote && (
               <Banner tone="warn" title="This is a live CMS">
-                Pages, images and theme go straight to <strong>{target.label}</strong>.
-                Anything you push here is real.
+                {paletteOnly ? 'Color changes' : 'Pages, images and theme'} go straight to <strong>{target.label}</strong>.
+                Changes published here appear on the live website.
               </Banner>
             )}
             <Field label="Email">
@@ -390,7 +437,7 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
           title="2 · Site"
           description={
             connected
-              ? 'Update one of your sites, or create a new one.'
+              ? paletteOnly ? 'Choose a site made with the new color system.' : 'Update one of your sites, or create a new one.'
               : 'Connect first to choose a site.'
           }
         >
@@ -402,7 +449,7 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
               onChange={switchMode}
               options={[
                 { value: 'update', label: 'Update existing site' },
-                ...(operation === 'extend' ? [] : [{ value: 'create' as Mode, label: 'Create new site' }]),
+                ...(operation === 'extend' || paletteOnly ? [] : [{ value: 'create' as Mode, label: 'Create new site' }]),
               ]}
             />
 
@@ -417,7 +464,7 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
                     >
                       <option value="">Choose a site…</option>
                       {sites.map((s) => (
-                        <option key={s.entity_api_token} value={s.entity_api_token} disabled={operation === 'extend' && s.entity_id !== site.cms_entity_id}>
+                        <option key={s.entity_api_token} value={s.entity_api_token} disabled={!paletteOnly && operation === 'extend' && s.entity_id !== site.cms_entity_id}>
                           {siteLabel(s)}
                         </option>
                       ))}
@@ -507,7 +554,7 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
           </div>
         </Card>
 
-        <Card title="3 · Options">
+        {!paletteOnly && <Card title="3 · Options">
           <div className="space-y-2.5">
             {operation !== 'extend' && <Checkbox
               checked={pushBuilderStyles}
@@ -550,7 +597,19 @@ export function PublishDrawer({ open, onClose, site, onPublished }: PublishDrawe
               </Banner>
             )}
           </div>
-        </Card>
+        </Card>}
+
+        {paletteOnly && livePalette && <Card title="Review colors">
+          <div className="grid grid-cols-4 gap-2">{(["primary", "secondary", "accent", "surface"] as const).map(key => <div key={key} className="text-xs capitalize">{key}<div className="mt-1 flex h-8 overflow-hidden rounded border border-line"><span className="w-1/2" title={`Live: ${livePalette.builder_styles.colors[key]}`} style={{ background: livePalette.builder_styles.colors[key] }} /><span className="w-1/2" title={`Selected: ${site.builder_styles?.colors[key]}`} style={{ background: site.builder_styles?.colors[key] }} /></div></div>)}</div>
+          <Button onClick={() => setContextAttempt(n => n+1)} disabled={busy}>Refresh live colors</Button>
+          <p className="mt-2 text-xs text-ink-muted">Live colors are on the left; your selected colors are on the right. Public caches refresh on their existing schedule.</p>
+        </Card>}
+        {paletteNotice && <Banner tone="info" title="Palette saved">
+          <p>{paletteNotice}</p>
+          <Button onClick={verifyPublication} busy={verifying} disabled={verifying} className="mt-2">Check public colors</Button>
+          <Button onClick={() => setContextAttempt(n => n+1)} disabled={busy || verifying} className="ml-2 mt-2">Refresh live colors</Button>
+          {publication && <p className="mt-2" role="status">{publication.message} {publication.public_url && <a href={publication.public_url} target="_blank" rel="noreferrer" className="underline">Open website</a>}</p>}
+        </Banner>}
 
         <Button
           variant="primary"

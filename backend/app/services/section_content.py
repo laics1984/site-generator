@@ -53,10 +53,11 @@ from app.models.content_blocks import (
 from app.services.icons import icons_for_items
 from app.services.image_styling import _split_layers
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
-from app.services.style_tokens import brand_ink, heading_ink
+from app.services.style_tokens import _accent_ink_for, brand_ink, emphasis_ink, heading_ink
 from app.services.template_filler import get_template, templates_for_type
 from app.services.theme import (
     _adjust_lightness,
+    _chroma,
     _contrast,
     _ensure_contrast_against,
     _hex_to_rgb,
@@ -1318,7 +1319,7 @@ _RGBA = _re.compile(
     r"rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)"
 )
 _HEX6 = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
-_VAR_TOKEN = _re.compile(r"var\(\s*(--builder-[a-z-]+)")
+_VAR_TOKEN = _re.compile(r"var\(\s*(--builder-[a-z0-9-]+)")
 # The catalog's only color-mix() shape: two colors (each independently a
 # var(--builder-*, #fallback) or a literal hex) blended in sRGB by a literal
 # percent — the second may be `transparent`, which makes the mix the first
@@ -1337,6 +1338,13 @@ def _token_hex(token: str, theme: ThemeTokens) -> str | None:
     scheme. Mirrors ThemeTokens.to_builder_styles(), so the contrast we compute
     here is exactly what the renderer paints."""
     p = theme.palette
+    if theme.color_system_version == 2:
+        from app.services.color_system import css_vars
+        tokens = css_vars(p.model_dump())
+        tokens.update({"--builder-page-background": theme.page.background,
+                       "--builder-button-background": theme.buttons.background,
+                       "--builder-button-text": theme.buttons.text})
+        return tokens.get(token)
     return {
         "--builder-color-primary": p.primary,
         "--builder-color-primary-ink": brand_ink(theme),
@@ -1917,6 +1925,14 @@ def surface_of(node: BuilderElement, theme: ThemeTokens) -> str | None:
     return _to_hex(fill) if isinstance(fill, tuple) else None
 
 
+def opaque_surface_of(node: BuilderElement, theme: ThemeTokens) -> str | None:
+    """The colour of `node`'s own fill when it hides whatever is behind it —
+    a solid button on a photo hero — else None. Its text sits on THAT, so no
+    ancestor's surface, photo or band, says anything about its ink."""
+    fill = _own_fill(node, theme, None)
+    return _to_hex(fill) if isinstance(fill, tuple) else None
+
+
 def band_of_surface(surface_hex: str, theme: ThemeTokens) -> Band:
     """Which band a surface is, by the ink that reads on it: "dark" when the
     palette's light ink wins. The same question the copy's ink answers, so a
@@ -1958,15 +1974,32 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
       same-luminance band. Only text on the WRONG side of its surface is
       flipped; a muted caption on the right side stays as designed.
 
-    Brand-hued text (primary/accent eyebrows, links) is intentional and never
-    recoloured. A surface no pass could measure (a photo nobody recorded) is
-    left alone, since there is nothing to judge against. A solid button's label
-    is judged against the button, a ghost button's against the band — and its
-    outline follows its label. Mutates in place; returns the count changed."""
+    **Brand-hued text keeps its hue.** An eyebrow, a badge or a quiet link in
+    the primary or the accent is the design, so it is never swapped for a
+    neutral — but it is held to AA on the surface it sits on, as
+    `_accent_ink_for` holds it (darker on a light surface, a pastel of the same
+    hue on a dark one). Producers ink it for the PAGE (`emphasis_ink` /
+    `brand_ink` with no surface), and later passes repaint what is under it —
+    a multi-tint band, the rhythm's surface band, the eyebrow chip's own accent
+    wash — so a page-tuned red eyebrow read 3.5-4.3:1 on its band. This pass is
+    the only one that sees the surface the copy finally sits on, so it is the
+    one that re-holds it.
+
+    A surface no pass could measure (a photo nobody recorded) is left alone,
+    since there is nothing to judge against. A solid button's label is judged
+    against the button, a ghost button's against the band — and its outline
+    follows its label. Mutates in place; returns the count changed."""
     page_rgb = _hex_to_rgb(_expand_hex(theme.page.background))
+    # The brand's inks as producers write them: the raw colours, and the
+    # page-tuned inks every eyebrow, badge and quiet link defaults to.
     brand_rgb = {
-        _hex_to_rgb(_expand_hex(theme.palette.primary)),
-        _hex_to_rgb(_expand_hex(theme.palette.accent)),
+        _hex_to_rgb(_expand_hex(ink))
+        for ink in (
+            theme.palette.primary,
+            theme.palette.accent,
+            brand_ink(theme),
+            emphasis_ink(theme),
+        )
     }
     changed = 0
 
@@ -1984,33 +2017,59 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
             if node.type in ("text", "link") and bg_rgb is not None:
                 raw = styles.get("color")
                 fg = _parse_color(raw, theme)
-                if fg is not None and fg[0] not in brand_rgb:
+                if fg is not None:
                     fg_hex, bg_hex = _to_hex(fg[0]), _to_hex(bg_rgb)
-                    hard_coded = isinstance(raw, str) and bool(_LITERAL_WHITE.match(raw))
-                    # Only "wrong-side" text — the same luminance tone as its
-                    # band — is the vanishing-text bug (dark-on-dark /
-                    # light-on-light).
-                    wrong_side = (_relative_luminance(fg_hex) < 0.5) == (
-                        _relative_luminance(bg_hex) < 0.5
-                    ) and _contrast(fg_hex, bg_hex) < 4.5
-                    # A neutral ink on the right side can still fail once its
-                    # translucency lets the surface through: a 92% paragraph on a
-                    # photo's solved scrim (which is solved for the OPAQUE ink).
                     need = _COPY_MIN_LARGE if _is_large_text(styles) else _COPY_MIN
-                    faded = fg[1] < 1.0 and _contrast(
-                        _to_hex(_composite(fg[0], fg[1], bg_rgb)), bg_hex
-                    ) < need
-                    neutral = hard_coded or _is_neutral_ink(raw, fg[0], theme)
-                    safe = ink_on(theme.palette, bg_hex)
-                    written = ink_css(theme.palette, safe)
-                    # The author's translucency is a nicety, kept only where the
-                    # ink still reads with it; legibility outranks it.
-                    keep_alpha = fg[1] < 1.0 and _contrast(
-                        _to_hex(_composite(_hex_to_rgb(safe), fg[1], bg_rgb)), bg_hex
-                    ) >= need
-                    if (hard_coded or wrong_side or (neutral and faded)) and (
-                        written.lower() != str(raw).lower()
-                    ):
+                    safe: str | None = None
+                    if theme.color_system_version == 2:
+                        from app.services.color_system import ensure_contrast
+                        alpha = fg[1]
+                        opacity = styles.get("opacity", 1)
+                        try:
+                            alpha *= float(str(opacity).rstrip("%")) / (100 if "%" in str(opacity) else 1)
+                        except ValueError:
+                            pass
+                        painted = _to_hex(_composite(fg[0], alpha, bg_rgb))
+                        if _contrast(painted, bg_hex) < need:
+                            safe = ensure_contrast(fg_hex, bg_hex, need)
+                            if "opacity" in styles:
+                                styles = dict(styles)
+                                styles.pop("opacity", None)
+                                node.styles = styles
+                    elif fg[0] in brand_rgb:
+                        if _contrast(fg_hex, bg_hex) < need:
+                            safe = _accent_ink_for(bg_hex, fg_hex)
+                            # Near the light/dark pivot only a pure white or
+                            # black reaches AA, so no shade of a hue can: the
+                            # lift bleaches to a white nobody chose. Copy there
+                            # wears the palette's ink, like any other copy.
+                            if not _chroma(safe) or _contrast(safe, bg_hex) < need:
+                                safe = ink_on(theme.palette, bg_hex)
+                    else:
+                        hard_coded = isinstance(raw, str) and bool(_LITERAL_WHITE.match(raw))
+                        # Only "wrong-side" text — the same luminance tone as
+                        # its band — is the vanishing-text bug (dark-on-dark /
+                        # light-on-light).
+                        wrong_side = (_relative_luminance(fg_hex) < 0.5) == (
+                            _relative_luminance(bg_hex) < 0.5
+                        ) and _contrast(fg_hex, bg_hex) < 4.5
+                        # A neutral ink on the right side can still fail once
+                        # its translucency lets the surface through: a 92%
+                        # paragraph on a photo's solved scrim (which is solved
+                        # for the OPAQUE ink).
+                        faded = fg[1] < 1.0 and _contrast(
+                            _to_hex(_composite(fg[0], fg[1], bg_rgb)), bg_hex
+                        ) < need
+                        neutral = hard_coded or _is_neutral_ink(raw, fg[0], theme)
+                        if hard_coded or wrong_side or (neutral and faded):
+                            safe = ink_on(theme.palette, bg_hex)
+                    written = ink_css(theme.palette, safe) if safe is not None else None
+                    if written is not None and written.lower() != str(raw).lower():
+                        # The author's translucency is a nicety, kept only where
+                        # the ink still reads with it; legibility outranks it.
+                        keep_alpha = fg[1] < 1.0 and _contrast(
+                            _to_hex(_composite(_hex_to_rgb(safe), fg[1], bg_rgb)), bg_hex
+                        ) >= need
                         new_styles = dict(styles)
                         new_styles["color"] = written
                         if keep_alpha and "opacity" not in new_styles:

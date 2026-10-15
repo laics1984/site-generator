@@ -168,6 +168,12 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
 # wave things through.
 NOT_PROCESS_LOCAL: tuple[tuple[str, str, str], ...] = (
     (
+        "app.services.color_system",
+        "_derive",
+        "Pure numerical memo keyed by normalized canonical colors. Bounded to "
+        "256 palettes, deterministic, no I/O or captured configuration.",
+    ),
+    (
         "app.services.theme",
         "_INDUSTRY_BACKGROUND_STRATEGY",
         "A lookup table that is currently empty (a background is a design "

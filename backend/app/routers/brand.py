@@ -7,15 +7,33 @@ from __future__ import annotations
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from app.models.brand import BrandIdentity
+from app.models.brand import BrandIdentity, CreativePalette
+from app.services.design_direction import regenerate_palette
+from app.services.llm import LlmError
 from app.services.logo import (
     LogoExtraction,
     extract_palette_from_image_bytes,
     fetch_logo_from_url,
 )
 from app.services.theme import build_theme
+from app.services.palette_updates import RegeneratePaletteRequest, PalettePatch, current_theme, palette_patch, design_inputs
 
 router = APIRouter(prefix="/api/brand", tags=["brand"])
+
+
+@router.post("/regenerate-palette", response_model=PalettePatch)
+async def regenerate_colors(payload: RegeneratePaletteRequest) -> PalettePatch:
+    try:
+        theme = current_theme(payload.site)
+        brand = BrandIdentity.model_validate(payload.site.brand or {"name": payload.site.site_name})
+        brief = payload.site.palette_brief or {"business": payload.site.site_name, "industry": brand.industry,
+                                              **design_inputs(None, brand)}
+        proposed = await regenerate_palette(theme, brief, payload.design_direction)
+        return palette_patch(payload.site, CreativePalette(**proposed.palette.model_dump()))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LlmError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/extract-from-upload")

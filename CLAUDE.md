@@ -203,7 +203,7 @@ WAS the design. Now:
   `INDUSTRY_LOCKED_MOOD` is gone.
 
 Two renderer traps the first browser check found: a decorated eyebrow (chip,
-rule, underline) must be `width: fit-content` with no forced `alignSelf`, or it
+underline) must be `width: fit-content` with no forced `alignSelf`, or it
 stretches across the column / sits left of a centred heading; and a surfaceless
 card must declare `backgroundTexture: "flat"`, because every renderer resolves
 `transparent` to white and paints the theme grain on it.
@@ -390,6 +390,37 @@ re-asking there is double jeopardy, and both had to be reverted once already.
 
 Tests: `test_scraper_images.CardRackIsNotARosterTest`,
 `test_directory_roster.PageScopedRosterTest`.
+
+## An author's list number is structure, not copy
+
+A page builder lets an author style each item of one numbered list
+differently: uniquekindies' "How we teach" is `1.` p, `2)` h2, `3)` p, `4)` h2,
+`5)` p, and its enrichment list is h4, h5, h4. `_segment` ranked headings by
+tag alone, so the paragraph items vanished into their neighbour's prose and
+the h5 nested under its own predecessor. `_numbered_runs` gives a run of
+consecutive numbers ONE rank (the highest any real heading in it holds); a
+run with no real heading is a list in body copy and is left alone.
+
+The number then comes OFF (`source_outline.strip_list_marker`, one regex
+shared with `paste_source`): the generated page never keeps the author's
+list. `_inject_image_walls` places only the items that have photos and the
+planner picks a subset, so a kept "1)" made pages open on "2)" or "4)".
+`_classify` reads the numbers first (they are what say `steps`), `emit`
+strips them after, and `schema_builder.strip_title_list_markers` is the
+backstop for a title the planner copied from `raw_text`.
+
+Same site, same pass: Wix puts the site title as an `<h1>` in `<header>` on
+every page, and `_page_subject_profile` read it as a person, so three
+card-less pages published as a "profile" of the brand over a stock banner. The
+subject h1 must not be chrome (`_in_profile_chrome`) or the `og:site_name`.
+And a name never carries sentence punctuation (`profile_text.has_sentence_punctuation`,
+both name tests): Latin-token counting read "Unique Kindies 创立于 2006 年，…。" as
+a two-word name.
+
+Not covered: an item the author wrote INSIDE a longer heading (Programmes'
+`1)` shares one 496-char h5 with the intro sentence) stays prose.
+
+Tests: `test_numbered_titles.py`.
 
 ## A scraped card vouches for a whole person
 
@@ -703,6 +734,39 @@ crisp elsewhere on the page. `scraper.EXTRACTION_VERSION` keys the crawl cache;
 bump it when what a crawl extracts changes.
 
 Tests: `test_image_identity.py`, `test_section_extraction.OnePictureOneUrlTest`.
+
+## A background layer is a surface, not a picture
+
+Wix paints every section, strip and column fill as an `<img>` inside a declared
+layer (`data-motion-part="BG_IMG"` in `BG_MEDIA` in `BG_LAYER`) — often Wix's
+own stock textures ("Textured Blue Surface", "Smooth Blue Forms"). Read as
+`<img>`s they entered the pool `source_usage="inline"`, so every gate that
+keeps a `css_background` out of featured slots (`image_match`, `media`,
+`image_refs`) never saw one, and uniquekindies' homepage cards were all
+textures. `section_extraction.is_background_layer` is the one answer: the pool
+files a layer as `css_background` (full-bleed slots only, what the source used
+it for) and the card builder never takes one as a card's picture. A missing
+producer again, not a missing gate.
+
+Two neighbours it exposed:
+
+- **A card group that only says how to reach the business** — every link a
+  phone, inbox, chat or social profile (`social_link_for_href`), no copy — is
+  `card_kind="contact"` → a `contact` section. Its pictures are platform
+  buttons, and the gallery rule filed it as photos: a lightbox rack of giant
+  icons whose links went nowhere. One page link makes it an offering.
+- **`_scope` skips a container that encloses its stop heading.** It opens
+  before the stop in document order, but it is the next section's wrapper, and
+  every reader calls `find_all` on scope elements — so the last card of one
+  section took the next section's photos.
+
+The colour-system v2 pass (`palette_styles.bind_theme_styles`) inks a node
+with an **opaque** fill of its own for that fill (`opaque_surface_of`), even
+inside a photo hero, and a `data:` icon is never a photo (`_has_real_photo`):
+a hero button used to take the photo's light ink on its own white fill.
+
+Tests: `test_section_extraction.DeclaredBackgroundLayerTest`/`ContactChannelBoundaryTest`,
+`test_ai_palette.test_a_solid_button_on_a_photo_hero_is_inked_for_the_button`.
 
 ## A signed photo link dies, so nothing is built on a dead one
 
@@ -1682,6 +1746,31 @@ next `webtree-public` deploy, with no regeneration or re-push.
 Tests: `test_self_ink.py` (drift over all three renderers, skipped when a sibling
 repo is absent — same idiom as the `RENDERER_PINNED_*` mirror).
 
+### A brand-tinted chip paints an opaque tint
+
+The contact form's **Required** chip measured a median **1.95:1** (216 of 216
+under AA, 54 sites). It was raw `--builder-color-primary` on a *translucent* 10%
+primary tint, under the label's `opacity: 0.7`. The tint is the defect: the
+contact band is `surface` on most schemes, the page background or a hue tint on
+others, with the form's glow on top, so a see-through chip has no knowable
+surface and **no** ink could be right. Even `--builder-color-primary-ink` (AA on
+the bare background) drops to 4.1-4.4:1 on the tint.
+
+So the chip paints an **opaque** tint, `primary` washed into `background`
+(`PRIMARY_TINT_WEIGHT`), and wears the brand's small-text ink held to AA on that
+tint. That pair is `--builder-color-primary-tint` / `-tint-ink`. It is derived
+and never stored, the `--builder-color-heading` idiom, in `webtree-public`
+`lib/styles.ts` (`primaryTint`), its verbatim preview copy, and builder
+`builder-styles.ts`. The label's opacity moved onto the icon and the label text,
+since an ancestor's opacity fades a chip's ink *and* fill back toward the band.
+Measured after: 4.56-12.61:1, all 216 pass, every other label byte-identical.
+The CMS card's category pill (`primary-ink` on an 8% translucent tint) is the
+same shortcut and is not yet on the pair.
+
+No backend, schema or catalog change. Tests: `test_contact_form_ink.py`;
+`webtree-public/lib/styles.test.ts`, `builder/src/lib/builder-styles.test.ts`.
+
+
 Tests: `test_floating_pill_heroes.BandMarkerTest`/`BandClassificationTest`,
 `test_header_footer.FloatingPillAdaptiveInkTest`, `test_preview_layout.py`;
 `webtree-public/lib/adaptiveInk.test.ts` (vitest);
@@ -1801,11 +1890,25 @@ The fix is four pieces, each one home:
    (`section_visual_input_for(painted=…)`, which outranks the stale policy).
    `apply_section_title_inks` skips a title inside a self-filled panel
    (`cta-banner`'s navy card took a brand-blue title at 1.08:1), and the
-   eyebrow treatment inks a painted section's label for its surface.
+   eyebrow treatment labels a painted section in the accent (`sentence`'s
+   muted neutral read 3.2:1 on a scrim) — choosing WHICH ink, never its shade.
 
-`enforce_text_contrast` is the final ink pass: it restates every literal white
-and every wrong-side ink against the surface it actually sits on, and leaves
-brand-hued text and unreadable surfaces alone.
+`enforce_text_contrast` is the final ink pass, and the only one that sees the
+surface copy finally sits on. It restates every literal white and every
+wrong-side ink as the palette's ink for that surface, and leaves unreadable
+surfaces alone. **Brand-hued text keeps its hue but is not exempt from AA.**
+Producers write it for the PAGE (`emphasis_ink` / `brand_ink` with no surface),
+and later passes repaint what is under it — a multi-tint band, the rhythm's
+surface band, the eyebrow chip's own 13% accent wash — so a page-tuned red
+eyebrow (`#dc0c30` on a `playroom`/`soft-warm` site, logo `#0284c7`) read
+3.5-4.3:1 on its band. The pass recognises the brand's inks exactly (the raw
+primary/accent and those two page-tuned inks — a hue test would also catch the
+palette's own surface tint, which IS a lightness step of the primary) and lifts
+one that fails along its own hue with `_accent_ink_for`. Near the light/dark
+pivot (a surface around luminance 0.18) no shade of a hue reaches 4.5:1 and the
+lift bleaches to `#ffffff`, so there it takes `ink_on` like any other copy.
+Measured over 72 offline sites (every scheme × four palettes): sub-AA brand
+text 60 → 0, every eyebrow ≥4.55:1, every lifted brand ink within 2° of its hue.
 
 Measured with the preview renderer (`measure.py`-style pixel sampling behind
 each text rect) over 144 offline-built sites — every scheme × palette, 45 stock
@@ -1847,7 +1950,8 @@ seam, or the panel's next write would undo a sheet. `band-markers.ts` reads the
 same surface model (it mirrored the old "photo or opaque gradient is dark").
 
 Tests: `test_surface_ink.py` (including an every-scheme matrix asserting no
-hard-coded white and nothing under 3:1 on a known surface),
+hard-coded white, nothing under 3:1 and no section label under 4.5:1 on a known
+surface, whatever form the colour is written in; `BrandInkHeldToItsSurfaceTest`),
 `test_surface_ink_mirror.py` (cross-repo constants, tokens, no literal white in
 the catalog), `test_ux_audit.TextContrastTest`; builder
 `src/lib/surface-ink.test.ts`, `band-markers.test.ts`,

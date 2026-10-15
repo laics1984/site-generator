@@ -382,18 +382,32 @@ class TextContrastTest(unittest.TestCase):
 
     def test_correct_side_text_left_alone(self):
         # Light text on the dark page band is already correct → untouched even if
-        # below 7:1; brand-token text on the correct side is likewise left alone.
+        # below 7:1.
         theme = build_theme("#2563eb", color_scheme="dark")
         tree = _container(
             "band",
-            [
-                _text("body", "x", color="var(--builder-color-text)"),
-                _text("eyebrow", "y", color="var(--builder-color-primary)"),
-            ],
+            [_text("body", "x", color="var(--builder-color-text)")],
             backgroundColor="var(--builder-page-background)",
         )
         _, n = self._run(tree, theme)
         self.assertEqual(n, 0)
+
+    def test_brand_text_keeps_its_hue_and_is_held_to_aa(self):
+        # Brand-token text is the design, so it is never flipped to a neutral —
+        # but it is not exempt from AA either: this primary eyebrow read 3.75:1
+        # on the dark page. It is lifted along its own hue until it reads.
+        from app.services.theme import _hex_to_rgb, _rgb_to_hls
+
+        theme = build_theme("#2563eb", color_scheme="dark")
+        eyebrow = _text("eyebrow", "y", color="var(--builder-color-primary)")
+        tree = _container("band", [eyebrow], backgroundColor="var(--builder-page-background)")
+        _, n = self._run(tree, theme)
+        self.assertEqual(n, 1)
+        page = _hex("var(--builder-page-background)", theme)
+        ink = eyebrow.styles["color"]
+        self.assertGreaterEqual(_contrast(ink, page), 4.5)
+        hue = lambda c: _rgb_to_hls(*_hex_to_rgb(c))[0] * 360
+        self.assertAlmostEqual(hue(ink), hue(theme.palette.primary), delta=2)
 
     def test_color_mix_card_background_not_misread_as_opaque_primary(self):
         # The process-enrollment-steps "Step Cell"/"Step Title" shape: a
@@ -417,7 +431,12 @@ class TextContrastTest(unittest.TestCase):
         # The services-programs-age "Age Badge" / hero-playful-split "Sticker
         # Eyebrow" shape: a single text node carries BOTH a color-mix() fill
         # and a primary-ink foreground. Misreading the fill as opaque primary
-        # risked stomping the badge's own intentionally brand-coloured label.
+        # risked stomping the badge's own intentionally brand-coloured label to
+        # a light neutral. Read as the 12% wash it is, the label stays brand-
+        # hued and dark — only held to AA on that wash (it read 4.37:1).
+        from app.services.section_content import _own_fill, _to_hex
+        from app.services.theme import _hex_to_rgb, _rgb_to_hls
+
         theme = build_theme("#2563eb", color_scheme="light")
         el = _text(
             "age-badge",
@@ -425,8 +444,13 @@ class TextContrastTest(unittest.TestCase):
             color="var(--builder-color-primary-ink, #2563eb)",
             backgroundColor="color-mix(in srgb, var(--builder-color-primary, #2563eb) 12%, #ffffff)",
         )
-        _, n = self._run(el, theme)
-        self.assertEqual(n, 0)
+        wash = _to_hex(_own_fill(el, theme, (255, 255, 255)))
+        self._run(el, theme)
+        ink = el.styles["color"]
+        self.assertGreaterEqual(_contrast(ink, wash), 4.5)
+        self.assertLess(_relative_luminance(ink), _relative_luminance(wash))
+        hue = lambda c: _rgb_to_hls(*_hex_to_rgb(c))[0] * 360
+        self.assertAlmostEqual(hue(ink), hue(theme.palette.primary), delta=2)
 
 
 class ColorMixParsingTest(unittest.TestCase):

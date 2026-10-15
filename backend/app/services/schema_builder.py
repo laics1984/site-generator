@@ -104,6 +104,7 @@ from app.services.media import ImageIntent, ImageResolver, monogram_avatar_url
 from app.services.timing import log_elapsed, stage
 from app.services.pexels import PhotoResult
 from app.config import settings
+from app.services.source_outline import strip_list_marker
 from app.services.section_content import (
     _FULLBLEED_HERO_IDS,
     _PAGE_BG,
@@ -362,7 +363,7 @@ def _walk_modernize(
     *,
     plan: _ModernizePlan,
     headings: list[tuple[BuilderElement, float]],
-    surface: str | None = None,
+    painted: bool = False,
 ) -> None:
     styles = node.styles
     name = (node.name or "").strip()
@@ -394,12 +395,15 @@ def _walk_modernize(
         # is a deliberate one-off variant and is left alone.
         if name == "Eyebrow" and plan.scheme.eyebrow_treatment != "inherit":
             styles.update(plan.eyebrow)
-            # The treatment's ink is the accent for the PAGE. On a section that
-            # paints its own surface (a photo hero, a gradient band) no later
-            # pass may recolour a brand ink, so it is chosen for that surface
-            # here — a page-tuned red chip on a photo hero measured 1.2:1.
-            if surface is not None:
-                styles["color"] = emphasis_ink(plan.theme, surface)
+            # A section that paints its own surface (a photo hero, a gradient
+            # band) labels it in the brand accent whatever the treatment's ink:
+            # `sentence`'s muted neutral is not what a scrim is solved for, and
+            # read 3.2:1 on one. This picks WHICH ink, never its shade — every
+            # brand ink is written for the page, and `enforce_text_contrast`
+            # holds it to the surface the label finally sits on (a tinted band,
+            # a scrim, the chip's own wash), which is not knowable here.
+            if painted:
+                styles["color"] = emphasis_ink(plan.theme)
 
     elif (
         node.type in ("container", "2Col", "3Col")
@@ -424,7 +428,7 @@ def _walk_modernize(
     content = node.content
     if isinstance(content, list):
         for child in content:
-            _walk_modernize(child, plan=plan, headings=headings, surface=surface)
+            _walk_modernize(child, plan=plan, headings=headings, painted=painted)
 
 
 def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> None:
@@ -488,7 +492,7 @@ def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> No
                 else _plan_without_glass(plan)
             ),
             headings=headings,
-            surface=painted_surface_of(section, theme),
+            painted=painted_surface_of(section, theme) is not None,
         )
 
         # The mood's display face goes on the section's largest heading (its H1).
@@ -784,6 +788,28 @@ def apply_heading_levels(sections: list[BuilderElement]) -> None:
             continue
         _tag_heading(heading, "h2" if seen_h1 else "h1")
         seen_h1 = True
+
+
+def strip_title_list_markers(sections: list[BuilderElement]) -> None:
+    """Drop an author's list number ("4) Character & Behaviour") from every
+    section title. Mutates in place.
+
+    The source extractor already publishes its headings without one
+    (`section_extraction`); this is the backstop for a title the planner copied
+    from the page's raw text, where the numbers still stand. Whatever path wrote
+    it, the page does not keep the author's list — it orders and selects its
+    own sections — so a kept number states a run that starts mid-count.
+    """
+    for section in sections:
+        heading = _first_heading(section)
+        if heading is None:
+            continue
+        # A split headline's number sits on its lead line.
+        if heading.type == "container" and isinstance(heading.content, list):
+            heading = next((ln for ln in heading.content if ln.type == "text"), None)
+        content = heading.content if heading is not None else None
+        if isinstance(content, BuilderElementContent) and content.innerText:
+            content.innerText = strip_list_marker(content.innerText)
 
 
 # --- section dividers ---------------------------------------------------------
@@ -4821,6 +4847,10 @@ async def plan_to_site(
         )
         theme = direction.theme
 
+    from app.services.palette_styles import rendering_theme, bind_theme_styles
+    canonical_theme = theme
+    theme = rendering_theme(theme)
+
     # Design manifest: the recorded chrome/decision layer composed BEFORE any
     # page is built (see services/design_director.py). Disabled → the default
     # manifest, which is exactly the legacy classic-header/mega-footer chrome.
@@ -4986,6 +5016,10 @@ async def plan_to_site(
                 # identity for the diversity history); primary hex otherwise.
                 choice=getattr(theme, "palette_slug", None) or theme.palette.primary,
                 rationale=(
+                    "validated four-color art direction or complete concept fallback; "
+                    "business identity and explicit design guidance lead; readable "
+                    "variants are derived deterministically"
+                    if theme.color_system_version == 2 else
                     "the logo's own hue when it has one (theme.has_brand_hue); "
                     "otherwise a curated palette within the design scheme's "
                     "colour strategies, steered off recently-used palettes"
@@ -5246,6 +5280,7 @@ async def plan_to_site(
         # Asymmetric headers + scroll/backdrop motion — applied last so they
         # read the final band/background each section landed on.
         apply_heading_alignment(elements, effective_brand.mood)
+        strip_title_list_markers(elements)
         # Semantic heading tags: the page's first section title becomes its
         # single <h1>, later ones <h2>. Purely structural — no styles touched.
         apply_heading_levels(elements)
@@ -5468,6 +5503,11 @@ async def plan_to_site(
     # channel googleFonts/brandMood use, no migration). The builder's
     # normalizeBuilderStyles carries `designManifest` through edit/save
     # round-trips as an opaque record; both renderers ignore it.
+    if canonical_theme.color_system_version == 2:
+        for generated_page in [*pages, *outside_pages]:
+            bind_theme_styles(generated_page.body_schema.elements, canonical_theme, theme)
+        bind_theme_styles([c for c in (header, footer) if isinstance(c, BuilderElement)], canonical_theme, theme)
+    theme = canonical_theme
     builder_styles = theme.to_builder_styles()
     if settings.design_engine_enabled:
         builder_styles["designManifest"] = manifest.model_dump()

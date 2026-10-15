@@ -1,3 +1,4 @@
+import { PalettePanel } from './components/PalettePanel'
 import { useEffect, useMemo, useState } from 'react'
 
 import { BrandPanel } from '@/components/BrandPanel'
@@ -138,6 +139,7 @@ export default function App() {
   const [formOpen, setFormOpen] = useState(true)
   const [lastGenerate, setLastGenerate] = useState<LastGenerate | null>(null)
   const [publishOpen, setPublishOpen] = useState(false)
+  const [paletteOnly, setPaletteOnly] = useState(false)
   const [exportBusy, setExportBusy] = useState(false)
 
   function refreshProjects() {
@@ -526,6 +528,7 @@ export default function App() {
       hero_height: heroHeight === 'auto' ? null : heroHeight,
       stock_images_only: stockImagesOnly,
       detected_brand: detectedBrand,
+      ...(site?.builder_styles?.colorSystemVersion === 2 ? { palette_override: { primary: site.builder_styles.colors.primary, secondary: site.builder_styles.colors.secondary, accent: site.builder_styles.colors.accent, surface: site.builder_styles.colors.surface } } : {}),
       // The Page stays the authority on its own contact details, hours,
       // reviews and counts — the backend rewrites those blocks from it after
       // the LLM has run. Riding on the payload means a regenerate keeps it too.
@@ -551,7 +554,9 @@ export default function App() {
     setBusy(true)
     setError(null)
     try {
-      const result = await generateWithPages(lastGenerate.payload)
+      const colors = site?.builder_styles?.colorSystemVersion === 2 ? site.builder_styles.colors : null
+      const payload = { ...lastGenerate.payload, ...(colors ? { palette_override: { primary: colors.primary, secondary: colors.secondary, accent: colors.accent, surface: colors.surface } } : {}) }
+      const result = await generateWithPages(payload)
       // Keep the previous site on screen until the new one is in hand.
       acceptSite(result, lastGenerate)
     } catch (err) {
@@ -627,7 +632,7 @@ export default function App() {
           exportBusy={exportBusy}
           onRegenerate={handleRegenerate}
           onAdjust={() => setFormOpen(true)}
-          onPublish={() => setPublishOpen(true)}
+          onPublish={() => { setPaletteOnly(false); setPublishOpen(true) }}
           onGenerateRemaining={
             site.generation_mode === 'two_page_preview' &&
             savedProjects.some((project) => project.id === site.generation_project_id && project.status === 'preview_published')
@@ -663,6 +668,7 @@ export default function App() {
             />
           </aside>
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden p-3 sm:p-4">
+            {site.builder_styles?.colorSystemVersion === 2 && <PalettePanel site={site} onChange={setSite} onPublish={() => { setPaletteOnly(true); setPublishOpen(true) }} />}
             <PagePreview
               page={selectedPage}
               site={site}
@@ -674,11 +680,12 @@ export default function App() {
         </main>
 
         <PublishDrawer
-          key={`${site.generation_mode ?? 'full'}:${site.generation_project_id ?? 'new'}`}
+          key={`${site.generation_mode ?? 'full'}:${site.generation_project_id ?? 'new'}:${paletteOnly}`}
           open={publishOpen}
           onClose={() => setPublishOpen(false)}
           site={site}
           onPublished={refreshProjects}
+          paletteOnly={paletteOnly}
         />
       </div>
     )

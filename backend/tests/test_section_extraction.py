@@ -399,3 +399,120 @@ class OnePictureOneUrlTest(unittest.TestCase):
             self.assertNotIn("blur_2", photo)
             self.assertIn("w_2560,h_1708", photo)
         self.assertEqual([c.image_url for c in rack.cards if c.image_url], rack.image_urls)
+
+
+# Wix paints every section/column fill as an <img> inside a declared
+# background layer; uniquekindies.com's contact strip is three such columns,
+# each a stock texture behind a platform button that links out.
+def _wix_bg(name: str, alt: str) -> str:
+    return f"""<div data-motion-part="BG_LAYER {name}"><div data-motion-part="BG_MEDIA {name}">
+      <wow-image data-motion-part="BG_IMG {name}">
+        <img src="https://static.wixstatic.com/media/11062b_{name}~mv2.jpg"
+             alt="{alt}" width="980" height="652"></wow-image></div></div>"""
+
+
+_WIX_CONTACT_STRIP = """
+<html><body>
+  <section>
+    <h2>What We Offer</h2>
+    <div class="row">%s</div>
+  </section>
+  <section>
+    <div class="column">
+      %s
+      <h2>Testimonials from Parents</h2>
+      <p>We chose this school because it is close to home and our relatives loved it.</p>
+      <img src="https://static.wixstatic.com/media/parents~mv2.jpg" width="361" height="206">
+    </div>
+  </section>
+  <section>
+    <h2>Address: 55, Jalan 9/39, Taman Megah Kepong</h2>
+    <div class="row">%s</div>
+  </section>
+</body></html>
+""" % (
+    "".join(
+        f"""<div class="card">{_wix_bg(f"offer{n}", "Smooth Blue Forms")}
+        <h3>Programme {n}</h3>
+        <p>A full description of this programme, its hours and what children learn.</p>
+        <a href="/programme-{n}">Learn More</a></div>"""
+        for n in ("a", "b", "c")
+    ),
+    _wix_bg("testimonials", "Minimalist Blue Design"),
+    "".join(
+        f"""<div class="card">{_wix_bg(f"c{i}", "Green Textured Background")}
+        <p>{title}</p>
+        <a href="{href}"><img src="https://static.wixstatic.com/media/{icon}.png" width="248" height="56"></a></div>"""
+        for i, (title, href, icon) in enumerate(
+            [
+                ("Call or Whatsapp Us @ 016-2791902", "https://wa.me/60162791902", "whatsapp"),
+                ("Find us on Facebook", "https://www.facebook.com/uniquekindies", "facebook"),
+                ("Follow us on Instagram", "https://www.instagram.com/uniquekindies/", "instagram"),
+            ]
+        )
+    ),
+)
+
+
+class DeclaredBackgroundLayerTest(unittest.TestCase):
+    def setUp(self):
+        self.sections = {s.heading.split(":")[0]: s for s in _extract(_WIX_CONTACT_STRIP)}
+
+    def test_a_background_layer_is_never_a_cards_picture(self):
+        urls = [c.image_url or "" for s in self.sections.values() for c in s.cards]
+        self.assertFalse(any("11062b_" in url for url in urls), urls)
+
+    def test_contact_channel_cards_are_contact_not_a_gallery(self):
+        address = self.sections["Address"]
+        self.assertEqual(address.card_kind, "contact")
+        self.assertEqual(
+            [c.link for c in address.cards],
+            [
+                "https://wa.me/60162791902",
+                "https://www.facebook.com/uniquekindies",
+                "https://www.instagram.com/uniquekindies/",
+            ],
+        )
+
+    def test_a_card_never_reaches_into_the_next_sections_wrapper(self):
+        # The column that opens before "Testimonials" holds it: its photo is
+        # that section's, not the last offering card's above it.
+        offer = self.sections["What We Offer"]
+        self.assertEqual(len(offer.cards), 3)
+        self.assertNotIn("parents", " ".join(c.image_url or "" for c in offer.cards))
+
+    def test_the_pool_files_a_layer_as_a_css_background(self):
+        soup = BeautifulSoup(_WIX_CONTACT_STRIP, "lxml")
+        usage = {
+            c.url.rsplit("/", 1)[-1]: c.source_usage
+            for c in scraper._extract_images(soup, "https://example.com/")
+        }
+        self.assertEqual(usage["11062b_offera~mv2.jpg"], "css_background")
+        self.assertEqual(usage["parents~mv2.jpg"], "inline")
+
+    def test_a_platform_button_is_furniture_not_a_poster(self):
+        soup = BeautifulSoup(_WIX_CONTACT_STRIP, "lxml")
+        urls = " ".join(c.url for c in scraper._extract_images(soup, "https://example.com/"))
+        for icon in ("whatsapp", "facebook", "instagram"):
+            self.assertNotIn(f"{icon}.png", urls)
+        address = self.sections["Address"]
+        self.assertEqual(address.card_kind, "contact")
+        self.assertFalse(any(c.image_url for c in address.cards))
+
+    def test_a_photo_linked_to_a_post_is_still_content(self):
+        html = """<html><body><a href="https://www.instagram.com/p/abc/">
+          <img src="https://example.com/feed1.jpg" width="640" height="640"></a></body></html>"""
+        urls = [c.url for c in scraper._extract_images(BeautifulSoup(html, "lxml"), "https://example.com/")]
+        self.assertIn("https://example.com/feed1.jpg", urls)
+
+
+class ContactChannelBoundaryTest(unittest.TestCase):
+    def test_an_offering_whose_cta_is_whatsapp_stays_an_offering(self):
+        cards = "".join(
+            f"""<div><h3>Programme {n}</h3>
+            <p>A full description of this programme, its hours and what children learn.</p>
+            <a href="https://wa.me/60162791902">WhatsApp us</a></div>"""
+            for n in ("A", "B", "C")
+        )
+        [section] = _extract(f"<html><body><h2>Programmes</h2>{cards}</body></html>")
+        self.assertEqual(section.card_kind, "offerings")

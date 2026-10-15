@@ -1919,3 +1919,19 @@ def build_theme(
         motion_intensity=scheme.motion_intensity,
         style=spec.style,
     )
+
+
+def apply_creative_palette(theme: ThemeTokens, creative: object) -> ThemeTokens:
+    """Replace colors only; all layout/type/motion choices survive unchanged."""
+    from app.models.brand import CreativePalette
+    from app.services.color_system import creative_colors, derive, luminance
+    palette = creative if isinstance(creative, CreativePalette) else CreativePalette.model_validate(creative)
+    colors = ColorPalette(**creative_colors(palette.model_dump()))
+    derived = derive(colors.model_dump())
+    return theme.model_copy(update={
+        "palette": colors, "color_system_version": 2,
+        "color_scheme": "dark" if luminance(colors.background) < .2 else "light",
+        "palette_slug": "ai-"+hashlib.sha256("|".join(palette.model_dump().values()).encode()).hexdigest()[:12],
+        "buttons": theme.buttons.model_copy(update={"background": colors.primary, "text": derived["on-primary"]}),
+        "page": theme.page.model_copy(update={"background": colors.background}),
+    })

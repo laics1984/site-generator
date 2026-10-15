@@ -60,6 +60,7 @@ from app.services.pexels import PhotoResult
 from app.services.schema_builder import plan_to_site
 from app.services.section_content import (
     _LITERAL_WHITE,
+    _parse_color,
     _NO_FILL,
     _own_fill,
     _to_hex,
@@ -71,8 +72,17 @@ from app.services.section_content import (
     surface_of,
     SectionVisualInput,
 )
+from app.services.style_tokens import band_tints, emphasis_ink, eyebrow_styles, type_ramp_for
 from app.services.template_filler import fill_template, get_template
-from app.services.theme import _contrast, build_theme, ink_css, ink_on, light_ink
+from app.services.theme import (
+    _contrast,
+    _hex_to_rgb,
+    _rgb_to_hls,
+    build_theme,
+    ink_css,
+    ink_on,
+    light_ink,
+)
 
 _BRIGHT_CENTRE = PhotoLuminance(
     4, 4,
@@ -412,6 +422,76 @@ class InkPassTest(unittest.TestCase):
         self.assertGreaterEqual(_contrast(_paints(number, theme), theme.palette.primary), 4.5)
 
 
+def _hue(hex_color):
+    return _rgb_to_hls(*_hex_to_rgb(hex_color))[0] * 360
+
+
+class BrandInkHeldToItsSurfaceTest(unittest.TestCase):
+    """A section eyebrow wears the accent tuned for the PAGE (`emphasis_ink`),
+    and later passes repaint what is under it: a multi-tint band, the rhythm's
+    surface band, the eyebrow chip's own accent wash. Measured on `playroom` and
+    `soft-warm` sites with a #0284c7 logo: #dc0c30 at 3.5-4.3:1. The final ink
+    pass holds it to AA on the surface it actually sits on, and keeps its hue —
+    the accent is the design, so it is never swapped for a neutral."""
+
+    def setUp(self):
+        self.theme = build_theme("#0284c7")
+        self.page_tuned = emphasis_ink(self.theme)  # the reported #dc0c30
+
+    def _assert_reads_as_the_accent(self, label, surface):
+        ink = label.styles["color"]
+        self.assertGreaterEqual(_contrast(ink, surface), 4.5)
+        self.assertAlmostEqual(_hue(ink), _hue(self.theme.palette.accent), delta=2)
+        self.assertNotEqual(ink, ink_on(self.theme.palette, surface))
+
+    def test_a_tinted_band_holds_the_page_tuned_accent_to_aa(self):
+        tint = min(band_tints(self.theme), key=lambda t: _contrast(self.page_tuned, t))
+        self.assertLess(_contrast(self.page_tuned, tint), 4.5)  # the defect, as measured
+        label = _text("Eyebrow", "About", color=self.page_tuned)
+        enforce_text_contrast([_box("About", [label], backgroundColor=tint)], self.theme)
+        self._assert_reads_as_the_accent(label, tint)
+
+    def test_a_chip_is_held_to_its_own_wash_not_the_band_under_it(self):
+        """The chip treatment tints itself with 13% of the accent, so its label
+        failed AA even on the plain page it was tuned for."""
+        scheme = next(s for s in DESIGN_SCHEMES if s.eyebrow_treatment == "chip")
+        chip = eyebrow_styles(self.theme, scheme, type_ramp_for(scheme))
+        label = _text("Eyebrow", "About", **chip)
+        page = _hex_to_rgb(self.theme.page.background)
+        surface = _to_hex(_own_fill(label, self.theme, page))
+        self.assertLess(_contrast(chip["color"], surface), 4.5)  # the defect, as measured
+        enforce_text_contrast(
+            [_box("About", [label], backgroundColor=self.theme.page.background)], self.theme
+        )
+        self._assert_reads_as_the_accent(label, surface)
+
+    def test_a_dark_band_gets_the_accent_as_a_pastel_not_a_neutral(self):
+        band = self.theme.palette.secondary
+        label = _text("Eyebrow", "About", color=self.page_tuned)
+        enforce_text_contrast([_box("About", [label], backgroundColor=band)], self.theme)
+        self._assert_reads_as_the_accent(label, band)
+
+    def test_where_no_shade_of_the_hue_reads_it_takes_the_palettes_ink(self):
+        """A chip on a photo hero's scrim, measured: #5e7688 sits at the
+        light/dark pivot, where only a pure white or black clears AA. The lift
+        bleached the accent to #ffffff — a white nobody chose."""
+        theme = build_theme("#facc15")
+        surface = "#5e7688"
+        label = _text("Eyebrow", "Since 2012", color=emphasis_ink(theme))
+        enforce_text_contrast([_box("Hero", [label], backgroundColor=surface)], theme)
+        self.assertEqual(label.styles["color"], ink_css(theme.palette, ink_on(theme.palette, surface)))
+        self.assertIsNone(_LITERAL_WHITE.match(label.styles["color"]))
+        self.assertGreaterEqual(_contrast(_paints(label, theme), surface), 4.5)
+
+    def test_a_brand_ink_that_already_reads_is_left_as_designed(self):
+        label = _text("Eyebrow", "About", color=self.page_tuned)
+        changed = enforce_text_contrast(
+            [_box("About", [label], backgroundColor=self.theme.page.background)], self.theme
+        )
+        self.assertEqual(changed, 0)
+        self.assertEqual(label.styles["color"], self.page_tuned)
+
+
 class BandPassTest(unittest.TestCase):
     def setUp(self):
         self.theme = build_theme("#0284c7")
@@ -461,7 +541,9 @@ def _walk(node):
 def _bad_inks(site, theme):
     """Every body text node that is a white the palette did not choose for its
     surface (a hard-coded one), or reads under 3:1 on the surface it actually
-    sits on (where that surface is known)."""
+    sits on (where that surface is known) — whatever form the colour is written
+    in, a token included. A section label is 13px caps — small text, never
+    large — so it is held to AA, 4.5:1."""
     bad = []
 
     def walk(node, bg):
@@ -479,9 +561,9 @@ def _bad_inks(site, theme):
                 and raw.lower() != ink_on(theme.palette, _to_hex(bg)).lower()
             ):
                 bad.append((node.name, raw, "hard-coded white"))
-            elif isinstance(raw, str) and raw.startswith("#") and bg is not None:
-                ratio = _contrast(raw, _to_hex(bg))
-                if ratio < 3.0:
+            elif isinstance(raw, str) and bg is not None and _parse_color(raw, theme):
+                ratio = _contrast(_to_hex(_parse_color(raw, theme)[0]), _to_hex(bg))
+                if ratio < (4.5 if "Eyebrow" in (node.name or "") else 3.0):
                     bad.append((node.name, raw, f"{ratio:.2f}:1 on {_to_hex(bg)}"))
         if isinstance(node.content, list):
             for child in node.content:
@@ -497,8 +579,8 @@ def _bad_inks(site, theme):
 class EverySchemeInksForItsSurfaceTest(unittest.IsolatedAsyncioTestCase):
     """End to end, over every design scheme, a hero planned "background" (which
     the director may turn into any template), with a hero photo whose copy zone
-    is near-white: no body copy is a literal white, and none reads under 3:1 on
-    the surface it actually sits on."""
+    is near-white: no body copy is a literal white, none reads under 3:1 on the
+    surface it actually sits on, and no section label reads under AA there."""
 
     async def test_no_scheme_ships_unreadable_copy(self):
         bright = PhotoResult(
@@ -519,8 +601,10 @@ class EverySchemeInksForItsSurfaceTest(unittest.IsolatedAsyncioTestCase):
                       primary_cta_label="Book", primary_cta_href="/contact",
                       secondary_cta_label="Programmes", secondary_cta_href="/p",
                       layout="background"),
-            AboutBlock(heading="About us", body="Ten years in Subang Jaya.", image_query="class"),
-            FeaturesBlock(heading="Why us", items=[FeatureItem(title="Small", description="d")] * 3),
+            AboutBlock(eyebrow="About", heading="About us", body="Ten years in Subang Jaya.",
+                       image_query="class"),
+            FeaturesBlock(eyebrow="Features", heading="Why us",
+                          items=[FeatureItem(title="Small", description="d")] * 3),
             CtaBlock(headline="Come and see us", subheadline="Weekdays.", cta_label="Book",
                      cta_href="/contact"),
         ]

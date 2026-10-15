@@ -322,6 +322,8 @@ Follow the supplied order; preserve every section's contents and card grouping.
 - prose-only → `about`; never invent cards. `meta` is a card's own label line.
 - Only `card_kind: people` may be a `team`. `offerings`/`steps`/`gallery`
   are never people — "Innovation Centre" is a room.
+- `card_kind: contact` (call/WhatsApp/social cards) → `contact`; its cards
+  are ways to reach the business, never a gallery or a services grid.
 - NEVER write markdown (`**bold**`, `-`/`•` bullets). Text renders literally.
 
 FIDELITY RULES — these override every other instruction:
@@ -572,7 +574,7 @@ Reply with ONE JSON object matching this schema — no markdown, no commentary:
        // health-wellness       → clinics, dental, physio, spas, salons, fitness
        // real-estate           → property agents, developers, listings
        // other                 → anything that doesn't fit cleanly above
-  "primary_color_hint": string|null,  // hex like "#2563eb" if you can infer brand colour, else null
+  "primary_color_hint": string|null,  // hex only when explicitly stated or observed in supplied visual evidence; never infer a hex from industry; else null
   "audience": string|null,            // who it serves, as the content describes them (≤12 words); null if not stated
   "positioning": string|null,         // its approach or angle in one short phrase; null if unclear
   "differentiators": [string],        // ≤5 phrases COPIED VERBATIM from the content that state something

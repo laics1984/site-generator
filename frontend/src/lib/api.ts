@@ -13,6 +13,8 @@ import type {
   FacebookFacts,
   FacebookSession,
   GeneratedSite,
+  CreativePalette,
+  PalettePatch,
   GenerationProjectSummary,
   HeroHeight,
   IndustryCategory,
@@ -27,6 +29,22 @@ import type {
 import { llmChoiceHeaders } from '@/lib/llmChoice'
 
 const API_BASE = ''
+
+export const previewPalette = (site: GeneratedSite, palette: CreativePalette, save = false) =>
+  jsonRequest<PalettePatch>('/api/preview/palette', { method: 'POST', body: JSON.stringify({ site, palette, save }) })
+export const regeneratePalette = (site: GeneratedSite, design_direction: string) =>
+  jsonRequest<PalettePatch>('/api/brand/regenerate-palette', { method: 'POST', body: JSON.stringify({ site, design_direction: design_direction || null }) })
+export interface PalettePublication {
+  state: 'verified' | 'pending' | 'unavailable'; message: string; public_url?: string
+}
+export const readLivePalette = (login: CmsLogin, entity_token: string, target?: string, palette?: CreativePalette) =>
+  jsonRequest<{ builder_styles: import('./types').BuilderStylesShape; layout: { versionId: string }; publication?: PalettePublication }>('/api/cms/palette/current', {
+    method: 'POST', body: JSON.stringify({ ...login, entity_token, target, palette }),
+  })
+export const publishPalette = (site: GeneratedSite, login: CmsLogin, entity_token: string, expected_layout_version_id: string, target?: string) =>
+  jsonRequest<{ success: boolean; warning?: string }>('/api/cms/palette', {
+    method: 'POST', body: JSON.stringify({ site, ...login, entity_token, expected_layout_version_id, target }),
+  })
 
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -97,6 +115,7 @@ export async function generateFromSource(payload: GeneratePayload): Promise<Gene
 }
 
 export interface GenerateWithPagesPayload {
+  palette_override?: CreativePalette | null
   source: SourceContent
   selected_pages: PageScaffold[]
   generation_mode?: 'full' | 'two_page_preview'

@@ -24,6 +24,13 @@ from app.services.pexels import get_pexels_client
 
 
 @pytest.fixture(autouse=True)
+def _legacy_theme_fixtures(monkeypatch):
+    # Structural fixtures retain their legacy colors. V2 tests explicitly turn
+    # this on and verify the new contract rather than silently re-rolling them.
+    monkeypatch.setattr(settings, "ai_palette_enabled", False)
+
+
+@pytest.fixture(autouse=True)
 def _offline_pexels():
     original = settings.pexels_api_key
     settings.pexels_api_key = None

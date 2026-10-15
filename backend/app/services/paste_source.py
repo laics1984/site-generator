@@ -35,7 +35,12 @@ from dataclasses import dataclass, field
 
 from app.services.doc_structure import DocImageRef
 from app.services.image_urls import upgrade_source_image_url
-from app.services.source_outline import OutlineBlock, ParsedDocument, read_html
+from app.services.source_outline import (
+    LIST_MARKER_RE,
+    OutlineBlock,
+    ParsedDocument,
+    read_html,
+)
 
 # Shown as the source label when the user gives the paste no title.
 PASTE_LABEL = "Pasted content"
@@ -75,7 +80,7 @@ _SETEXT_H2_RE = re.compile(r"^-{2,}$")
 # the heading test applied to what is left ("1. You talk to the person building
 # it." still ends in a full stop and stays a list item).
 _SYMBOL_BULLET_RE = re.compile(r"^\s*[-*+•·]\s+")
-_NUMBER_PREFIX_RE = re.compile(r"^\s*\d{1,3}[.)]\s+")
+_NUMBER_PREFIX_RE = LIST_MARKER_RE
 # The union, for stripping the marker off the text either way.
 _BULLET_RE = re.compile(r"^\s*(?:[-*+•·]|\d+[.)])\s+")
 

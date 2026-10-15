@@ -22,6 +22,7 @@ whitelist is a silent off switch on whatever markup it does not describe.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -137,6 +138,32 @@ def is_text_block(tag: Tag) -> bool:
     # `find` stops at the first hit, so a wrapper is rejected on its first child
     # box and only genuine leaves pay for a walk of their (inline) subtree.
     return tag.find(_NESTED_BOX_TAGS) is None
+
+
+# An author's own list number in front of a title: "1) Waterplay", "3)Thematic
+# Approach", "2. Our approach". A full stop needs a space after it, or "3.5
+# stars" and "2.0 release" would read as numbered. The number is the item's
+# position in the AUTHOR's list — evidence for which titles are siblings
+# (`section_extraction`), never copy: a generated page does not keep that list
+# (an image wall skips the items with no photos, the planner picks a subset),
+# so a kept marker publishes a run that "starts at 4)".
+LIST_MARKER_RE = re.compile(r"^\s*(\d{1,3})(?:\)\s*|\.\s+)")
+
+
+def list_marker_number(text: str) -> int | None:
+    """The author's list number on a title, or None when it carries none."""
+    match = LIST_MARKER_RE.match(text or "")
+    return int(match.group(1)) if match and text[match.end():].strip() else None
+
+
+def strip_list_marker(text: str) -> str:
+    """A title without the author's list number. A bare number is left alone —
+    with nothing after it, the number IS the title."""
+    match = LIST_MARKER_RE.match(text or "")
+    if match is None:
+        return text
+    rest = text[match.end():].strip()
+    return rest or text
 
 
 # h4-h6 all collapse to 3: doc_structure only opens pages at level 1-2, and a

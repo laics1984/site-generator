@@ -311,6 +311,8 @@ class GeneratedSite(BaseModel):
     """A full site = a set of pages + global metadata + theme + header/footer."""
 
     site_name: str
+    # Compact design inputs retained for color-only AI calls. Never public copy.
+    palette_brief: dict[str, Any] | None = None
     tagline: str | None = None
     primary_color: str | None = None
     secondary_color: str | None = None

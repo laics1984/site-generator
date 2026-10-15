@@ -458,6 +458,7 @@ _CARD_KIND_SECTIONS: dict[str, SectionType] = {
     "steps": "process",
     "gallery": "gallery",
     "documents": "downloads",
+    "contact": "contact",
 }
 
 # Below this the tree says too little to be worth overriding the page-type

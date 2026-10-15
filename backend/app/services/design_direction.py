@@ -33,10 +33,11 @@ rotation the fit list always had decides — so a brand still regenerates
 identically, and the deterministic path degrades to exactly the old one.
 
 Then at most ONE reasoning call picks among the top `design_concept_candidates`
-concepts BY INDEX (the paste_structure / bio_condense contract): it supplies
-judgement, it cannot invent a palette or bypass the history, and any failure
-falls back to the best score. The same call states the hero height, as the
-pass it replaces did. `design_concept_candidates = 1` makes no call at all.
+concepts BY INDEX and creates the four creative colors for this business. Code
+validates that complete proposal and derives readable variants. A failed or
+malformed proposal keeps the validated concept's palette. The same call states
+the hero height. With creative colors disabled, a one-concept shortlist needs
+no model call.
 """
 
 from __future__ import annotations
@@ -45,12 +46,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError, field_validator
 
 from app.config import settings
 from app.models.brand import (
     BrandMood,
     BrandPersonality,
+    CreativePalette,
     HeroBackgroundHeight,
     ThemeTokens,
     default_hero_height,
@@ -69,7 +71,7 @@ from app.services.diversity import recent_choices, recent_records, seeded_index
 from app.services.industry_personality import personality_for
 from app.services.llm import LlmClient, LlmError, get_reasoning_llm
 from app.services.source_router import is_content_photo
-from app.services.theme import build_theme, resolve_color_scheme
+from app.services.theme import apply_creative_palette, build_theme, resolve_color_scheme
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +258,17 @@ class ConceptChoice(BaseModel):
 
     concept: int | None = None
     hero_height: HeroBackgroundHeight | None = None
+    palette: CreativePalette | None = None
+
+    @field_validator("palette", mode="before")
+    @classmethod
+    def _complete_palette(cls, value: object) -> CreativePalette | None:
+        # A bad palette must not discard a usable concept or trigger a repair
+        # call. Retain the complete deterministic fallback, never partial hexes.
+        try:
+            return CreativePalette.model_validate(value) if value is not None else None
+        except (ValidationError, ValueError, TypeError):
+            return None
 
 
 CONCEPT_PROMPT = """You are an art director choosing the design direction for ONE business's website.
@@ -278,8 +291,23 @@ content starts near the fold. Choose "full" when the brand sells atmosphere,
 place, craft or emotion and the imagery IS the message; "banded" when the
 visitor arrived to read, compare or act.
 
+Create an intentional palette for THIS business: primary is its identity,
+secondary a harmonious supporting color, accent a selective small emphasis,
+surface a restrained foundation in the requested light/dark scheme. Industry
+and category influence atmosphere, never impose fixed colors. Read personality,
+audience, purpose, imagery and explicit direction. Prefer explicit user direction
+and observed brand colors over inferred industry conventions. Preserve the logo's
+recognizable color; complementary brand colors may inform secondary and accent.
+Choose analogous, complementary, split-complementary, monochromatic, neutral,
+warm/cool or another coherent relationship as appropriate. Avoid automatic blue
+for technology, teal for healthcare, rainbow for childcare, or one palette per
+industry. Spend accent sparingly; applications derive technical shades and inks.
+Use only four #rrggbb palette values, not separate hover/text/border colors.
+If a direction is pinned, keep its concept and hero height; change colors only.
+
 Reply with ONE JSON object, no markdown, no commentary:
-{"concept": <concept number>, "hero_height": "full" | "banded" | null}
+{"concept": <concept number>, "hero_height": "full" | "banded" | null,
+ "palette": {"primary":"#...", "secondary":"#...", "accent":"#...", "surface":"#..."}}
 """
 
 
@@ -292,6 +320,12 @@ def _concept_prompt(
     logo_hex: str | None,
     personality: BrandPersonality | None,
     positioning: str | None,
+    audience: str | None = None,
+    brand_colors: list[str] | None = None,
+    reference_colors: list[str] | None = None,
+    image_colors: list[str] | None = None,
+    design_direction: str | None = None,
+    business_context: str | None = None,
 ) -> str:
     lines = [
         f"Business: {brand_name}",
@@ -301,6 +335,15 @@ def _concept_prompt(
     ]
     if positioning:
         lines.append(f"Positioning (inferred): {positioning}")
+    lines.extend([
+        f"Audience: {(audience or 'unknown')[:300]}",
+        f"Observed brand colors: {(brand_colors or [])[:6]}",
+        f"Observed website colors: {(reference_colors or [])[:8]}",
+        f"Measured image colors: {(image_colors or [])[:6]}",
+        f"Explicit design direction: {(design_direction or 'none')[:1000]}",
+        f"Business content and purpose: {(business_context or 'unknown')[:1600]}",
+        f"Requested scheme: {concepts[0].theme.color_scheme if concepts else 'light'}",
+    ])
     if personality is not None and personality.known():
         traits = ", ".join(
             f"{axis.replace('_', '↔')} {value:+d}" for axis, value in personality.known().items()
@@ -376,6 +419,12 @@ async def resolve_direction(
     logo_is_light: bool | None = None,
     personality: BrandPersonality | None = None,
     positioning: str | None = None,
+    audience: str | None = None,
+    brand_colors: list[str] | None = None,
+    reference_colors: list[str] | None = None,
+    image_colors: list[str] | None = None,
+    design_direction: str | None = None,
+    business_context: str | None = None,
     content: ContentProfile | None = None,
     hero_height: HeroBackgroundHeight | None = None,
     scheme_choice: str | None = None,
@@ -411,6 +460,8 @@ async def resolve_direction(
         theme.hero_background_height = resolve_hero_height(
             hero_height, None, mood=mood, industry=industry
         )
+        if settings.ai_palette_enabled and use_model:
+            theme = _creative_theme(theme, None, brand_colors, design_direction)
         return DesignDirection(theme=theme, color_scheme=color_scheme, picked_by="schemes-off")
 
     pinned = design_schemes.SCHEMES_BY_SLUG.get((scheme_choice or "").strip().lower())
@@ -441,7 +492,8 @@ async def resolve_direction(
     chosen = concepts[0]
     picked_by: Literal["score", "model", "pin"] = "pin" if pinned is not None else "score"
     model_height: HeroBackgroundHeight | None = None
-    if use_model and settings.design_language_enabled and len(concepts) > 1:
+    choice: ConceptChoice | None = None
+    if use_model and settings.design_language_enabled and (len(concepts) > 1 or settings.ai_palette_enabled):
         choice = await _model_choice(
             concepts,
             llm=llm,
@@ -451,6 +503,12 @@ async def resolve_direction(
             logo_hex=logo_hex,
             personality=personality,
             positioning=positioning,
+            audience=audience,
+            brand_colors=brand_colors,
+            reference_colors=reference_colors,
+            image_colors=image_colors,
+            design_direction=design_direction,
+            business_context=business_context,
         )
         if choice is not None:
             model_height = choice.hero_height
@@ -459,6 +517,8 @@ async def resolve_direction(
                 picked_by = "model"
 
     theme = chosen.theme
+    if settings.ai_palette_enabled and use_model:
+        theme = _creative_theme(theme, choice.palette if choice else None, brand_colors, design_direction)
     theme.hero_background_height = resolve_hero_height(
         hero_height, model_height, mood=mood, industry=industry
     )
@@ -474,3 +534,34 @@ async def resolve_direction(
         picked_by=picked_by,
         hero_height_from_model=model_height,
     )
+
+
+def _creative_theme(theme: ThemeTokens, palette: CreativePalette | None,
+                    brand_colors: list[str] | None, direction: str | None) -> ThemeTokens:
+    from app.services.color_system import normalize_hex
+    creative = palette or CreativePalette(**{
+        key: getattr(theme.palette, key) for key in ("primary", "secondary", "accent", "surface")
+    })
+    if brand_colors and not direction:
+        try:
+            creative = creative.model_copy(update={"primary": normalize_hex(brand_colors[0])})
+        except ValueError:
+            pass
+    return apply_creative_palette(theme, creative)
+
+
+async def regenerate_palette(theme: ThemeTokens, brief: dict, direction: str | None = None,
+                             llm: LlmClient | None = None) -> ThemeTokens:
+    """Same art director, with layout/type/hero pinned. One reasoning call."""
+    client = llm or get_reasoning_llm()
+    choice = await client.chat_json(
+        system_prompt=CONCEPT_PROMPT,
+        user_prompt=(f"Pinned direction: {theme.design_scheme or theme.mood}; scheme: {theme.color_scheme}. "
+                     f"Current palette: {theme.palette.model_dump()}. Keep all non-color decisions.\n"
+                     + str(brief)[:6000] + "\nExplicit design direction: " + (direction or "Create another appropriate coherent palette.")[:1000]),
+        schema=ConceptChoice,
+        temperature=settings.design_temperature,
+    )
+    if choice.palette is None:
+        raise LlmError("The AI did not return a complete valid palette. Your current colors were kept.")
+    return _creative_theme(theme, choice.palette, brief.get("brand_colors"), direction)

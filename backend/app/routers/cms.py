@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.models.builder_schema import GeneratedSite
+from app.models.brand import CreativePalette
 from app.services.cms_client import CmsApiError, CmsClient
 from app.services.cms_targets import (
     CmsTarget,
@@ -87,6 +88,50 @@ class ConnectRequest(BaseModel):
     # an unauthenticated local endpoint a credential-forwarding proxy to any
     # host. None ⇒ the default target.
     target: str | None = None
+
+
+class PaletteContextRequest(ConnectRequest):
+    entity_token: str = Field(min_length=1)
+    palette: CreativePalette | None = None
+
+
+class PublishPaletteRequest(PaletteContextRequest):
+    site: GeneratedSite
+    expected_layout_version_id: str = Field(min_length=1, max_length=100)
+
+
+@router.post("/palette/current")
+async def palette_context(payload: PaletteContextRequest) -> dict:
+    client = CmsClient.for_target(_resolve(payload.target))
+    try:
+        await client.login(payload.email, payload.password)
+        await client.mint_builder_session(payload.entity_token)
+        data = (await client.get_builder_styles()).get("data") or {}
+        if payload.palette is not None:
+            from app.services.palette_verification import verify_public_palette
+            data["publication"] = await verify_public_palette(client, payload.entity_token, payload.palette)
+        return data
+    except CmsApiError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    finally:
+        await client.aclose()
+
+
+@router.post("/palette")
+async def publish_colors(payload: PublishPaletteRequest) -> dict:
+    from app.services.palette_publish import publish_palette
+    target = _resolve(payload.target)
+    client = CmsClient.for_target(target)
+    try:
+        await client.login(payload.email, payload.password)
+        await client.mint_builder_session(payload.entity_token)
+        return await publish_palette(client, site=payload.site,
+                                     expected_version=payload.expected_layout_version_id,
+                                     project_target=target.name, entity_token=payload.entity_token)
+    except (CmsApiError, ValueError) as exc:
+        raise HTTPException(status_code=exc.status if isinstance(exc, CmsApiError) else 409, detail=str(exc)) from exc
+    finally:
+        await client.aclose()
 
 
 def _site_summary(entity: dict[str, Any]) -> dict[str, Any]:

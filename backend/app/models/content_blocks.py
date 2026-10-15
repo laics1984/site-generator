@@ -1586,6 +1586,7 @@ class SourceContent(BaseModel):
     # reads like a document, so it splits into pages the same way one does.
     source_kind: Literal["url", "pdf", "docx", "facebook", "paste"]
     source_ref: str
+    reference_colors: list[str] = Field(default_factory=list, max_length=8)
     # The industry the source states about ITSELF — a Facebook Page's own
     # category, say. Outranks a model's guess and yields to the user's choice;
     # see `resolve_industry`. None when the source states nothing usable.
@@ -1851,6 +1852,7 @@ SourceCardKind = Literal[
     "steps",
     "documents",
     "gallery",
+    "contact",
     "prose",
 ]
 

@@ -164,10 +164,9 @@ class ColorPalette(BaseModel):
     """
     The 6 tokens the webtree builder understands.
 
-    Constraints we enforce on construction:
-    - primary is the brand color (from logo)
-    - text vs background must meet WCAG AA (4.5:1) for body copy
-    - surface is a near-background tint, slightly tinted toward primary
+    Construction validates hex syntax. The theme entry point owns contrast.
+    Legacy themes retain their palette behavior. Version 2 stores four creative
+    colors unchanged and derives text/background and readable semantic variants.
     """
 
     primary: str
@@ -181,6 +180,20 @@ class ColorPalette(BaseModel):
     @classmethod
     def _hex_only(cls, v: object) -> str:
         return _validate_hex(v)
+
+
+class CreativePalette(BaseModel):
+    """The only four creative colors requested from AI or a color editor."""
+    primary: str
+    secondary: str
+    accent: str
+    surface: str
+
+    @field_validator("primary", "secondary", "accent", "surface", mode="before")
+    @classmethod
+    def _normalize(cls, value: object) -> str:
+        from app.services.color_system import normalize_hex
+        return normalize_hex(value)
 
 
 class Typography(BaseModel):
@@ -275,6 +288,7 @@ class ThemeTokens(BaseModel):
     """
 
     palette: ColorPalette
+    color_system_version: Literal[2] | None = None
     typography: Typography
     buttons: Buttons
     page: PageTokens
@@ -410,6 +424,8 @@ class ThemeTokens(BaseModel):
             # editing a law firm. Builder-only; the public renderer ignores it.
             "brandMood": self.mood,
         }
+        if self.color_system_version == 2:
+            styles["colorSystemVersion"] = 2
         # Only emit the hero token when banded; absence → the template's
         # full-screen fallback, so "full" sites stay byte-identical.
         if self.hero_background_height == "banded":
