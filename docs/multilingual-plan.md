@@ -2,7 +2,8 @@
 
 Status: **proposed 2026-10-16.** Q2–Q4 decided (all recommended options:
 primary at root; AI-translate gaps with a badge; users may add languages).
-Q1 awaiting the UX answer in "Shared body — what the owner sees". Nothing below
+Q5 decided 2026-10-16: more than one language is a plan feature.
+Q1 (shared body) awaiting approval — UX in "Shared body — what the owner sees". Nothing below
 is implemented yet unless it's listed under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -247,6 +248,74 @@ divergent layouts are what the spec's "one website" rules out. "Regenerate
 translation" is **out of scope here** (it needs an LLM in cms-api or a builder →
 generator call); listed under future work.
 
+### 8. Admin suite (webtreesuite-admin-app)
+
+Settings and reporting only; text editing stays in the builder. Each item
+extends a screen that exists today:
+
+- **Site settings → new "Languages" card** (beside Industry): main language,
+  enabled languages with their URL prefix (`/zh/`), add/remove a language,
+  and a per-language completeness line ("中文 — 2 pages need translation").
+  Removing a language unpublishes it, never deletes its text. Writes
+  `entities.locales_json`.
+- **Webpages list** (`viewWebpagesList`): language pills per row (EN ✓ BM ✓
+  中文 ⚠) and a "Needs translation" filter. Still one row per page.
+- **Page information form** (`componentWebpageInformationForm`): a language
+  switch above the SEO title/description, with `SeoPreview` showing the
+  selected language's search result and URL. Writes that language's overlay.
+- **Insights** (`viewInsightsPages`): a language filter; per-language traffic
+  is grouped by URL prefix, since metrics are already per path.
+- **SEO audit** (`viewInsightsSeoAudit`): new checks — hreflang reciprocity,
+  a language published with untranslated text, a missing localised SEO title.
+- **Not touched**: articles/events (per-language CMS content is future work),
+  CRM, inbox, WhatsApp.
+
+Plan gating (Q5, decided): a new `PlanFeature::MultilingualSite =
+'multilingual_site'` in cms-api, set per plan in `config/plans.php` and asked
+through `EntityEntitlements`, like `custom_domain`. Without it:
+
+- **Generator**: detects, previews and generates every language as usual (the
+  owner sees what they'd get). The push publishes the main language and saves
+  the others as **drafts**, with a push warning naming the plan feature.
+- **cms-api**: refuses enabling a second language in `locales_json` and
+  publishing a non-primary translation (the gate lives here, so the builder,
+  the admin app and the generator all get one answer).
+- **Admin**: the Languages card shows the upsell through
+  `featureUnavailableCopy`; the main-language setting stays available on
+  every plan.
+- **Downgrade**: translations are kept, never deleted. Non-primary URLs
+  301-redirect to the same page in the main language (so indexed URLs don't
+  404), drop out of hreflang and the sitemap, and come back on re-upgrade.
+
+No dependency on unmerged work: `PlanFeature`, `config/plans.php` and
+`EntityEntitlements` are already on cms-api `main` (#123), and
+`featureUnavailableCopy` on admin-app `main`.
+
+## Database changes (webtree-cms-api only, all additive)
+
+1. **`entities.locales_json`** — nullable JSON: `{primary, enabled[], aliases{code: prefix}, mode}`.
+   `NULL` = a monolingual site = exactly today's behaviour, so every existing
+   site is untouched until a push or the owner turns a language on.
+2. **`translations`** — one new table: `id`, `entity_id`, `translatable_type`
+   (`page` | `layout`), `translatable_id`, `locale`, `draft_overlay_json`,
+   `published_overlay_json`, `published_against_id` (the page revision / layout
+   version it was published over), `draft_version`, `updated_by`, timestamps;
+   unique `(translatable_type, translatable_id, locale)`. Per-string status
+   (`source`/`ai`/`edited`) and source-text hash live **inside** the overlay
+   JSON, so there's no per-string table and no row-per-word growth.
+3. **Unchanged**: `pages`, `page_revisions`, `layouts`, `layout_versions`,
+   media, menus. Per-language analytics come free: `page_metrics_daily` is keyed
+   by path, and `/zh/about` is its own path.
+
+No stored-data migration converts existing `bm/committee` mirror pages: a
+blind slug test can't tell `/bm/committee` from a real `/it/support` section
+(the `AMBIGUOUS_LOCALE_SEGMENTS` problem). The generator adopts them on the
+next push, where it has the crawl evidence — the `_adopt_as_template` precedent.
+
+Rollback: `down()` drops the table and column; a `NULL` `locales_json` serves
+pages exactly as before. Feature tests build their schema by hand in
+`tests/Support/BuildsCmsSchema.php`, so the table and column go there too.
+
 ## Phases
 
 | # | Repo(s) | Deliverable | Visible effect |
@@ -258,6 +327,7 @@ generator call); listed under future work.
 | P4 | public (+ preview mirror) | lang/dir, hreflang, canonical, sitemap alternates, switcher, `:lang()` font fallbacks | Crawlable, valid international SEO |
 | P5 | generator | Push overlays + locale config; per-locale SEO + JSON-LD; sync rules (never overwrite `edited`) | End-to-end publish |
 | P6 | builder | Locale tabs, overlay editing, status badges | Owners edit languages independently |
+| P7 | admin-app (+ cms-api endpoints) | Languages card, page-list pills/filter, per-language SEO fields, insights filter, audit checks | Owners manage languages without the builder |
 
 P1–P2 change nothing for a monolingual source (Scenario A is a regression
 test, not a feature). Each phase states before/after on the capture set.
@@ -307,6 +377,13 @@ also Bahasa Melayu)?
 - **(Recommended) Yes**, via the override's language picker (Rule 3's "explicit
   user request"); same translation path.
 - No — only languages detected in the source.
+
+**Q5 — Is a second language a plan feature?**
+- **(Recommended) Yes**: one language on every plan; more than one is an
+  entitlement through the existing `PlanFeature` / `EntityEntitlements`
+  machinery (`featureUnavailableCopy` already words the upsell). AI translation is the
+  one part of this that costs per site.
+- No — every plan gets multilingual sites.
 
 ## Future work (not in these phases)
 
