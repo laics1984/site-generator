@@ -4,8 +4,12 @@ Status: **approved 2026-10-16** — all five decisions took the recommended
 option: Q1 shared page body + per-language text overlay; Q2 primary language at
 the root, others prefixed; Q3 AI-translate gaps with a badge; Q4 users may add
 languages; Q5 more than one language is the `multilingual_site` plan feature.
-Work happens on `feature/multilingual` in every repo. P0–P1 next. Nothing below
-is implemented yet unless it's listed under "What exists today".
+Work happens on `feature/multilingual` in every repo. **P0–P1 done in
+site-generator (2026-10-15)** — detection is shown in the preview, generation is
+unchanged; see "Progress and corrections" below. P0's real-site captures are
+still owed (the build sandbox could not reach the sites), so the thresholds are
+provisional. P2 next. Nothing else below is implemented yet unless it's listed
+under "What exists today".
 
 ## What exists today (measured, not assumed)
 
@@ -38,6 +42,97 @@ Malay is Latin script (`/bm` read as "English" by any script test), so script
 detection alone cannot separate en/ms — word-level statistics are required.
 The local crawl cache is empty (post-migration), so thresholds below get
 calibrated on a capture set in Phase 0, not on a guess.
+
+## Progress and corrections
+
+### P0–P1 (site-generator, 2026-10-15)
+
+**Built.** `services/language_analysis.py` (`analyze`, `with_language_profile`);
+the BCP 47 registry in `services/locale.py` (`LOCALES`, `LOCALE_ALIASES`,
+`canonical_locale`, `is_rtl`; `LOCALE_LABELS` is gone, `locale_label` and
+`locale_segment` keep their signatures); `LanguageProfile` /
+`LanguageShare` / `LanguagePair` / `PageLanguage` and `SourceContent.declared_lang`
++ `.language_profile` in `models/content_blocks.py`, mirrored in
+`frontend/src/lib/types.ts`; `LanguageCard` in the scrape preview;
+`scripts/capture_language_source.py` → `backend/.language-captures/`
+(gitignored) and `scripts/measure_language_analysis.py` (replays captures,
+`--fixtures` replays the committed Scenarios A–F in
+`backend/tests/fixtures/languages/`); `tests/test_language_analysis.py`.
+
+**One seam.** The profile is computed in `source_preview.source_preview_payload`,
+which the crawl, document, Facebook, paste and merge endpoints all already call,
+so there is no per-reader call. The reader's brand candidate (og:site_name, a
+Page's name) is passed in and excluded. Nothing in planning, generation or push
+reads the profile yet.
+
+**The captures were NOT made.** The sandbox's network policy refused all four
+hosts (proxy 403 on CONNECT; `capture_language_source.py https://mmta.org.my`
+fails DNS inside it). Nothing below is measured on mmta, uniquekindies, watr or
+mykiddyland. The first job of the next session with network access is:
+
+    cd backend && .venv/bin/python scripts/capture_language_source.py \
+        https://mmta.org.my https://uniquekindies.com https://watr.org.my https://mykiddyland.com
+    .venv/bin/python scripts/measure_language_analysis.py -v
+
+then restate the thresholds here with real numbers.
+
+**Calibration so far (synthetic fixtures only).**
+
+| Knob | Set to | From |
+|---|---|---|
+| `CJK_WEIGHT` | 2.5 (first draft 3.0) | English ÷ Chinese letters for the same copy in the fixtures' parallel pages: 2.71, 2.65, 2.17. The plan's uniquekindies count (1,174 English prose chars vs 390 Han) reads 55/45 at 2.5, 50/50 at 3.0 — both substantial either way. |
+| `MIN_SHARE` / `MIN_AMOUNT` | 15% and 240 weighted letters | Scenario F's Chinese (brand excluded, one "欢迎光临") is 3%/15 letters; the smallest real second language in A–E is 38%/415. Wide margin, but untested on real incidental text. |
+| `LATIN_MIN_CONFIDENCE` | 0.5 (new) | Every py3langid misreading scored 0.21–0.26 ("Our Programmes" → `de`), every correct paragraph ≥ 0.88. |
+| `MIN_LATIN_LETTERS` | 12 (plan's figure) | Kept; see correction 2. |
+
+Before → after on the fixtures (before = the first draft of these rules; the
+pipeline itself had no text-level detection at all, only URL prefixes):
+
+| Scenario | First draft | Now |
+|---|---|---|
+| A English only | `incidental` — "a little Deutsch (3%)" | `monolingual` en 100% |
+| B bilingual headings | `inline_bilingual`, primary **zh-Hans** (51/49) | `inline_bilingual`, primary **en** (53/47), 10 pairs, 7 headings |
+| C full /zh mirrors | `parallel_urls` en; stray `de` 1% | `parallel_urls` en; zh-Hans coverage 1.0 |
+| D en / bm / zh | `parallel_urls` en; stray `de` 1% | `parallel_urls` en; ms and zh-Hans coverage 1.0; declared `lang="en"` flagged untrusted |
+| E partial /zh | `parallel_urls`; stray `de` 2% | `parallel_urls`; zh-Hans coverage 0.4 |
+| F Chinese brand | `incidental` en, zh 4% | `incidental` en, zh 3% |
+
+**Corrections to the plan.**
+
+1. **Malay and Indonesian are one family to py3langid**, not a tie-break at the
+   margin: it reads plain Malaysian copy as `id` ("Tentang Kami" → id 0.42). The
+   two probabilities are summed, reported `ms`, and `id` only on
+   `detect_market` → Indonesia.
+2. **"Under ~12 letters inherits" was not enough.** 13–16 letter headings
+   ("Our Programmes", "Full-Day Programme") pass the length test and are still
+   misread with low confidence. A reading below `LATIN_MIN_CONFIDENCE` inherits
+   too.
+3. **The primary of an inline-bilingual source is the language written FIRST
+   in its pairs**, not the larger one. uniquekindies is ~50/50 by letters; the
+   owner's "English | 中文" order is the evidence that says which leads.
+4. **Han with no differential character is reported `zh`, not guessed.** The
+   declared `<html lang>` is used for exactly one thing — breaking that tie
+   (`zh-TW` → `zh-Hant`, at confidence 0.5) — and otherwise only appears as an
+   evidence line ("recorded, not trusted").
+5. **`coverage` is defined** as pages carrying the language ÷ pages carrying the
+   primary (≥ 15% of a page's text), so 1.0 = every page translated. The plan
+   named the field without a definition.
+6. **A sixth pattern, `unknown`**, for a source with no countable text, so the
+   preview never states a language it did not read.
+7. **A `/bm/…` directory written in the primary language is not a mirror.** It
+   is reported as an evidence line and not counted (`parallel_urls` needs the
+   directory's pages to be in the language it names).
+
+**Visible changes in P1, all deliberate:**
+
+- The registry has one label per language, so `ms` and `bm` now share
+  "Bahasa Malaysia" (the old `/bm` label, and what mmta's own nav says). A
+  source mirrored under **`/ms/`** used to get "Bahasa Melayu" in its language
+  menu and now gets "Bahasa Malaysia". Codes the old table lacked (`tl`, `he`,
+  `ur`, `fil`) now get names instead of upper-cased codes. Nothing else about
+  generated sites changes.
+- `scraper.EXTRACTION_VERSION` 4 → 5 (pages now record `declared_lang`), so
+  crawls cached under 4 are re-crawled once.
 
 ## Architecture
 

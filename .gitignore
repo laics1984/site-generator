@@ -77,3 +77,4 @@ npm-debug.log*
 # Captured Facebook reads (real people's names and words) — local replay only,
 # see backend/scripts/capture_facebook_page.py. Never commit.
 /backend/.facebook-captures/
+/backend/.language-captures/

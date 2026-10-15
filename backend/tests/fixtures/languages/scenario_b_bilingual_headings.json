@@ -1,0 +1,41 @@
+{
+  "scenario_note": "One URL, two languages on purpose: every heading is 'English | 中文'; prose is English in some sections, Chinese in others, one paragraph pair. Expect inline_bilingual en + zh-Hans.",
+  "source": {
+    "source_kind": "url",
+    "source_ref": "https://scenario_b_bilingual_headings.example.test",
+    "title": "Home | Unique Little Ones",
+    "raw_text": "Welcome | 欢迎\nUnique Little Ones is a bilingual kindergarten where children learn in English and Mandarin every day, through stories, songs and play.\nUnique Little Ones 创立于 2006 年，致力于为孩子提供快乐而扎实的双语教育。\nProgrammes | 课程\nOur programmes cover literacy, numeracy, science and the arts, with small classes and caring teachers.\nCurricular Activities | 课间活动\n孩子们每周参加书法、武术、舞蹈和华语故事时间，在活动中认识中华文化。\nTestimonials | 家长心声\n孩子在这里非常开心，每天回家都会唱新学的歌，老师们也很用心。—— 陈太太\n我们很满意这里的双语环境，孩子的华语和英语都进步了很多。—— 林先生\nEnrolment | 报名\nEnrolment for next year is open now. Visit our centre to meet the teachers and see the classrooms.",
+    "headings": [
+      "Welcome | 欢迎",
+      "Programmes | 课程",
+      "Curricular Activities | 课间活动",
+      "Testimonials | 家长心声",
+      "Enrolment | 报名"
+    ],
+    "declared_lang": "en",
+    "nav_links": [
+      {
+        "label": "Home | 首页",
+        "href": "/"
+      },
+      {
+        "label": "About | 关于我们",
+        "href": "/about"
+      }
+    ],
+    "discovered_pages": [
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "About | Unique Little Ones",
+        "raw_text": "About Us | 关于我们\nWe started with one classroom and a belief that children can grow up comfortable in two languages.\n我们从一间教室开始，相信孩子可以在两种语言中自在地成长。\nOur Teachers | 我们的老师\nEvery teacher speaks both English and Mandarin and holds an early childhood qualification.",
+        "headings": [
+          "About Us | 关于我们",
+          "Our Teachers | 我们的老师"
+        ],
+        "declared_lang": "en",
+        "url_path": "/about"
+      }
+    ]
+  }
+}

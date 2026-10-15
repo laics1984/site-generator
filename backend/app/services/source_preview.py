@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Sequence
 
 from app.models.content_blocks import SourceContent
+from app.services.language_analysis import with_language_profile
 
 
 @dataclass
@@ -95,8 +96,15 @@ def source_preview_payload(
     more" affordance stays hidden without either caller having to think about
     it. `extra` carries reader-specific keys (the Facebook facts) additively, so
     adding one can never change the shared shape.
+
+    Every reader passes here, so this is where the source's language is read —
+    once, by one set of rules (services/language_analysis.py). The brand the
+    reader found is excluded from the count: a name is not a language choice.
     """
     unvisited = list(unvisited_urls)
+    source_content = with_language_profile(
+        source_content, brand_name=getattr(brand_candidate, "name", None)
+    )
     payload: dict[str, Any] = {
         "url": url,
         "final_url": final_url,

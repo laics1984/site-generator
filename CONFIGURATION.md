@@ -144,6 +144,7 @@ is the cost record.
 | `CONTENT_MIGRATION_ENABLED` | `true` | Migrate blog/event listings as CMS entries. |
 | `CONTENT_MIGRATION_MAX_ENTRIES` | `60` | Cap on migrated entries. |
 | `RECORD_TEMPLATE_LLM_ENABLED` | `true` | Let the LLM choose one layout (by section number) per set of look-alike detail pages; off ⇒ deterministic default layout. |
+| `LANGUAGE_DETECT_CANDIDATES` | `en,ms,id,fr,de,es,pt,it,nl,vi,tl` | Latin-script languages `language_analysis` may report (py3langid is restricted to these; other scripts are identified by script). Malay/Indonesian are one family, reported as `ms` unless the market says Indonesia. |
 | `RECORD_SET_MIN_PAGES` | `6` | Same-parent, same-template sibling pages before they're built as a record set instead of one content batch each. |
 
 ## Facebook Page reading

@@ -168,6 +168,12 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
 # wave things through.
 NOT_PROCESS_LOCAL: tuple[tuple[str, str, str], ...] = (
     (
+        "app.services.language_analysis",
+        "_identifier",
+        "Pure memo of the bundled py3langid model, keyed by the candidate set. "
+        "Deterministic, no I/O beyond the package's own file, ~2 MB per worker.",
+    ),
+    (
         "app.services.color_system",
         "_derive",
         "Pure numerical memo keyed by normalized canonical colors. Bounded to "

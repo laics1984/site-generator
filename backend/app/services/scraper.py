@@ -117,7 +117,9 @@ logger = logging.getLogger(__name__)
 # 3: a page builder's declared background layer (Wix `BG_IMG`) is a
 # css_background, never a card's picture; contact-channel cards are `contact`
 # and their platform buttons are furniture.
-EXTRACTION_VERSION = 4
+# 5: each page records its declared `<html lang>` (`declared_lang`), evidence
+# for `language_analysis`.
+EXTRACTION_VERSION = 5
 
 
 # --- public types ---------------------------------------------------------------
@@ -2314,6 +2316,15 @@ def _observed_colors(soup: BeautifulSoup) -> list[str]:
     return [v.lower() for v in values if isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v)][:8] if isinstance(values, list) else []
 
 
+def _declared_lang(soup: BeautifulSoup) -> str | None:
+    """`<html lang>` as written — a claim the language analysis weighs lightly."""
+    html = soup.find("html")
+    value = html.get("lang") if isinstance(html, Tag) else None
+    if not isinstance(value, str):
+        return None
+    return value.strip() or None
+
+
 def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True) -> _ParsedPage:
     """HTML → SourceContent + image candidates + logo URL.
 
@@ -2418,6 +2429,7 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         social_links=social_links,
         url_path=urlparse(final_url).path or "/",
         subject_name=_leading_person_name(soup),
+        declared_lang=_declared_lang(soup),
         image_metadata=[
             ImageMetadata(
                 url=c.url,

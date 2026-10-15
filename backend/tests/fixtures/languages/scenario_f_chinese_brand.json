@@ -1,0 +1,38 @@
+{
+  "scenario_note": "English site whose brand carries Chinese characters plus one Chinese greeting. Expect monolingual or incidental en; zh never substantial.",
+  "source": {
+    "source_kind": "url",
+    "source_ref": "https://scenario_f_chinese_brand.example.test",
+    "title": "Home | Golden Lotus 金莲 Restaurant",
+    "raw_text": "Golden Lotus 金莲 Restaurant\nWelcome to Golden Lotus 金莲, a family restaurant serving Cantonese dishes in the heart of Ipoh since 1998.\nOur dim sum is made fresh every morning, and our roast duck has been the same recipe for three generations.\nOpening Hours\nOpen daily from 7am to 3pm and from 5pm to 10pm. Closed on the first day of Chinese New Year.\nReservations\nCall us to book a table for groups of eight or more. 欢迎光临!",
+    "headings": [
+      "Golden Lotus 金莲 Restaurant",
+      "Opening Hours",
+      "Reservations"
+    ],
+    "declared_lang": "en",
+    "nav_links": [
+      {
+        "label": "Home",
+        "href": "/"
+      },
+      {
+        "label": "Menu",
+        "href": "/menu"
+      }
+    ],
+    "discovered_pages": [
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "Menu | Golden Lotus 金莲 Restaurant",
+        "raw_text": "Our Menu\nSteamed har gow, siu mai, char siu bao and egg tarts are served until 3pm.\nIn the evening we serve roast duck, steamed fish, claypot rice and seasonal vegetables.",
+        "headings": [
+          "Our Menu"
+        ],
+        "declared_lang": "en",
+        "url_path": "/menu"
+      }
+    ]
+  }
+}

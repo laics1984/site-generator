@@ -1571,6 +1571,69 @@ class SitePlan(BaseModel):
         return self
 
 
+# Mirrored by `LanguagePattern` in frontend/src/lib/types.ts — change both.
+LanguagePattern = Literal[
+    "monolingual",  # one substantial language
+    "parallel_urls",  # translated mirrors live at their own URLs (/bm/…, /zh/…)
+    "inline_bilingual",  # two languages paired on the same page ("Programmes | 课程")
+    "mixed_sections",  # two substantial languages on the same pages, mostly unpaired
+    "incidental",  # a second language present, under the coverage threshold
+    "unknown",  # no countable text
+]
+
+
+class LanguageShare(BaseModel):
+    """One language a source is written in (services/language_analysis.py)."""
+
+    code: str  # BCP 47, a `locale.LOCALES` key
+    label: str = ""  # the registry's name for it, so no client keeps a second table
+    share: float  # of the source's counted text, 0..1
+    confidence: float  # how sure the identification is, 0..1
+    # How much of the site exists in this language: pages carrying it as a
+    # share of the pages carrying the primary language (1.0 = every page).
+    coverage: float
+    substantial: bool  # past BOTH the share and the absolute-amount thresholds
+    amount: int  # counted letters, a Han/Kana/Hangul character weighted as several
+
+
+class LanguagePair(BaseModel):
+    """Two units saying the same thing in two languages on one page, in source order."""
+
+    page: str  # the page's url_path, "/" for the entry page
+    kind: Literal["heading", "paragraph", "label"]
+    first: str
+    first_lang: str
+    second: str
+    second_lang: str
+
+
+class PageLanguage(BaseModel):
+    """What one page is written in, and what its URL and markup claim."""
+
+    path: str
+    locale: str | None  # the dominant language of the page's own text
+    url_locale: str | None = None  # a language directory in the path, canonicalised
+    declared: str | None = None  # <html lang>, recorded as low-weight evidence only
+
+
+class LanguageProfile(BaseModel):
+    """Which languages a source is written in, and how they are laid out.
+
+    Computed once per source by `language_analysis.analyze`, deterministically,
+    at the one point every reader passes (`source_preview.source_preview_payload`).
+    Evidence for the preview and, from P2 on, for the strategy — nothing in
+    generation reads it yet. Mirrored in frontend/src/lib/types.ts.
+    """
+
+    primary: str | None = None
+    languages: list[LanguageShare] = Field(default_factory=list)
+    pattern: LanguagePattern = "unknown"
+    pairs: list[LanguagePair] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    reason: str = ""
+    pages: list[PageLanguage] = Field(default_factory=list)
+
+
 class SourceContent(BaseModel):
     """Normalized input passed to the LLM, regardless of source (URL or doc).
 
@@ -1703,6 +1766,22 @@ class SourceContent(BaseModel):
             "Facts two combined sources state differently (services/"
             "source_conflicts.py) — reported, never silently resolved. The site "
             "uses the first source's value; the preview says so."
+        ),
+    )
+    declared_lang: str | None = Field(
+        default=None,
+        description=(
+            "The page's <html lang> as the markup states it. A claim, not "
+            "evidence of the language: mmta.org.my and uniquekindies.com "
+            "declare 'en' on every language. language_analysis records it with "
+            "low weight; nothing else reads it."
+        ),
+    )
+    language_profile: LanguageProfile | None = Field(
+        default=None,
+        description=(
+            "Set on the top-level source only, by source_preview_payload. "
+            "None on discovered pages and on payloads from before P1."
         ),
     )
     subject_name: str | None = Field(

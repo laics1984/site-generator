@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { FacebookFactsPanel } from '@/components/FacebookFactsPanel'
+import { LanguageCard } from '@/components/LanguageCard'
 import { exportSiteDocument } from '@/lib/api'
 import type {
   CrawlStopReason,
@@ -155,6 +156,8 @@ export function ScrapePreview({
           </ul>
         </div>
       )}
+
+      {sc.language_profile && <LanguageCard profile={sc.language_profile} />}
 
       {facts && <FacebookFactsPanel facts={facts} />}
       {isFacebook && (sc.images?.length ?? 0) === 0 && (

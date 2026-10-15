@@ -1,0 +1,131 @@
+{
+  "scenario_note": "Three languages at their own URLs; /bm is the source's spelling of ms; every page declares lang=en. Expect parallel_urls en primary, ms and zh-Hans at coverage 1.0, declared lang flagged as untrusted.",
+  "source": {
+    "source_kind": "url",
+    "source_ref": "https://scenario_d_en_ms_zh.example.test",
+    "title": "Home | Sunny Days Kindergarten",
+    "raw_text": "Welcome to Sunny Days\nSunny Days is a kindergarten in Petaling Jaya where children aged three to six learn through play, music and outdoor discovery.\nOur teachers are trained in early childhood education and know every child by name.\nOur Programmes\nWe offer a full-day programme, a half-day programme and an after-school club for older siblings.\nEnrol now",
+    "headings": [
+      "Welcome to Sunny Days",
+      "Our Programmes"
+    ],
+    "declared_lang": "en",
+    "nav_links": [
+      {
+        "label": "Home",
+        "href": "/"
+      },
+      {
+        "label": "About Us",
+        "href": "/about"
+      },
+      {
+        "label": "Contact",
+        "href": "/contact"
+      },
+      {
+        "label": "Bahasa Malaysia",
+        "href": "/bm"
+      },
+      {
+        "label": "中文",
+        "href": "/zh"
+      }
+    ],
+    "discovered_pages": [
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "About | Sunny Days Kindergarten",
+        "raw_text": "About Us\nFounded in 2006, Sunny Days began with twelve children in a converted shophouse and has grown into a community of over two hundred families.\nWe believe children learn best when they feel safe, curious and listened to.\nOur Mission\nTo give every child a joyful start to learning, in partnership with their parents.",
+        "headings": [
+          "About Us",
+          "Our Mission"
+        ],
+        "declared_lang": "en",
+        "url_path": "/about"
+      },
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "Contact | Sunny Days Kindergarten",
+        "raw_text": "Contact Us\nVisit us on weekdays between 8am and 6pm, or send us a message and we will reply within one working day.\n12, Jalan SS2/24, 47300 Petaling Jaya, Selangor\nhello@sunnydays.example.test\n+60 3-7877 1234",
+        "headings": [
+          "Contact Us"
+        ],
+        "declared_lang": "en",
+        "url_path": "/contact"
+      },
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "Laman Utama | Sunny Days Kindergarten",
+        "raw_text": "Selamat Datang ke Sunny Days\nSunny Days ialah tadika di Petaling Jaya di mana kanak-kanak berumur tiga hingga enam tahun belajar melalui permainan, muzik dan penerokaan luar.\nGuru-guru kami terlatih dalam pendidikan awal kanak-kanak dan mengenali setiap kanak-kanak dengan nama.\nProgram Kami\nKami menawarkan program sehari penuh, program separuh hari dan kelab selepas sekolah untuk abang dan kakak.\nDaftar sekarang",
+        "headings": [
+          "Selamat Datang ke Sunny Days",
+          "Program Kami"
+        ],
+        "declared_lang": "en",
+        "url_path": "/bm"
+      },
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "Tentang Kami | Sunny Days Kindergarten",
+        "raw_text": "Tentang Kami\nDitubuhkan pada tahun 2006, Sunny Days bermula dengan dua belas kanak-kanak di sebuah rumah kedai dan kini menjadi komuniti lebih daripada dua ratus keluarga.\nKami percaya kanak-kanak belajar dengan terbaik apabila mereka berasa selamat, ingin tahu dan didengari.\nMisi Kami\nMemberi setiap kanak-kanak permulaan pembelajaran yang gembira, bersama ibu bapa mereka.",
+        "headings": [
+          "Tentang Kami",
+          "Misi Kami"
+        ],
+        "declared_lang": "en",
+        "url_path": "/bm/about"
+      },
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "Hubungi Kami | Sunny Days Kindergarten",
+        "raw_text": "Hubungi Kami\nKunjungi kami pada hari bekerja antara jam 8 pagi hingga 6 petang, atau hantar mesej dan kami akan membalas dalam satu hari bekerja.",
+        "headings": [
+          "Hubungi Kami"
+        ],
+        "declared_lang": "en",
+        "url_path": "/bm/contact"
+      },
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "首页 | Sunny Days Kindergarten",
+        "raw_text": "欢迎来到阳光幼儿园\n阳光幼儿园位于八打灵再也，三至六岁的孩子在这里通过游戏、音乐和户外探索来学习。\n我们的老师都受过幼儿教育的专业训练，认识每一个孩子的名字。\n我们的课程\n我们提供全日班、半日班，以及为哥哥姐姐们开设的课后俱乐部。\n立即报名",
+        "headings": [
+          "欢迎来到阳光幼儿园",
+          "我们的课程"
+        ],
+        "declared_lang": "en",
+        "url_path": "/zh"
+      },
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "关于我们 | Sunny Days Kindergarten",
+        "raw_text": "关于我们\n阳光幼儿园创立于2006年，最初只有十二个孩子，在一间改建的店屋里上课，如今已成为两百多个家庭的社区。\n我们相信，孩子在感到安全、好奇并被倾听的时候学得最好。\n我们的使命\n与家长携手，让每个孩子都有一个快乐的学习开端。",
+        "headings": [
+          "关于我们",
+          "我们的使命"
+        ],
+        "declared_lang": "en",
+        "url_path": "/zh/about"
+      },
+      {
+        "source_kind": "url",
+        "source_ref": "https://example.test",
+        "title": "联系我们 | Sunny Days Kindergarten",
+        "raw_text": "联系我们\n欢迎在周一至周五早上八点至傍晚六点来访，或给我们留言，我们会在一个工作日内回复。",
+        "headings": [
+          "联系我们"
+        ],
+        "declared_lang": "en",
+        "url_path": "/zh/contact"
+      }
+    ]
+  }
+}

@@ -27,6 +27,57 @@ export interface SourceConflict {
   values: Array<{ source: string; value: string }>
 }
 
+/** How a source lays out its languages. Mirrors `LanguagePattern` in
+ * backend/app/models/content_blocks.py — change both. */
+export type LanguagePattern =
+  | 'monolingual'
+  | 'parallel_urls'
+  | 'inline_bilingual'
+  | 'mixed_sections'
+  | 'incidental'
+  | 'unknown'
+
+/** Mirrors `content_blocks.LanguageShare`. */
+export interface LanguageShare {
+  code: string
+  label: string
+  share: number
+  confidence: number
+  coverage: number
+  substantial: boolean
+  amount: number
+}
+
+/** Mirrors `content_blocks.LanguagePair`. */
+export interface LanguagePair {
+  page: string
+  kind: 'heading' | 'paragraph' | 'label'
+  first: string
+  first_lang: string
+  second: string
+  second_lang: string
+}
+
+/** Mirrors `content_blocks.PageLanguage`. */
+export interface PageLanguage {
+  path: string
+  locale: string | null
+  url_locale?: string | null
+  declared?: string | null
+}
+
+/** Mirrors `content_blocks.LanguageProfile` (services/language_analysis.py).
+ * Shown in the preview; nothing in generation reads it yet. */
+export interface LanguageProfile {
+  primary: string | null
+  languages: LanguageShare[]
+  pattern: LanguagePattern
+  pairs: LanguagePair[]
+  evidence: string[]
+  reason: string
+  pages: PageLanguage[]
+}
+
 export interface SourceContent {
   reference_colors?: string[]
   source_kind: SourceKind
@@ -50,6 +101,10 @@ export interface SourceContent {
   /** Facts two combined sources state differently — reported, never silently
    * resolved; the site uses `kept`. Mirrors `SourceContent.source_conflicts`. */
   source_conflicts?: SourceConflict[]
+  /** `<html lang>` as the page declared it — a claim, not evidence. */
+  declared_lang?: string | null
+  /** Set on the top-level source by every reader's preview. */
+  language_profile?: LanguageProfile | null
 }
 
 export interface SourceNavLink {

@@ -2657,6 +2657,44 @@ makes forgetting it impossible rather than papering over it.
 
 Tests: `test_deployment_boundary.py`.
 
+## Which languages a source is written in
+
+`services/language_analysis.analyze` is the one answer (docs/multilingual-plan.md
+§1; P0–P1 done, nothing downstream reads it yet). It runs **once per source in
+`source_preview.source_preview_payload`** — the seam every reader (crawl,
+document, Facebook, paste, merge) already passes — and lands on
+`SourceContent.language_profile` (mirrored in `frontend/src/lib/types.ts`,
+shown by `LanguageCard`). No LLM call.
+
+- **Codes are BCP 47 from one registry**, `locale.LOCALES` +
+  `canonical_locale` (`bm`→`ms`, `cn`→`zh-Hans`, `tw`→`zh-Hant`).
+  `locale_segment` still returns the source's spelling, because a mirror's slug
+  is the source's URL; ask `canonical_locale` when you mean "which language".
+  `locale_label` reads the registry — there is no second label table.
+- **Script first, then py3langid for Latin only**, restricted to
+  `LANGUAGE_DETECT_CANDIDATES`. Malay+Indonesian are one family to the model
+  (it reads Malaysian copy as `id`), reported `ms` unless `detect_market` says
+  Indonesia. Han is split by a differential table (`SIMPLIFIED_ONLY` /
+  `TRADITIONAL_ONLY`), and is plain `zh` when no differing character occurs —
+  never assumed Simplified.
+- **A short or low-confidence Latin unit inherits its neighbour**
+  (`MIN_LATIN_LETTERS`, `LATIN_MIN_CONFIDENCE`): py3langid calls "Our
+  Programmes" German at p≈0.26.
+- **Brand, people's names, contacts, URLs and address lines are excluded
+  before counting**; a Facebook digest's labels and machine facts are
+  Facebook's words, not the owner's.
+- **Coverage, not presence**: substantial = `MIN_SHARE` AND `MIN_AMOUNT`, with
+  Han/Kana/Hangul weighted `CJK_WEIGHT` letters each.
+- **`<html lang>` is a claim** (`SourceContent.declared_lang`): mmta and
+  uniquekindies declare `en` on every language. It only breaks a Han-script tie.
+- The thresholds are calibrated on the synthetic Scenarios A–F
+  (`tests/fixtures/languages/`) only — real captures are still owed. Measure any
+  change with `scripts/measure_language_analysis.py [--fixtures] -v`; capture
+  with `scripts/capture_language_source.py` (→ `backend/.language-captures/`,
+  gitignored: real copy).
+
+Tests: `test_language_analysis.py`.
+
 ## Same site, one spelling
 
 `services/site_url.py` is the only answer to "is this the same site" (`www.` is

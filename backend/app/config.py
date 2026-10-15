@@ -268,6 +268,12 @@ class Settings(BaseSettings):
     # consistent one, because the dropped tail silently loses its pages.
     paste_structure_max_chars: int = 24000
 
+    # Latin-script languages `language_analysis` may answer with (py3langid is
+    # restricted to these; non-Latin scripts are identified by script, exactly).
+    # Malay and Indonesian are one family there — reported as `ms` unless the
+    # market evidence says Indonesia. Comma-separated ISO 639-1 codes.
+    language_detect_candidates: str = "en,ms,id,fr,de,es,pt,it,nl,vi,tl"
+
     # Look-alike detail pages — a catalogue's products, a portfolio's projects —
     # are built from ONE layout per source template (services/record_pages.py)
     # instead of a content batch each. The LLM picks which of an exemplar's

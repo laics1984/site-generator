@@ -13,6 +13,11 @@ crawler (which defers translated mirrors) and page inference (which pairs each
 mirror with the page it translates). Both need the same answer for
 ``/bm/committee``, and neither should import the other.
 
+And home to the locale REGISTRY (``LOCALES``, ``canonical_locale``): the one
+answer to "which language is this code and what is it called", in BCP 47
+(``ms``, ``zh-Hans``), with a source's own spellings (``bm``, ``cn``, ``tw``)
+as aliases. ``locale_segment`` keeps returning the source's spelling.
+
 Deterministic + dependency-light on purpose — no LLM call, unit-testable alone.
 """
 
@@ -42,19 +47,110 @@ AMBIGUOUS_LOCALE_SEGMENTS = frozenset({
     "am", "be", "hr", "id", "is", "it", "ms", "my", "no", "pa",
 })
 
-# Display names for the language switcher. Falls back to the uppercased code.
-LOCALE_LABELS: dict[str, str] = {
-    "ar": "العربية", "bm": "Bahasa Malaysia", "cn": "中文", "de": "Deutsch",
-    "en": "English", "es": "Español", "fr": "Français", "hi": "हिन्दी",
-    "id": "Bahasa Indonesia", "it": "Italiano", "ja": "日本語", "ko": "한국어",
-    "ms": "Bahasa Melayu", "nl": "Nederlands", "pt": "Português",
-    "ru": "Русский", "ta": "தமிழ்", "th": "ไทย", "tw": "繁體中文",
-    "vi": "Tiếng Việt", "zh": "中文",
+# --- the locale registry (BCP 47) ---------------------------------------------------
+#
+# ONE answer to "which language is this code, and what is it called". Internal
+# codes are BCP 47 (`ms`, `zh-Hans`); a source's own spellings (`/bm/`, `/cn/`,
+# `/tw/`) are ALIASES of them, resolved by `canonical_locale`. `locale_segment`
+# still returns the spelling the source used — a mirror's slug is the source's
+# URL, and P2's alias map keeps `/bm/` as `/bm/` — so callers that key slugs on
+# the segment are unchanged, and only callers asking "which language" canonicalise.
+
+
+@dataclass(frozen=True)
+class Locale:
+    code: str  # BCP 47: language, plus a script subtag where the script is the point
+    label: str  # the language's own name for itself, for a switcher
+    rtl: bool = False
+
+
+def _registry(*entries: Locale) -> dict[str, Locale]:
+    return {entry.code: entry for entry in entries}
+
+
+LOCALES: dict[str, Locale] = _registry(
+    Locale("ar", "العربية", rtl=True),
+    Locale("de", "Deutsch"),
+    Locale("en", "English"),
+    Locale("es", "Español"),
+    Locale("fil", "Filipino"),
+    Locale("fr", "Français"),
+    Locale("he", "עברית", rtl=True),
+    Locale("hi", "हिन्दी"),
+    Locale("id", "Bahasa Indonesia"),
+    Locale("it", "Italiano"),
+    Locale("ja", "日本語"),
+    Locale("ko", "한국어"),
+    # The name Malaysian sites give it in their own switchers (mmta.org.my's
+    # nav says "Bahasa Malaysia"), and the label `/bm/` mirrors always had.
+    Locale("ms", "Bahasa Malaysia"),
+    Locale("nl", "Nederlands"),
+    Locale("pt", "Português"),
+    Locale("ru", "Русский"),
+    Locale("ta", "தமிழ்"),
+    Locale("th", "ไทย"),
+    Locale("ur", "اردو", rtl=True),
+    Locale("vi", "Tiếng Việt"),
+    # Chinese with no script stated — what a source is when its Han text carries
+    # no character that differs between the two scripts. Never assumed Simplified.
+    Locale("zh", "中文"),
+    Locale("zh-Hans", "中文"),
+    Locale("zh-Hant", "繁體中文"),
+)
+
+# A source's own spelling → the registry code. Keys are lower-case.
+LOCALE_ALIASES: dict[str, str] = {
+    "bm": "ms",
+    "cn": "zh-Hans",
+    "tw": "zh-Hant",
+    "jp": "ja",
+    "kr": "ko",
+    "tl": "fil",
+    "iw": "he",
+    "in": "id",
+    "zh-cn": "zh-Hans",
+    "zh-sg": "zh-Hans",
+    "zh-my": "zh-Hans",
+    "zh-tw": "zh-Hant",
+    "zh-hk": "zh-Hant",
+    "zh-mo": "zh-Hant",
 }
 
 
+def canonical_locale(code: str | None) -> str | None:
+    """The registry's BCP 47 code for any spelling of a language, else None.
+
+    `bm` → `ms`, `cn` → `zh-Hans`, `zh_TW` → `zh-Hant`, `fr-FR` → `fr` (a
+    region subtag says where, not which language), `zh-hans` → `zh-Hans`.
+    """
+    if not code:
+        return None
+    normalized = code.strip().replace("_", "-").lower()
+    if not normalized:
+        return None
+    if normalized in LOCALE_ALIASES:
+        return LOCALE_ALIASES[normalized]
+    for registered in LOCALES:
+        if registered.lower() == normalized:
+            return registered
+    base = normalized.split("-", 1)[0]
+    if base in LOCALE_ALIASES:
+        return LOCALE_ALIASES[base]
+    if base in LOCALES:
+        return base
+    return None
+
+
+def is_rtl(code: str | None) -> bool:
+    canonical = canonical_locale(code)
+    return bool(canonical and LOCALES[canonical].rtl)
+
+
 def locale_segment(path: str) -> str | None:
-    """First path segment when it looks like a language/locale directory."""
+    """First path segment when it looks like a language/locale directory.
+
+    Returns the source's own spelling (`bm`, `fr-fr`); `canonical_locale` says
+    which language that is."""
     segment = path.strip("/").split("/", 1)[0].lower()
     if not segment:
         return None
@@ -69,13 +165,10 @@ def locale_segment(path: str) -> str | None:
 
 def locale_label(code: str) -> str:
     """Human-readable name for a locale code, for the language switcher."""
-    normalized = code.strip().lower()
-    if normalized in LOCALE_LABELS:
-        return LOCALE_LABELS[normalized]
-    base = re.split(r"[-_]", normalized)[0]
-    if base in LOCALE_LABELS:
-        return LOCALE_LABELS[base]
-    return normalized.upper()
+    canonical = canonical_locale(code)
+    if canonical:
+        return LOCALES[canonical].label
+    return code.strip().lower().upper()
 
 
 @dataclass(frozen=True)
