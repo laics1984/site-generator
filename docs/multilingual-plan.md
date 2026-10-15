@@ -1,9 +1,10 @@
 # Multilingual generation — plan
 
-Status: **proposed 2026-10-16.** Q2–Q4 decided (all recommended options:
-primary at root; AI-translate gaps with a badge; users may add languages).
-Q5 decided 2026-10-16: more than one language is a plan feature.
-Q1 (shared body) awaiting approval — UX in "Shared body — what the owner sees". Nothing below
+Status: **approved 2026-10-16** — all five decisions took the recommended
+option: Q1 shared page body + per-language text overlay; Q2 primary language at
+the root, others prefixed; Q3 AI-translate gaps with a badge; Q4 users may add
+languages; Q5 more than one language is the `multilingual_site` plan feature.
+Work happens on `feature/multilingual` in every repo. P0–P1 next. Nothing below
 is implemented yet unless it's listed under "What exists today".
 
 ## What exists today (measured, not assumed)
