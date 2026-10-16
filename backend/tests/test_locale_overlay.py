@@ -58,6 +58,17 @@ class OverlayMirrorTest(unittest.TestCase):
         self.assertIsNotNone(declared)
         self.assertEqual(tuple(re.findall(r"'([^']+)'", declared.group(1))), locale_overlay.TEXT_FIELDS)
 
+    def test_the_builder_splits_the_same_text_fields(self):
+        # The builder's language lens (P6) decides which fields an edit in
+        # another language sends to the overlay; a field missing there would
+        # be written into the SHARED tree, i.e. into every language.
+        lens = _REPOS / "builder" / "src" / "lib" / "locale-lens.ts"
+        if not lens.exists():
+            self.skipTest(f"{lens} not checked out beside this repo")
+        declared = re.search(r"TEXT_FIELDS = \[([^\]]+)\]", lens.read_text())
+        self.assertIsNotNone(declared)
+        self.assertEqual(tuple(re.findall(r"'([^']+)'", declared.group(1))), locale_overlay.TEXT_FIELDS)
+
 
 class DeriveApplyTest(unittest.TestCase):
     MAP = {"Welcome": "Selamat datang", "We chose this school.": "Kami memilih sekolah ini.",

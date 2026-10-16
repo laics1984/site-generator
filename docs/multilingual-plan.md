@@ -13,7 +13,8 @@ modes in the preview — see "P2"). **P3 done 2026-10-16** in cms-api (storage,
 locale-aware public payloads, admin endpoints, plan gate — see "P3").
 **P4 done 2026-10-16** in webtree-public (lang, hreflang, sitemap, language
 menus — see "P4"). **P5 done 2026-10-16** (push of overlays, locale config,
-mirror adoption, language menu — see "P5"). P6 (builder) next. Nothing else below is implemented yet unless it's listed
+mirror adoption, language menu — see "P5"). **P6 done 2026-10-17** in the
+builder (edit a page in another language — see "P6"). P7 (admin) next. Nothing else below is implemented yet unless it's listed
 under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -49,6 +50,62 @@ The local crawl cache is empty (post-migration), so thresholds below get
 calibrated on a capture set in Phase 0, not on a guess.
 
 ## Progress and corrections
+
+### P6 (builder, 2026-10-17)
+
+**Built** (builder `feature/multilingual` 3dcd4f8). Editing in another
+language is a lens at the editor's two seams, exactly as §7 planned:
+`lib/locale-lens.ts` views the shared body and layout through a language's
+overlay at load (`reloadCurrentPage`) and splits each save back into the
+shared tree and the overlay (`persistCurrentDraftBody`, `persistCurrentLayout`
+— header, footer and menu labels). No reducer action knows. A language switch
+sits beside the device toggle; text still in the main language is framed
+amber and counted on the switch ("中文 · 1 to translate"); an element hidden
+in this language is dimmed; "layout changes apply to every language" is said
+once per session. Publishing publishes the page's complete translations and
+the layout's; an incomplete one stays on its last version and the message says
+so. A header-template swap keeps the language menu (`HeaderPresetOptions`).
+
+**Decisions and corrections:**
+
+1. **Two requests, not one.** §7 said the body and its overlay save "in one
+   request, so the draftVersion check covers the pair". The P3 endpoints are
+   separate (page draft; translation draft, each with its own version), so
+   each side is saved only when IT changed — typing in 中文 never touches the
+   page draft — and each has its own conflict check.
+2. **The first save after a load is the editor's, not the owner's.**
+   `LOAD_DATA` normalises what it loads (body root, heading levels, font
+   vars), so that save changes the shared tree with no edit made. It no longer
+   announces "layout changes apply to every language"; a lens side is
+   `settled` after it.
+3. **A field the editor drops is never written back as null.** The text editor
+   rewrites a node's content to `{innerText}` on blur; restoring the shared
+   text wrote `alt: null` etc. into it. A blank primary field now stays absent.
+4. **Hidden elements stay in the edited tree**, dimmed, rather than removed:
+   the split needs the whole structure, and a removed element could not be
+   moved or restyled for the other languages.
+5. **Overlay comparison is order-free** (`overlayKey`): the CMS returns `{}`
+   for an empty translation and its own key order; a byte compare re-saved
+   unchanged translations.
+6. Language names are the browser's (`Intl.DisplayNames` in the language
+   itself: "中文（简体）"), not a third label table.
+
+**Measured end to end** on the branch CMS through the real builder: an edit
+in 中文 changed only the translation draft (meta `edited`, `sourceHash`
+identical to the generator's and the CMS's for that English text), English
+body text unchanged; publish published page + page translation + layout
+translation; `/zh/about` served the new words, `/about` stayed English. With
+one entry removed, the switch showed "1 to translate" and framed that
+paragraph. A page overlay went 49 → 48 entries across the builder's saves:
+the split drops entries for elements no longer on the page, and nothing on the
+page was untranslated afterwards.
+
+**Not covered:** page title/SEO per language (the overlay's `page` section
+is carried, not edited); "Hide in other languages" on a section; the page
+list's per-language pills (admin, P7); a new section added in English is
+counted "to translate" in 中文 but its words are not pre-filled (no LLM in
+the builder); the Menu sheet's "Language" heading is the menu's name, not
+translated per language.
 
 ### P5 (site-generator push + one cms-api rule, 2026-10-16)
 

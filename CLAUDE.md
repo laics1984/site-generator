@@ -2790,7 +2790,14 @@ sets `uncertain` and says so; it never silently changes the mode.
   — the same predicate `build_menus` asks. `plan_to_site(languages=)` is the
   one place both read it. The renderers already handled the slot: inline
   beside the CTA on desktop, hidden below 1024px, listed in the Menu sheet.
-  A header archetype swapped in the builder carries no language node yet (P6).
+  A header-template swap in the builder keeps it (`HeaderPresetOptions`).
+- **The builder edits a language through a lens** (P6,
+  `builder/src/lib/locale-lens.ts`): the page is VIEWED in the language at
+  load and each save is SPLIT back into the shared tree and the overlay, so
+  no reducer action knows languages exist. Its `TEXT_FIELDS` is a third copy
+  of `locale_overlay.TEXT_FIELDS` / `OverlayApplier::TEXT_FIELDS`, drift-tested
+  (`test_locale_overlay`); a field missing there would be written into the
+  shared tree, i.e. into every language.
 - **`PagePlan` is also the LLM's output schema**: pipeline-only fields are
   `SkipJsonSchema` (`translation_status`, `inline_translation`, `text_map`), or
   the structured-output schema advertises them to the model.
