@@ -11,6 +11,7 @@ import type { CSSProperties } from 'react'
 import type { PublicBlockNode } from '../lib/public'
 import { getClampLines, getNodeClasses, getNodeStyles, getStringField } from '../lib/blockRuntime'
 import { getNodeDomId } from '../lib/responsiveRuntime'
+import { languageAttrs } from '../lib/languages'
 
 export function TextBlock({ node }: { node: PublicBlockNode }) {
   const html = getStringField(node, 'html', 'innerText', 'text') || ''
@@ -24,6 +25,11 @@ export function TextBlock({ node }: { node: PublicBlockNode }) {
   const nodeStyles = getNodeStyles(node) as CSSProperties
   const nodeDomId = getNodeDomId(node) || undefined
   const isClamp = getClampLines(node) !== null
+  // Upstream binds `lang`/`dir` once in ElementRenderer as a fallthrough
+  // attribute on every block's root; React has no fallthrough, and only text
+  // elements carry `lang` today (the bilingual pass's second-language lines),
+  // so this block states it on the same root element upstream's lands on.
+  const langAttrs = languageAttrs((node as { lang?: string | null }).lang)
 
   const textEl = useRef<HTMLDivElement | null>(null)
   const [expanded, setExpanded] = useState(false)
@@ -52,6 +58,7 @@ export function TextBlock({ node }: { node: PublicBlockNode }) {
         className={['wt-text', nodeClasses].filter(Boolean).join(' ')}
         style={nodeStyles}
         data-wt-node-id={nodeDomId}
+        {...langAttrs}
         dangerouslySetInnerHTML={{ __html: html }}
       />
     )
@@ -63,7 +70,7 @@ export function TextBlock({ node }: { node: PublicBlockNode }) {
     : nodeStyles
 
   return (
-    <div className="wt-clamp-wrap">
+    <div className="wt-clamp-wrap" {...langAttrs}>
       <Tag
         ref={textEl}
         className={['wt-text', nodeClasses].filter(Boolean).join(' ')}

@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import type { PublicBlockNode, PublicMenu, PublicSchemaTree, PublicStyleTokens } from './lib/public'
+import type { PublicAlternate, PublicBlockNode, PublicMenu, PublicSchemaTree, PublicStyleTokens } from './lib/public'
 import { SchemaRenderer } from './SchemaRenderer'
 import { GalleryLightbox } from './GalleryLightbox'
 import { getNodeStyles } from './lib/blockRuntime'
@@ -36,6 +36,7 @@ import {
   normalizeSchemaNodes,
 } from './lib/schema'
 import { buildCssVars } from './lib/styles'
+import { resolveLanguageMenus } from './lib/languages'
 import {
   BuilderStylesContext,
   HeaderOverlayContext,
@@ -129,6 +130,9 @@ export interface PreviewSiteShellProps {
   bodySchema?: Schema
   /** The element the preview scrolls in (the iframe's scrollingElement). */
   scrollRoot?: HTMLElement | null
+  /** The page's language and alternates, for `purpose: "language"` menus (upstream props). */
+  locale?: string | null
+  alternates?: PublicAlternate[] | null
   children?: (slotProps: {
     headerOverlaySpacerPaddingTop?: string
     globalHeroMinHeight?: string
@@ -139,10 +143,16 @@ export function PreviewSiteShell({
   site,
   bodySchema,
   scrollRoot,
+  locale,
+  alternates,
   children,
 }: PreviewSiteShellProps) {
   const cssVars = useMemo(() => buildCssVars(site.builderStyles), [site.builderStyles])
-  const runtimeMenus = useMemo(() => site.menus ?? [], [site.menus])
+  // Language menus follow the reader's page, as upstream's shell resolves them.
+  const runtimeMenus = useMemo(
+    () => resolveLanguageMenus(site.menus ?? [], alternates, locale),
+    [site.menus, alternates, locale],
+  )
 
   // Click-to-enlarge on gallery grids (`lightbox` markers from the section
   // catalog). PORT of useSchemaLightbox — the composable's job is split between

@@ -431,3 +431,21 @@ class FencedReplyTest(unittest.IsolatedAsyncioTestCase):
         result = await _validated(post, {"messages": [], "max_tokens": 100}, TranslatedStrings)
         self.assertEqual(result.translations, ["欢迎"])
         self.assertEqual(len(calls), 1)
+
+
+class PreviewLanguagesVendoredTest(unittest.TestCase):
+    """The preview's language helpers are webtree-public's, verbatim (P4):
+    hreflang, <html lang dir> and the language menu must read the same in the
+    preview as on the published site. Skips while the sibling checkout's
+    branch predates lib/languages.ts."""
+
+    def test_the_preview_copy_matches_upstream(self):
+        import pathlib
+
+        repos = pathlib.Path(__file__).resolve().parents[3]
+        public = repos / "webtree-public" / "lib" / "languages.ts"
+        preview = repos / "site-generator" / "frontend" / "src" / "preview" / "lib" / "languages.ts"
+        if not public.exists():
+            self.skipTest(f"{public} not checked out beside this repo")
+        body = preview.read_text().split("\n", 3)[3]  # the three-line provenance header
+        self.assertEqual(public.read_text().replace("~/types/public", "./public"), body)

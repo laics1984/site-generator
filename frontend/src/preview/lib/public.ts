@@ -36,10 +36,23 @@ export interface PublicMenuItem {
   id?: string
   href?: string | null
   label?: string | null
+  /** On a `purpose: "language"` menu: the BCP 47 language this item switches to. */
+  locale?: string | null
+  /** Set by lib/languages.resolveLanguageMenus on a resolved language item. */
+  hreflang?: string | null
+  lang?: string | null
+  current?: boolean
   target?: string | null
   rel?: string | null
   visible?: boolean
   children?: PublicMenuItem[] | null
+}
+
+/** The same page in one language (webtree-cms-api specs/multilingual-sites.md). */
+export interface PublicAlternate {
+  locale: string
+  path: string
+  href?: string | null
 }
 
 export interface PublicMenu {

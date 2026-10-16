@@ -10,8 +10,9 @@ unchanged; see "Progress and corrections" below. Real-site captures were
 taken locally on 2026-10-16 and two gaps they exposed are fixed (see
 "Captured locally"). **P2 done 2026-10-16** (strategy, override UI, three
 modes in the preview — see "P2"). **P3 done 2026-10-16** in cms-api (storage,
-locale-aware public payloads, admin endpoints, plan gate — see "P3"). P4
-(webtree-public) next. Nothing else below is implemented yet unless it's listed
+locale-aware public payloads, admin endpoints, plan gate — see "P3").
+**P4 done 2026-10-16** in webtree-public (lang, hreflang, sitemap, language
+menus — see "P4"). P5 (the generator's push) next. Nothing else below is implemented yet unless it's listed
 under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -47,6 +48,42 @@ The local crawl cache is empty (post-migration), so thresholds below get
 calibrated on a capture set in Phase 0, not on a guess.
 
 ## Progress and corrections
+
+### P4 (webtree-public + preview mirror, 2026-10-16)
+
+**Built** on webtree-public `feature/multilingual` (06a2af2). `lib/languages.ts`
+is the one reader of `page.alternates`: `languageAttrs` (`<html lang dir>`, the
+page's own language first), `hreflangLinks` (reciprocal, self included,
+`x-default` → the primary page, absolute URLs only, never on a noindex host),
+`sitemapAlternates` (`xhtml:link` per URL; a one-language sitemap is
+byte-identical), and `resolveLanguageMenus`. `ElementRenderer` binds an
+element's own `lang`/`dir` once, as a fallthrough attribute. Mirrored into
+`frontend/src/preview/` (`lib/languages.ts` vendored verbatim and drift-tested;
+React has no fallthrough, so the text block states it — only text carries
+`lang` today).
+
+**The switcher is a menu with `purpose: "language"`**, not a component of its
+own: its items are authored, one per language with a `locale` and a label in
+that language, so the words stay editable and translatable in the builder and
+it sits in any header slot an archetype already renders. The renderer only
+decides where each item points — THIS page in that language — leaves out a
+language the page isn't published in, and shows nothing on a one-language page.
+Links carry `hreflang`, `lang` and `aria-current`, in the mobile sheet too. The
+generator's home-only "Language" utility menu moves to this shape in P5.
+
+**Verified** on a node-server build against a mock API returning the P3
+payload shape: `<html lang="ms" dir="ltr">`, hreflang en / ms / x-default,
+canonical `/bm/about`, the menu linking `/about` and `/bm/about` with
+`aria-current` on Malay, Chinese (unpublished) left out, `lang="zh-Hans"` on
+the second-language line, `xhtml:link` alternates in the sitemap. Tests: 12
+new; the 9 failing on the branch are the colour-system fixtures and a scratch
+probe, failing before the change too.
+
+**Deferred: script-specific font fallbacks.** The generator writes each font as
+a literal stack on the element (`"Sora", system-ui, sans-serif`); a `:lang()`
+rule cannot append to an inline `font-family`, and CJK/Tamil glyphs already
+fall back to the OS font through `system-ui`. Doing better means loading Noto
+faces per language — a weight and licence decision of its own.
 
 ### P3 (webtree-cms-api, 2026-10-16)
 
