@@ -11,6 +11,11 @@ crawl entirely.
 Mirrors now go to a deferred queue: crawled after every untranslated page,
 never dropped. Locale-*looking* paths that aren't mirrors (/it/support on a
 site with no /support) keep full priority.
+
+Except each mirror's ROOT (/bm, /zh), which is fetched first: one page per
+language, and the only evidence the crawl has that the site is multilingual.
+Deferred like the rest, mmta's roots never fit the 30-page default and the site
+read as English-only (docs/multilingual-plan.md, P0-P1 corrections).
 """
 
 from __future__ import annotations
@@ -97,7 +102,7 @@ class LocaleSegmentTest(unittest.TestCase):
 
 
 class LocaleMirrorOrderingTest(unittest.IsolatedAsyncioTestCase):
-    async def test_language_roots_are_crawled_after_the_source_language(self):
+    async def test_language_roots_sort_after_the_source_language(self):
         _patch_crawl(self)
         seeds = [
             "https://site.test/bm",
@@ -105,7 +110,8 @@ class LocaleMirrorOrderingTest(unittest.IsolatedAsyncioTestCase):
             "https://site.test/about",
         ]
         crawled, unvisited = await _crawl("https://site.test/", seeds)
-        # Listed first in the header, crawled last — but still crawled.
+        # Fetched first, but a translation still sorts behind the pages it
+        # translates in the result (tier 1), so downstream ranking is unchanged.
         self.assertEqual(crawled[0], "https://site.test/about")
         self.assertEqual(sorted(crawled[1:]), ["https://site.test/bm", "https://site.test/zh"])
         self.assertEqual(unvisited, [])
@@ -169,11 +175,29 @@ class LocaleMirrorOrderingTest(unittest.IsolatedAsyncioTestCase):
         # The language roots fan out into a full mirror of the site.
         _patch_crawl(self, {committee: members, "https://site.test/bm": mirrors})
 
-        crawled, unvisited = await _crawl(entry, seeds, max_pages=7)
+        # Seven untranslated pages plus one slot per language root.
+        crawled, unvisited = await _crawl(entry, seeds, max_pages=9)
 
-        # The budget goes to pages that exist in no other language first.
+        # The budget goes to pages that exist in no other language first —
+        # bar each language's root, which is what proves the language exists.
         for member in members:
             self.assertIn(member, crawled)
+        self.assertIn("https://site.test/bm", crawled)
+        self.assertIn("https://site.test/zh", crawled)
         self.assertFalse([u for u in crawled if u in mirrors])
         # And the translations are queued behind them, not discarded.
         self.assertTrue(unvisited)
+
+    async def test_a_language_root_survives_a_budget_full_of_untranslated_pages(self):
+        """The mmta.org.my capture: 30 untranslated pages filled the cap, so
+        neither /bm nor /zh was read and the language profile said English."""
+        _patch_crawl(self)
+        pages = [f"https://site.test/p{i}" for i in range(10)]
+        seeds = [*pages, "https://site.test/bm", "https://site.test/zh"]
+        crawled, unvisited = await _crawl("https://site.test/", seeds, max_pages=4)
+        self.assertIn("https://site.test/bm", crawled)
+        self.assertIn("https://site.test/zh", crawled)
+        # Only the roots jump the queue; the rest still waits its turn.
+        self.assertEqual(len(crawled), 4)
+        self.assertTrue(unvisited)
+        self.assertFalse({"https://site.test/bm", "https://site.test/zh"} & set(unvisited))

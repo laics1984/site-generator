@@ -119,7 +119,9 @@ logger = logging.getLogger(__name__)
 # and their platform buttons are furniture.
 # 5: each page records its declared `<html lang>` (`declared_lang`), evidence
 # for `language_analysis`.
-EXTRACTION_VERSION = 5
+# 6: a translated mirror's root (/bm, /zh) is fetched before the page cap can
+# starve it — a cached crawl of a mirrored site may hold no mirror at all.
+EXTRACTION_VERSION = 6
 
 
 # --- public types ---------------------------------------------------------------
@@ -2493,6 +2495,16 @@ _SKIP_PATH_HINTS = (
 # already queued. Mirrors are crawled last (the `deferred` queue in
 # _crawl_extra_pages), never dropped; page_inference then pairs each one with
 # the page it translates.
+#
+# One exception per language: a mirror's ROOT (/bm, /zh) is fetched first. It
+# is the only evidence the crawl has that the site is multilingual, and it is
+# one page per language — mmta.org.my spent its whole 30-page budget before
+# reaching either, and read as an English-only site.
+
+
+def _is_language_root(path: str) -> bool:
+    """A bare language directory (/bm, /zh): the switcher's landing page."""
+    return len([s for s in path.split("/") if s]) == 1
 
 
 def _path_key(url: str) -> str:
@@ -2674,7 +2686,13 @@ async def _crawl_extra_pages(
     # budget over nav/footer/unrelated links when the site has more pages than
     # the crawl can afford, instead of losing out just because they happened
     # to be discovered later or appear lower in the page's HTML.
+    #
+    # `language_roots` holds each mirror's root (/bm, /zh) — one page per
+    # language, drained first, so the language evidence never loses the budget
+    # (see `_is_language_root`). Still tier 1: it sorts behind the pages it
+    # translates in the result, like every other mirror.
     discovery_count = 0
+    language_roots: deque[tuple[str, int, int, int]] = deque()
     priority: deque[tuple[str, int, int, int]] = deque()
     frontier: deque[tuple[str, int, int, int]] = deque()
     deferred: deque[tuple[str, int, int, int]] = deque()
@@ -2684,7 +2702,9 @@ async def _crawl_extra_pages(
         is_mirror = _is_locale_mirror(
             _path_key(url), entry_locale=entry_locale, known_paths=known_paths
         )
-        if is_mirror:
+        if is_mirror and _is_language_root(_path_key(url)):
+            queue = language_roots
+        elif is_mirror:
             queue = deferred
         elif priority_link:
             queue = priority
@@ -2707,7 +2727,7 @@ async def _crawl_extra_pages(
             continue
         fetch_url, key = admitted
         _enqueue(fetch_url, 1, priority_link=key in priority_keys)
-        if len(priority) + len(frontier) + len(deferred) >= max_pages * 3:  # cap how many we even queue
+        if len(language_roots) + len(priority) + len(frontier) + len(deferred) >= max_pages * 3:  # cap how many we even queue
             break
 
     # Sliding-window worker pool instead of lockstep batches: with batches of 3,
@@ -2850,7 +2870,7 @@ async def _crawl_extra_pages(
         while True:
             if _should_stop():
                 return
-            if not priority and not frontier:
+            if not language_roots and not priority and not frontier:
                 if not mirrors_unlocked:
                     if in_flight:
                         # An in-flight fetch may still expand the frontier with
@@ -2865,7 +2885,9 @@ async def _crawl_extra_pages(
                         return  # no queued work and nobody can produce more
                     await _wait_for_work()
                     continue
-            url, depth, _discovered, _tier = (priority or frontier or deferred).popleft()
+            url, depth, _discovered, _tier = (
+                language_roots or priority or frontier or deferred
+            ).popleft()
             in_flight += 1
             try:
                 depth, parsed = await _fetch_one((url, depth))
@@ -2910,8 +2932,8 @@ async def _crawl_extra_pages(
                 _enqueue(fetch_url, depth + 1, priority_link=key in roster_keys)
             new_work.set()
 
-    if priority or frontier or deferred:
-        queued = len(priority) + len(frontier) + len(deferred)
+    if language_roots or priority or frontier or deferred:
+        queued = len(language_roots) + len(priority) + len(frontier) + len(deferred)
         worker_count = min(_CRAWL_WORKERS, max(1, queued))
         await asyncio.gather(*(_worker() for _ in range(min(worker_count, max_pages))))
 
@@ -2928,7 +2950,7 @@ async def _crawl_extra_pages(
     # before translations.
     unvisited = [
         *challenged,
-        *(url for url, _depth, _i, _tier in (*priority, *frontier, *deferred)),
+        *(url for url, _depth, _i, _tier in (*priority, *frontier, *language_roots, *deferred)),
     ]
     return CrawlOutcome(
         pages=parsed_pages,

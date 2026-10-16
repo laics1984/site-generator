@@ -2684,11 +2684,23 @@ shown by `LanguageCard`). No LLM call.
   before counting**; a Facebook digest's labels and machine facts are
   Facebook's words, not the owner's.
 - **Coverage, not presence**: substantial = `MIN_SHARE` AND `MIN_AMOUNT`, with
-  Han/Kana/Hangul weighted `CJK_WEIGHT` letters each.
+  Han/Kana/Hangul weighted `CJK_WEIGHT` letters each — except a language read
+  at its own URLs, which needs only `MIN_AMOUNT` on its mirror pages: a
+  deferred mirror's share is set by the page budget, not by the site.
+- **The crawler fetches each mirror's ROOT first** (`/bm`, `/zh`,
+  `scraper._is_language_root`), one page per language; every other mirror stays
+  deferred. Deferred too, mmta's roots never fit the 30-page cap and it read as
+  English-only. A menu link to a language the crawl still didn't read is stated
+  in the reason, never counted.
+- **A Title-Case or address-shaped Latin line is a name** (`_is_name_like`):
+  it inherits a neighbour instead of being identified — "Kota Kinabalu, Sabah"
+  read as Malay. Same-script neighbours pair only as confident paragraphs
+  (`SAME_SCRIPT_PAIR_CONFIDENCE`); a switch label ("EN", "中文") is not counted.
 - **`<html lang>` is a claim** (`SourceContent.declared_lang`): mmta and
   uniquekindies declare `en` on every language. It only breaks a Han-script tie.
-- The thresholds are calibrated on the synthetic Scenarios A–F
-  (`tests/fixtures/languages/`) only — real captures are still owed. Measure any
+- Calibrated on the synthetic Scenarios A–F (`tests/fixtures/languages/`) and
+  four real captures (mmta, uniquekindies, watr, mykiddyland — numbers in the
+  plan's "Progress and corrections"). Measure any
   change with `scripts/measure_language_analysis.py [--fixtures] -v`; capture
   with `scripts/capture_language_source.py` (→ `backend/.language-captures/`,
   gitignored: real copy).

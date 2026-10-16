@@ -42,6 +42,7 @@ and uniquekindies.com declare `lang="en"` on every language.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -58,6 +59,7 @@ from app.models.content_blocks import (
 from app.models.facebook import FactLabel
 from app.services.contact_text import EMAIL_RE, phones_in
 from app.services.locale import (
+    LOCALE_ALIASES,
     LOCALES,
     canonical_locale,
     detect_market,
@@ -98,6 +100,16 @@ PAIR_LENGTH_RATIO = 2.5
 MIN_PAIRS = 2
 # Pairs kept on the profile (the preview shows a few; P2 will re-derive them).
 MAX_PAIRS_KEPT = 40
+# Two ADJACENT units in one script (English beside Malay) pair only when both
+# are paragraphs read with at least this py3langid probability. Script tells
+# en from zh exactly; nothing tells en from ms except the model, and on short
+# Latin labels the model is reading place names: mmta's 13 and mykiddyland's 20
+# "pairs" were all addresses and places ("Kota Kinabalu, Sabah" → ms).
+SAME_SCRIPT_PAIR_CONFIDENCE = 0.9
+# A Latin line this short, every word capitalised, is a name: a place, a
+# building, a course ("Taman Bukit Indah", "Enrichment Classes"). It says
+# nothing about the language around it, so it inherits a neighbour's.
+NAME_LIKE_MAX_WORDS = 8
 
 # --- scripts ------------------------------------------------------------------------
 
@@ -306,6 +318,32 @@ def _is_address(line: str) -> bool:
     return line.count(",") >= 2 and _POSTCODE_RE.search(line) is not None
 
 
+# A Latin word as written: never the tail of a number ("2nd" has no word "nd").
+_LATIN_WORD_RE = re.compile(r"(?<![0-9A-Za-z\u00C0-\u024F])[A-Za-z\u00C0-\u024F]+")
+
+
+def _is_name_like(text: str) -> bool:
+    """Every Latin word capitalised: a proper noun or an address, not prose.
+
+    Shape, not vocabulary — a list of Malaysian place words would be a silent
+    off switch on the next country. Prose carries lowercase function words
+    ("of", "with", "dan"); a name, an address line or a Title-Case label doesn't.
+    Short, or comma-listed like an address ("1-9-3 (2nd Floor), Sinaran Satu,
+    No. 14, Persiaran Anggerik Vanilla, Kota Kemuning, Shah Alam").
+    """
+    words = _LATIN_WORD_RE.findall(text)
+    if not words or not all(w[0].isupper() for w in words):
+        return False
+    return len(words) <= NAME_LIKE_MAX_WORDS or text.count(",") >= 2
+
+
+# Every spelling of a language's name or code: a language switch's labels.
+_LANGUAGE_NAMES = frozenset(
+    {code.casefold() for code in (*LOCALES, *LOCALE_ALIASES)}
+    | {locale_label(code).casefold() for code in LOCALES}
+)
+
+
 def _digest_lines(raw_text: str) -> list[str]:
     """A Facebook fact digest, reduced to the owner's own words.
 
@@ -365,7 +403,10 @@ def _read_units(source: SourceContent, brand_name: str | None = None) -> list[_U
             return
         text = _strip_exclusions(line, excluded)
         key = text.casefold()
-        if not text or key in seen:
+        # "EN", "English", "中文": a language switch names a language, it isn't
+        # written in one — on a mirror page it sits beside the page's own copy
+        # and read as a pair ("EN" / "关于").
+        if not text or key in seen or key in _LANGUAGE_NAMES:
             return
         seen.add(key)
         unit = _Unit(page=page_index, kind=kind, text=text)
@@ -405,7 +446,7 @@ def _resolve_latin(units: list[_Unit]) -> None:
     guesses: dict[int, tuple[str, float]] = {}
     for index, unit in enumerate(units):
         latin = unit.letters.get("Latn", 0)
-        if latin >= MIN_LATIN_LETTERS:
+        if latin >= MIN_LATIN_LETTERS and not _is_name_like(unit.text):
             lang, conf = _identify_latin(unit.latin_text)
             if conf >= LATIN_MIN_CONFIDENCE:
                 unit.latin_lang, unit.latin_conf = lang, conf
@@ -503,7 +544,7 @@ def _side_language(text: str, units: list[_Unit], index: int, han: str, indonesi
         script = max(wide.items(), key=lambda kv: kv[1])[0]
         return han if script == "Hani" else _SCRIPT_LANGUAGE.get(script)
     lang = None
-    if probe.letters.get("Latn", 0) >= MIN_LATIN_LETTERS:
+    if probe.letters.get("Latn", 0) >= MIN_LATIN_LETTERS and not _is_name_like(text):
         guess, conf = _identify_latin(probe.latin_text)
         lang = guess if conf >= LATIN_MIN_CONFIDENCE else None
     if lang is None:
@@ -512,6 +553,14 @@ def _side_language(text: str, units: list[_Unit], index: int, han: str, indonesi
     if lang == "ms" and indonesia:
         lang = "id"
     return canonical_locale(lang) if lang else None
+
+
+def _different_scripts(a: _Unit, b: _Unit) -> bool:
+    """Whether two units are written in different scripts (en beside 中文),
+    which is what makes their languages certain without the Latin model."""
+    def script(unit: _Unit) -> str:
+        return max(unit.letters.items(), key=lambda kv: kv[1])[0]
+    return script(a) != script(b)
 
 
 def _find_pairs(
@@ -547,6 +596,12 @@ def _find_pairs(
         # Each must be essentially one language, and the two about the same size.
         if a.amounts[la] < 0.8 * a.weight or b.amounts[lb] < 0.8 * b.weight:
             continue
+        if not _different_scripts(a, b) and not all(
+            u.kind == "paragraph" and not u.latin_inherited
+            and u.latin_conf >= SAME_SCRIPT_PAIR_CONFIDENCE
+            for u in (a, b)
+        ):
+            continue
         ratio = a.weight / b.weight if b.weight else 0
         if not (1 / PAIR_LENGTH_RATIO <= ratio <= PAIR_LENGTH_RATIO):
             continue
@@ -576,6 +631,36 @@ def _url_locales(source: SourceContent) -> dict[int, str]:
         if canonical:
             out[slugs[slug]] = canonical
     return out
+
+
+def _advertised_locales(source: SourceContent) -> dict[str, str]:
+    """Language → path, for the language switch in the source's own menu.
+
+    A nav link to a bare language directory (``/bm``, ``/zh``) is the owner
+    saying another version exists — evidence even when the crawl never read it.
+    An ambiguous code (``/it``, ``/my``) counts only when its label names that
+    language, the rule ``scraper._is_locale_mirror`` applies to a bare root.
+    """
+    from app.services.locale import AMBIGUOUS_LOCALE_SEGMENTS
+
+    entry = locale_segment(source.url_path or "/")
+    found: dict[str, str] = {}
+
+    def walk(links: list[NavLink]) -> None:
+        for link in links:
+            path = urlparse(link.href).path if "://" in link.href else link.href.split("#")[0].split("?")[0]
+            segments = [s for s in path.split("/") if s]
+            segment = locale_segment(path) if len(segments) == 1 else None
+            code = canonical_locale(segment) if segment and segment != entry else None
+            if code and (
+                segment not in AMBIGUOUS_LOCALE_SEGMENTS
+                or link.label.strip().casefold() == locale_label(code).casefold()
+            ):
+                found.setdefault(code, "/" + segments[0])
+            walk(link.children)
+
+    walk(source.nav_links)
+    return found
 
 
 def _same_language(a: str | None, b: str | None) -> bool:
@@ -652,6 +737,15 @@ def analyze(source: SourceContent, *, brand_name: str | None = None) -> Language
         )
 
     primary_pages = max(pages_carrying(primary), 1)
+    # A language read at its own URLs is measured by what its mirror pages
+    # hold, not by its share of the crawl: mirrors are fetched last, so their
+    # share is set by the page budget, not by the site (mmta's /bm is one page
+    # of 33). Its share still reports what was read.
+    mirror_amount: dict[str, float] = defaultdict(float)
+    for index, lang in url_locales.items():
+        for code, amount in per_page[index].items():
+            if _same_language(code, lang):
+                mirror_amount[code] += amount
     shares: list[LanguageShare] = []
     for lang, amount in sorted(totals.items(), key=lambda kv: -kv[1]):
         share = amount / grand
@@ -661,7 +755,8 @@ def analyze(source: SourceContent, *, brand_name: str | None = None) -> Language
             share=round(share, 3),
             confidence=round(conf_weight[lang] / amount, 2) if amount else 0.0,
             coverage=round(min(1.0, pages_carrying(lang) / primary_pages), 2),
-            substantial=share >= MIN_SHARE and amount >= MIN_AMOUNT,
+            substantial=(share >= MIN_SHARE and amount >= MIN_AMOUNT)
+            or mirror_amount.get(lang, 0) >= MIN_AMOUNT,
             amount=int(round(amount)),
         ))
     substantial = [s for s in shares if s.substantial]
@@ -748,6 +843,17 @@ def analyze(source: SourceContent, *, brand_name: str | None = None) -> Language
     else:
         pattern = "monolingual"
         reason = f"Mostly {_name(primary)}, but too little text to be sure."
+
+    advertised = _advertised_locales(source)
+    unread = {
+        code: path for code, path in advertised.items()
+        if not any(_same_language(code, lang) for lang in url_locales.values())
+        and not _same_language(code, primary)
+    }
+    if unread:
+        listed = ", ".join(f"{_name(code)} ({path})" for code, path in unread.items())
+        evidence.append(f"The menu links to {listed} — not read, so not counted")
+        reason += f" The menu also links to {listed}, which wasn't read."
 
     if pairs:
         evidence.append(f"{len(pairs)} paired passage(s), e.g. “{pairs[0].first}” / “{pairs[0].second}”")

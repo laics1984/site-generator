@@ -6,9 +6,9 @@ the root, others prefixed; Q3 AI-translate gaps with a badge; Q4 users may add
 languages; Q5 more than one language is the `multilingual_site` plan feature.
 Work happens on `feature/multilingual` in every repo. **P0–P1 done in
 site-generator (2026-10-15)** — detection is shown in the preview, generation is
-unchanged; see "Progress and corrections" below. P0's real-site captures are
-still owed (the build sandbox could not reach the sites), so the thresholds are
-provisional. P2 next. Nothing else below is implemented yet unless it's listed
+unchanged; see "Progress and corrections" below. Real-site captures were
+taken locally on 2026-10-16 and two gaps they exposed are fixed (see
+"Captured locally"). P2 next. Nothing else below is implemented yet unless it's listed
 under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -75,6 +75,50 @@ mykiddyland. The first job of the next session with network access is:
     .venv/bin/python scripts/measure_language_analysis.py -v
 
 then restate the thresholds here with real numbers.
+
+**Captured locally, 2026-10-16** (default crawl cap; replayed with
+`measure_language_analysis.py -v`). Before → after the two fixes below:
+
+| Site | Pages | Before | After | Junk pairs before → after |
+|---|---|---|---|---|
+| uniquekindies.com | 5 | `inline_bilingual` | `inline_bilingual`, en 56% / zh-Hans 44%, 72 pairs (all en↔zh); Simplified 917 vs 0; declared `lang="en"` overruled | 2 → 0 |
+| watr.org.my | 8 | `incidental` | `monolingual` | 0 → 0 |
+| mykiddyland.com | 31 | `incidental` | `incidental` (0.2% German noise ignored) | 20 → 0 |
+| mmta.org.my | 31 | `incidental` — **mirrors missed** | `parallel_urls`: English at the root, `/bm` Malay, `/zh` Simplified Chinese | 13 → 0 |
+
+Scenario fixtures A–F are unchanged by the fixes.
+
+1. **A mirror the crawl deferred was invisible.** mmta's header links
+   "Bahasa Malaysia" → `/bm` and "中文" → `/zh`, but mirrors are deferred behind
+   untranslated pages, so the 30-page cap was spent before either was fetched.
+   Fixed in three places:
+   - **Crawler**: each mirror's root (`/bm`, `/zh`) is fetched first — one page
+     per language (`scraper._is_language_root`, a `language_roots` queue). Still
+     tier 1, so it sorts behind the pages it translates. `EXTRACTION_VERSION` 6.
+   - **Coverage**: a language read at its own URLs is substantial when its
+     mirror pages hold `MIN_AMOUNT`, whatever its share — the share of a
+     deferred mirror is set by the page budget, not by the site (mmta's `/bm`
+     is 2% of the crawl).
+   - **Unread switch**: a menu link to a bare language directory that the crawl
+     didn't read is stated in the reason and evidence ("The menu also links
+     to …, which wasn't read") and not counted — Rule 6, surface the
+     uncertainty. An ambiguous code (`/it`, `/my`) needs its language label.
+2. **Pairs were reading place names.** Two rules, both shape-based:
+   - A Latin line whose every word is capitalised and is short (≤
+     `NAME_LIKE_MAX_WORDS`) or comma-listed like an address is a name; it
+     inherits a neighbour's language instead of being identified ("Kota
+     Kinabalu, Sabah" was Malay, "Enrichment Classes" German).
+   - Two adjacent units in the SAME script pair only when both are paragraphs
+     read at `SAME_SCRIPT_PAIR_CONFIDENCE` (0.9); different scripts keep the
+     old rule, since script is exact. A language switch's own labels ("EN",
+     "English", "中文") are not counted at all — on a mirror page they sat
+     beside the page's copy and paired with it.
+
+Also found while verifying: `tests/test_cms_list_layout.HeadingInkTest::
+test_the_preview_token_builder_is_vendored_verbatim` fails against current
+webtree-public `master` (#33 added `semanticColorVars` to `lib/styles.ts`; the
+preview copy predates it). Pre-existing on `main`, unrelated to this work; the
+other 11 suite failures fail on `main` too.
 
 **Calibration so far (synthetic fixtures only).**
 

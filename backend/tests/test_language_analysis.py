@@ -59,6 +59,10 @@ ZH_PARA = "我们的幼儿园欢迎三至六岁的孩子，每天的活动都围
 ZH_PARA_2 = "我们随时欢迎家长来访，每周都会给家长写一封信，告诉他们孩子学到了什么、喜欢做什么。"
 ZH_PARA_3 = "孩子们每周都有书法、武术和舞蹈课，在快乐的活动中认识中华文化，也学会和同伴一起合作。"
 ZH_HANT_PARA = "我們的幼兒園歡迎三至六歲的孩子，每天的活動都圍繞遊戲、故事、音樂和戶外時間來安排，老師們細心照顧每一個孩子。"
+MS_PARA_2 = (
+    "Ibu bapa sentiasa dialu-alukan untuk melawat, dan kami memaklumkan keluarga "
+    "melalui surat mingguan tentang apa yang dipelajari dan digemari anak-anak mereka."
+)
 MS_PARA = (
     "Tadika kami mengalu-alukan kanak-kanak berumur tiga hingga enam tahun, dan setiap "
     "hari dirancang dengan permainan, cerita, muzik dan masa di luar bersama guru yang penyayang."
@@ -287,6 +291,76 @@ class PatternTest(unittest.TestCase):
         profile = analyze(source)
 
         self.assertEqual([p.kind for p in profile.pairs], ["label", "label"])
+
+
+class CaptureCorrectionTest(unittest.TestCase):
+    """What the first real-site captures overturned (plan, P0-P1 corrections)."""
+
+    def _site(self, *mirrors: SourceContent, nav=()) -> SourceContent:
+        root = page(EN_PARA + "\n" + EN_PARA_2, path="/", nav_links=list(nav))
+        english = [page(EN_PARA_3 + f" Page {i} of our English site.", path=f"/p{i}") for i in range(30)]
+        return root.model_copy(update={"discovered_pages": [*english, *mirrors]})
+
+    def test_one_mirror_page_is_enough_when_it_is_a_whole_page_in_that_language(self):
+        """mmta: /bm is one page of 32, so its SHARE can't reach the threshold;
+        what it holds is what proves the language."""
+        site = self._site(page(MS_PARA + "\n" + MS_PARA_2, path="/bm"))
+        profile = analyze(site)
+        self.assertEqual(profile.pattern, "parallel_urls")
+        self.assertTrue(codes(profile)["ms"])
+        self.assertLess(next(i for i in profile.languages if i.code == "ms").share, la.MIN_SHARE)
+
+    def test_a_language_the_menu_links_to_but_the_crawl_never_read_is_stated(self):
+        nav = [NavLink(label="Bahasa Malaysia", href="/bm"), NavLink(label="中文", href="/zh")]
+        profile = analyze(self._site(nav=nav))
+        self.assertNotEqual(profile.pattern, "parallel_urls")  # unread: not counted
+        self.assertIn("/bm", profile.reason)
+        self.assertIn("/zh", profile.reason)
+        self.assertTrue(any("not read" in line for line in profile.evidence))
+
+    def test_an_ambiguous_code_in_the_menu_needs_its_language_label(self):
+        nav = [NavLink(label="IT Support", href="/it"), NavLink(label="My Account", href="/my")]
+        profile = analyze(self._site(nav=nav))
+        self.assertFalse(any("not read" in line for line in profile.evidence))
+
+    def test_place_names_and_address_lines_are_not_pairs(self):
+        """mmta and mykiddyland: Title-Case places read as Malay beside English."""
+        source = page(
+            "\n".join([
+                EN_PARA,
+                "Older adults with dementia",
+                "Kota Kinabalu, Sabah",
+                "Community programs",
+                "Taman Bukit Indah",
+                "No 23, Block D2, Jalan PJU 1A",
+                "20B, Dataran Ara Damansara,",
+                EN_PARA_2,
+            ]),
+            path="/",
+        )
+        profile = analyze(source)
+        self.assertEqual(profile.pairs, [])
+        self.assertEqual(profile.primary, "en")
+
+    def test_a_title_case_course_name_is_not_german(self):
+        """uniquekindies: 'Enrichment Classes | 额外课程' scored its English side as de."""
+        source = page(
+            EN_PARA + "\n" + ZH_PARA,
+            path="/",
+            headings=["Enrichment Classes | 额外课程", "Programmes | 课程"],
+        )
+        profile = analyze(source)
+        langs = {(p.first, p.first_lang) for p in profile.pairs}
+        self.assertIn(("Enrichment Classes", "en"), langs)
+        self.assertNotIn("de", codes(profile))
+
+    def test_english_and_malay_paragraphs_side_by_side_still_pair(self):
+        """The same-script rule narrows Latin pairs to confident paragraphs; it
+        must not remove the real thing."""
+        source = page("\n".join([EN_PARA, MS_PARA, EN_PARA_2, MS_PARA_2]), path="/")
+        profile = analyze(source)
+        self.assertEqual(len(profile.pairs), 2)
+        self.assertEqual({(p.first_lang, p.second_lang) for p in profile.pairs}, {("en", "ms")})
 
 
 class PreviewSeamTest(unittest.TestCase):
