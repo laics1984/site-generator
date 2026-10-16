@@ -41,6 +41,7 @@ and uniquekindies.com declare `lang="en"` on every language.
 
 from __future__ import annotations
 
+import logging
 import re
 from urllib.parse import urlparse
 from collections import Counter, defaultdict
@@ -67,6 +68,8 @@ from app.services.locale import (
     locale_segment,
 )
 from app.services.source_path import normalize_source_slug
+
+logger = logging.getLogger(__name__)
 
 # --- calibration -------------------------------------------------------------------
 #
@@ -244,10 +247,19 @@ def _candidates() -> tuple[str, ...]:
     )
 
 
+class LanguageModelUnavailable(RuntimeError):
+    """py3langid isn't installed in this process — typically a backend image
+    built before it joined requirements.txt (CLAUDE.md, "Docker dependency
+    skew"). Detection can't run, but the preview it rides on must."""
+
+
 @lru_cache(maxsize=4)
 def _identifier(candidates: tuple[str, ...]):
     """The py3langid model restricted to `candidates` (a ~2 MB load, once)."""
-    from py3langid.langid import MODEL_FILE, LanguageIdentifier
+    try:
+        from py3langid.langid import MODEL_FILE, LanguageIdentifier
+    except ImportError as exc:
+        raise LanguageModelUnavailable(str(exc)) from exc
 
     identifier = LanguageIdentifier.from_model_file(MODEL_FILE, norm_probs=True)
     identifier.set_languages(list(candidates))
@@ -877,8 +889,24 @@ def analyze(source: SourceContent, *, brand_name: str | None = None) -> Language
     )
 
 
+# Shown in the preview when the model is missing: says what broke and the fix,
+# rather than a profile that silently reads every Latin line as "unknown".
+MODEL_UNAVAILABLE_REASON = (
+    "Language detection is unavailable: this backend is missing py3langid. "
+    "Rebuild it with `docker compose build backend`."
+)
+
+
 def with_language_profile(source: SourceContent, *, brand_name: str | None = None) -> SourceContent:
-    """`source` carrying its profile — a copy; the reader's object is untouched."""
-    return source.model_copy(
-        update={"language_profile": analyze(source, brand_name=brand_name)}
-    )
+    """`source` carrying its profile — a copy; the reader's object is untouched.
+
+    Detection is advisory (nothing downstream reads it yet), so a missing model
+    states itself in the profile instead of failing the reader's preview — every
+    reader's preview passes through here.
+    """
+    try:
+        profile = analyze(source, brand_name=brand_name)
+    except LanguageModelUnavailable as exc:
+        logger.warning("Language detection skipped: %s", exc)
+        profile = LanguageProfile(pattern="unknown", reason=MODEL_UNAVAILABLE_REASON)
+    return source.model_copy(update={"language_profile": profile})

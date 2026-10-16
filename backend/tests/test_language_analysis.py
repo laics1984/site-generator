@@ -8,7 +8,9 @@ tests/fixtures/languages/ — the same files `scripts/measure_language_analysis.
 from __future__ import annotations
 
 import json
+import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from app.models.content_blocks import NavLink, ProfileCandidate, SourceContent
@@ -377,6 +379,22 @@ class PreviewSeamTest(unittest.TestCase):
         self.assertEqual(profile["pattern"], "parallel_urls")
         self.assertIsNone(source.language_profile)  # the reader's object is untouched
         self.assertIsNone(payload["source_content"]["discovered_pages"][0]["language_profile"])
+
+    def test_a_missing_model_states_itself_instead_of_failing_the_preview(self):
+        """A backend image built before py3langid joined requirements.txt
+        500'd every preview (POST /api/document/preview on an English DOCX)."""
+        source = fixture("scenario_a_english_only")
+        la._identifier.cache_clear()
+        self.addCleanup(la._identifier.cache_clear)
+        with mock.patch.dict(sys.modules, {"py3langid": None, "py3langid.langid": None}):
+            payload = source_preview_payload(
+                url="doc.docx", final_url="doc.docx",
+                source_content=source, brand_candidate=None, image_candidates=[],
+            )
+
+        profile = payload["source_content"]["language_profile"]
+        self.assertEqual(profile["pattern"], "unknown")
+        self.assertEqual(profile["reason"], la.MODEL_UNAVAILABLE_REASON)
 
     def test_the_scraper_records_the_declared_lang(self):
         from app.services.scraper import _parse_rendered_html
