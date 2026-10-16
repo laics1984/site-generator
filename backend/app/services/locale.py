@@ -141,6 +141,19 @@ def canonical_locale(code: str | None) -> str | None:
     return None
 
 
+def url_prefix(code: str, codes: list[str] | tuple[str, ...] = ()) -> str:
+    """The URL directory a language's pages live under (`/ms/about`).
+
+    Lower-cased BCP 47 (`zh-hant`), shortened to the bare language where that
+    is unambiguous among the site's own `codes`: Simplified Chinese is `/zh/`
+    unless Traditional is published too, then `/zh-hans/` and `/zh-hant/`.
+    A source's own spelling (`/bm/`) is kept by the strategy, not here.
+    """
+    base = code.split("-", 1)[0]
+    siblings = {c for c in codes if c.split("-", 1)[0] == base and c != code}
+    return (base if not siblings else code).lower()
+
+
 def is_rtl(code: str | None) -> bool:
     canonical = canonical_locale(code)
     return bool(canonical and LOCALES[canonical].rtl)

@@ -8,7 +8,8 @@ Work happens on `feature/multilingual` in every repo. **P0–P1 done in
 site-generator (2026-10-15)** — detection is shown in the preview, generation is
 unchanged; see "Progress and corrections" below. Real-site captures were
 taken locally on 2026-10-16 and two gaps they exposed are fixed (see
-"Captured locally"). P2 next. Nothing else below is implemented yet unless it's listed
+"Captured locally"). **P2 done 2026-10-16** (strategy, override UI, three
+modes in the preview — see "P2"). P3 (cms-api) next. Nothing else below is implemented yet unless it's listed
 under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -44,6 +45,67 @@ The local crawl cache is empty (post-migration), so thresholds below get
 calibrated on a capture set in Phase 0, not on a guess.
 
 ## Progress and corrections
+
+### P2 (site-generator + builder type, 2026-10-16)
+
+**Built.** `services/multilingual_strategy.py` (`decide`, `with_plan`,
+`addable_locales`); `MultilingualChoice` / `MultilingualPlan` /
+`InlineTranslation` in `content_blocks.py`, `GeneratedSite.multilingual`,
+`PagePlan.translation_status` / `inline_translation`, `BuilderElement.lang`
+(mirrored in builder `site-navigation.ts` on its `feature/multilingual`);
+`locale.url_prefix`; `page_inference.translation_scaffold` /
+`scaffolds_for_languages`; `services/inline_translation.py`; the string-based
+`translations.py`; `planner._write_in`; the recipe's `multilingual` +
+`available_locales`; `LanguagePlanCard` in the page picker.
+
+- **Mode A** — the planner is told the language (`write_in`), never left to
+  infer it from a mixed source.
+- **Mode C** — the recipe adds every page in every language (Q3); a page's
+  `locale` is BCP 47 and its URL directory lives in its slug, so a source's
+  `/bm/` survives as `ms` at `bm/…`. Not exercised end to end on a real site:
+  the two-page preview never selects translation pages, and a full mmta build
+  is 30+ pages on the local model. Unit-tested.
+- **Mode B** — a string map per page, applied to the built tree as
+  `lang`-tagged lines (§3's "one representation, two presentations").
+
+**Measured on uniquekindies.com** (two-page preview, local Qwen3.8-27B,
+auto → bilingual en + zh-Hans; a "string" is one text element or one split
+headline, counted as the reader sees it):
+
+| Run | Home: strings with a Chinese line | About | Primary strings with Han | `<h1>` per page |
+|---|---|---|---|---|
+| 1 (blocks sent whole) | 0 / 39 | 0 / 40 | 0 / 1 | 1 / 1 |
+| 2 (strings) | 18 / 27 | 0 / 38 (fenced reply) | 0 / 1 | 1 / 1 |
+| 5 (+ fence strip, numbered reply, owner pairs, quotes) | **37 / 44** | **30 / 37** | 0 / 0 | 1 / 1 |
+
+Everything still without a line in run 5 is a default section eyebrow
+("About", "Services", "Features", "Testimonials"), a brand ("GlobalArt") or a
+person's name — the last two correctly so. Runs vary in page shape because the
+planner re-writes each time; 317–842 s per two-page run on the local model.
+
+**Corrections the runs forced:**
+
+1. **The translation pass sent whole blocks and asked for them back** (it
+   predates this plan). The model blanked `visual_policy` on every block; one
+   invalid field failed the whole page, which shipped untranslated. It sends a
+   numbered list of strings now and swaps them field by field — the model never
+   sees a field it could break. This also fixes the mirror path (mode C).
+2. **The local client never stripped a markdown fence** before validating;
+   `llm._validated` does, for every client.
+3. **The model mirrors the input's shape** — numbered `strings` came back as a
+   numbered object. That is now the contract (`TranslatedStrings` takes either).
+4. **`write_in` is not obeyed perfectly**: the planner copied an owner's
+   bilingual heading verbatim. On a bilingual site that is the owner's pair, so
+   it is split by script and kept word for word (`split_owner_pairs`).
+5. **`headline` is already the whole sentence** — `headline_accent` is a
+   trailing phrase of it, not a continuation. A change that translated
+   `headline + accent` as one string was wrong and is reverted (it cost run 4
+   its hero lines); the split group joins back to `headline`, which is the key.
+
+**Not covered yet:** section eyebrows a mapper fills from a default ("About",
+"Services") are not block text, so they stay in the primary language — all 7
+untranslated lines on /about in run 5. Renderers don't emit `lang` as an attribute
+yet (P4), and the preview shows the lines but not the attribute.
 
 ### P0–P1 (site-generator, 2026-10-15)
 

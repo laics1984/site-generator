@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from app.models.content_blocks import ContentCollections, NavLink
+from app.models.content_blocks import ContentCollections, MultilingualPlan, NavLink
 
 
 EditorBtns = Literal[
@@ -207,6 +207,12 @@ class BuilderElement(BaseModel):
     # meaningful on section/container-like elements with a plain fill — the
     # right panel hides the control otherwise.
     htmlTag: str | None = None
+    # BCP 47 language of this element's own text when it differs from the
+    # page's — the second-language line of a same-page bilingual site
+    # (services/inline_translation.py). Renderers emit it as the HTML `lang`
+    # attribute; absent means "the page's language". Mirrors `lang` on the
+    # builder's BuilderElement.
+    lang: str | None = None
     backgroundTexture: BackgroundStrategy | None = None
     # Marks this element as a lightbox gallery group: on the public site every
     # descendant image becomes click-to-enlarge and the group navigates as one
@@ -311,6 +317,10 @@ class GeneratedSite(BaseModel):
     """A full site = a set of pages + global metadata + theme + header/footer."""
 
     site_name: str
+    # How the site presents its languages (multilingual_strategy.decide). Read
+    # by the language switcher now and by the push's locale config later.
+    # None on sites generated before P2 = a single-language site.
+    multilingual: MultilingualPlan | None = None
     # Compact design inputs retained for color-only AI calls. Never public copy.
     palette_brief: dict[str, Any] | None = None
     tagline: str | None = None

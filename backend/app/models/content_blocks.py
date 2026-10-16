@@ -1332,6 +1332,15 @@ class PagePlan(BaseModel):
     # images, same templates, text in another language.
     locale: str | None = None
     translation_of: str | None = None
+    # A translated page's text came from the owner's own page in that language
+    # ("source") or was translated from ours ("ai") — Q3's badge. None on a
+    # page that is not a translation. Never set by the LLM.
+    translation_status: Literal["source", "ai"] | None = None
+    # Same-page bilingual (mode B): what this page's primary-language strings
+    # read in the second language. Set after planning by
+    # translations.add_inline_translations, read once by
+    # inline_translation.apply_inline_translation. Never sent to the LLM.
+    inline_translation: "InlineTranslation | None" = None
 
     @field_validator("page_type", mode="before")
     @classmethod
@@ -1621,8 +1630,9 @@ class LanguageProfile(BaseModel):
 
     Computed once per source by `language_analysis.analyze`, deterministically,
     at the one point every reader passes (`source_preview.source_preview_payload`).
-    Evidence for the preview and, from P2 on, for the strategy — nothing in
-    generation reads it yet. Mirrored in frontend/src/lib/types.ts.
+    Evidence for the preview and the input to `multilingual_strategy.decide`,
+    which turns it into the site's `MultilingualPlan`. Mirrored in
+    frontend/src/lib/types.ts.
     """
 
     primary: str | None = None
@@ -1632,6 +1642,55 @@ class LanguageProfile(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     reason: str = ""
     pages: list[PageLanguage] = Field(default_factory=list)
+
+
+MultilingualMode = Literal["single", "bilingual", "separate"]
+
+
+class MultilingualChoice(BaseModel):
+    """What the user asked for (docs/multilingual-plan.md Rule 5).
+
+    `auto` takes the strategy's recommendation. `locales` adds languages the
+    source doesn't contain (Q4) — BCP 47 codes or any spelling
+    `locale.canonical_locale` knows. Mirrored in frontend/src/lib/types.ts.
+    """
+
+    mode: Literal["auto", "single", "bilingual", "separate"] = "auto"
+    locales: list[str] = Field(default_factory=list)
+
+
+class MultilingualPlan(BaseModel):
+    """How the site presents its languages — the strategy's one answer.
+
+    Decided by `multilingual_strategy.decide` from the source's
+    `LanguageProfile` and the user's `MultilingualChoice`; the recipe and both
+    generate endpoints ask it, so the page picker and the build agree.
+    Mirrored in frontend/src/lib/types.ts.
+    """
+
+    mode: MultilingualMode = "single"
+    primary: str = "en"  # BCP 47; the language the site is written in first
+    secondary: list[str] = Field(default_factory=list)  # BCP 47, in display order
+    # code → URL directory for "separate" (`ms` → "bm" when the source used /bm).
+    prefixes: dict[str, str] = Field(default_factory=dict)
+    reason: str = ""
+    confidence: float = 1.0
+    chosen_by: Literal["auto", "override"] = "auto"
+    # The recommendation rested on thin evidence (Rule 6): the preview says so,
+    # and the decision fell back to the least destructive mode.
+    uncertain: bool = False
+
+
+class InlineTranslation(BaseModel):
+    """A page's second language for same-page bilingual presentation.
+
+    `text` maps each primary-language string the page shows to its
+    translation, both exactly as written. Strings, not element ids: the plan
+    exists before any element does, and a string map survives every mapper.
+    """
+
+    lang: str  # BCP 47
+    text: dict[str, str] = Field(default_factory=dict)
 
 
 class SourceContent(BaseModel):
@@ -1782,6 +1841,14 @@ class SourceContent(BaseModel):
         description=(
             "Set on the top-level source only, by source_preview_payload. "
             "None on discovered pages and on payloads from before P1."
+        ),
+    )
+    multilingual: MultilingualPlan | None = Field(
+        default=None,
+        description=(
+            "The decided language plan, stamped once per generation by "
+            "multilingual_strategy.with_plan so every pass reads one answer "
+            "(the planner's `write_in`, the translation stages). Top-level only."
         ),
     )
     subject_name: str | None = Field(
@@ -2091,6 +2158,7 @@ class LinkCluster(BaseModel):
 
 NavLink.model_rebuild()
 SourceContent.model_rebuild()
+PagePlan.model_rebuild()
 
 
 # --- source blog/event entries (content migration) -------------------------------

@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.models.content_blocks import (
+    MultilingualPlan,
     NavLink,
     PageType,
     SectionCandidate,
@@ -32,6 +33,7 @@ from app.services.industry_templates import gallery_page, get_template, menu_pag
 from app.services.landing_patterns import homepage_sections
 from app.services.locale import (
     AMBIGUOUS_LOCALE_SEGMENTS,
+    canonical_locale,
     locale_label,
     locale_segment,
 )
@@ -1142,6 +1144,67 @@ def evidence_pages(source: SourceContent, industry: IndustryCategory) -> list[Pa
     return pages
 
 
+def translation_scaffold(
+    counterpart: PageScaffold,
+    locale: str,
+    slug: str,
+    *,
+    rationale: str,
+    source_url: str | None = None,
+) -> PageScaffold:
+    """`counterpart` in another language, at `slug` (`bm/committee`).
+
+    It inherits the counterpart's type and section rhythm because it will be
+    built by cloning its finished page, not planned independently — so it costs
+    no design decisions and carries no nav_rank of its own. `locale` is BCP 47;
+    the URL directory lives in the slug, in whatever spelling the site uses.
+    """
+    return PageScaffold(
+        page_type=counterpart.page_type,
+        slug=slug,
+        title=f"{counterpart.title} ({locale_label(locale)})",
+        sections=list(counterpart.sections),
+        rationale=rationale,
+        parent_slug=counterpart.parent_slug,
+        source_url=source_url,
+        from_source=source_url is not None,
+        locale=locale,
+        translation_of=counterpart.slug,
+    )
+
+
+def scaffolds_for_languages(
+    scaffolds: list[PageScaffold], plan: MultilingualPlan, *, add_missing: bool
+) -> list[PageScaffold]:
+    """The page set the language plan calls for.
+
+    Translations of a language the plan doesn't publish are dropped (a single
+    or bilingual site keeps its mirrors' words through the clone, never as
+    pages). Under `separate`, `add_missing` gives every page a version in every
+    language — the owner's own when the crawl found it, else one translated
+    from ours (Q3). The recipe adds; generation only filters, so a page the
+    user unticked in the picker stays unticked. Legal pages and catalogue
+    records are never added: boilerplate and per-product copy are not what a
+    language switch is for.
+    """
+    wanted = set(plan.secondary) if plan.mode == "separate" else set()
+    kept = [s for s in scaffolds if not s.locale or s.locale in wanted]
+    if not add_missing or not wanted:
+        return kept
+    have = {(s.locale, s.translation_of) for s in kept if s.locale}
+    out = list(kept)
+    for code in plan.secondary:
+        prefix = plan.prefixes.get(code) or code.lower()
+        for page in scaffolds:
+            if page.locale or page.is_legal or page.record_set or (code, page.slug) in have:
+                continue
+            out.append(translation_scaffold(
+                page, code, f"{prefix}/{page.slug}".rstrip("/") if page.slug else prefix,
+                rationale=f"{locale_label(code)} version, translated from /{page.slug}.",
+            ))
+    return out
+
+
 def infer_page_scaffolds(
     source: SourceContent,
     *,
@@ -1534,25 +1597,19 @@ def infer_page_scaffolds(
     #     cost no design decisions and carry no nav_rank of their own.
     by_scaffold_slug = {s.slug: s for s in scaffolds}
     for slug in sorted(translations, key=lambda s: (s.count("/"), s)):
-        locale, counterpart_slug = translations[slug]
+        segment, counterpart_slug = translations[slug]
         counterpart = by_scaffold_slug.get(counterpart_slug)
-        if counterpart is None or counterpart.locale:
+        locale = canonical_locale(segment)
+        if counterpart is None or counterpart.locale or locale is None:
             continue  # nothing to translate, or a mirror of a mirror
         scaffolds.append(
-            PageScaffold(
-                page_type=counterpart.page_type,
-                slug=slug,
-                title=f"{counterpart.title} ({locale_label(locale)})",
-                sections=list(counterpart.sections),
+            translation_scaffold(
+                counterpart, locale, slug,
                 rationale=(
                     f"{locale_label(locale)} translation of "
                     f"/{counterpart_slug} on the source site."
                 ),
-                parent_slug=counterpart.parent_slug,
                 source_url=by_slug[slug].source_ref,
-                from_source=True,
-                locale=locale,
-                translation_of=counterpart_slug,
             )
         )
         seen_slugs.add(slug)

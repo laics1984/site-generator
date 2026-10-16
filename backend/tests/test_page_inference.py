@@ -509,7 +509,7 @@ class TranslatedMirrorTest(unittest.TestCase):
         translated = next(s for s in scaffolds if s.slug == "bm/committee")
 
         self.assertIsNone(committee.locale)
-        self.assertEqual(translated.locale, "bm")
+        self.assertEqual(translated.locale, "ms")  # BCP 47; the slug keeps the source's /bm
         self.assertEqual(translated.translation_of, "committee")
         # It clones the counterpart's design, so it inherits its shape.
         self.assertEqual(translated.page_type, committee.page_type)
@@ -519,7 +519,7 @@ class TranslatedMirrorTest(unittest.TestCase):
         scaffolds = infer_page_scaffolds(self._source("/bm"), industry="other")
 
         translated = next(s for s in scaffolds if s.slug == "bm")
-        self.assertEqual(translated.locale, "bm")
+        self.assertEqual(translated.locale, "ms")
         self.assertEqual(translated.translation_of, "")
 
     def test_mirror_does_not_invent_a_language_section(self):

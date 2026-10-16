@@ -35,6 +35,7 @@ from app.models.content_blocks import (
     LinkCluster,
     MapBlock,
     MapItem,
+    MultilingualChoice,
     PagePlan,
     ProfileBlock,
     ProfileCandidate,
@@ -60,7 +61,8 @@ from app.services.industry_templates import gallery_page, get_template
 from app.services.design_direction import ContentProfile, resolve_direction
 from app.services.record_pages import build_record_pages
 from app.services.source_router import gallery_photos, match_scaffolds_to_pages, pages_by_source_slug
-from app.services.translations import build_translated_pages
+from app.services.multilingual_strategy import with_plan
+from app.services.translations import add_inline_translations, build_translated_pages
 from app.services.text_detection import prefetch_text_flags, verify_many
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
@@ -73,7 +75,11 @@ from app.services.planner import (
     plan_site_with_scaffolds,
 )
 from app.services.nav_extraction import find_linkbar_cluster, strip_linkbar_lines
-from app.services.page_inference import DIRECTORY_MIN_PROFILES, defer_home_contact
+from app.services.page_inference import (
+    DIRECTORY_MIN_PROFILES,
+    defer_home_contact,
+    scaffolds_for_languages,
+)
 from app.services.source_injection import (
     MAX_GALLERY_ITEMS,
     accumulate_by_slug,
@@ -158,6 +164,9 @@ class GenerateRequest(BaseModel):
     # pick (see design_director.compose_design_manifest). None → let it decide.
     header_archetype: HeaderArchetype | None = None
     footer_archetype: FooterArchetype | None = None
+    # How to present the source's languages (docs/multilingual-plan.md Rule 5).
+    # None = automatic; decided once by multilingual_strategy.with_plan.
+    multilingual: MultilingualChoice | None = None
 
 
 def _market_cues_for(source: SourceContent) -> tuple[str, str]:
@@ -1310,6 +1319,9 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     """
     live = await keep_photo_links_alive(payload.source, payload.brand)
     payload.source, payload.brand = live.source, live.brand
+    # The language plan, decided once; the planner writes in its primary.
+    payload.source = with_plan(payload.source, payload.multilingual)
+    languages = payload.source.multilingual
     # Locale detection reads image URLs as domain evidence
     # (_market_cues_for → detect_market), and the cues it produces steer every
     # Pexels query toward the right market. Under stock_images_only those cues
@@ -1390,6 +1402,14 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     await _condense_team_card_bios(plan)
     if payload.stock_images_only:
         _drop_person_photos(plan.pages)
+    # This free-form flow builds no per-language pages, so a language plan
+    # asking for them is honoured as the same-page presentation.
+    if languages and languages.mode != "single" and languages.secondary:
+        with stage("inline_translations"):
+            await add_inline_translations(
+                plan.pages, languages.secondary[0], _sources_by_slug(payload.source),
+                primary=languages.primary,
+            )
 
     collections_task = asyncio.create_task(_safe_extract_collections(payload.source))
     site = await plan_to_site(
@@ -1409,6 +1429,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         stock_only=payload.stock_images_only,
     )
     site.collections = await collections_task
+    site.multilingual = languages
     site.palette_brief = {"business": site.site_name, "industry": plan.industry_category, **design_inputs(payload.source, brand)}
     site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
     return site
@@ -1454,6 +1475,9 @@ class GenerateWithPagesRequest(BaseModel):
     # pick (see design_director.compose_design_manifest). None → let it decide.
     header_archetype: HeaderArchetype | None = None
     footer_archetype: FooterArchetype | None = None
+    # How to present the source's languages (docs/multilingual-plan.md Rule 5).
+    # None = automatic; decided once by multilingual_strategy.with_plan.
+    multilingual: MultilingualChoice | None = None
     # The Facebook Page this site was read from, round-tripped from the preview.
     # It is the authority on its own contact details, hours, reviews and counts:
     # `facebook_authority.enforce_facebook_facts` rewrites those blocks from it
@@ -1545,6 +1569,14 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
 
 
 async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
+    # The language plan, decided once, before anything reads the page set: a
+    # translation of a language the plan doesn't publish is not built.
+    payload.source = with_plan(payload.source, payload.multilingual)
+    languages = payload.source.multilingual
+    assert languages is not None
+    payload.selected_pages = scaffolds_for_languages(
+        payload.selected_pages, languages, add_missing=False
+    )
     # Before the preview narrows the selection: the planned set is what says a
     # Contact page is coming, and the saved project replays this stripped plan.
     planned_scaffolds = defer_home_contact(payload.selected_pages)
@@ -1911,6 +1943,14 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
                     _sources_by_slug(payload.source),
                 )
             )
+    # Same-page bilingual: each page's strings in the second language, kept as
+    # a map the site builder turns into lang-tagged lines.
+    if languages.mode == "bilingual" and languages.secondary:
+        with stage("inline_translations"):
+            await add_inline_translations(
+                plan.pages, languages.secondary[0], _sources_by_slug(payload.source),
+                primary=languages.primary,
+            )
 
     # Legal pages from boilerplate. Built BEFORE the site so plan_to_site sees
     # the complete page list: it appends them to site.pages itself (still out of
@@ -1963,6 +2003,7 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         ),
     )
     site.collections = await collections_task if collections_task else None
+    site.multilingual = languages
     site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
 
     if payload.generation_mode == "two_page_preview" and len(site.pages) != 2:

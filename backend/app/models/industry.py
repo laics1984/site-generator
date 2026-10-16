@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 
 from app.models.content_blocks import (
     IndustryCategoryLiteral,
+    MultilingualPlan,
     PageType,
     SectionCandidate,
     SectionType,
@@ -129,4 +130,19 @@ class PageRecipeResponse(BaseModel):
     google_fonts: list[str] = Field(
         default_factory=list,
         description="Google Font families to preload for the preview theme.",
+    )
+    multilingual: MultilingualPlan | None = Field(
+        default=None,
+        description=(
+            "How the site will present the source's languages, and why "
+            "(multilingual_strategy.decide). inferred_pages already holds every "
+            "page the plan publishes at its own URLs."
+        ),
+    )
+    available_locales: list[dict[str, str]] = Field(
+        default_factory=list,
+        description=(
+            "Languages a user may add (Q4): [{code, label}] from locale.LOCALES, "
+            "so the picker never keeps a second list."
+        ),
     )

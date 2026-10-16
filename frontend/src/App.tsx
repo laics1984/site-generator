@@ -42,6 +42,7 @@ import type {
   GenerationProjectSummary,
   HeroHeightChoice,
   IndustryCategory,
+  MultilingualChoice,
   PageScaffold,
   ScrapePreview as ScrapePreviewType,
   SitemapProbeResult,
@@ -126,6 +127,8 @@ export default function App() {
   const [previewSecondSlug, setPreviewSecondSlug] = useState<string | null>(null)
   const [savedProjects, setSavedProjects] = useState<GenerationProjectSummary[]>([])
   const [industryOverride, setIndustryOverride] = useState<IndustryCategory | null>(null)
+  // How to present the source's languages (services/multilingual_strategy.py).
+  const [multilingual, setMultilingual] = useState<MultilingualChoice>({ mode: 'auto', locales: [] })
   // Captured from /api/pages/recipe and passed to /generate/with-pages so we
   // don't re-run brand detection.
   const [detectedBrand, setDetectedBrand] = useState<DetectedBrand | null>(null)
@@ -533,6 +536,7 @@ export default function App() {
       // reviews and counts — the backend rewrites those blocks from it after
       // the LLM has run. Riding on the payload means a regenerate keeps it too.
       facebook_facts: scrapeResult?.facebook_facts ?? null,
+      multilingual,
     }
     setBusy(true)
     setError(null)
@@ -577,6 +581,7 @@ export default function App() {
     setGenerationMode('full')
     setPreviewSecondSlug(null)
     setDetectedBrand(null)
+    setMultilingual({ mode: 'auto', locales: [] })
     setScrapeResult(null)
     setSourceUrl('')
     setSourceCrawl(true)
@@ -618,6 +623,7 @@ export default function App() {
     setConfirmedSource(null)
     setSelectedPages([])
     setDetectedBrand(null)
+    setMultilingual({ mode: 'auto', locales: [] })
   }
 
   if (stage === 'preview' && site && selectedPage) {
@@ -796,6 +802,8 @@ export default function App() {
                     source={confirmedSource}
                     industryOverride={industryOverride}
                     setIndustryOverride={setIndustryOverride}
+                    multilingual={multilingual}
+                    setMultilingual={setMultilingual}
                     selectedPages={selectedPages}
                     setSelectedPages={setSelectedPages}
                     generationMode={generationMode}

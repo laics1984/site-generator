@@ -365,7 +365,10 @@ async def _validated(
             post, payload, trunc, max_tokens_cap
         )
     try:
-        return schema.model_validate_json(response_text)
+        # A fence is stripped here, the loop every client shares: the Claude
+        # client already did it, the local one never did, and a fenced reply
+        # failed validation twice for nothing but its wrapper.
+        return schema.model_validate_json(_strip_code_fence(response_text))
     except ValidationError as exc:
         first_err = exc
         err_summary = "; ".join(
@@ -383,7 +386,7 @@ async def _validated(
     )
     response_text = await _post_nonempty(post, repair(payload, response_text, error_summary))
     try:
-        return schema.model_validate_json(response_text)
+        return schema.model_validate_json(_strip_code_fence(response_text))
     except ValidationError as second_err:
         raise LlmError(
             f"LLM produced invalid JSON after retry: {second_err}"

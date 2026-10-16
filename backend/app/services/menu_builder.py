@@ -27,7 +27,7 @@ from uuid import uuid4
 
 from app.config import settings
 from app.models.builder_schema import BuilderElement, GeneratedSite, PageNode
-from app.models.content_blocks import NavLink
+from app.models.content_blocks import MultilingualPlan, NavLink
 from app.models.design_manifest import SELF_CHROME_HEADERS
 from app.services.locale import locale_label
 
@@ -41,7 +41,7 @@ FOOTER_MENU_ID = "menu-footer"
 LEGAL_MENU_ID = "menu-legal"
 SOCIAL_MENU_ID = "menu-social"
 
-# Label for the source-language entry in the language switcher.
+# Label for the primary-language entry when a site predates its language plan.
 SOURCE_LANGUAGE_LABEL = "English"
 
 # Primary nav cap, including Home and Contact. Standard UX guidance is 5–7
@@ -119,6 +119,7 @@ def build_menus(
     legal_pages: list[tuple[str, str]] | None = None,
     social_links: list[tuple[str, str]] | None = None,
     source_navigation: list[NavLink] | None = None,
+    languages: MultilingualPlan | None = None,
 ) -> list[dict[str, Any]]:
     """
     Build the SiteMenu list webtree expects in PUT /layout.
@@ -263,10 +264,14 @@ def build_menus(
             preferred = by_locale.get(node.locale or "")
             if preferred is None or (node.translation_of == "" and preferred.translation_of != ""):
                 by_locale[node.locale or ""] = node
-        switcher = [_menu_item(SOURCE_LANGUAGE_LABEL, "/")]
+        # The primary language names itself — a Chinese-first site's switch
+        # does not open on "English" — and the rest follow the plan's order.
+        primary_label = locale_label(languages.primary) if languages else SOURCE_LANGUAGE_LABEL
+        order = [c for c in (languages.secondary if languages else []) if c in by_locale]
+        order += sorted(c for c in by_locale if c not in order)
+        switcher = [_menu_item(primary_label, "/")]
         switcher.extend(
-            _menu_item(locale_label(code), f"/{by_locale[code].slug}")
-            for code in sorted(by_locale)
+            _menu_item(locale_label(code), f"/{by_locale[code].slug}") for code in order
         )
         menus.append(_menu(UTILITY_MENU_ID, "Language", "utility", switcher))
 
@@ -403,6 +408,7 @@ def build_layout_payload(site: GeneratedSite) -> LayoutPayload:
         legal_pages=legal_pages,
         social_links=site.social_links,
         source_navigation=site.source_navigation,
+        languages=site.multilingual,
     )
     if site.header_schema is None or site.footer_schema is None:
         raise ValueError(

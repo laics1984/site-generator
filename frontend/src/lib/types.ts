@@ -67,7 +67,7 @@ export interface PageLanguage {
 }
 
 /** Mirrors `content_blocks.LanguageProfile` (services/language_analysis.py).
- * Shown in the preview; nothing in generation reads it yet. */
+ * Shown in the preview, and decided on by services/multilingual_strategy.py. */
 export interface LanguageProfile {
   primary: string | null
   languages: LanguageShare[]
@@ -76,6 +76,33 @@ export interface LanguageProfile {
   evidence: string[]
   reason: string
   pages: PageLanguage[]
+}
+
+export type MultilingualMode = 'single' | 'bilingual' | 'separate'
+
+/** Mirrors `content_blocks.MultilingualChoice`: what the user asked for.
+ * `auto` takes the recommendation; `locales` adds languages the source lacks. */
+export interface MultilingualChoice {
+  mode: 'auto' | MultilingualMode
+  locales: string[]
+}
+
+/** Mirrors `content_blocks.MultilingualPlan` (services/multilingual_strategy.py). */
+export interface MultilingualPlan {
+  mode: MultilingualMode
+  primary: string
+  secondary: string[]
+  /** code → URL directory for separate pages (`ms` → `bm` when the source used /bm). */
+  prefixes: Record<string, string>
+  reason: string
+  confidence: number
+  chosen_by: 'auto' | 'override'
+  uncertain: boolean
+}
+
+export interface LocaleOption {
+  code: string
+  label: string
 }
 
 export interface SourceContent {
@@ -278,6 +305,8 @@ export interface BrandExtractionResult {
 }
 
 export interface GeneratedSite {
+  /** How the site presents its languages; absent on single-language sites built before P2. */
+  multilingual?: MultilingualPlan | null
   palette_brief?: Record<string, unknown> | null
   generation_warnings?: string[]
   site_name: string
@@ -404,7 +433,8 @@ export interface PageScaffold {
   /** Exemplar slug of the look-alike page set this page belongs to (e.g. a
    * catalogue's products) — laid out once, filled from its own content. */
   record_set?: string | null
-  /** Language directory of a translated mirror (/bm/...); null for the source language. */
+  /** BCP 47 language of a translated page (its URL directory is in the slug, /bm/...);
+   * null for the primary language. */
   locale?: string | null
 }
 
@@ -433,6 +463,10 @@ export interface PageRecipeResponse {
   inferred_pages: PageScaffold[]
   all_industries: IndustryOption[]
   detected_brand: DetectedBrand | null
+  /** The language plan; inferred_pages already holds every page it publishes. */
+  multilingual?: MultilingualPlan | null
+  /** Languages a user may add, from the backend's one registry. */
+  available_locales?: LocaleOption[]
 }
 
 export interface ImageCandidate {

@@ -19,6 +19,7 @@ import type {
   HeroHeight,
   IndustryCategory,
   LlmModelsResponse,
+  MultilingualChoice,
   PageRecipeResponse,
   PageScaffold,
   PreviewLayout,
@@ -137,6 +138,8 @@ export interface GenerateWithPagesPayload {
    * contact details, hours, reviews and counts — the backend rewrites those
    * blocks from it after the LLM has run. */
   facebook_facts?: FacebookFacts | null
+  /** How to present the source's languages; null = automatic. */
+  multilingual?: MultilingualChoice | null
 }
 
 export async function generateWithPages(
@@ -162,6 +165,8 @@ export interface PageRecipeOptions {
   singlePage?: boolean
   /** Section list gated on the facts the source actually holds. */
   homepageSections?: string[]
+  /** How to present the source's languages; omitted = automatic. */
+  multilingual?: MultilingualChoice | null
 }
 
 export async function fetchPageRecipe(
@@ -175,6 +180,7 @@ export async function fetchPageRecipe(
       industry_override: opts.industryOverride ?? null,
       single_page: opts.singlePage ?? false,
       homepage_sections: opts.homepageSections ?? null,
+      multilingual: opts.multilingual ?? null,
     }),
   })
 }

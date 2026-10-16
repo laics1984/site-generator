@@ -1,5 +1,5 @@
 """
-Build a translated page by cloning its source-language counterpart.
+A page's text in another language, without planning or designing it again.
 
 A multilingual source site (mmta.org.my ships /bm and /zh copies of every page)
 gives us the same page twice. Generating each language independently would pay
@@ -7,40 +7,50 @@ the full content + design + imagery cost per language and — worse — let the 
 drift: different hero photo, different section rhythm, different template
 variants for pages that are meant to be the same page in another language.
 
-So a translated page is never planned. It is *cloned*: the finished PagePlan of
-its counterpart, deep-copied, with only the human-readable strings replaced.
-Everything that decides how the page looks — image refs and URLs, layout hints,
-section order, block kinds — is copied verbatim, and re-copied defensively after
-the model answers (see ``_TRANSLATABLE_FIELDS``). The design is identical by
-construction rather than by instruction.
+So a translated page is never planned. Its counterpart's finished PagePlan is
+cloned and only the human-readable strings are swapped. **The model sees
+strings, never blocks**: one numbered list of the page's distinct prose strings
+(the allowlisted `_TRANSLATABLE_FIELDS`), and it answers with the same list
+translated. The swap then happens here, field by field, so image refs, hrefs,
+layout hints and every other field are untouched by construction — the model
+cannot reach them. Sending whole blocks used to let it blank a field it was
+told to keep (`visual_policy: ""` on every block of uniquekindies), and one
+such field failed validation for the entire page.
 
-Text comes from the owner's *own* translated page where it covers the same
-ground; the model falls back to translating our copy only for slots the source
-doesn't speak to (a CTA label we wrote, say). That keeps the owner's real
-Malay/Chinese wording instead of round-tripping their English through us.
+The same string map serves both presentations (docs/multilingual-plan.md §3):
 
-Failure is never fatal: any error, or a shape that doesn't match the original,
-leaves the clone with its counterpart's text. A page in the wrong language is a
-flaw; a failed generation is a broken deliverable.
+- separate language pages — `build_translated_pages` applies it to a clone;
+- same-page bilingual — `add_inline_translations` keeps it on the page as
+  `PagePlan.inline_translation`, which `inline_translation` turns into
+  lang-tagged lines once the page is built.
+
+Text comes from the owner's *own* page in that language where it covers the
+same ground; the model translates ours only where the owner is silent. That
+keeps their real Malay/Chinese wording instead of round-tripping it through us.
+
+Failure is never fatal: any error, or a reply whose length doesn't match the
+list, leaves the page in its primary language. A page in the wrong language is
+a flaw; a failed generation is a broken deliverable.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.content_blocks import (
-    ContentBlock,
+    InlineTranslation,
     PagePlan,
     SourceContent,
     clamp_seo_description,
     clamp_seo_title,
 )
 from app.models.industry import PageScaffold
-from app.services.llm import LlmClient, LlmError, get_llm
+from app.services.llm import LlmClient, LlmError, chat_json_cached, get_llm
 from app.services.locale import locale_label
 
 logger = logging.getLogger(__name__)
@@ -48,9 +58,9 @@ logger = logging.getLogger(__name__)
 
 # Only these carry prose. Everything else — image refs and queries, hrefs,
 # person and company names, prices, years, stat values, phone/email, block
-# kinds and layout hints — is restored from the counterpart after the model
-# answers. An allowlist (not a blocklist) so a field added to any block model
-# later defaults to "preserved" rather than silently becoming translatable.
+# kinds and layout hints — never reaches the model. An allowlist (not a
+# blocklist) so a field added to any block model later defaults to "kept"
+# rather than silently becoming translatable.
 _TRANSLATABLE_FIELDS = frozenset({
     "answer", "audience", "bio", "body", "caption", "cta_label", "description",
     "eyebrow", "heading", "headline", "headline_accent", "hours", "image_alt",
@@ -58,108 +68,221 @@ _TRANSLATABLE_FIELDS = frozenset({
     "secondary_cta_label", "subheading", "subheadline", "title",
 })
 
-# Cap on how much of the translated source page we show the model. The page's
-# own words are the point, but a long roster page would crowd out the blocks.
+# Cap on how much of the owner's own page we show the model. Their words are
+# the point, but a long roster page would crowd out the strings.
 _MAX_SOURCE_CHARS = 6000
 
-TRANSLATION_PROMPT = """You are localizing one page of a website that already exists in another language.
+TRANSLATION_PROMPT = """You are localizing one page of a website into another language.
 
 You are given:
-  1. `blocks` — the finished page content, as JSON.
-  2. `source_text` — the site owner's OWN version of this page in the target language.
+  1. `strings` — the page's text, one string per entry, numbered.
+  2. `source_text` — the site owner's OWN version of this page in the target
+     language, when they have one.
 
-Rewrite every human-readable string in `blocks` into the target language.
+Translate every entry of `strings` into the target language.
 
 Rules:
-- Reuse the owner's wording from `source_text` wherever it covers the same
-  ground. Their phrasing is authoritative — do not re-translate what they have
-  already written themselves. Only translate the existing string when
-  `source_text` says nothing about that slot.
-- Return the SAME JSON structure: same number of blocks, same order, same
-  "kind" on every block, same number of items in every list.
+- Reply with `translations`: an object with exactly the same keys as
+  `strings` — the value under key N is the translation of string N.
+- Reuse the owner's wording from `source_text` wherever it says the same
+  thing. Their phrasing is authoritative — do not re-translate what they have
+  already written themselves. Only translate a string `source_text` says
+  nothing about.
 - Never translate: people's names, organisation names, brand names, email
-  addresses, phone numbers, URLs, prices, years, and numeric stat values.
-- Never change any field that is not human-readable prose (image references,
-  layout hints, links).
-- Keep the register and length close to the original — these strings sit in a
-  fixed layout, so a heading that triples in length will break it.
+  addresses, phone numbers, URLs, prices, years, and numeric values. A string
+  that is only such a thing is returned unchanged.
+- Translate meaning, not words: it should read as if written in the target
+  language, in the same register.
+- Keep each translation close to its original's length — these strings sit
+  in a fixed layout, so a heading that triples in length will break it.
 
 Reply ONLY with valid JSON matching the schema."""
 
 
-class TranslatedPageContent(BaseModel):
-    """What the model returns: the page's prose, in the target language."""
+class TranslatedStrings(BaseModel):
+    """What the model returns: `strings`, translated, in order.
 
-    title: str = ""
-    seo_title: str = ""
-    seo_description: str = ""
-    blocks: list[ContentBlock] = Field(default_factory=list)
+    Asked for as an object keyed by the same numbers as `strings` — the number
+    pins each translation to its string, where a bare list could slip by one.
+    A plain list in order is accepted too."""
+
+    translations: list[str] = Field(default_factory=list)
+
+    @field_validator("translations", mode="before")
+    @classmethod
+    def _numbered(cls, value: object) -> object:
+        if isinstance(value, dict):
+            try:
+                ordered = sorted(value.items(), key=lambda kv: int(kv[0]))
+            except (TypeError, ValueError):
+                return value  # not numbered: let validation say so
+            # A gap in the numbering is a missing string; padding keeps the
+            # length honest so translate_strings rejects the reply.
+            if [int(k) for k, _ in ordered] != list(range(1, len(ordered) + 1)):
+                return [str(v) for _, v in ordered][:-1] if ordered else []
+            return [str(v) for _, v in ordered]
+        return value
 
 
-def _localize_href(href: str, locale: str, translated_slugs: set[str]) -> str:
-    """Point an internal link at the same page in this locale, when it exists.
+# --- strings in, strings out -----------------------------------------------------------
+
+
+def _prose_strings(value: Any, out: dict[str, None]) -> None:
+    """Every distinct non-empty allowlisted string in a block tree, in order."""
+    if isinstance(value, list):
+        for item in value:
+            _prose_strings(item, out)
+        return
+    if not isinstance(value, BaseModel):
+        return
+    for name in type(value).model_fields:
+        child = getattr(value, name, None)
+        if isinstance(child, (list, BaseModel)):
+            _prose_strings(child, out)
+        elif name in _TRANSLATABLE_FIELDS and isinstance(child, str) and child.strip():
+            out.setdefault(child.strip(), None)
+
+
+def page_strings(page: PagePlan) -> list[str]:
+    """The page's distinct prose strings — what one translation call covers.
+
+    The page title and SEO texts ride along: they are the page's words too,
+    and in another language they are what a search result shows."""
+    found: dict[str, None] = {}
+    for text in (page.title, page.seo_title, page.seo_description):
+        if text and text.strip():
+            found.setdefault(text.strip(), None)
+    _prose_strings(page.blocks, found)
+    return list(found)
+
+
+def _apply_map(value: Any, mapping: dict[str, str]) -> None:
+    """Swap every allowlisted string `mapping` translates, in place."""
+    if isinstance(value, list):
+        for item in value:
+            _apply_map(item, mapping)
+        return
+    if not isinstance(value, BaseModel):
+        return
+    for name in type(value).model_fields:
+        child = getattr(value, name, None)
+        if isinstance(child, (list, BaseModel)):
+            _apply_map(child, mapping)
+        elif name in _TRANSLATABLE_FIELDS and isinstance(child, str):
+            translated = mapping.get(child.strip())
+            if translated:
+                setattr(value, name, translated)
+
+
+def _source_excerpt(source: SourceContent | None) -> str:
+    if source is None:
+        return ""
+    parts = [source.title or "", *source.headings, source.raw_text or ""]
+    return "\n".join(p for p in parts if p).strip()[:_MAX_SOURCE_CHARS]
+
+
+async def translate_strings(
+    strings: list[str],
+    locale: str,
+    source: SourceContent | None,
+    *,
+    client: LlmClient,
+    label: str = "",
+) -> dict[str, str] | None:
+    """`strings` → their translations in `locale`, or None on any failure.
+
+    A string the model returned unchanged (a name, a brand) is left out of the
+    map: it is not a translation, and the page already shows it."""
+    if not strings:
+        return {}
+    excerpt = _source_excerpt(source)
+    language = f"{locale_label(locale)} (code: {locale})"
+    user_prompt = json.dumps(
+        {
+            "target_language": language,
+            "strings": {str(i + 1): text for i, text in enumerate(strings)},
+            "source_text": excerpt or "(none — translate the strings)",
+        },
+        ensure_ascii=False,
+    )
+    try:
+        result = await chat_json_cached(
+            client,
+            system_prompt=TRANSLATION_PROMPT,
+            user_prompt=user_prompt,
+            schema=TranslatedStrings,
+        )
+    except (LlmError, asyncio.TimeoutError) as exc:
+        logger.warning("Translation of %s into %s failed (%s)", label, locale, exc)
+        return None
+    if len(result.translations) != len(strings):
+        logger.warning(
+            "Translation of %s into %s returned %d strings for %d — keeping the "
+            "primary language", label, locale, len(result.translations), len(strings),
+        )
+        return None
+    return {
+        old: new.strip()
+        for old, new in zip(strings, result.translations)
+        if new and new.strip() and new.strip() != old
+    }
+
+
+# --- separate language pages ------------------------------------------------------------
+
+
+def url_prefix_of(slug: str, translation_of: str | None) -> str:
+    """The language directory a translated page lives under, from its own slug.
+
+    ``bm/committee`` translating ``committee`` → ``bm``. Read off the slug, not
+    the locale: the locale is BCP 47 (``ms``) while the URL keeps whatever
+    spelling the site uses.
+    """
+    slug = slug.strip("/")
+    if translation_of:
+        return slug[: -len(translation_of)].strip("/") if slug.endswith(translation_of) else slug.split("/", 1)[0]
+    return slug
+
+
+def _localize_href(href: str, prefix: str, translated_slugs: set[str]) -> str:
+    """Point an internal link at the same page in this language, when it exists.
 
     A translated page linking to ``/committee`` should reach ``/bm/committee``
-    — but only if we actually built that translation. Otherwise the reader is
-    better off on the source-language page than on a 404.
+    — but only if that page was built in THIS language. Otherwise the reader is
+    better off on the primary-language page than on a 404.
     """
-    if not href.startswith("/") or href.startswith("//"):
+    if not prefix or not href.startswith("/") or href.startswith("//"):
         return href
     path, _, fragment = href.partition("#")
     slug = path.strip("/")
-    if slug.startswith(f"{locale}/") or slug == locale:
+    if slug.startswith(f"{prefix}/") or slug == prefix:
         return href  # already localized
     if slug not in translated_slugs:
         return href
-    localized = f"/{locale}/{slug}".rstrip("/") if slug else f"/{locale}"
+    localized = f"/{prefix}/{slug}".rstrip("/") if slug else f"/{prefix}"
     return f"{localized}#{fragment}" if fragment else localized
 
 
-def _restore_untranslatable(
-    original: BaseModel, translated: BaseModel
-) -> BaseModel:
-    """Rebuild ``translated`` with every non-prose field taken from ``original``.
-
-    The prompt asks the model to leave those alone; this makes it true. Any
-    structural mismatch (different block kind, different item count) falls back
-    to the original wholesale — a section in the wrong language beats a section
-    whose photo or link the model rewrote.
-    """
-    if type(original) is not type(translated):
-        return original
-
-    updates: dict[str, Any] = {}
-    for name in type(original).model_fields:
-        old = getattr(original, name, None)
-        new = getattr(translated, name, None)
-
-        if isinstance(old, BaseModel):
-            updates[name] = (
-                _restore_untranslatable(old, new) if isinstance(new, BaseModel) else old
-            )
-        elif isinstance(old, list) and old and isinstance(old[0], BaseModel):
-            if not isinstance(new, list) or len(new) != len(old):
-                updates[name] = old  # the model added/dropped items
-            else:
-                updates[name] = [
-                    _restore_untranslatable(o, n) for o, n in zip(old, new)
-                ]
-        elif name in _TRANSLATABLE_FIELDS:
-            # Take the translation only when it's a non-empty string; an empty
-            # slot would render as a blank heading.
-            updates[name] = new if isinstance(new, str) and new.strip() else old
-        else:
-            updates[name] = old
-
-    return type(original).model_validate(updates)
+def _localize_block_hrefs(
+    value: Any, prefix: str, translated_slugs: set[str]
+) -> None:
+    """Walk a block tree rewriting internal hrefs to their localized twin."""
+    if isinstance(value, list):
+        for item in value:
+            _localize_block_hrefs(item, prefix, translated_slugs)
+        return
+    if not isinstance(value, BaseModel):
+        return
+    for name in type(value).model_fields:
+        child = getattr(value, name, None)
+        if isinstance(child, str) and name.endswith("href"):
+            setattr(value, name, _localize_href(child, prefix, translated_slugs))
+        elif isinstance(child, (list, BaseModel)):
+            _localize_block_hrefs(child, prefix, translated_slugs)
 
 
 def _clone_plan(canonical: PagePlan, scaffold: PageScaffold) -> PagePlan:
-    """A deep copy of the counterpart carrying the translation's identity.
-
-    Links are localized later, once the blocks are final — translating replaces
-    the block list wholesale, so rewriting hrefs here would be undone.
-    """
+    """A deep copy of the counterpart carrying the translation's identity."""
     clone = canonical.model_copy(deep=True)
     clone.slug = scaffold.slug
     clone.title = scaffold.title
@@ -170,32 +293,8 @@ def _clone_plan(canonical: PagePlan, scaffold: PageScaffold) -> PagePlan:
     clone.from_source = True
     clone.locale = scaffold.locale
     clone.translation_of = scaffold.translation_of
+    clone.inline_translation = None
     return clone
-
-
-def _localize_block_hrefs(
-    value: Any, locale: str, translated_slugs: set[str]
-) -> None:
-    """Walk a block tree rewriting internal hrefs to their localized twin."""
-    if isinstance(value, list):
-        for item in value:
-            _localize_block_hrefs(item, locale, translated_slugs)
-        return
-    if not isinstance(value, BaseModel):
-        return
-    for name in type(value).model_fields:
-        child = getattr(value, name, None)
-        if isinstance(child, str) and name.endswith("href"):
-            setattr(value, name, _localize_href(child, locale, translated_slugs))
-        elif isinstance(child, (list, BaseModel)):
-            _localize_block_hrefs(child, locale, translated_slugs)
-
-
-def _source_excerpt(source: SourceContent | None) -> str:
-    if source is None:
-        return ""
-    parts = [source.title or "", *source.headings, source.raw_text or ""]
-    return "\n".join(p for p in parts if p).strip()[:_MAX_SOURCE_CHARS]
 
 
 async def _translate_one(
@@ -205,56 +304,25 @@ async def _translate_one(
     *,
     client: LlmClient,
 ) -> PagePlan:
-    """Fill one clone's prose. Returns it untouched on any failure."""
+    """Fill one clone's prose. Returns it in the primary language on any failure."""
     locale = clone.locale or ""
-    excerpt = _source_excerpt(source)
-    payload = TranslatedPageContent(
-        title=canonical.title,
-        seo_title=canonical.seo_title,
-        seo_description=canonical.seo_description,
-        blocks=canonical.blocks,
+    # Q3's badge: the owner's own page in this language, or ours translated.
+    clone.translation_status = "source" if _source_excerpt(source) else "ai"
+    mapping = await translate_strings(
+        page_strings(canonical), locale, source, client=client, label=f"/{clone.slug}",
     )
-    user_prompt = (
-        f"Target language: {locale_label(locale)} (code: {locale})\n\n"
-        f"blocks:\n{payload.model_dump_json(indent=1)}\n\n"
-        f"source_text (the owner's own {locale_label(locale)} version of this page):\n"
-        f"{excerpt or '(none available — translate the strings above)'}"
-    )
-
-    try:
-        result = await client.chat_json(
-            system_prompt=TRANSLATION_PROMPT,
-            user_prompt=user_prompt,
-            schema=TranslatedPageContent,
-        )
-    except (LlmError, asyncio.TimeoutError) as exc:
-        logger.warning(
-            "Translation of /%s into %s failed (%s) — keeping source-language copy",
-            clone.slug, locale, exc,
-        )
+    if not mapping:
         return clone
-
-    if len(result.blocks) != len(canonical.blocks):
-        logger.warning(
-            "Translation of /%s into %s returned %d blocks for %d — keeping "
-            "source-language copy",
-            clone.slug, locale, len(result.blocks), len(canonical.blocks),
-        )
-        return clone
-
-    clone.blocks = [
-        _restore_untranslatable(original, translated)  # type: ignore[misc]
-        for original, translated in zip(canonical.blocks, result.blocks)
-    ]
-    if result.title.strip():
-        clone.title = result.title.strip()
+    _apply_map(clone.blocks, mapping)
+    if title := mapping.get(canonical.title.strip()):
+        clone.title = title
     # Direct assignment skips PagePlan's validators, so the SERP budgets are
     # applied here too — a translation is as likely to overrun them as the
     # canonical page was, and often likelier (German, Malay).
-    if result.seo_title.strip():
-        clone.seo_title = clamp_seo_title(result.seo_title)
-    if result.seo_description.strip():
-        clone.seo_description = clamp_seo_description(result.seo_description)
+    if seo_title := mapping.get(canonical.seo_title.strip()):
+        clone.seo_title = clamp_seo_title(seo_title)
+    if seo_description := mapping.get(canonical.seo_description.strip()):
+        clone.seo_description = clamp_seo_description(seo_description)
     return clone
 
 
@@ -267,9 +335,10 @@ async def build_translated_pages(
 ) -> list[PagePlan]:
     """Clone each translation scaffold from the page it translates.
 
-    ``pages`` are the finished source-language PagePlans (images already bound,
-    so the clones inherit the exact same photos). ``sources`` maps a translated
-    page's slug to its crawled SourceContent, supplying the owner's own wording.
+    ``pages`` are the finished primary-language PagePlans (images already
+    bound, so the clones inherit the exact same photos). ``sources`` maps a
+    translated page's slug to its crawled SourceContent, supplying the owner's
+    own wording.
 
     Scaffolds whose counterpart wasn't generated are skipped — there is nothing
     to clone.
@@ -279,9 +348,12 @@ async def build_translated_pages(
         return []
 
     by_slug = {p.slug: p for p in pages}
-    translated_slugs = {
-        s.translation_of for s in wanted if s.translation_of in by_slug
-    }
+    # Per language: a Chinese page links to a page's Chinese twin, never to a
+    # Malay one that happens to exist.
+    translated_slugs: dict[str, set[str]] = {}
+    for s in wanted:
+        if s.translation_of in by_slug:
+            translated_slugs.setdefault(s.locale or "", set()).add(s.translation_of)
 
     clones: list[tuple[PagePlan, PagePlan, SourceContent | None]] = []
     for scaffold in wanted:
@@ -311,7 +383,7 @@ async def build_translated_pages(
     for (clone, _canonical, _source), result in zip(clones, results):
         if isinstance(result, BaseException):
             logger.warning(
-                "Translation of /%s crashed (%s) — keeping source-language copy",
+                "Translation of /%s crashed (%s) — keeping the primary language",
                 clone.slug, result,
             )
             page = clone
@@ -319,7 +391,91 @@ async def build_translated_pages(
             page = result
         # Last, on the final blocks: a reader who followed a Malay link should
         # land on the Malay version of the next page where one exists.
-        _localize_block_hrefs(page.blocks, page.locale or "", translated_slugs)
+        _localize_block_hrefs(
+            page.blocks,
+            url_prefix_of(page.slug, page.translation_of),
+            translated_slugs.get(page.locale or "", set()),
+        )
         out.append(page)
     logger.info("Built %d translated page(s) by cloning", len(out))
     return out
+
+
+# --- same-page bilingual -------------------------------------------------------------
+
+
+def split_owner_pairs(value: Any, primary: str, second: str, found: dict[str, str]) -> None:
+    """Split a string the owner wrote in both languages, in place.
+
+    The planner is told to write in one language, but it does copy a source
+    heading like "Character & Behaviour Development | 品格与行为培养" verbatim.
+    On a same-page bilingual site that IS the owner's pair: the primary side
+    stays in the field, the other becomes its second line word for word
+    (`found`), and no model is asked to translate what the owner wrote.
+    """
+    from app.services.language_analysis import split_bilingual
+
+    if isinstance(value, list):
+        for item in value:
+            split_owner_pairs(item, primary, second, found)
+        return
+    if not isinstance(value, BaseModel):
+        return
+    for name in type(value).model_fields:
+        child = getattr(value, name, None)
+        if isinstance(child, (list, BaseModel)):
+            split_owner_pairs(child, primary, second, found)
+        elif name in _TRANSLATABLE_FIELDS and isinstance(child, str):
+            pair = split_bilingual(child, primary, second)
+            if pair is not None:
+                setattr(value, name, pair[0])
+                found.setdefault(pair[0], pair[1])
+
+
+async def add_inline_translations(
+    pages: list[PagePlan],
+    locale: str,
+    sources: dict[str, SourceContent],
+    *,
+    primary: str,
+    client: LlmClient | None = None,
+) -> None:
+    """Same-page bilingual (mode B): give each page its strings in `locale`.
+
+    First the owner's own pairs (`split_owner_pairs`), verbatim. Then, for the
+    strings left, the same translation a separate-language page gets — the
+    owner's wording from `sources[page.slug]` (the page itself, which carries
+    both languages) where it covers the string, ours translated where it is
+    silent. The map stays on the primary page as `PagePlan.inline_translation`;
+    `inline_translation.apply_inline_translation` adds the lines once the page
+    is built. A failed call keeps whatever the owner's pairs already gave.
+    """
+    targets = [p for p in pages if not p.locale]
+    if not targets:
+        return
+    owned: list[dict[str, str]] = []
+    for page in targets:
+        found: dict[str, str] = {}
+        split_owner_pairs(page.blocks, primary, locale, found)
+        owned.append(found)
+    llm = client or get_llm()
+    maps = await asyncio.gather(
+        *(
+            translate_strings(
+                [text for text in page_strings(page) if text not in found],
+                locale, sources.get(page.slug), client=llm, label=f"/{page.slug}",
+            )
+            for page, found in zip(targets, owned)
+        ),
+        return_exceptions=True,
+    )
+    for page, found, mapping in zip(targets, owned, maps):
+        if isinstance(mapping, BaseException):
+            logger.warning("Inline translation of /%s crashed (%s)", page.slug, mapping)
+            mapping = None
+        text = {**(mapping or {}), **found}  # the owner's own words win
+        if text:
+            page.inline_translation = InlineTranslation(lang=locale, text=text)
+    logger.info("Inline %s strings added to %d page(s)", locale, sum(
+        1 for page in targets if page.inline_translation
+    ))

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app.models.content_blocks import (
     IndustryCategoryLiteral,
+    MultilingualChoice,
     SourceContent,
     resolve_industry,
     resolve_mood,
@@ -25,7 +26,9 @@ from app.services.page_inference import (
     core_pages_not_in_inferred,
     infer_page_scaffolds,
     optional_pool_for,
+    scaffolds_for_languages,
 )
+from app.services.multilingual_strategy import addable_locales, with_plan
 from app.services.planner import detect_brand_cached
 from app.services.design_direction import ContentProfile, resolve_direction
 
@@ -41,6 +44,9 @@ class RecipeRequest(BaseModel):
     # Section list gated on the facts the source actually holds, so no section
     # is requested that it can't ground. Ignored unless `single_page`.
     homepage_sections: list[str] | None = None
+    # How to present the source's languages; None = automatic. The returned
+    # `multilingual` plan is what /generate/with-pages will build.
+    multilingual: MultilingualChoice | None = None
 
 
 @router.post("/recipe", response_model=PageRecipeResponse)
@@ -59,6 +65,9 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
     # crawl merges, doc uploads) where repeated template menu strips may still
     # pollute raw_text.
     strip_chrome_lines(payload.source)
+    payload.source = with_plan(payload.source, payload.multilingual)
+    languages = payload.source.multilingual
+    assert languages is not None
 
     detected = None
     if not payload.industry_override:
@@ -81,6 +90,9 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
         single_page=payload.single_page,
         homepage_sections_override=payload.homepage_sections,
     )
+    # Every page in every language the plan publishes at its own URLs — the
+    # owner's own version where the crawl found it, else translated from ours.
+    inferred = scaffolds_for_languages(inferred, languages, add_missing=True)
 
     # Reshape the template surfaced to the UI: optional_pages becomes the pool
     # the user can opt into on top of what we inferred. ``suggested_pages`` is
@@ -133,4 +145,6 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
         detected_brand=detected.model_dump() if detected else None,
         theme_preview=preview.to_builder_styles(),
         google_fonts=preview.typography.google_fonts,
+        multilingual=languages,
+        available_locales=addable_locales(),
     )

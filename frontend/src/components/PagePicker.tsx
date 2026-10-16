@@ -9,11 +9,15 @@ import type {
   IndustryCategory,
   IndustryOption,
   IndustryTemplate,
+  LocaleOption,
+  MultilingualChoice,
+  MultilingualPlan,
   PageScaffold,
   SourceContent,
 } from '@/lib/types'
 import { Button, Spinner } from '@/ui'
 import { BrandBriefCard } from '@/components/BrandBriefCard'
+import { LanguagePlanCard } from '@/components/LanguagePlanCard'
 
 interface PagePickerProps {
   source: SourceContent
@@ -33,6 +37,9 @@ interface PagePickerProps {
   singlePage?: boolean
   /** Sections gated on the facts the source holds — overrides the industry pattern. */
   homepageSections?: string[]
+  /** How to present the source's languages; changing it re-reads the recipe. */
+  multilingual: MultilingualChoice
+  setMultilingual: (choice: MultilingualChoice) => void
 }
 
 interface TreeNode {
@@ -135,12 +142,16 @@ export function PagePicker({
   busy,
   singlePage,
   homepageSections,
+  multilingual,
+  setMultilingual,
 }: PagePickerProps) {
   const [inferred, setInferred] = useState<PageScaffold[]>([])
   const [template, setTemplate] = useState<IndustryTemplate | null>(null)
   const [allIndustries, setAllIndustries] = useState<IndustryOption[]>([])
   const [detectedIndustry, setDetectedIndustry] = useState<IndustryCategory | null>(null)
   const [brief, setBrief] = useState<BrandBrief | null>(null)
+  const [languagePlan, setLanguagePlan] = useState<MultilingualPlan | null>(null)
+  const [locales, setLocales] = useState<LocaleOption[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isFirstLoad = useRef(true)
@@ -155,9 +166,12 @@ export function PagePicker({
       industryOverride: industryOverride ?? undefined,
       singlePage,
       homepageSections,
+      multilingual,
     })
       .then((res) => {
         if (cancelled) return
+        setLanguagePlan(res.multilingual ?? null)
+        setLocales(res.available_locales ?? [])
         setInferred(res.inferred_pages)
         setTemplate(res.template)
         setAllIndustries(res.all_industries)
@@ -194,7 +208,7 @@ export function PagePicker({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source.source_ref, industryOverride])
+  }, [source.source_ref, industryOverride, multilingual])
 
   const selectedByKey = useMemo(
     () => new Set(selectedPages.map(pageKey)),
@@ -320,6 +334,16 @@ export function PagePicker({
       </div>
 
       {brief && <BrandBriefCard brief={brief} />}
+
+      {languagePlan && (
+        <LanguagePlanCard
+          plan={languagePlan}
+          choice={multilingual}
+          onChange={setMultilingual}
+          locales={locales}
+          disabled={loading}
+        />
+      )}
 
       <label className="block">
         <span className="text-sm font-medium text-slate-700">Override industry</span>

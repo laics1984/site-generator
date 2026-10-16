@@ -82,6 +82,7 @@ from app.models.design_manifest import (
     HeaderArchetype,
 )
 from app.models.industry import PageScaffold
+from app.services.inline_translation import apply_inline_translation
 from app.services.design_brain import DesignRecipe, generate_site_design_recipe
 from app.services.design_director import (
     compose_design_manifest,
@@ -5218,6 +5219,10 @@ async def plan_to_site(
             getattr(contact_element, "anchorId", None) is None
         ):
             contact_element.anchorId = CONTACT_ANCHOR
+        # Same-page bilingual: the second language joins each string now,
+        # before the rhythm, density and ink passes, so they style and ink
+        # its lines like any other copy (services/inline_translation.py).
+        apply_inline_translation(elements, page_plan.inline_translation)
         # Story pages: alternate the image side of consecutive about splits so
         # the photos zigzag down the page instead of stacking on one side — the
         # scheme's call, since a restrained language reads better holding one

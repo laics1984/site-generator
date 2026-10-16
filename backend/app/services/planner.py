@@ -64,6 +64,7 @@ from app.services.llm import (
     get_reasoning_llm,
 )
 from app.services.polite import HostPoliteness
+from app.services.locale import locale_label
 from app.services.prompts import (
     CHILDCARE_VISUAL_PROMPT,
     RESTAURANT_MENU_CONTENT_PROMPT,
@@ -95,6 +96,19 @@ _LLM_ITEM_ATTEMPTS = 2
 # land as isolated diffs; assembly, sizing, and batching stay here.
 
 
+def _write_in(source: SourceContent) -> dict[str, str]:
+    """The language the planner writes in, from the decided language plan.
+
+    A bilingual source would otherwise leave "the source's language" to the
+    model, which writes some sections in each; the second language is added
+    by the translation passes, never by the planner.
+    """
+    plan = source.multilingual
+    if plan is None:
+        return {}
+    return {"write_in": f"{locale_label(plan.primary)} ({plan.primary})"}
+
+
 def _build_user_prompt(source: SourceContent, max_chars: int | None = None) -> str:
     if max_chars is None:
         max_chars = settings.legacy_prompt_max_chars
@@ -110,6 +124,7 @@ def _build_user_prompt(source: SourceContent, max_chars: int | None = None) -> s
             "sample_links": source.links[:30],
             "sample_image_alts": source.images[:20],
             "raw_text": truncated_text,
+            **_write_in(source),
             "menu_assets": [
                 {"purpose": meta.content_purpose, "heading": meta.menu_heading}
                 for meta in source.image_metadata if meta.content_purpose
@@ -677,6 +692,7 @@ def _build_scaffolded_user_prompt(
     return json.dumps(
         {
             "source": source_payload,
+            **_write_in(source),
             "brand": brand.copy_payload() if brand else None,
             # 2026 art-direction brief for this industry — the DESIGN INTENT
             # section of the system prompt tells the model how to apply it.

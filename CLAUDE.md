@@ -2707,6 +2707,62 @@ shown by `LanguageCard`). No LLM call.
 
 Tests: `test_language_analysis.py`.
 
+## How a site presents its languages
+
+`services/multilingual_strategy.decide` turns the source's `LanguageProfile`
+and the user's `MultilingualChoice` (`auto | single | bilingual | separate`,
+plus added `locales`) into ONE `MultilingualPlan`. The recipe and both generate
+endpoints call it through `with_plan`, which stamps the plan on
+`SourceContent.multilingual` once, so the picker and the build can't disagree;
+`GeneratedSite.multilingual` carries it on (the switcher label now, the push
+later). Auto: mirrors → `separate`, two languages on one page → `bilingual`,
+anything else → `single` in the PRIMARY (a Chinese-only source is a Chinese
+site). An added language on a one-language source → `separate`. Thin evidence
+sets `uncertain` and says so; it never silently changes the mode.
+
+- **The planner writes in ONE language** — `write_in` in the prompt payload
+  (`planner._write_in`, both prompts). "The same language as the source" let a
+  bilingual source come back mixed; the second language is the translation
+  passes' job.
+- **A translated scaffold's `locale` is BCP 47; its URL directory is in its
+  slug** (`ms` at `bm/committee`). Read a page's prefix with
+  `translations.url_prefix_of`, never by formatting the locale.
+  `page_inference.scaffolds_for_languages` is the page set per plan: the recipe
+  ADDS every page in every `separate` language (Q3: the owner's own page when
+  crawled, else translated — `PagePlan.translation_status` "source"/"ai");
+  generation only FILTERS, so an unticked page stays unticked. Legal pages and
+  catalogue records are never added.
+- **The model translates strings, never blocks.** `translations.translate_strings`
+  sends one numbered list of a page's distinct allowlisted prose
+  (`page_strings`) and takes the same list back; `_apply_map` swaps field by
+  field. Sending whole blocks let the model blank `visual_policy` on every
+  block of uniquekindies, and one bad field failed validation for the whole
+  page — the mirror path had the same weakness since it existed. The reply is
+  an object keyed by the input's numbers (`TranslatedStrings` also takes a
+  list), so each translation is pinned to its string; a reply of the wrong
+  length or with a gap keeps the primary language. Cached via
+  `chat_json_cached`. `llm._validated` strips a markdown fence for every
+  client now — only the Claude client used to, and the local model's fenced
+  reply failed validation twice for nothing but its wrapper.
+- **Same-page bilingual is a string map, not a second build.**
+  `add_inline_translations` keeps the map on `PagePlan.inline_translation`;
+  `inline_translation.apply_inline_translation` (in `plan_to_site`, before the
+  rhythm and ink passes) adds a `lang`-tagged "Second language" line after each
+  text element — or split-headline group — whose string it translates,
+  through quote marks a mapper added (a testimonial's “…”). Links and buttons
+  keep one label; the line never carries `htmlTag`. **The owner's own pairs
+  come first** (`split_owner_pairs` over `language_analysis.split_bilingual`):
+  the planner copies "Character & Behaviour Development | 品格与行为培养"
+  verbatim despite `write_in`, so the primary side stays and the other is its
+  second line word for word, never sent to the model. Script is the only
+  evidence, so English/Malay never split.
+  `BuilderElement.lang` is mirrored in the builder's `site-navigation.ts`;
+  renderers don't emit it as an attribute yet (P4).
+- The switcher's first entry names the PRIMARY language (`build_menus(languages=)`),
+  not a hard-coded "English".
+
+Tests: `test_multilingual_strategy.py`, `test_translations.py`.
+
 ## Same site, one spelling
 
 `services/site_url.py` is the only answer to "is this the same site" (`www.` is

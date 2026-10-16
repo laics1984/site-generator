@@ -11,7 +11,8 @@ const PATTERN_LABELS: Record<LanguagePattern, string> = {
 }
 
 /** The source's detected languages, layout and the one-line reason
- * (services/language_analysis.py). Read-only: generation does not use it yet. */
+ * (services/language_analysis.py) — what the source IS. What the site will DO
+ * with it is the page picker's LanguagePlanCard. */
 export function LanguageCard({ profile }: { profile: LanguageProfile }) {
   const shown = profile.languages.filter((l) => l.substantial)
   const minor = profile.languages.filter((l) => !l.substantial)

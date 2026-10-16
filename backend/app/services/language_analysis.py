@@ -238,6 +238,47 @@ class _Unit:
         return max(self.amounts.items(), key=lambda kv: kv[1])[0]
 
 
+# --- a pair written on one line ------------------------------------------------------
+
+
+def _script_for_language(code: str) -> str:
+    """The script a language is written in, as `_script_of` names it."""
+    if code.split("-", 1)[0] == "zh":
+        return "Hani"
+    for script, language in _SCRIPT_LANGUAGE.items():
+        if language == code.split("-", 1)[0]:
+            return script
+    return "Latn"
+
+
+def _dominant_script(text: str) -> str | None:
+    counts: Counter = Counter(s for ch in text if (s := _script_of(ch)))
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def split_bilingual(text: str, first: str, second: str) -> tuple[str, str] | None:
+    """`"Programmes | 课程"` → `("Programmes", "课程")`: the side written in
+    `first`'s script, then the side in `second`'s, in either source order.
+
+    The same separators the pair reading uses (`_PAIR_SEPARATOR_RE`). Script
+    is the only evidence used, so two languages sharing one (English and
+    Malay) never split — a slash inside an English heading stays a slash.
+    None for anything but exactly two sides in the two scripts.
+    """
+    want_first, want_second = _script_for_language(first), _script_for_language(second)
+    if want_first == want_second:
+        return None
+    sides = [side.strip() for side in _PAIR_SEPARATOR_RE.split(text) if side.strip()]
+    if len(sides) != 2:
+        return None
+    scripts = [_dominant_script(side) for side in sides]
+    if scripts == [want_first, want_second]:
+        return sides[0], sides[1]
+    if scripts == [want_second, want_first]:
+        return sides[1], sides[0]
+    return None
+
+
 # --- py3langid ---------------------------------------------------------------------------
 
 
