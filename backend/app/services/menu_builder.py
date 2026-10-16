@@ -41,9 +41,6 @@ FOOTER_MENU_ID = "menu-footer"
 LEGAL_MENU_ID = "menu-legal"
 SOCIAL_MENU_ID = "menu-social"
 
-# Label for the primary-language entry when a site predates its language plan.
-SOURCE_LANGUAGE_LABEL = "English"
-
 # Primary nav cap, including Home and Contact. Standard UX guidance is 5–7
 # top-level items; pages that don't make the cut stay reachable via the
 # footer columns and their parent's hub page.
@@ -149,10 +146,9 @@ def build_menus(
         — desktop dropdown flyouts, indented mobile-drawer entries.
     """
     legal_pages = legal_pages or []
-    # Translated pages are reachable through the language switcher, never
-    # through the primary or footer menus: a reader should not meet
-    # "Committee" and "Committee (Bahasa Malaysia)" side by side in one menu.
-    translated_nodes = [n for n in (page_tree or []) if n.locale]
+    # Translated pages are reachable through the language menu, never through
+    # the primary or footer menus: a reader should not meet "Committee" and
+    # "Committee (Bahasa Malaysia)" side by side in one menu.
     page_tree = [n for n in (page_tree or []) if not n.locale] or None
     primary_items: list[dict[str, Any]] = []
     if page_tree:
@@ -251,29 +247,26 @@ def build_menus(
             )
         )
 
-    # Language switcher: one entry per language the source publishes, pointing
-    # at that language's home. It goes in the utility menu, which header
-    # archetypes render separately from the primary nav (a top bar, a corner
-    # link) — the same job the source's own "BM | 中文" strip does. The
-    # source-language entry leads so the reader can always get back.
-    if translated_nodes:
-        by_locale: dict[str, PageNode] = {}
-        for node in translated_nodes:
-            # The locale's own homepage is the switcher target; failing that
-            # (only inner pages were selected) its first page will do.
-            preferred = by_locale.get(node.locale or "")
-            if preferred is None or (node.translation_of == "" and preferred.translation_of != ""):
-                by_locale[node.locale or ""] = node
-        # The primary language names itself — a Chinese-first site's switch
-        # does not open on "English" — and the rest follow the plan's order.
-        primary_label = locale_label(languages.primary) if languages else SOURCE_LANGUAGE_LABEL
-        order = [c for c in (languages.secondary if languages else []) if c in by_locale]
-        order += sorted(c for c in by_locale if c not in order)
-        switcher = [_menu_item(primary_label, "/")]
-        switcher.extend(
-            _menu_item(locale_label(code), f"/{by_locale[code].slug}") for code in order
-        )
-        menus.append(_menu(UTILITY_MENU_ID, "Language", "utility", switcher))
+    # Language menu: one entry per language the site publishes at its own
+    # URLs, labelled in that language and carrying its `locale`. Authored, so
+    # the words are the owner's to edit; where each one points is the
+    # renderer's — THIS page in that language, from the page's published
+    # alternates (webtree-public lib/languages.resolveLanguageMenus), so a reader
+    # on /about lands on /bm/about, not /bm. The href here is that language's
+    # home, the fallback for a renderer that predates alternates. It rides the
+    # utility slot header archetypes already render (a top bar, a corner link).
+    if languages and languages.mode == "separate" and languages.secondary:
+        codes = [languages.primary, *languages.secondary]
+        menus.append(_menu(UTILITY_MENU_ID, "Language", "language", [
+            {
+                **_menu_item(locale_label(code), "/" if code == languages.primary
+                             else f"/{languages.prefixes.get(code) or code.lower()}"),
+                # Stable, so a translation of the layout keeps naming this item.
+                "id": f"language-{code}",
+                "locale": code,
+            }
+            for code in codes
+        ]))
 
     # Social menu: profile links scraped from the source — external, so they
     # open in a new tab.

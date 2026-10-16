@@ -255,9 +255,6 @@ class LanguageSwitcherTest(unittest.TestCase):
             ),
         )
 
-    def _utility(self, menus):
-        return next((m for m in menus if m["id"] == "menu-utility"), None)
-
     def test_translations_stay_out_of_the_primary_menu(self):
         menus = build_menus(self._multilingual())
         labels = [i["label"] for i in _primary(menus)["items"]]
@@ -272,51 +269,9 @@ class LanguageSwitcherTest(unittest.TestCase):
         self.assertNotIn("Committee (Bahasa Malaysia)", labels)
         self.assertNotIn("Home (中文)", labels)
 
-    def test_switcher_lists_one_entry_per_language(self):
-        menus = build_menus(self._multilingual())
-        utility = self._utility(menus)
-
-        self.assertIsNotNone(utility)
-        self.assertEqual(
-            [(i["label"], i["href"]) for i in utility["items"]],
-            [("English", "/"), ("Bahasa Malaysia", "/bm"), ("中文", "/zh")],
-        )
-
-    def test_switcher_points_at_the_language_home_not_an_inner_page(self):
-        # /bm/committee comes first in the tree; the switcher must still land
-        # the reader on the Malay homepage.
-        tree = _tree(
-            PageNode(
-                slug="bm/committee",
-                title="Committee (BM)",
-                locale="bm",
-                translation_of="committee",
-            ),
-            PageNode(slug="bm", title="Home (BM)", locale="bm", translation_of=""),
-        )
-        utility = self._utility(build_menus(tree))
-
-        self.assertEqual([i["href"] for i in utility["items"]], ["/", "/bm"])
-
-    def test_a_language_with_only_inner_pages_still_gets_an_entry(self):
-        tree = _tree(
-            PageNode(
-                slug="bm/committee",
-                title="Committee (BM)",
-                locale="bm",
-                translation_of="committee",
-            ),
-        )
-        utility = self._utility(build_menus(tree))
-
-        self.assertEqual([i["href"] for i in utility["items"]], ["/", "/bm/committee"])
-
-    def test_a_monolingual_site_gets_no_switcher(self):
-        menus = build_menus(
-            _tree(PageNode(slug="committee", title="Committee", from_source=True))
-        )
-
-        self.assertIsNone(self._utility(menus))
+    # The language menu itself is built from the site's language plan, not
+    # from these nodes: one item per language with its `locale`, linked by the
+    # renderer to the reader's own page (test_multilingual_strategy.LanguageMenuTest).
 
 
 class ListingReachedPagesTest(unittest.TestCase):

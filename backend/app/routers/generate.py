@@ -62,7 +62,7 @@ from app.services.design_direction import ContentProfile, resolve_direction
 from app.services.record_pages import build_record_pages
 from app.services.source_router import gallery_photos, match_scaffolds_to_pages, pages_by_source_slug
 from app.services.multilingual_strategy import with_plan
-from app.services.translations import add_inline_translations, build_translated_pages
+from app.services.translations import add_inline_translations, build_translated_pages, complete_translations
 from app.services.text_detection import prefetch_text_flags, verify_many
 from app.services.legal_pages import build_privacy_page, build_terms_page
 from app.services.llm import LlmError
@@ -124,7 +124,7 @@ from app.services.image_vision import (
     annotate_image_pool,
     prefetch_image_pool,
 )
-from app.services.locale import detect_market, image_query_cue, place_query_cue
+from app.services.locale import detect_market, image_query_cue, locale_label, place_query_cue
 from app.services.content_collections import extract_collections
 from app.services.schema_builder import plan_to_site
 from app.models.brand import CreativePalette
@@ -2011,6 +2011,17 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
 
     site.generation_mode = payload.generation_mode
     site.palette_brief = {"business": site.site_name, "industry": industry, "positioning": detected.positioning, "personality": detected.personality.model_dump(), **design_inputs(payload.source, brand, detected)}
+    # Each translated page was derived from its page's string map; finish what
+    # the planner never wrote (default eyebrows, header and footer copy).
+    if languages.mode == "separate" and any(page.locale for page in site.pages):
+        with stage("complete_translations"):
+            incomplete = await complete_translations(site, _sources_by_slug(payload.source))
+        if incomplete:
+            site.generation_warnings.append(
+                f"{len(incomplete)} translation(s) still have text in {locale_label(languages.primary)}: "
+                + ", ".join(incomplete)
+                + ". They are saved as drafts, not published, until finished."
+            )
     site.planned_page_count = len(planned_scaffolds)
     if payload.generation_mode == "two_page_preview":
         request = payload.model_dump(mode="json", exclude={"frozen_site", "available_scaffolds"})

@@ -272,33 +272,25 @@ class CtaHrefResolutionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], _page_hrefs(site, ""))
 
     async def test_a_translated_page_resolves_against_its_own_locale(self):
+        """A translated page is its counterpart's tree; its link follows the
+        reader into the language where the target page exists."""
         site = await self._build(
             self._plan(
-                _page("home", "", "Home", _hero("Welcome"), is_homepage=True),
-                _page("contact", "contact", "Contact", _hero("Get in touch")),
                 # A `cta` block, not the hero: an interior hero drops its CTA
                 # outright (apply_hero_cta_policy), so it can't show routing.
-                _page(
-                    "home",
-                    "zh",
-                    "首页",
-                    _hero("欢迎"),
-                    CtaBlock(headline="准备好了吗?", cta_label="联系我们",
-                             cta_href="/contact"),
-                    locale="zh",
-                ),
-                _page(
-                    "contact",
-                    "zh/contact",
-                    "联系我们",
-                    _hero("联系我们"),
-                    ContactBlock(heading="联系我们"),
-                    locale="zh",
-                ),
+                _page("home", "", "Home", _hero("Welcome"),
+                      CtaBlock(headline="Ready?", cta_label="Contact us", cta_href="/contact"),
+                      is_homepage=True),
+                _page("contact", "contact", "Contact", _hero("Get in touch"), ContactBlock(heading="Contact")),
+                _page("home", "zh", "首页", _hero("欢迎"), locale="zh-Hans", translation_of="",
+                      text_map={"Welcome": "欢迎", "Contact us": "联系我们"}),
+                _page("contact", "zh/contact", "联系我们", _hero("联系我们"),
+                      locale="zh-Hans", translation_of="contact"),
             )
         )
 
         self.assertIn("/zh/contact", _page_hrefs(site, "zh"))
+        self.assertIn("/contact", _page_hrefs(site, ""))
 
     async def test_no_page_ships_a_link_off_the_generated_page_set(self):
         """Site-wide invariant, across the block kinds that carry CTAs."""

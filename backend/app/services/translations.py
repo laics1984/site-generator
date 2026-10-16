@@ -244,7 +244,7 @@ def url_prefix_of(slug: str, translation_of: str | None) -> str:
     return slug
 
 
-def _localize_href(href: str, prefix: str, translated_slugs: set[str]) -> str:
+def localize_href(href: str, prefix: str, translated_slugs: set[str]) -> str:
     """Point an internal link at the same page in this language, when it exists.
 
     A translated page linking to ``/committee`` should reach ``/bm/committee``
@@ -276,7 +276,7 @@ def _localize_block_hrefs(
     for name in type(value).model_fields:
         child = getattr(value, name, None)
         if isinstance(child, str) and name.endswith("href"):
-            setattr(value, name, _localize_href(child, prefix, translated_slugs))
+            setattr(value, name, localize_href(child, prefix, translated_slugs))
         elif isinstance(child, (list, BaseModel)):
             _localize_block_hrefs(child, prefix, translated_slugs)
 
@@ -313,6 +313,9 @@ async def _translate_one(
     )
     if not mapping:
         return clone
+    # Kept: plan_to_site builds the page from its counterpart's finished tree
+    # with this map, so it differs from that page in words only.
+    clone.text_map = mapping
     _apply_map(clone.blocks, mapping)
     if title := mapping.get(canonical.title.strip()):
         clone.title = title
@@ -479,3 +482,132 @@ async def add_inline_translations(
     logger.info("Inline %s strings added to %d page(s)", locale, sum(
         1 for page in targets if page.inline_translation
     ))
+
+
+# --- separate language pages: the finished site ----------------------------------------
+
+
+def localized_body(
+    base: list, overlay: dict | None, slug: str, translation_of: str | None, translated_slugs: set[str]
+) -> list:
+    """A translated page's body: its counterpart's tree with the overlay applied
+    and internal links following the reader into this language where the
+    target page exists — what the CMS will serve for this URL."""
+    from app.services import locale_overlay
+
+    prefix = url_prefix_of(slug, translation_of)
+    return locale_overlay.apply(base, overlay, lambda href: localize_href(href, prefix, translated_slugs))
+
+
+def _translated_slugs(site) -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for page in site.pages:
+        if page.locale and page.translation_of is not None:
+            out.setdefault(page.locale, set()).add(page.translation_of)
+    return out
+
+
+async def _complete_overlay(
+    elements: list, overlay: dict, locale: str, source: SourceContent | None,
+    *, client: LlmClient, label: str, origin: str,
+) -> bool:
+    """Translate what `overlay` still leaves in the primary language, in place.
+
+    A string the model returns unchanged (a name, a brand, "UNIQUE KINDIES") IS
+    its translation and is recorded as covered, so the CMS's completeness test
+    agrees the page is finished. A failed call leaves the gaps for the owner,
+    and the CMS keeps such a page out of publication. Returns whether anything
+    is still missing."""
+    from app.services import locale_overlay
+
+    gaps = locale_overlay.missing(elements, overlay)
+    if not gaps:
+        return False
+    strings: dict[str, None] = {}
+    for element in gaps:
+        for field in locale_overlay.TEXT_FIELDS:
+            value = getattr(element.content, field, None)
+            if isinstance(value, str) and value.strip():
+                strings.setdefault(value.strip(), None)
+    mapping = await translate_strings(list(strings), locale, source, client=client, label=label)
+    if mapping is None:
+        return True
+    for element in gaps:
+        patch: dict[str, str] = {}
+        for field in locale_overlay.TEXT_FIELDS:
+            value = getattr(element.content, field, None)
+            if isinstance(value, str) and value.strip():
+                patch[field] = mapping.get(value.strip(), value.strip())
+        overlay.setdefault("elements", {})[element.id] = {**overlay.get("elements", {}).get(element.id, {}), **patch}
+        if (digest := locale_overlay.source_hash(element)) is not None:
+            overlay.setdefault("meta", {})[element.id] = {"origin": origin, "sourceHash": digest}
+    return bool(locale_overlay.missing(elements, overlay))
+
+
+async def complete_translations(
+    site, sources: dict[str, SourceContent], *, client: LlmClient | None = None
+) -> list[str]:
+    """Finish every translated page, and the header and footer per language.
+
+    `plan_to_site` derives each translation from its page's string map, which
+    only knows the strings the PLANNER wrote; a template's default eyebrow
+    ("About"), a section label or a footer line is text the page shows that no
+    map covered. One call per page (and one per language for the layout)
+    translates exactly those, so a page is complete enough for the CMS to
+    publish it. Returns the slugs (and "layout:<locale>") still incomplete,
+    for the generation warnings.
+    """
+    from app.services import locale_overlay
+
+    translated = [p for p in site.pages if p.locale and p.overlay is not None]
+    if not translated:
+        return []
+    llm = client or get_llm()
+    by_slug = {p.slug: p for p in site.pages if not p.locale}
+    slugs = _translated_slugs(site)
+
+    async def page_job(page) -> str | None:
+        base = by_slug.get(page.translation_of or "")
+        if base is None:
+            return None
+        incomplete = await _complete_overlay(
+            base.body_schema.elements, page.overlay, page.locale, sources.get(page.slug),
+            client=llm, label=f"/{page.slug}", origin=page.translation_status or "ai",
+        )
+        page.body_schema.elements = localized_body(
+            base.body_schema.elements, page.overlay, page.slug, page.translation_of,
+            slugs.get(page.locale, set()),
+        )
+        return page.slug if incomplete else None
+
+    async def layout_job(locale: str) -> str | None:
+        chrome = [c for c in (site.header_schema, site.footer_schema) if c is not None]
+        # What the pages already say, first: a header CTA reading "Enrol now"
+        # is the same words wherever they appear.
+        known: dict[str, str] = {}
+        for page in translated:
+            if page.locale == locale and page.translation_of in by_slug:
+                known.update(locale_overlay.as_text_map(
+                    by_slug[page.translation_of].body_schema.elements, page.overlay
+                ))
+        overlay = locale_overlay.derive(chrome, known, origin="ai")
+        incomplete = await _complete_overlay(
+            chrome, overlay, locale, None, client=llm, label=f"layout:{locale}", origin="ai",
+        )
+        site.layout_overlays[locale] = overlay
+        return f"layout:{locale}" if incomplete else None
+
+    locales = sorted({p.locale for p in translated})
+    results = await asyncio.gather(
+        *(page_job(p) for p in translated), *(layout_job(code) for code in locales),
+        return_exceptions=True,
+    )
+    left = []
+    for result in results:
+        if isinstance(result, BaseException):
+            logger.warning("Completing a translation crashed (%s)", result)
+        elif result:
+            left.append(result)
+    logger.info("Translations completed: %d page(s), %d language layout(s); %d still incomplete",
+                len(translated), len(locales), len(left))
+    return left

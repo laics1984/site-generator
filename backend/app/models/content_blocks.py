@@ -34,6 +34,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic.json_schema import SkipJsonSchema
 
 from app.models.facebook_photos import FacebookPhotoReview
 from app.models.industry_catalog import IndustryCategoryLiteral
@@ -1333,15 +1334,24 @@ class PagePlan(BaseModel):
     # images, same templates, text in another language.
     locale: str | None = None
     translation_of: str | None = None
+    # The fields below are the pipeline's, never the model's: SkipJsonSchema
+    # keeps them out of the structured-output schema the planner sends, so the
+    # model is neither asked for them nor shown them.
+    #
     # A translated page's text came from the owner's own page in that language
     # ("source") or was translated from ours ("ai") — Q3's badge. None on a
-    # page that is not a translation. Never set by the LLM.
-    translation_status: Literal["source", "ai"] | None = None
+    # page that is not a translation.
+    translation_status: SkipJsonSchema[Literal["source", "ai"] | None] = None
     # Same-page bilingual (mode B): what this page's primary-language strings
     # read in the second language. Set after planning by
     # translations.add_inline_translations, read once by
-    # inline_translation.apply_inline_translation. Never sent to the LLM.
-    inline_translation: "InlineTranslation | None" = None
+    # inline_translation.apply_inline_translation.
+    inline_translation: SkipJsonSchema["InlineTranslation | None"] = None
+    # A translated page (separate URLs): its counterpart's primary strings → this
+    # language. plan_to_site builds the page from the counterpart's finished
+    # tree with this map (services/locale_overlay.py), so a translation can
+    # never differ from its page in anything but words.
+    text_map: SkipJsonSchema[dict[str, str]] = Field(default_factory=dict)
 
     @field_validator("page_type", mode="before")
     @classmethod

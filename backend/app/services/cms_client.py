@@ -424,6 +424,65 @@ class CmsClient:
                 )
             return body.get("data") or body
 
+    # --- languages (webtree-cms-api specs/multilingual-sites.md) -------------------------
+
+    async def put_languages(self, entity_token: str, config: dict[str, Any]) -> dict[str, Any]:
+        """The site's language config: {primary, mode, locales: [{code, prefix}]}."""
+        return await self._json_call(
+            "put_languages", "put", f"/api/entities/{entity_token}/languages", config,
+            failure="Saving the site's languages failed",
+        )
+
+    async def get_translation(
+        self, entity_token: str, kind: str, target_id: str, locale: str
+    ) -> dict[str, Any]:
+        return await self._json_call(
+            "get_translation", "get",
+            f"/api/entities/{entity_token}/translations/{kind}/{target_id}/{locale}", None,
+            failure="Reading a translation failed",
+        )
+
+    async def save_translation(
+        self, entity_token: str, kind: str, target_id: str, locale: str,
+        *, overlay: dict[str, Any], base_draft_version: int | None,
+    ) -> dict[str, Any]:
+        return await self._json_call(
+            "save_translation", "put",
+            f"/api/entities/{entity_token}/translations/{kind}/{target_id}/{locale}",
+            {"overlay": overlay, "baseDraftVersion": base_draft_version},
+            failure="Saving a translation failed",
+        )
+
+    async def publish_translation(
+        self, entity_token: str, kind: str, target_id: str, locale: str
+    ) -> dict[str, Any]:
+        return await self._json_call(
+            "publish_translation", "post",
+            f"/api/entities/{entity_token}/translations/{kind}/{target_id}/{locale}/publish", {},
+            failure="Publishing a translation failed",
+        )
+
+    async def _json_call(
+        self, name: str, method: str, path: str, payload: dict[str, Any] | None, *, failure: str
+    ) -> dict[str, Any]:
+        """One JWT-authenticated JSON call, the shape every page call above
+        spells out by hand: the `data` envelope unwrapped, a 4xx/5xx raised
+        with the CMS's own error body for the caller to read the code from."""
+        async with self._wrap_request(name):
+            request = getattr(self._http_client(), method)
+            kwargs: dict[str, Any] = {"headers": self._jwt_headers()}
+            if payload is not None:
+                kwargs["json"] = payload
+            resp = await request(f"{self.base_url}{path}", **kwargs)
+            body = _safe_json(resp)
+            if resp.status_code >= 400:
+                raise CmsApiError(
+                    resp.status_code,
+                    f"{failure}: {body.get('message') or resp.text[:300]}",
+                    response_body=body,
+                )
+            return body.get("data") or body
+
     async def save_page_layout(
         self,
         entity_token: str,

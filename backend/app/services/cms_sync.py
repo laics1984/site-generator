@@ -96,6 +96,16 @@ def slug_spelling(raw: str, existing: Collection[str]) -> str:
     return flat if flat in existing else kept
 
 
+def primary_pages(site: GeneratedSite) -> list:
+    """The pages that ARE CMS pages. A page in another language is not one: it
+    is text stored against its counterpart (`translations/page/{id}/{locale}`),
+    so it takes no slug, is never created or updated as a page, and an old
+    mirror page still sitting at its URL (`bm/committee`, pushed before
+    translations existed) is unclaimed and archived like any page the new site
+    dropped — which is what lets the translation serve that URL."""
+    return [page for page in site.pages if not page.locale]
+
+
 def normalize_site_slugs(
     site: GeneratedSite, *, existing_slugs: Collection[str] = ()
 ) -> dict[str, str]:
@@ -111,7 +121,7 @@ def normalize_site_slugs(
     """
     slug_map: dict[str, str] = {}
     used: set[str] = set()
-    for page in site.pages:
+    for page in primary_pages(site):
         old = page.slug or ""
         if page.is_homepage:
             new = ""
@@ -128,6 +138,17 @@ def normalize_site_slugs(
             used.add(new)
         slug_map[old] = new
         page.slug = new
+
+    # A translation follows its page: the counterpart it names, and its own
+    # path (prefix + the page's published slug), which is the URL the CMS
+    # serves it at.
+    from app.services.translations import url_prefix_of
+
+    for page in site.pages:
+        if page.locale and page.translation_of is not None and page.translation_of in slug_map:
+            prefix = url_prefix_of(page.slug, page.translation_of)
+            page.translation_of = slug_map[page.translation_of]
+            page.slug = f"{prefix}/{page.translation_of}".rstrip("/") if page.translation_of else prefix
 
     # parent_slug references point at a parent's (old) slug — remap them.
     for page in site.pages:
@@ -314,7 +335,7 @@ def plan_sync(
 
     changes: list[PageChange] = []
     template_routes: list[str] = []
-    for page in sorted(site.pages, key=lambda p: (not p.is_homepage, p.slug)):
+    for page in sorted(primary_pages(site), key=lambda p: (not p.is_homepage, p.slug)):
         match = content.get(page.slug)
         if operation in ("preview", "extend") and match is not None and (known_page_ids or {}).get(page.slug) != match.id:
             raise ValueError(f"/{page.slug} already belongs to a page outside this generation project.")
@@ -336,7 +357,7 @@ def plan_sync(
         else:
             changes.append(PageChange("create", page.slug, page.title))
 
-    wanted = {page.slug for page in site.pages}
+    wanted = {page.slug for page in primary_pages(site)}
     for page in existing if operation == "sync" else []:
         if (
             page.is_template

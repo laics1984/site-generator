@@ -2758,8 +2758,33 @@ sets `uncertain` and says so; it never silently changes the mode.
   evidence, so English/Malay never split.
   `BuilderElement.lang` is mirrored in the builder's `site-navigation.ts`;
   renderers don't emit it as an attribute yet (P4).
-- The switcher's first entry names the PRIMARY language (`build_menus(languages=)`),
-  not a hard-coded "English".
+- **A translated page is TEXT on its page, never a page of its own** (P5,
+  `services/locale_overlay.py`, the Python mirror of the CMS's
+  `OverlayApplier` — `TEXT_FIELDS` drift-tested, `source_hash` pinned to a
+  value the PHP computed). `plan_to_site` doesn't render translations: after
+  every pass, `_translated_pages` derives each one's overlay from its string map
+  (`PagePlan.text_map`) on the counterpart's FINISHED tree and applies it to a
+  copy, so the preview is exactly what the CMS will serve. A split headline's
+  translation goes on the lead line and the accent is hidden.
+  `translations.complete_translations` (after the build) translates what no map
+  covered — default eyebrows, header/footer copy (`GeneratedSite.layout_overlays`)
+  — and records a string the model returns unchanged (a name) as covered, so
+  the CMS's completeness check agrees.
+- **The push sends overlays, not pages.** `cms_sync.primary_pages` is the page
+  set; a translation takes no slug, follows a renamed counterpart, and an old
+  mirror page at its URL is unclaimed, so the existing archive rule takes it
+  off (the "adoption"). `_push_languages` (after the archive): `PUT languages`,
+  then each page and layout overlay saved and, when publishing AND
+  `entitled`, published; otherwise drafts with a warning. Menu labels are
+  overlaid at push time from the menus actually pushed (`_menu_overlay`) —
+  item ids are minted per build.
+- **The language menu is `purpose: "language"`** (`menu_builder`), one item per
+  language with its `locale` and a stable id; webtree-public points each at
+  the reader's own page from `page.alternates`. The preview computes those
+  alternates from the site (`frontend/src/lib/previewLanguages.ts`).
+- **`PagePlan` is also the LLM's output schema**: pipeline-only fields are
+  `SkipJsonSchema` (`translation_status`, `inline_translation`, `text_map`), or
+  the structured-output schema advertises them to the model.
 
 Tests: `test_multilingual_strategy.py`, `test_translations.py`.
 

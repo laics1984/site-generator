@@ -69,6 +69,7 @@ from app.services.cms_sync import (
     existing_pages,
     normalize_site_slugs,
     plan_sync,
+    primary_pages,
 )
 from app.services.cms_targets import CmsTarget, default_target
 from app.services.generation_projects import (
@@ -451,6 +452,10 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         report.error = str(exc)
         return report
 
+    # The menus exactly as pushed: a translation of the layout names their items
+    # by id, and those ids are minted per build.
+    pushed_menus: list[dict[str, Any]] | None = None
+
     # 6. Save layout — wrap + emit menus + PUT once on the homepage. The layout
     #    is entity-scoped and has no draft state: the CMS re-pins every published
     #    page to the new version at once, so on an update the header, footer and
@@ -461,6 +466,7 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         else:
             try:
                 menus, header_payload, footer_payload = build_layout_payload(req.site)
+                pushed_menus = menus
             except ValueError as exc:
                 raise CmsApiError(500, str(exc)) from exc
             result = await client.save_page_layout(
@@ -611,6 +617,12 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     #     the new pages went live with them (see _archive_pages).
     await _archive_pages(client, req, plan, report, publishing=req.publish)
 
+    # 9c. The site's other languages: its language config, then each
+    #     translation as text on its page (and the header/footer/menus on the
+    #     layout). After the archive, so an old mirror page no longer shadows
+    #     the URL its translation now serves. Non-fatal: the primary site is in.
+    await _push_languages(client, req, report, landed, pushed_menus)
+
     # 10. CMS content types — the template pages the site's list elements need
     #     and, on a first push only, the migrated article/event entries. Both
     #     are non-fatal: the site is already pushed, so a failure here degrades
@@ -642,6 +654,139 @@ class _LandedPage:
     page: GeneratedPage
     page_id: str
     draft_version: int
+
+
+def _language_config(plan) -> dict[str, Any]:
+    """The CMS's `locales_json` for a site's language plan (SiteLocales shape)."""
+    from app.services.locale import url_prefix
+
+    codes = [plan.primary, *plan.secondary]
+    return {
+        "primary": plan.primary,
+        "mode": plan.mode,
+        "locales": [
+            {"code": code, "prefix": plan.prefixes.get(code) or url_prefix(code, codes)}
+            for code in plan.secondary
+        ],
+    }
+
+
+def _menu_overlay(menus: list[dict[str, Any]], titles: dict[str, str]) -> dict[str, dict]:
+    """{menu id: {item id: {label}}} for every item linking a translated page.
+
+    `titles` is primary slug → that page's title in the language. A language
+    menu's own labels are already each language's name for itself."""
+    out: dict[str, dict] = {}
+
+    def visit(menu_id: str, items: list[dict[str, Any]]) -> None:
+        for item in items or []:
+            href = str(item.get("href") or "")
+            slug = href.split("#", 1)[0].strip("/") if href.startswith("/") else None
+            if slug is not None and slug in titles and item.get("id"):
+                out.setdefault(menu_id, {})[str(item["id"])] = {"label": titles[slug]}
+            visit(menu_id, item.get("children") or [])
+
+    for menu in menus:
+        if menu.get("purpose") != "language":
+            visit(str(menu.get("id")), menu.get("items") or [])
+    return out
+
+
+async def _save_translation(
+    client: CmsClient, token: str, kind: str, target_id: str, locale: str,
+    overlay: dict[str, Any], *, publish: bool,
+) -> str:
+    """Save one translation as a draft, then publish it when asked. Returns
+    "published", "draft", or "incomplete" (the CMS found text still in the
+    primary language and kept it a draft)."""
+    current = await client.get_translation(token, kind, target_id, locale)
+    await client.save_translation(
+        token, kind, target_id, locale,
+        overlay=overlay, base_draft_version=current.get("draftVersion"),
+    )
+    if not publish:
+        return "draft"
+    try:
+        await client.publish_translation(token, kind, target_id, locale)
+    except CmsApiError as exc:
+        if exc.code == "TRANSLATION_INCOMPLETE":
+            return "incomplete"
+        raise
+    return "published"
+
+
+async def _push_languages(
+    client: CmsClient,
+    req: PushRequest,
+    report: PushReport,
+    landed: list[_LandedPage],
+    pushed_menus: list[dict[str, Any]] | None,
+) -> None:
+    """Languages and translations (site-generator plan P5).
+
+    A translation is TEXT on its page — never a page of its own — keyed by the
+    CMS id its counterpart just landed under. Publishing needs the
+    multilingual_site plan feature: without it everything is saved as a draft
+    and the step says why, so the owner loses nothing by upgrading later.
+    The overlay replaces the stored draft wholesale: the page body it is keyed
+    to was itself replaced by this push, so the old element ids name nothing.
+    """
+    languages = req.site.multilingual
+    if languages is None or languages.mode == "single" or not languages.secondary:
+        return
+    token = req.entity_token
+    try:
+        config = await client.put_languages(token, _language_config(languages))
+    except CmsApiError as exc:
+        report.record(PushStep(name="languages", ok=True, warning=f"Languages not saved: {exc}"))
+        return
+    entitled = bool(config.get("entitled"))
+    publish = req.publish and entitled
+
+    page_ids = {item.page.slug: item.page_id for item in landed}
+    jobs: list[tuple[str, str, str, dict[str, Any]]] = [
+        ("page", page_ids[page.translation_of], page.locale, page.overlay)
+        for page in req.site.pages
+        if page.locale and page.overlay and page.translation_of in page_ids
+    ]
+    if languages.mode == "separate":
+        for locale in languages.secondary:
+            layout = dict(req.site.layout_overlays.get(locale) or {"elements": {}, "meta": {}})
+            titles = {
+                page.translation_of: page.title
+                for page in req.site.pages
+                if page.locale == locale and page.translation_of is not None
+            }
+            layout["menus"] = _menu_overlay(pushed_menus or [], titles)
+            jobs.append(("layout", "website", locale, layout))
+
+    sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
+
+    async def run(kind: str, target: str, locale: str, overlay: dict[str, Any]) -> str:
+        async with sem:
+            return await _save_translation(client, token, kind, target, locale, overlay, publish=publish)
+
+    with stage("push_translations"):
+        results = await asyncio.gather(*(run(*job) for job in jobs), return_exceptions=True)
+    failed = [r for r in results if isinstance(r, BaseException)]
+    outcome = {key: sum(1 for r in results if r == key) for key in ("published", "draft", "incomplete")}
+    detail = (
+        f"{len(languages.secondary)} language(s); {outcome['published']} translation(s) published, "
+        f"{outcome['draft'] + outcome['incomplete']} saved as draft(s)"
+    )
+    warnings = []
+    if req.publish and not entitled:
+        warnings.append("This site's plan doesn't include more than one language, so the translations "
+                        "were saved as drafts. They publish once the plan does.")
+    if outcome["incomplete"]:
+        warnings.append(f"{outcome['incomplete']} translation(s) still have untranslated text and "
+                        "were kept as drafts.")
+    if failed:
+        warnings.append(f"{len(failed)} translation(s) could not be saved: {failed[0]}")
+    report.record(PushStep(
+        name="languages", ok=True, detail=detail, data=outcome,
+        warning=" ".join(warnings) or None,
+    ))
 
 
 async def inspect_entity(
@@ -2201,7 +2346,7 @@ async def _ensure_template_pages(
     # slug, IS that template — read back off the live site's template route
     # before the crawler learned to skip it. Adopt it rather than leave it
     # beside a suffixed twin.
-    claimed = {page.slug for page in req.site.pages}
+    claimed = {page.slug for page in primary_pages(req.site)}
     adoptable = {
         page.slug: page
         for page in existing

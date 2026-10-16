@@ -282,6 +282,16 @@ class GeneratedPage(BaseModel):
     nav_rank: int | None = None     # source-nav position carried from the scaffold; None ⇒ not in source nav
     from_source: bool = False       # page evidenced by the source site vs template-injected
     menu_hidden: bool = False       # reached from a listing (a roster grid), not from a menu
+    # A page in another language (separate URLs): its BCP 47 `locale`, the slug
+    # of the page it translates, where its words came from, and its `overlay` —
+    # the text the CMS stores against that page (services/locale_overlay.py;
+    # webtree-cms-api specs/multilingual-sites.md). Its body is the shared tree
+    # with the overlay applied, exactly what the CMS will serve. The push sends
+    # the overlay, never this page as a page of its own. None on primary pages.
+    locale: str | None = None
+    translation_of: str | None = None
+    translation_status: Literal["source", "ai"] | None = None
+    overlay: dict[str, Any] | None = None
 
 
 class PageNode(BaseModel):
@@ -321,6 +331,10 @@ class GeneratedSite(BaseModel):
     # by the language switcher now and by the push's locale config later.
     # None on sites generated before P2 = a single-language site.
     multilingual: MultilingualPlan | None = None
+    # Per language, the header and footer text as an overlay on the shared
+    # layout (the CMS's `translations/layout/website/{locale}`). Menu labels are
+    # added at push time, from the menus the push itself builds.
+    layout_overlays: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # Compact design inputs retained for color-only AI calls. Never public copy.
     palette_brief: dict[str, Any] | None = None
     tagline: str | None = None

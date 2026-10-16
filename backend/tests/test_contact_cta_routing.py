@@ -190,22 +190,13 @@ class ContactCtaRoutingTest(unittest.IsolatedAsyncioTestCase):
         plan = _plan(
             _page("contact", "contact", "Contact", _hero("Get in touch")),
             _page(
-                "contact",
-                "bm/contact",
-                "Hubungi Kami",
-                _hero("Hubungi kami"),
-                locale="bm",
-                translation_of="contact",
+                "landing", "keahlian", "Membership", _hero("Membership"),
+                CtaBlock(headline="Ready?", cta_label="Get in touch", cta_href="#contact"),
             ),
-            _page(
-                "landing",
-                "bm/keahlian",
-                "Keahlian",
-                _hero("Keahlian"),
-                CtaBlock(headline="Sedia?", cta_label="Hubungi kami", cta_href="#contact"),
-                locale="bm",
-                translation_of="keahlian",
-            ),
+            _page("contact", "bm/contact", "Hubungi Kami", _hero("Hubungi kami"),
+                  locale="ms", translation_of="contact"),
+            _page("landing", "bm/keahlian", "Keahlian", _hero("Keahlian"),
+                  locale="ms", translation_of="keahlian", text_map={"Ready?": "Sedia?"}),
         )
         site = await self._build(plan)
 
@@ -214,7 +205,7 @@ class ContactCtaRoutingTest(unittest.IsolatedAsyncioTestCase):
             el for el in bm_page.body_schema.elements if (el.name or "").startswith("CTA")
         )
         self.assertIn("/bm/contact", _all_hrefs(cta_section))
-        # The site-wide header still points at the source-language page.
+        # The site-wide header still points at the primary-language page.
         self.assertIn("/contact", _all_hrefs(site.header_schema))
 
 

@@ -12,7 +12,8 @@ taken locally on 2026-10-16 and two gaps they exposed are fixed (see
 modes in the preview — see "P2"). **P3 done 2026-10-16** in cms-api (storage,
 locale-aware public payloads, admin endpoints, plan gate — see "P3").
 **P4 done 2026-10-16** in webtree-public (lang, hreflang, sitemap, language
-menus — see "P4"). P5 (the generator's push) next. Nothing else below is implemented yet unless it's listed
+menus — see "P4"). **P5 done 2026-10-16** (push of overlays, locale config,
+mirror adoption, language menu — see "P5"). P6 (builder) next. Nothing else below is implemented yet unless it's listed
 under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -48,6 +49,45 @@ The local crawl cache is empty (post-migration), so thresholds below get
 calibrated on a capture set in Phase 0, not on a guess.
 
 ## Progress and corrections
+
+### P5 (site-generator push + one cms-api rule, 2026-10-16)
+
+**Built.** A translation is now text on its page end to end:
+`services/locale_overlay.py` (derive / apply / missing / source hash, the
+Python mirror of `OverlayApplier`); `plan_to_site._translated_pages` builds each
+translated page from its counterpart's finished tree; `complete_translations`
+fills what the planner's strings didn't cover, header and footer included; the
+push (`_push_languages`) sends the language config and every page and layout
+overlay to the P3 endpoints and publishes when it may; `cms_sync.primary_pages`
+keeps translations out of the page sync, which is what archives an old mirror
+page; the language menu is `purpose: "language"`; the preview computes
+alternates (`previewLanguages.ts`).
+
+**Decisions and corrections:**
+
+1. **A translated page is derived, not rendered.** Building it separately could
+   pick other templates or photos (per-slug seeds, the image resolver's
+   reservations); derived from the finished tree it can only differ in words,
+   and the preview is the shared tree plus the overlay the CMS will serve.
+2. **A model's unchanged answer is a translation.** "UNIQUE KINDIES" or a
+   parent's name stays as it is, and is recorded as covered, or the CMS's
+   completeness check would refuse to publish every page that names anyone.
+3. **Saving the language config is not plan-gated** (cms-api 789293b). Q5 says a
+   site without the plan keeps its translations as drafts; drafts need the
+   language enabled, so gating the config made that impossible. Publishing and
+   serving stay gated.
+4. **The pushed overlay replaces the stored draft wholesale.** The page body it
+   is keyed to is itself replaced by the push, so old element ids name nothing;
+   preserving an owner's edited strings across a regeneration needs stable
+   element ids, which the generator doesn't have (future work).
+5. **`PagePlan` fields the pipeline owns are `SkipJsonSchema`** — P2's
+   `translation_status` and `inline_translation` had been advertised to the model
+   in the structured-output schema.
+
+**Not covered:** the preview shows the shared (primary) header and footer on a
+translated page — the layout overlay is applied by the CMS, not by the preview
+yet. An end-to-end push against a real CMS was not run: the local CMS database
+isn't migrated for P3 (`php artisan migrate` there first).
 
 ### P4 (webtree-public + preview mirror, 2026-10-16)
 

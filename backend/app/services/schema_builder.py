@@ -83,6 +83,8 @@ from app.models.design_manifest import (
 )
 from app.models.industry import PageScaffold
 from app.services.inline_translation import apply_inline_translation
+from app.services import locale_overlay
+from app.services.translations import localized_body
 from app.services.design_brain import DesignRecipe, generate_site_design_recipe
 from app.services.design_director import (
     compose_design_manifest,
@@ -4527,8 +4529,8 @@ def _has_contact_section(page: PagePlan) -> bool:
     return any(b.kind == "contact" for b in page.blocks)
 
 
-def _resolve_contact_href(pages: list[PagePlan], *, locale: str | None) -> str | None:
-    """Where `#contact` should point for pages in ``locale``.
+def _resolve_contact_href(pages: list[PagePlan]) -> str | None:
+    """Where `#contact` should point on the primary-language pages.
 
     A Contact page is the destination. Among several, the ranking is: one that
     renders a form first (the CTA promises an action, so the page that can
@@ -4537,14 +4539,13 @@ def _resolve_contact_href(pages: list[PagePlan], *, locale: str | None) -> str |
     page entirely, the page carrying a `contact` section, linked as
     ``/slug#contact`` — the render loop stamps the matching anchor.
 
-    Locale-scoped so a translated page reaches its own twin rather than the
-    source-language page; the caller falls back to the base locale when a
-    translation set has no Contact page of its own.
+    A translated page's own link is localized afterwards, from this one
+    (`_translated_pages`), so no second resolution exists to disagree with it.
 
     None means the site has no contact affordance at all; the caller drops the
     action rather than shipping the placeholder.
     """
-    scoped = [p for p in pages if p.locale == locale]
+    scoped = pages
     contact_pages = [p for p in scoped if _is_contact_page(p)]
     if contact_pages:
         best = min(
@@ -5082,13 +5083,12 @@ async def plan_to_site(
     # None, and those buttons are dropped rather than shipped dead — the same
     # rule the header CTA below has always followed.
     #
-    # Both the destination and the page index are locale-scoped so a translated
-    # page links to its own twin, falling back to the base locale's pages.
-    contact_href_by_locale = {
-        loc: _resolve_contact_href(plan.pages, locale=loc)
-        for loc in {p.locale for p in plan.pages}
-    }
-    base_contact_href = contact_href_by_locale.get(None)
+    # Only primary-language pages are rendered: a translated page is its
+    # counterpart's tree, and its links follow the reader into the language
+    # where that page exists (`_translated_pages` → `localize_href`) — so its
+    # "Contact us" reaches /bm/contact without being resolved twice.
+    primary_plans = [p for p in plan.pages if not p.locale]
+    base_contact_href = _resolve_contact_href(primary_plans)
     route_pages = available_pages if available_pages is not None else plan.pages
     _base_href_index = _page_href_index([p for p in route_pages if p.locale is None])
     if base_contact_href is None and available_pages is not None:
@@ -5097,23 +5097,19 @@ async def plan_to_site(
         )
         if contact_page is not None:
             base_contact_href = f"/{contact_page.slug}"
-    href_index_by_locale = {
-        loc: {
-            **_base_href_index,
-            **_page_href_index([p for p in route_pages if p.locale == loc]),
-        }
-        for loc in {p.locale for p in plan.pages}
-    }
-    for _page_plan in plan.pages:
-        _href = contact_href_by_locale.get(_page_plan.locale) or base_contact_href
-        _index = href_index_by_locale.get(_page_plan.locale, _base_href_index)
+    for _page_plan in primary_plans:
         for _block in _page_plan.blocks:
-            _resolve_block_cta_hrefs(_block, index=_index, contact_href=_href)
+            _resolve_block_cta_hrefs(_block, index=_base_href_index, contact_href=base_contact_href)
 
     # Build each page's body
     pages: list[GeneratedPage] = []
+    # A page in another language is not rendered: it is its counterpart's
+    # FINISHED tree with that language's text, made last (_translated_pages).
+    translation_plans = [p for p in plan.pages if p.locale]
     _render_start = perf_counter()
     for page_index, page_plan in enumerate(plan.pages):
+        if page_plan.locale:
+            continue
         # Each page resets section_index so rotation starts fresh per page.
         ctx = RenderContext(
             theme=theme,
@@ -5517,6 +5513,10 @@ async def plan_to_site(
     if settings.design_engine_enabled:
         builder_styles["designManifest"] = manifest.model_dump()
 
+    # Last, after every pass has finished its counterpart: a translated page is
+    # exactly the shared tree plus its overlay — what the CMS will serve.
+    pages.extend(_translated_pages(translation_plans, pages))
+
     site = GeneratedSite(
         site_name=plan.site_name,
         tagline=plan.tagline,
@@ -5573,6 +5573,65 @@ async def plan_to_site(
         pass
 
     return site
+
+
+def _translated_pages(plans: list[PagePlan], pages: list[GeneratedPage]) -> list[GeneratedPage]:
+    """Each translation as an overlay on its counterpart's finished tree.
+
+    The overlay is derived from the page's string map by the same matching the
+    same-page bilingual pass uses (services/locale_overlay.py); the body is the
+    counterpart's tree with that overlay applied, so a translation can never
+    differ from its page in layout, photos or styling — only in words. Strings
+    the map doesn't cover keep the primary text here and are finished by
+    `translations.complete_translations` after the build.
+    """
+    by_slug = {page.slug: page for page in pages}
+    translated: dict[str, set[str]] = {}
+    for plan_page in plans:
+        if plan_page.translation_of in by_slug:
+            translated.setdefault(plan_page.locale or "", set()).add(plan_page.translation_of or "")
+
+    out: list[GeneratedPage] = []
+    for plan_page in plans:
+        base = by_slug.get(plan_page.translation_of or "")
+        if base is None:
+            continue
+        overlay = locale_overlay.derive(
+            base.body_schema.elements, plan_page.text_map,
+            origin=plan_page.translation_status or "ai",
+        )
+        overlay["page"] = {
+            "title": plan_page.title,
+            "description": plan_page.description,
+            "seoTitle": plan_page.seo_title,
+            "seoDescription": plan_page.seo_description,
+        }
+        body = localized_body(
+            base.body_schema.elements, overlay, plan_page.slug, plan_page.translation_of,
+            translated.get(plan_page.locale or "", set()),
+        )
+        out.append(GeneratedPage(
+            slug=plan_page.slug,
+            title=plan_page.title,
+            description=plan_page.description,
+            is_homepage=False,
+            body_schema=BodySchema(elements=body),
+            seo=base.seo.model_copy(update={
+                "title": plan_page.seo_title,
+                "description": plan_page.seo_description,
+                "ogTitle": plan_page.seo_title,
+                "ogDescription": plan_page.seo_description,
+                "canonical": f"/{plan_page.slug}",
+            }),
+            parent_slug=plan_page.parent_slug,
+            from_source=plan_page.from_source,
+            menu_hidden=True,
+            locale=plan_page.locale,
+            translation_of=plan_page.translation_of,
+            translation_status=plan_page.translation_status,
+            overlay=overlay,
+        ))
+    return out
 
 
 def _build_page_tree(pages: list[GeneratedPage]) -> list[PageNode]:

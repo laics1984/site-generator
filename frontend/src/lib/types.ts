@@ -217,6 +217,11 @@ export interface GeneratedPage {
   seo: PageSeo
   /** Set on sub-pages — references the parent's slug. */
   parent_slug?: string | null
+  /** A page in another language: its BCP 47 code, and the slug of the page it
+   * translates. Its body is that page's tree with this language's text. */
+  locale?: string | null
+  translation_of?: string | null
+  translation_status?: 'source' | 'ai' | null
 }
 
 export interface PageNode {

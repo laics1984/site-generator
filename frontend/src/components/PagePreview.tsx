@@ -7,6 +7,7 @@ import { pagePath, resolveInternalSlug } from '@/lib/previewNav'
 import { Banner, Button, Segmented, SectionLabel, Spinner } from '@/ui'
 import { PreviewFrame } from '@/preview/PreviewFrame'
 import { PreviewSiteShell } from '@/preview/PreviewSiteShell'
+import { previewLanguages } from '@/lib/previewLanguages'
 import { SchemaRenderer } from '@/preview/SchemaRenderer'
 import { buildResponsiveStylesheet } from '@/preview/lib/responsiveRuntime'
 import { asPublicSchema } from '@/preview/lib/adapt'
@@ -94,6 +95,8 @@ export function PagePreview({
   const headerSchema = useMemo(() => asPublicSchema(layout?.header), [layout])
   const footerSchema = useMemo(() => asPublicSchema(layout?.footer), [layout])
   const bodySchema = useMemo(() => asPublicSchema(page.body_schema), [page.body_schema])
+  // The language menu links where it will live: this page in each language.
+  const languages = useMemo(() => previewLanguages(site, page), [site, page])
 
   const previewSite = useMemo(
     () => ({
@@ -279,7 +282,13 @@ export function PagePreview({
             // and therefore its media queries — actually narrows.
             style={frameWidth ? { width: `${frameWidth}px`, maxWidth: '100%' } : undefined}
           >
-            <PreviewSiteShell site={previewSite} bodySchema={bodySchema} scrollRoot={scrollRoot}>
+            <PreviewSiteShell
+              site={previewSite}
+              bodySchema={bodySchema}
+              scrollRoot={scrollRoot}
+              locale={languages.locale}
+              alternates={languages.alternates}
+            >
               {({ headerOverlaySpacerPaddingTop, globalHeroMinHeight }) => (
                 <SchemaRenderer
                   schema={bodySchema}

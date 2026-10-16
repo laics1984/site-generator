@@ -341,20 +341,33 @@ class WriteInTest(unittest.TestCase):
         self.assertNotIn("write_in", json.loads(_build_user_prompt(source)))
 
 
-class SwitcherLabelTest(unittest.TestCase):
-    def test_the_primary_entry_names_the_primary_language(self):
+class LanguageMenuTest(unittest.TestCase):
+    def test_a_separate_language_site_gets_a_language_menu_one_item_per_language(self):
         from app.models.builder_schema import PageNode
         from app.services.menu_builder import UTILITY_MENU_ID, build_menus
 
-        tree = [
-            PageNode(slug="", title="首页", is_homepage=True),
-            PageNode(slug="en", title="Home", locale="en", translation_of=""),
-        ]
         menus = build_menus(
-            tree, languages=MultilingualPlan(mode="separate", primary="zh-Hans", secondary=["en"]),
+            [PageNode(slug="", title="首页", is_homepage=True)],
+            languages=MultilingualPlan(
+                mode="separate", primary="zh-Hans", secondary=["en", "ms"], prefixes={"en": "en", "ms": "bm"},
+            ),
         )
-        switcher = next(m for m in menus if m["id"] == UTILITY_MENU_ID)
-        self.assertEqual([item["label"] for item in switcher["items"]], ["中文", "English"])
+        menu = next(m for m in menus if m["id"] == UTILITY_MENU_ID)
+        self.assertEqual(menu["purpose"], "language")
+        self.assertEqual(
+            [(i["id"], i["label"], i["locale"], i["href"]) for i in menu["items"]],
+            [("language-zh-Hans", "中文", "zh-Hans", "/"),
+             ("language-en", "English", "en", "/en"),
+             ("language-ms", "Bahasa Malaysia", "ms", "/bm")],
+        )
+
+    def test_a_single_or_bilingual_site_has_no_language_menu(self):
+        from app.models.builder_schema import PageNode
+        from app.services.menu_builder import build_menus
+
+        for plan in (None, MultilingualPlan(mode="bilingual", primary="en", secondary=["zh-Hans"])):
+            menus = build_menus([PageNode(slug="", title="Home", is_homepage=True)], languages=plan)
+            self.assertFalse([m for m in menus if m["purpose"] == "language"])
 
 
 class RecipeEndpointTest(unittest.TestCase):
