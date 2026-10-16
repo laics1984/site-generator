@@ -1,47 +1,58 @@
-"""The site industry taxonomy is one slug set across two repos.
-
-The generator classifies a site (`IndustryCategory`) and the push stores that
-slug on the CMS entity, which validates it against
-`webtree-cms-api/config/benchmarks.php`. A slug on one side only is a site
-whose industry is silently dropped on push (or one the generator can never
-produce), so the two sets must be equal. Skipped when the CMS repo is not
-checked out beside this one — the `BlankTemplateBodyTest` idiom.
-"""
-
+"""CMS owns category values/labels; generator artifacts and prompts cannot drift."""
 from __future__ import annotations
 
-import pathlib
 import re
+import tempfile
 import unittest
+from pathlib import Path
 from typing import get_args
 
 from app.models.industry import IndustryCategory
-from app.services.industry_templates import TEMPLATES
-
-_CMS_CONFIG = (
-    pathlib.Path(__file__).resolve().parents[3] / "webtree-cms-api" / "config" / "benchmarks.php"
-)
-
-
-def _cms_industry_slugs(php: str) -> set[str]:
-    start = php.index("'industries' => [") + len("'industries' => [")
-    block = php[start : php.index("],", start)]
-    return set(re.findall(r"'([a-z-]+)'\s*=>", block))
+from app.models.industry_catalog import INDUSTRY_LABELS
+from app.services.industry_templates import TEMPLATES, all_industries_summary
+from app.services.prompts import DETECT_BRAND_PROMPT, LEGACY_SYSTEM_PROMPT, _SCAFFOLD_PROMPT_HEAD
+from scripts.sync_industries import SOURCE, generated_files, load_catalog
 
 
 class IndustryTaxonomyTest(unittest.TestCase):
-    def test_the_cms_accepts_exactly_the_generators_industries(self):
-        if not _CMS_CONFIG.exists():
-            self.skipTest("webtree-cms-api not checked out beside this repo")
-        self.assertEqual(
-            _cms_industry_slugs(_CMS_CONFIG.read_text()), set(get_args(IndustryCategory))
-        )
+    def test_generated_vocabulary_and_types_match_the_cms_source(self):
+        if not SOURCE.exists():
+            self.skipTest("CMS source not checked out beside the generator; run sync_industries.py --check at release")
+        catalog = load_catalog(SOURCE)
+        self.assertEqual(INDUSTRY_LABELS, catalog)
+        for path, expected in generated_files(catalog).items():
+            self.assertEqual(path.read_text(), expected, f"{path}: run scripts/sync_industries.py")
 
     def test_every_industry_has_a_page_template(self):
-        # The override dropdown lists TEMPLATES; an industry without one can be
-        # detected but never chosen.
         self.assertEqual(set(TEMPLATES), set(get_args(IndustryCategory)))
+        self.assertEqual(list(get_args(IndustryCategory)), list(INDUSTRY_LABELS))
 
+    def test_template_and_dropdown_labels_are_the_catalog_labels(self):
+        self.assertEqual(
+            [(row["id"], row["label"]) for row in all_industries_summary()],
+            list(INDUSTRY_LABELS.items()),
+        )
+        for slug, template in TEMPLATES.items():
+            self.assertEqual(template.label, INDUSTRY_LABELS[slug])
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_all_generation_prompts_use_the_complete_category_vocabulary(self):
+        for prompt in (DETECT_BRAND_PROMPT, _SCAFFOLD_PROMPT_HEAD):
+            choices = re.search(r'"industry_category":\s*([^\n]+)', prompt).group(1)
+            self.assertEqual(re.findall(r'"([a-z-]+)"', choices), list(INDUSTRY_LABELS))
+            self.assertNotIn("__INDUSTRY", prompt)
+        self.assertIn("Pick `industry_category` from: " + ", ".join(INDUSTRY_LABELS) + ".", LEGACY_SYSTEM_PROMPT)
+
+    def test_catalog_rejects_duplicate_or_invalid_entries(self):
+        malformed = [
+            '{"other":"Other","other":"Something else"}',
+            '{"other":"Other","Bad slug":"Bad"}',
+            '{"other":""}',
+            '{"agency":"Agency"}',
+            '[]',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "industries.json"
+            for raw in malformed:
+                path.write_text(raw)
+                with self.subTest(raw=raw), self.assertRaises(ValueError):
+                    load_catalog(path)

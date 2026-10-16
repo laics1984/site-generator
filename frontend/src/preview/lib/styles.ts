@@ -1,7 +1,7 @@
 // Vendored from webtree-public/lib/styles.ts — near-verbatim, only the
 // import path changed (`~/types/public` → `./public`).
 import type { JsonPrimitive, PublicStyleTokens } from './public'
-import { semanticColorVars, type ThemeColors } from './colorSystem'
+import { semanticColorVars, ensureColorContrast, normalizeHex, type ThemeColors } from './colorSystem'
 
 // --- AA contrast safety net for brand-primary text ------------------------
 // Small, self-contained port of builder src/lib/color-utils.ts's
@@ -315,6 +315,14 @@ export function buildCssVars(styles?: PublicStyleTokens | null) {
   const buttonBackground = getNestedStyleValue(styles, ['buttons', 'background']) || primaryColor
   const buttonText = getNestedStyleValue(styles, ['buttons', 'text']) || '#ffffff'
   const buttonRadius = toCssLength(styles?.buttons && isStyleRecord(styles.buttons) ? styles.buttons.radius : null, '14px')
+  const versionedVars = styles?.colorSystemVersion === 2 ? semanticColorVars({
+    primary: primaryColor, secondary: secondaryColor, accent: accentColor,
+    text: textColor, background: backgroundColor, surface: surfaceColor,
+  } as ThemeColors, { background: buttonBackground, text: buttonText }) : {}
+  const customMuted = getNestedStyleValue(styles, ['colors', 'muted']) || directVars['--wt-color-muted']
+  const semanticMuted = customMuted
+    ? (normalizeHex(customMuted) ? ensureColorContrast(normalizeHex(customMuted)!, backgroundColor) : customMuted)
+    : versionedVars['--builder-color-text-muted']
   const pageBackground = getNestedStyleValue(styles, ['page', 'background']) || backgroundColor
   // Sections center their content with
   // `padding: max(80px, calc((100% - var(--builder-page-max-width)) / 2))`.
@@ -367,10 +375,11 @@ export function buildCssVars(styles?: PublicStyleTokens | null) {
     ...(heroMinHeight ? { '--builder-hero-min-height': heroMinHeight } : {}),
     ...(heroHeadingSize ? { '--builder-hero-heading-size': heroHeadingSize } : {}),
     ...(heroBodySize ? { '--builder-hero-body-size': heroBodySize } : {}),
-    ...(styles?.colorSystemVersion === 2 ? semanticColorVars({
-      primary: primaryColor, secondary: secondaryColor, accent: accentColor,
-      text: textColor, background: backgroundColor, surface: surfaceColor,
-    } as ThemeColors, { background: buttonBackground, text: buttonText }) : {})
+    ...versionedVars,
+    ...(styles?.colorSystemVersion === 2 ? {
+      '--wt-color-muted': semanticMuted || mutedColor,
+      '--wt-color-surface-ink': ensureColorContrast(versionedVars['--builder-color-ink-dark'] || textColor, '#ffffff'),
+    } : {})
   }
 }
 

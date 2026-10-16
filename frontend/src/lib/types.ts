@@ -1,3 +1,6 @@
+import type { IndustryCategory } from './industryCatalog'
+export type { IndustryCategory } from './industryCatalog'
+
 /** Mirrors the backend Literal on SourceContent.source_kind — change both together. */
 export type SourceKind = 'url' | 'pdf' | 'docx' | 'facebook' | 'paste'
 
@@ -399,21 +402,6 @@ export interface PreviewLayout {
   header: PreviewHeader
   footer: PreviewFooter
 }
-
-export type IndustryCategory =
-  | 'restaurant'
-  | 'agency'
-  | 'saas'
-  | 'professional-services'
-  | 'ecommerce'
-  | 'consultancy'
-  | 'nonprofit'
-  | 'childcare'
-  | 'personal'
-  | 'home-services'
-  | 'health-wellness'
-  | 'real-estate'
-  | 'other'
 
 export interface PageScaffold {
   page_type: string

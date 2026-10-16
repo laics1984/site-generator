@@ -36,6 +36,7 @@ from pydantic import (
 )
 
 from app.models.facebook_photos import FacebookPhotoReview
+from app.models.industry_catalog import IndustryCategoryLiteral
 
 
 SectionType = Literal[
@@ -1439,24 +1440,6 @@ BrandMood = Literal[
 ]
 
 
-# The site industry taxonomy. webtree-cms-api's `config/benchmarks.php`
-# validates `entities.industry` against the same slugs, and
-# `tests/test_industry_taxonomy.py` fails when the two drift.
-IndustryCategoryLiteral = Literal[
-    "restaurant",
-    "agency",
-    "saas",
-    "professional-services",
-    "ecommerce",
-    "consultancy",
-    "nonprofit",
-    "childcare",
-    "personal",
-    "home-services",
-    "health-wellness",
-    "real-estate",
-    "other",
-]
 
 
 # Industry → default brand mood, used when the LLM gives no usable mood so the

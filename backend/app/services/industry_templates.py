@@ -17,6 +17,7 @@ the LLM can still adapt the copy intelligently — the structure stays.
 from __future__ import annotations
 
 from app.models.industry import IndustryCategory, IndustryTemplate, PageScaffold
+from app.models.industry_catalog import INDUSTRY_LABELS
 from app.services.landing_patterns import homepage_sections
 
 
@@ -241,7 +242,7 @@ def _core_set(home: PageScaffold) -> list[PageScaffold]:
 TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     "restaurant": IndustryTemplate(
         industry="restaurant",
-        label="Restaurant / Café / Hospitality",
+        label=INDUSTRY_LABELS["restaurant"],
         description="Hospitality businesses where menu, vibe, and reservations drive bookings.",
         core_pages=_core_set(_core_home("restaurant", extra_sections=["gallery"])),
         suggested_pages=[menu_page(), gallery_page()],
@@ -249,7 +250,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "agency": IndustryTemplate(
         industry="agency",
-        label="Agency / Studio",
+        label=INDUSTRY_LABELS["agency"],
         description="Creative or marketing agencies where work + process win pitches.",
         core_pages=_core_set(_core_home("agency")),
         suggested_pages=[_services_page(), _work_page(), _process_page()],
@@ -257,7 +258,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "saas": IndustryTemplate(
         industry="saas",
-        label="SaaS / Software",
+        label=INDUSTRY_LABELS["saas"],
         description="Software products where pricing and feature depth drive sign-ups.",
         core_pages=_core_set(_core_home("saas")),
         suggested_pages=[_pricing_page(), _faq_page()],
@@ -265,7 +266,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "professional-services": IndustryTemplate(
         industry="professional-services",
-        label="Professional Services (legal, accounting, advisory)",
+        label=INDUSTRY_LABELS["professional-services"],
         description="Service businesses where trust and credentials drive bookings.",
         core_pages=_core_set(_core_home("professional-services")),
         suggested_pages=[_services_page(), _team_page(), _faq_page(), _testimonials_page()],
@@ -273,7 +274,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "ecommerce": IndustryTemplate(
         industry="ecommerce",
-        label="E-commerce",
+        label=INDUSTRY_LABELS["ecommerce"],
         description="Product-led businesses. (Storefront integration is out of scope — these pages set the brand around it.)",
         core_pages=_core_set(_core_home("ecommerce", extra_sections=["gallery"])),
         suggested_pages=[gallery_page(), _faq_page()],
@@ -281,7 +282,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "consultancy": IndustryTemplate(
         industry="consultancy",
-        label="Consultancy",
+        label=INDUSTRY_LABELS["consultancy"],
         description="Expertise-led businesses where case studies and team bios drive engagement.",
         core_pages=_core_set(_core_home("consultancy")),
         suggested_pages=[_services_page(), _work_page(), _team_page()],
@@ -289,7 +290,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "nonprofit": IndustryTemplate(
         industry="nonprofit",
-        label="Non-profit / Charity",
+        label=INDUSTRY_LABELS["nonprofit"],
         description="Mission-led organizations where impact stories and donation paths matter most.",
         core_pages=_core_set(_core_home("nonprofit")),
         suggested_pages=[_services_page(), _team_page(), _testimonials_page()],
@@ -297,7 +298,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "childcare": IndustryTemplate(
         industry="childcare",
-        label="Childcare / Kindergarten",
+        label=INDUSTRY_LABELS["childcare"],
         description="Kindergartens, preschools, daycares, and early learning centers where parent trust drives tour bookings.",
         # No gallery extra on the homepage: it keeps the parent-trust pattern at
         # 6 sections (a single homepage scaffold is generated in ONE LLM call and
@@ -309,7 +310,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "personal": IndustryTemplate(
         industry="personal",
-        label="Personal / Portfolio",
+        label=INDUSTRY_LABELS["personal"],
         description="Solo professionals and creators where personality and work samples matter.",
         core_pages=_core_set(_core_home("personal")),
         suggested_pages=[_work_page(), _testimonials_page()],
@@ -317,7 +318,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "home-services": IndustryTemplate(
         industry="home-services",
-        label="Home Services (trades, repairs, cleaning)",
+        label=INDUSTRY_LABELS["home-services"],
         description="Trades and home-service businesses where fast quotes and proven past jobs win the call-out.",
         core_pages=_core_set(_core_home("home-services")),
         suggested_pages=[_services_page(), _process_page(), _testimonials_page(), _faq_page()],
@@ -325,7 +326,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "health-wellness": IndustryTemplate(
         industry="health-wellness",
-        label="Health & Wellness (clinics, dental, spa, fitness)",
+        label=INDUSTRY_LABELS["health-wellness"],
         description="Clinics, practices and wellness studios where qualified people and easy booking build trust.",
         core_pages=_core_set(_core_home("health-wellness")),
         suggested_pages=[_services_page(), _team_page(), _faq_page(), _testimonials_page()],
@@ -333,7 +334,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "real-estate": IndustryTemplate(
         industry="real-estate",
-        label="Real Estate (agents, developers, property)",
+        label=INDUSTRY_LABELS["real-estate"],
         description="Property businesses where the listings and the people behind them drive viewings.",
         core_pages=_core_set(_core_home("real-estate", extra_sections=["gallery"])),
         suggested_pages=[gallery_page(), _services_page(), _team_page()],
@@ -341,7 +342,7 @@ TEMPLATES: dict[IndustryCategory, IndustryTemplate] = {
     ),
     "other": IndustryTemplate(
         industry="other",
-        label="Other / General",
+        label=INDUSTRY_LABELS["other"],
         description="Generic small-business template when nothing else fits.",
         core_pages=_core_set(_core_home("other")),
         suggested_pages=[_services_page(), _faq_page()],

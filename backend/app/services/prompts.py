@@ -1,7 +1,8 @@
 """LLM prompt text for site generation.
 
-Pure text constants — no imports, no logic — so prompt edits land as isolated
-diffs. Assembly, sizing, and batching stay in planner.py (which re-exports
+Prompt constants; industry vocabulary is interpolated from the CMS-owned
+catalog so category instructions cannot drift from validation. Assembly,
+sizing, and batching stay in planner.py (which re-exports
 these names, keeping `from app.services.planner import _SCAFFOLD_BLOCK_SCHEMAS`
 style imports in tests working).
 
@@ -13,6 +14,11 @@ language, and vary headline phrasing across pages.
 """
 
 from __future__ import annotations
+
+from app.models.industry_catalog import INDUSTRY_LABELS
+
+_INDUSTRY_ENUM = "|".join(f'"{slug}"' for slug in INDUSTRY_LABELS)
+_INDUSTRY_LIST = ", ".join(INDUSTRY_LABELS)
 
 RESTAURANT_MENU_CONTENT_PROMPT = """RESTAURANT MENU CONTENT
 Apply only to restaurant, café, bar and food-service sites.
@@ -399,7 +405,7 @@ skeleton EXACTLY; every page MUST have a "blocks" array:
   "site_name":"string", "tagline":"string or null",
   "brand_summary":"1-2 sentence string",
   "brand_mood":"modern|luxury|friendly|technical|editorial|playful",
-  "industry_category":"restaurant|agency|saas|professional-services|ecommerce|consultancy|nonprofit|childcare|personal|other",
+  "industry_category": __INDUSTRY_ENUM__,
   "primary_color_hint":"#hexcolor or null",
   "pages":[{"page_type":"home", "slug":"string", "title":"string",
     "description":"string", "is_homepage":true,
@@ -462,6 +468,8 @@ PER PAGE
 BLOCK SCHEMAS — give the block's `kind` exactly. Item counts are maximums with
 a floor: if you can't reach the floor with real items, omit the block.
 """
+
+_SCAFFOLD_PROMPT_HEAD = _SCAFFOLD_PROMPT_HEAD.replace("__INDUSTRY_ENUM__", _INDUSTRY_ENUM)
 
 # One schema line per block kind. The system prompt only carries the lines for
 # the kinds a batch actually requests (plus the always-keep kinds), cutting
@@ -534,13 +542,14 @@ Hard rules:
 - Preserve sourced section boundaries and order. The generator, not the model,
   decides any landing-page conversion reorder; never shuffle cards between groups.
 
-Pick `industry_category` from: restaurant, agency, saas, professional-services, ecommerce,
-consultancy, nonprofit, childcare, personal, other.
+Pick `industry_category` from: __INDUSTRY_LIST__.
 Pick `brand_mood` from: modern, luxury, friendly, technical, editorial, playful.
 
 For a typical small business produce 4 pages: home, services, about, contact.
 """ + WEBSITE_COPY_GUIDANCE
 
+
+LEGACY_SYSTEM_PROMPT = LEGACY_SYSTEM_PROMPT.replace("__INDUSTRY_LIST__", _INDUSTRY_LIST)
 
 # --- brand detection (small, fast LLM call) -------------------------------------
 
@@ -562,14 +571,12 @@ Reply with ONE JSON object matching this schema — no markdown, no commentary:
        // technical → precise, structured, expert
        // editorial → story-led, considered, cultured
        // playful   → bold, energetic, fun
-  "industry_category": "restaurant"|"agency"|"saas"|"professional-services"
-                       |"ecommerce"|"consultancy"|"nonprofit"|"childcare"|"personal"
-                       |"home-services"|"health-wellness"|"real-estate"|"other",
+  "industry_category": __INDUSTRY_ENUM__,
        // restaurant            → restaurants, cafés, bars, food
        // agency                → creative / marketing / design agencies, studios
        // saas                  → software products, apps, platforms
        // professional-services → legal, accounting, advisory, architecture
-       // ecommerce             → online stores, product brands
+       // ecommerce             → retail shops, online stores, product brands
        // consultancy           → strategy, management, niche advisory
        // nonprofit             → charities, NGOs, foundations
        // childcare             → kindergartens, preschools, daycare, early learning
@@ -602,6 +609,8 @@ can sit at opposite ends of every axis. Put null when the content gives no signa
 an axis. "evidence" must be a short phrase copied exactly from the content, or null.
 """
 
+
+DETECT_BRAND_PROMPT = DETECT_BRAND_PROMPT.replace("__INDUSTRY_ENUM__", _INDUSTRY_ENUM)
 
 # --- paste structuring (small, fast LLM call) -----------------------------------
 

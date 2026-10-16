@@ -29,7 +29,10 @@ export function PalettePanel({ site, onChange, onPublish }: {
     saved.current = site
     setDraft(colorsOf(site))
     setNotice('')
+    setBusy(false)
+    setError(null)
     epoch.current++
+    return () => { epoch.current++ }
     // Color patches preserve these page objects. A new generation resets the editor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [site.pages])
@@ -53,17 +56,20 @@ export function PalettePanel({ site, onChange, onPublish }: {
       if (requested !== epoch.current) return
       const next = apply(current.current, patch)
       onChange(next); setDraft(colorsOf(next))
-    } catch (err) { setError(err instanceof Error ? err.message : 'Color generation failed') }
-    finally { setBusy(false) }
+    } catch (err) { if (requested === epoch.current) setError(err instanceof Error ? err.message : 'Color generation failed') }
+    finally { if (requested === epoch.current) setBusy(false) }
   }
   async function save() {
-    ++epoch.current; setBusy(true); setError(null)
+    const requested = ++epoch.current
+    setBusy(true); setError(null)
     try {
-      const next = apply(current.current, await previewPalette(current.current, draft, true))
+      const patch = await previewPalette(current.current, draft, true)
+      if (requested !== epoch.current) return
+      const next = apply(current.current, patch)
       saved.current = next; onChange(next); setDraft(colorsOf(next))
       setNotice('Palette saved to this preview. Publish colors to update an existing live site.')
-    } catch (err) { setError(err instanceof Error ? err.message : 'Could not save colors') }
-    finally { setBusy(false) }
+    } catch (err) { if (requested === epoch.current) setError(err instanceof Error ? err.message : 'Could not save colors') }
+    finally { if (requested === epoch.current) setBusy(false) }
   }
   function cancel() {
     epoch.current++; onChange(saved.current); setDraft(colorsOf(saved.current)); setError(null); setNotice('')

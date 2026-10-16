@@ -49,9 +49,9 @@ def test_every_semantic_pair_and_state_meets_aa(palette, surface):
     for key, fg in d.items():
         if key.startswith("on-"):
             assert contrast(fg, d[key[3:]]) >= 4.5, key
-    for surface in ("background", "surface", "surface-inverse", "band-1", "band-2", "band-3", "band-4"):
+    for role in ("background", "surface", "surface-inverse", "band-1", "band-2", "band-3", "band-4"):
         for brand in ("primary", "secondary", "accent"):
-            assert contrast(d[f"{brand}-ink-on-{surface}"], d[surface]) >= 4.5
+            assert contrast(d[f"{brand}-ink-on-{role}"], d[role]) >= 4.5
     assert contrast(d["border-strong"], d["background"]) >= 3
     assert contrast(d["text-muted"], d["background"]) >= 4.5
     assert colors["primary"] == palette["primary"]

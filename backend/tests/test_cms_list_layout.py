@@ -156,6 +156,17 @@ class HeadingInkTest(unittest.TestCase):
         body = preview.split("\n", 2)[2]  # the two-line provenance header
         self.assertEqual(public.replace("~/types/public", "./public"), body)
 
+    def test_versioned_form_and_interaction_rules_reach_the_preview_and_builder(self):
+        public = _read(_REPOS / "webtree-public" / "app" / "assets" / "css" / "main.css", self)
+        preview = _read(_PREVIEW_CSS, self)
+        builder = _read(_REPOS / "builder" / "src" / "index.css", self)
+        rules = re.findall(r"(\.wt-color-system-v2[^{}]+)\{([^{}]+)\}", public)
+        self.assertGreater(len(rules), 10, "the public renderer has lost its versioned color rules")
+        for selector, declarations in rules:
+            rule = _squash(selector + "{" + declarations + "}")
+            self.assertIn(rule, _squash(preview), selector)
+            self.assertIn(rule, _squash(builder), selector)
+
 
 if __name__ == "__main__":
     unittest.main()
