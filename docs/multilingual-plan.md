@@ -14,7 +14,7 @@ locale-aware public payloads, admin endpoints, plan gate — see "P3").
 **P4 done 2026-10-16** in webtree-public (lang, hreflang, sitemap, language
 menus — see "P4"). **P5 done 2026-10-16** (push of overlays, locale config,
 mirror adoption, language menu — see "P5"). **P6 done 2026-10-17** in the
-builder (edit a page in another language — see "P6"). **P7 started 2026-10-17** in admin-app: the Languages card and the page list's language pills (see "P7"). Nothing else below is implemented yet unless it's listed
+builder (edit a page in another language — see "P6"). **P7 done 2026-10-17** in admin-app (+ cms-api endpoints): Languages card, page pills and filter, per-language search text, Insights language filter, language audit checks (see "P7"). Nothing else below is implemented yet unless it's listed
 under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -51,9 +51,9 @@ calibrated on a capture set in Phase 0, not on a guess.
 
 ## Progress and corrections
 
-### P7 (admin-app + one cms-api endpoint, 2026-10-17)
+### P7 (admin-app + cms-api endpoints, 2026-10-17)
 
-**Built** (admin-app `feature/multilingual` 73c7d3f, cms-api c4761bd).
+**Built** (admin-app `feature/multilingual` 73c7d3f + 53cdc85, cms-api c4761bd + 365207b).
 Site settings has a **Languages** card beside Industry: the main language
 (every plan), each other language with its prefix (`/zh/`) and a progress
 line ("中文 — 1 page needs translation · 1 page to publish", header & footer
@@ -100,11 +100,59 @@ pages need translation · header & footer need translation"; removing it put
 ("Available on the Growth and Business plans"). admin `node --test tests/`
 517/517, cms-api phpunit 1207 green, vue-tsc clean, `vite build` clean.
 
-**Not covered** (the rest of §8): the "Needs translation" filter on the
-page list (the pages API has no translation filter, and a client-side one
-would filter only the current page); the page information form's language
-switch for SEO title/description; the Insights language filter; the SEO
-audit checks. Layout publish/republish is only reported, not actionable here.
+**The rest of §8** (53cdc85, 365207b):
+
+- **Per-language search text.** The page information form has a language
+  switch above Search & sharing. The main language edits the page as
+  before; another edits its search title and description in that
+  translation's `page` section (`PUT translations/page/{id}/{locale}`),
+  never the page, with the Google preview at that language's address
+  (`/zh/about`) and the main language's text as placeholder — which is
+  also what the public site falls back to. Keywords, sharing image,
+  canonical and noindex are shared by every language and stay on the main
+  language's tab. Saving writes the translation DRAFT; it goes live with
+  the next publish of that language from the builder — the same timing as
+  the main language's search text, which waits for the page's publish.
+- **Page-list filter** "Languages: Needs translation / Translated, to
+  publish", in the list's URL. cms-api `GET pages?translationStates=` keeps
+  pages with a language in one of those states, applied as an id filter so
+  the list still pages and sorts on the server (a client-side filter would
+  only have filtered the current page). Which states each option asks for
+  is read off the same admin copy the card's counts use. A filtered total
+  no longer stands in for the plan's page count (it read "1 of 20 pages
+  used" under the filter).
+- **Insights › Pages language filter.** cms-api `insights/pages?locale=`
+  keeps that language's paths — its prefix, or no prefix for the main
+  language (`/bmx` is not `/bm`); rows carry `locale`, and `/zh/about` is
+  titled after its shared page instead of showing a bare path.
+  `SiteLocales::splitPath`/`localeOfPath` are now the one path splitter;
+  `LocalizedPageLookup` reads them too.
+- **SEO audit.** Each LIVE translation of a published page, when the plan
+  serves languages: `TRANSLATION_TEXT_UNTRANSLATED` (published overlay
+  against the published body), `TRANSLATION_SEO_TITLE_MISSING` /
+  `_DESCRIPTION_MISSING` (the page has one and the language does not, so
+  search shows the main language's). The audit's cache key now covers
+  translations and the language config (it keyed on page rows only, so a
+  translation publish would have served a stale audit). **hreflang
+  reciprocity is not checked**: every language's alternates are built from
+  one table (`PublishedTranslations::localesByPath`), so they cannot
+  disagree — the check could never fire.
+
+**Measured** on the branch CMS (uniquekindies e2e): the filter listed
+Privacy alone under "Needs translation"; the form loaded 中文's real search
+text, and a save changed only the translation draft (v7 → v8, page draft
+unchanged at v16, all 48 element entries identical), then restored; with
+four temporary metric rows Insights showed `/zh/about` and `/zh` titled
+"About us"/"Home" under 简体中文 and the two English paths under English;
+the audit reported no language findings, which is correct — both live
+translations carry their own search text and nothing untranslated. admin
+`node --test tests/` 524/524, cms-api phpunit 1211 green, vue-tsc clean.
+
+**Not covered:** a translated page's title (`page.title`) is not editable
+here (only its search text); overlay `page.description` arrives from the
+generator in English (it is admin-only copy, never shown publicly); the
+audit does not length-check translated search text; layout translation is
+reported on the Languages card but published only from the builder.
 
 ### P6 (builder, 2026-10-17)
 
