@@ -9,7 +9,9 @@ site-generator (2026-10-15)** — detection is shown in the preview, generation 
 unchanged; see "Progress and corrections" below. Real-site captures were
 taken locally on 2026-10-16 and two gaps they exposed are fixed (see
 "Captured locally"). **P2 done 2026-10-16** (strategy, override UI, three
-modes in the preview — see "P2"). P3 (cms-api) next. Nothing else below is implemented yet unless it's listed
+modes in the preview — see "P2"). **P3 done 2026-10-16** in cms-api (storage,
+locale-aware public payloads, admin endpoints, plan gate — see "P3"). P4
+(webtree-public) next. Nothing else below is implemented yet unless it's listed
 under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -45,6 +47,40 @@ The local crawl cache is empty (post-migration), so thresholds below get
 calibrated on a capture set in Phase 0, not on a guess.
 
 ## Progress and corrections
+
+### P3 (webtree-cms-api, 2026-10-16)
+
+**Built** on cms-api `feature/multilingual` (0ed02f8); the contract is
+`specs/multilingual-sites.md` there. Storage as planned: `entities.locales_json`
+(read only through `App\Support\SiteLocales`) and one `translations` table.
+`LocalizedPageLookup` answers "which page, which language" for both public
+endpoints; `OverlayApplier` puts a language's text on the shared body, header,
+footer and menus (text fields only); `PublishedTranslations` reads published
+overlays; `TranslationService` is the admin side. Payloads gain
+`page.locale` and `page.alternates` (`[{locale, path, href}]`), the resolve
+endpoint `locale`, the route manifest one route per published translation with
+`alternates`. `PlanFeature::MultilingualSite` gates publishing and turning a
+second language on; without it a prefixed URL 301s to the primary page.
+
+**Decisions made in the building:**
+
+1. **An exact page wins over a language prefix.** Sites pushed before this
+   carry `bm/committee` as an ordinary page; it keeps resolving until P5's push
+   adopts it, so no indexed URL breaks in between.
+2. **A translated URL with no PUBLISHED translation is a 404**, never the
+   primary text (Phase 9's "don't silently display another language").
+3. **Publishing is per translation and refuses incomplete ones** unless asked
+   (`allowIncomplete`); it records the page revision it was made over, and a
+   later republish of the page reads as `outdated`.
+4. **A translated page's canonical is its own URL** — the primary page's custom
+   `seo_canonical_url` is not inherited, or every language would point at it.
+5. **Plan packaging: Growth and Business include `multilingual_site`, Starter
+   doesn't.** One line per plan in `config/plans.php` if that should change.
+
+**Not covered yet:** per-language articles and events; serving the "last
+complete version" of a translation while the base page has newer untranslated
+strings (today new strings show in the primary language until the translation
+is republished). Nothing renders `page.alternates` yet — that is P4.
 
 ### P2 (site-generator + builder type, 2026-10-16)
 
