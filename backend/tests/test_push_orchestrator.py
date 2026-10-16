@@ -654,9 +654,12 @@ class _FakeClient:
 
 def test_resolve_document_to_bytes_success():
     client = _FakeClient(_FakeResponse(200, b"%PDF-1.4 fake"))
-    body, content_type, filename = asyncio.run(
-        _resolve_document_to_bytes("https://mmta.org.my/files/brochure-en.pdf", client)
-    )
+    # The SSRF guard is a DNS lookup; stubbed so the test doesn't pass or fail
+    # by whether this machine can resolve mmta.org.my (see _upload_with_brand).
+    with patch("app.services.push_orchestrator.assert_public_url", new=AsyncMock()):
+        body, content_type, filename = asyncio.run(
+            _resolve_document_to_bytes("https://mmta.org.my/files/brochure-en.pdf", client)
+        )
     assert body == b"%PDF-1.4 fake"
     assert content_type == "application/pdf"
     assert filename == "brochure-en.pdf"
@@ -795,6 +798,8 @@ def test_upload_media_rehosts_document_links_alongside_images():
             CmsClient, "upload_media",
             new=AsyncMock(return_value="https://cms.example/storage/brochure-en.pdf"),
         ),
+        # A DNS lookup — stubbed for the same reason as the brand-logo tests below.
+        patch("app.services.push_orchestrator.assert_public_url", new=AsyncMock()),
     ):
         client = CmsClient(base_url="http://localhost:8000")
         media = asyncio.run(_upload_media(client, req))

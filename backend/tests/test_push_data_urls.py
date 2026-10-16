@@ -190,6 +190,8 @@ class MonogramSurvivesUploadTest(unittest.TestCase):
         )
         client = AsyncMock()
         client.lookup_media.return_value = None
+        # An API without storage quotas: no pre-check budget, upload everything.
+        client.get_storage_usage.return_value = None
         client.upload_media.return_value = "https://cms.example.com/storage/mono.svg"
 
         media = asyncio.run(_upload_media(client, req))
