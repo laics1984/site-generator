@@ -254,8 +254,9 @@ def build_menus(
     # alternates (webtree-public lib/languages.resolveLanguageMenus), so a reader
     # on /about lands on /bm/about, not /bm. The href here is that language's
     # home, the fallback for a renderer that predates alternates. It rides the
-    # utility slot header archetypes already render (a top bar, a corner link).
-    if languages and languages.mode == "separate" and languages.secondary:
+    # utility slot: every chrome-header-* declares a "Language menu" node gated
+    # on `has_languages`, which build_header sets from the same predicate.
+    if languages and languages.serves_language_urls:
         codes = [languages.primary, *languages.secondary]
         menus.append(_menu(UTILITY_MENU_ID, "Language", "language", [
             {

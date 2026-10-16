@@ -2782,6 +2782,15 @@ sets `uncertain` and says so; it never silently changes the mode.
   language with its `locale` and a stable id; webtree-public points each at
   the reader's own page from `page.alternates`. The preview computes those
   alternates from the site (`frontend/src/lib/previewLanguages.ts`).
+  **A menu needs a node to render it**: it rides the utility slot, and until
+  the first real push no header archetype had a utility node, so the menu
+  shipped in `menus[]` and appeared nowhere. Every `chrome-header-*` now
+  declares a "Language menu" node gated on `has_languages`, set by
+  `build_header(language_menu=)` from `MultilingualPlan.serves_language_urls`
+  — the same predicate `build_menus` asks. `plan_to_site(languages=)` is the
+  one place both read it. The renderers already handled the slot: inline
+  beside the CTA on desktop, hidden below 1024px, listed in the Menu sheet.
+  A header archetype swapped in the builder carries no language node yet (P6).
 - **`PagePlan` is also the LLM's output schema**: pipeline-only fields are
   `SkipJsonSchema` (`translation_status`, `inline_translation`, `text_map`), or
   the structured-output schema advertises them to the model.

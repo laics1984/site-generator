@@ -1427,9 +1427,9 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         header_override=payload.header_archetype,
         footer_override=payload.footer_archetype,
         stock_only=payload.stock_images_only,
+        languages=languages,
     )
     site.collections = await collections_task
-    site.multilingual = languages
     site.palette_brief = {"business": site.site_name, "industry": plan.industry_category, **design_inputs(payload.source, brand)}
     site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
     return site
@@ -2001,9 +2001,9 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
             else planned_scaffolds if payload.generation_mode == "two_page_preview"
             else None
         ),
+        languages=languages,
     )
     site.collections = await collections_task if collections_task else None
-    site.multilingual = languages
     site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
 
     if payload.generation_mode == "two_page_preview" and len(site.pages) != 2:

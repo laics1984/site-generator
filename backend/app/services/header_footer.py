@@ -408,6 +408,7 @@ def build_header(
     overlay: bool = False,
     archetype: HeaderArchetype = "classic",
     social_links: list[tuple[str, str]] | None = None,
+    language_menu: bool = False,
 ) -> BuilderElement:
     """
     Sticky header: logo · nav · CTA, max-width contained. Chrome follows the
@@ -472,6 +473,9 @@ def build_header(
     content: dict[str, Any] = {
         "logo": logo,
         "has_social": bool(social_links),
+        # The utility-slot menu the language menu rides (menu_builder): beside
+        # the CTA on a wide screen, in the Menu sheet below 1024px.
+        "has_languages": language_menu,
     }
     if primary_cta:
         label, href = primary_cta

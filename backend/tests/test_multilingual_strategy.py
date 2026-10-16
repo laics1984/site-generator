@@ -370,6 +370,66 @@ class LanguageMenuTest(unittest.TestCase):
             self.assertFalse([m for m in menus if m["purpose"] == "language"])
 
 
+class HeaderLanguageMenuTest(unittest.TestCase):
+    """The language menu needs a node to render it: every header archetype
+    declares one on the utility slot, present only when the site serves
+    languages at their own URLs (no header used to render that slot at all)."""
+
+    @staticmethod
+    def _utility_menus(element):
+        found = []
+
+        def walk(node):
+            content = node.content
+            if node.type == "menu" and getattr(content, "slot", None) == "utility":
+                found.append(node)
+            if isinstance(content, list):
+                for child in content:
+                    walk(child)
+
+        walk(element)
+        return found
+
+    def test_every_header_archetype_places_the_language_menu_only_when_asked(self):
+        from typing import get_args
+
+        from app.models.brand import BrandIdentity
+        from app.models.design_manifest import HeaderArchetype
+        from app.services.header_footer import build_header
+        from app.services.theme import build_theme
+
+        brand, theme = BrandIdentity(name="Acme"), build_theme("#2563eb")
+        for archetype in get_args(HeaderArchetype):
+            with self.subTest(archetype=archetype):
+                on = build_header(brand, theme, nav_items=[], archetype=archetype,
+                                  primary_cta=("Contact", "/contact"), language_menu=True)
+                off = build_header(brand, theme, nav_items=[], archetype=archetype,
+                                   primary_cta=("Contact", "/contact"))
+                self.assertEqual(len(self._utility_menus(on)), 1)
+                self.assertEqual(self._utility_menus(off), [])
+
+    def test_the_layout_binds_the_header_node_to_the_language_menu(self):
+        from app.models.builder_schema import GeneratedSite, PageNode
+        from app.models.brand import BrandIdentity
+        from app.services.header_footer import build_footer, build_header
+        from app.services.menu_builder import UTILITY_MENU_ID, build_layout_payload
+        from app.services.theme import build_theme
+
+        brand, theme = BrandIdentity(name="Acme"), build_theme("#2563eb")
+        site = GeneratedSite(
+            site_name="Acme", primary_color="#2563eb", secondary_color="#0f172a",
+            pages=[], page_tree=[PageNode(slug="", title="Home", is_homepage=True)],
+            header_schema=build_header(brand, theme, nav_items=[], language_menu=True),
+            footer_schema=build_footer(brand, theme, nav_items=[]),
+            multilingual=MultilingualPlan(mode="separate", primary="en", secondary=["ms"],
+                                          prefixes={"ms": "bm"}),
+        )
+        payload = build_layout_payload(site)
+        self.assertEqual(payload.header["slots"]["utilityMenuId"], UTILITY_MENU_ID)
+        menu = next(m for m in payload.menus if m["id"] == UTILITY_MENU_ID)
+        self.assertEqual(menu["purpose"], "language")
+
+
 class RecipeEndpointTest(unittest.TestCase):
     """The picker and the build read one plan."""
 

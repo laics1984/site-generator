@@ -1673,6 +1673,12 @@ class MultilingualPlan(BaseModel):
     # and the decision fell back to the least destructive mode.
     uncertain: bool = False
 
+    @property
+    def serves_language_urls(self) -> bool:
+        """Each secondary language is served at its own URLs (`/{prefix}/…`),
+        so the site carries a language menu and the header a place for it."""
+        return self.mode == "separate" and bool(self.secondary)
+
 
 class InlineTranslation(BaseModel):
     """A page's second language for same-page bilingual presentation.

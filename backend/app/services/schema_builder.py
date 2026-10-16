@@ -62,6 +62,7 @@ from app.models.content_blocks import (
     ImageMetadata,
     LinkBarBlock,
     MenuBlock,
+    MultilingualPlan,
     NavLink,
     PagePlan,
     PricingBlock,
@@ -4796,6 +4797,7 @@ async def plan_to_site(
     header_override: HeaderArchetype | None = None,
     footer_override: FooterArchetype | None = None,
     stock_only: bool = False,
+    languages: MultilingualPlan | None = None,
 ) -> GeneratedSite:
     """
     Build a complete, themed site from a SitePlan.
@@ -4822,6 +4824,9 @@ async def plan_to_site(
       has already handed us a source with no photography (see
       services/source_images.py), and this closes the one path an empty pool
       leaves open — an LLM-bound `pinned_url` the pool no longer contains.
+    - `languages` is the site's MultilingualPlan, recorded on the site and
+      asked once here: a site serving languages at their own URLs gets the
+      header's language-menu node, which build_menus fills.
     """
     effective_brand = brand or BrandIdentity(
         name=plan.site_name,
@@ -5458,6 +5463,7 @@ async def plan_to_site(
         overlay=header_overlay,
         archetype=manifest.header_archetype,
         social_links=social_links,
+        language_menu=bool(languages and languages.serves_language_urls),
     )
     footer = build_footer(
         effective_brand,
@@ -5541,6 +5547,7 @@ async def plan_to_site(
         header_schema=header,
         footer_schema=footer,
         header_overlay=header_overlay,
+        multilingual=languages,
     )
 
     # Feed the diversity history so the NEXT generation rotates away from this

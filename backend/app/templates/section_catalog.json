@@ -17392,6 +17392,11 @@
           "id": "cta",
           "kind": "link",
           "optional": true
+        },
+        {
+          "id": "has_languages",
+          "kind": "flag",
+          "optional": true
         }
       ],
       "sampleContent": {
@@ -17455,6 +17460,25 @@
                 }
               },
               {
+                "name": "Language menu",
+                "type": "menu",
+                "styles": {
+                  "width": "auto",
+                  "flex": "0 0 auto",
+                  "color": "{{header.fg}}",
+                  "fontSize": "14px",
+                  "whiteSpace": "nowrap"
+                },
+                "classes": "wt-header-ink",
+                "$if": "has_languages",
+                "content": {
+                  "slot": "utility",
+                  "variant": "utility-inline",
+                  "menuLabel": "Language",
+                  "colorMode": "manual"
+                }
+              },
+              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
@@ -17499,6 +17523,11 @@
         {
           "id": "cta",
           "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_languages",
+          "kind": "flag",
           "optional": true
         }
       ],
@@ -17565,6 +17594,25 @@
                 }
               },
               {
+                "name": "Language menu",
+                "type": "menu",
+                "styles": {
+                  "width": "auto",
+                  "flex": "0 0 auto",
+                  "color": "{{header.fg}}",
+                  "fontSize": "14px",
+                  "whiteSpace": "nowrap"
+                },
+                "classes": "wt-header-ink",
+                "$if": "has_languages",
+                "content": {
+                  "slot": "utility",
+                  "variant": "utility-inline",
+                  "menuLabel": "Language",
+                  "colorMode": "manual"
+                }
+              },
+              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
@@ -17609,6 +17657,11 @@
         {
           "id": "cta",
           "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_languages",
+          "kind": "flag",
           "optional": true
         }
       ],
@@ -17683,6 +17736,24 @@
                 }
               },
               {
+                "name": "Language menu",
+                "type": "menu",
+                "styles": {
+                  "width": "auto",
+                  "flex": "0 0 auto",
+                  "color": "var(--wt-pill-ink, {{header.fg}})",
+                  "fontSize": "14px",
+                  "whiteSpace": "nowrap"
+                },
+                "$if": "has_languages",
+                "content": {
+                  "slot": "utility",
+                  "variant": "utility-inline",
+                  "menuLabel": "Language",
+                  "colorMode": "manual"
+                }
+              },
+              {
                 "name": "Header CTA",
                 "type": "link",
                 "styles": {
@@ -17728,6 +17799,11 @@
         {
           "id": "cta",
           "kind": "link",
+          "optional": true
+        },
+        {
+          "id": "has_languages",
+          "kind": "flag",
           "optional": true
         }
       ],
@@ -17803,6 +17879,25 @@
                       "flex": "1 1 0%"
                     },
                     "content": [
+                      {
+                        "name": "Language menu",
+                        "type": "menu",
+                        "styles": {
+                          "width": "auto",
+                          "flex": "0 0 auto",
+                          "color": "{{header.fg}}",
+                          "fontSize": "14px",
+                          "whiteSpace": "nowrap"
+                        },
+                        "classes": "wt-header-ink",
+                        "$if": "has_languages",
+                        "content": {
+                          "slot": "utility",
+                          "variant": "utility-inline",
+                          "menuLabel": "Language",
+                          "colorMode": "manual"
+                        }
+                      },
                       {
                         "name": "Header CTA",
                         "type": "link",
@@ -17945,6 +18040,11 @@
           "id": "cta",
           "kind": "link",
           "optional": true
+        },
+        {
+          "id": "has_languages",
+          "kind": "flag",
+          "optional": true
         }
       ],
       "sampleContent": {
@@ -18004,6 +18104,25 @@
                   "slot": "primary",
                   "variant": "header-inline",
                   "menuLabel": "Primary navigation",
+                  "colorMode": "manual"
+                }
+              },
+              {
+                "name": "Language menu",
+                "type": "menu",
+                "styles": {
+                  "width": "auto",
+                  "flex": "0 0 auto",
+                  "color": "{{header.fg}}",
+                  "fontSize": "14px",
+                  "whiteSpace": "nowrap"
+                },
+                "classes": "wt-header-ink",
+                "$if": "has_languages",
+                "content": {
+                  "slot": "utility",
+                  "variant": "utility-inline",
+                  "menuLabel": "Language",
                   "colorMode": "manual"
                 }
               },
