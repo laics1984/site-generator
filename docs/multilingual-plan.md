@@ -14,7 +14,7 @@ locale-aware public payloads, admin endpoints, plan gate — see "P3").
 **P4 done 2026-10-16** in webtree-public (lang, hreflang, sitemap, language
 menus — see "P4"). **P5 done 2026-10-16** (push of overlays, locale config,
 mirror adoption, language menu — see "P5"). **P6 done 2026-10-17** in the
-builder (edit a page in another language — see "P6"). P7 (admin) next. Nothing else below is implemented yet unless it's listed
+builder (edit a page in another language — see "P6"). **P7 started 2026-10-17** in admin-app: the Languages card and the page list's language pills (see "P7"). Nothing else below is implemented yet unless it's listed
 under "What exists today".
 
 ## What exists today (measured, not assumed)
@@ -50,6 +50,61 @@ The local crawl cache is empty (post-migration), so thresholds below get
 calibrated on a capture set in Phase 0, not on a guess.
 
 ## Progress and corrections
+
+### P7 (admin-app + one cms-api endpoint, 2026-10-17)
+
+**Built** (admin-app `feature/multilingual` 73c7d3f, cms-api c4761bd).
+Site settings has a **Languages** card beside Industry: the main language
+(every plan), each other language with its prefix (`/zh/`) and a progress
+line ("中文 — 1 page needs translation · 1 page to publish", header & footer
+counted too), **add a language** (prefix defaulted as `locale.url_prefix`
+does: `zh`, or `zh-hant` once Simplified is on the site) and **remove** one
+behind a confirm. Without `multilingual_site` the languages stay listed
+("kept, not shown on your website") and the add form becomes the
+`FeatureUnavailable` upsell, plan names from the catalogue. The **page list**
+shows each row's languages, `EN ✓ · ZH ⚠`, with the reason on hover and for
+screen readers. A bilingual site's card explains there are no separate
+addresses and offers no add/remove.
+
+**Decisions and corrections:**
+
+1. **One summary endpoint, not N×M requests.** The P3 endpoints answer one
+   page in one language, so pills for a 20-row list on a two-language site
+   were 40 requests — the N+1 the admin's own rules forbid. cms-api gained
+   `GET entities/{token}/translations[?pageIds=]`: every page's (and the
+   layout's) state per language with its missing count, one request per list
+   load. `TranslationService::state` is the **only** place the states are
+   decided — `untranslated`, `incomplete` (text still in the main language,
+   against the draft), `unpublished` (complete, but its address 404s),
+   `outdated` (page republished since), `complete` — so the card's counts and
+   the pills cannot disagree. Archived pages and article/event templates are
+   left out (per-language CMS content is future work); a single or bilingual
+   site returns no locales, and the list then stops asking for that visit.
+2. **"Removing unpublishes" is the CMS's existing rule, stated honestly.**
+   Dropping a language from `locales_json` stops its prefix routing; its
+   translation rows, published ones included, are untouched, so adding it
+   back serves them again. The confirm says exactly that.
+3. **A legal page reads "needs translation".** The generator never
+   translates legal pages, so `/zh/privacy` is a 404 on uniquekindies; the
+   card counts it rather than hiding it.
+4. Language names are the browser's (`Intl.DisplayNames` in the language
+   itself, as the builder's switch does); the offered list is the
+   generator's `LOCALES` registry minus the bare `zh`.
+
+**Measured** on the local branch CMS (uniquekindies e2e, Growth): the list
+made one summary request for its seven rows; About `EN ✓ ZH ✓`, Home
+`ZH ⚠` (outdated), Privacy `ZH ⚠` (22 strings untranslated), the four
+templates no pills. Adding 繁體中文 defaulted to `/zh-hant/` and read "3
+pages need translation · header & footer need translation"; removing it put
+`locales_json` back byte for byte. On Starter the card showed the upsell
+("Available on the Growth and Business plans"). admin `node --test tests/`
+517/517, cms-api phpunit 1207 green, vue-tsc clean, `vite build` clean.
+
+**Not covered** (the rest of §8): the "Needs translation" filter on the
+page list (the pages API has no translation filter, and a client-side one
+would filter only the current page); the page information form's language
+switch for SEO title/description; the Insights language filter; the SEO
+audit checks. Layout publish/republish is only reported, not actionable here.
 
 ### P6 (builder, 2026-10-17)
 
