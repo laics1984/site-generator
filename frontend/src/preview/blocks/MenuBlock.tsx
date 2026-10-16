@@ -15,15 +15,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { PublicBlockNode } from '../lib/public'
+import { getNodeClasses, getNodeStyles, getStringField } from '../lib/blockRuntime'
 import {
-  getArrayField,
-  getNodeClasses,
-  getNodeField,
-  getNodeStyles,
-  getStringField,
-} from '../lib/blockRuntime'
+  collectHeaderSheet,
+  resolveMenuForNode,
+  utilitySheetSections,
+  type HeaderSheetAction,
+} from '../lib/headerSheet'
 import { getNodeDomId } from '../lib/responsiveRuntime'
-import { getNodeChildren, normalizeBlockType, normalizeSchemaNodes } from '../lib/schema'
 import { resolveSocialGlyph, socialItemLabel } from '../lib/socialIcons'
 import { useRuntimeHeaderOverlay, useRuntimeHeaderSchema, useRuntimeMenus } from '../context'
 
@@ -52,15 +51,6 @@ type FlatMenuItem = {
   hreflang?: string | null
   lang?: string | null
   current?: boolean
-}
-
-type HeaderActionLink = {
-  id: string
-  href: string
-  label: string
-  target?: string | null
-  rel?: string | null
-  styles: Record<string, string | number>
 }
 
 function visibleChildren(item: RuntimeMenuItem): RuntimeMenuItem[] {
@@ -99,17 +89,7 @@ function flattenMenuItems(items: RuntimeMenuItem[], depth = 0): FlatMenuItem[] {
   return flattened
 }
 
-function collectHeaderElements(nodes: PublicBlockNode[], visitor: (node: PublicBlockNode) => void) {
-  for (const node of nodes) {
-    if (getNodeField(node, 'visible') === false) {
-      continue
-    }
-    visitor(node)
-    collectHeaderElements(getNodeChildren(node), visitor)
-  }
-}
-
-function getActionLinkStyle(actionLink: HeaderActionLink): CSSProperties {
+function getActionLinkStyle(actionLink: HeaderSheetAction): CSSProperties {
   return {
     backgroundColor:
       typeof actionLink.styles.backgroundColor === 'string'
@@ -183,26 +163,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
     setOpenDropdownKey(null)
   }
 
-  function resolveMenuItemsForNode(target: PublicBlockNode | Record<string, unknown>) {
-    const directItems = getArrayField<RuntimeMenuItem>(target, 'items')
-    if (directItems.length) {
-      return directItems
-    }
-
-    const explicitMenuId = getStringField(target, 'menuId')
-    const nodeSlot = getStringField(target, 'slot')
-    const label = getStringField(target, 'menuLabel')
-    const menu = runtimeMenus.find((entry) => {
-      if (explicitMenuId) {
-        return entry.id === explicitMenuId
-      }
-      return (nodeSlot && entry.purpose === nodeSlot) || (label && entry.name === label)
-    })
-
-    return Array.isArray(menu?.items) ? (menu.items as RuntimeMenuItem[]) : []
-  }
-
-  const items = resolveMenuItemsForNode(node)
+  const items = resolveMenuForNode(node, runtimeMenus).items as RuntimeMenuItem[]
   const visibleItems = items.filter((item) => item?.visible !== false)
 
   // Grouped footer layout only when at least one item carries children —
@@ -210,47 +171,18 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
   const hasFooterColumnGroups =
     isFooterColumnsMenu && visibleItems.some((item) => visibleChildren(item).length > 0)
 
+  // What the Menu sheet lists besides the primary nav (lib/headerSheet): the
+  // header's utility menus as titled lists, and its call-to-action links.
   const headerSupplemental = (() => {
-    const utilityItems: RuntimeMenuItem[] = []
-    const actionLinks: HeaderActionLink[] = []
-
-    collectHeaderElements(normalizeSchemaNodes(runtimeHeaderSchema), (candidate) => {
-      const candidateId = getNodeDomId(candidate)
-      if (candidateId && candidateId === nodeDomId) return
-
-      const type = normalizeBlockType(getStringField(candidate, 'type'))
-      if (type === 'header') return
-
-      if (type === 'menu') {
-        const nodeSlot = (getStringField(candidate, 'slot') || '').trim().toLowerCase()
-        const nodeVariant = (getStringField(candidate, 'variant') || '').trim().toLowerCase()
-        if (!(nodeSlot === 'utility' || nodeVariant === 'utility-inline')) return
-        utilityItems.push(
-          ...resolveMenuItemsForNode(candidate).filter((item) => item?.visible !== false)
-        )
-        return
-      }
-
-      if (type !== 'link') return
-
-      const href = getStringField(candidate, 'href') || ''
-      const label = getStringField(candidate, 'innerText', 'label', 'text') || ''
-      if (!href.trim() || !label.trim()) return
-
-      actionLinks.push({
-        id: candidateId || label,
-        href,
-        label,
-        rel: getStringField(candidate, 'rel'),
-        target: getStringField(candidate, 'target'),
-        styles: getNodeStyles(candidate),
-      })
-    })
-
-    return { utilityItems, actionLinks }
+    const sheet = collectHeaderSheet(runtimeHeaderSchema, runtimeMenus, nodeDomId)
+    return {
+      utilitySections: utilitySheetSections(sheet.menus).map((section) => ({
+        ...section,
+        items: flattenMenuItems(section.items as RuntimeMenuItem[]),
+      })),
+      actionLinks: sheet.actionLinks,
+    }
   })()
-
-  const flattenedUtilityItems = flattenMenuItems(headerSupplemental.utilityItems)
 
   const resolvedStyles = (() => {
     if (colorMode !== 'auto') {
@@ -431,11 +363,14 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
                     </a>
                   ))}
                 </nav>
-                {flattenedUtilityItems.length > 0 && (
-                  <div className="wt-mobile-menu-section">
-                    <p className="wt-mobile-menu-section__title">Utility</p>
-                    <nav className="wt-mobile-menu-list" aria-label="Utility links">
-                      {flattenedUtilityItems.map((item) => (
+                {headerSupplemental.utilitySections.map((section) => (
+                  <div key={`utility-section:${section.key}`} className="wt-mobile-menu-section">
+                    {section.title && <p className="wt-mobile-menu-section__title">{section.title}</p>}
+                    <nav
+                      className="wt-mobile-menu-list"
+                      aria-label={section.title ? `${section.title} links` : undefined}
+                    >
+                      {section.items.map((item) => (
                         <a
                           key={item.id}
                           className="wt-mobile-menu-link wt-mobile-menu-link--secondary wt-ui-link wt-ui-divider-link"
@@ -453,7 +388,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
                       ))}
                     </nav>
                   </div>
-                )}
+                ))}
                 {headerSupplemental.actionLinks.length > 0 && (
                   <div className="wt-mobile-menu-actions">
                     {headerSupplemental.actionLinks.map((actionLink) => (

@@ -43,6 +43,11 @@ export function hreflangLinks(alternates: PublicAlternate[] | null | undefined):
   return [...links, { rel: 'alternate', hreflang: 'x-default', href: links[0]!.href }]
 }
 
+/** A menu that switches the reader's language (`purpose: "language"`). */
+export function isLanguageMenu(menu: PublicMenu | null | undefined): boolean {
+  return menu?.purpose === 'language'
+}
+
 /**
  * A `purpose: "language"` menu, resolved against this page.
  *
@@ -60,11 +65,11 @@ export function resolveLanguageMenus(
   currentLocale: string | null | undefined
 ): PublicMenu[] {
   const list = Array.isArray(menus) ? menus : []
-  if (!list.some((menu) => menu?.purpose === 'language')) return list
+  if (!list.some(isLanguageMenu)) return list
   const byLocale = new Map((hasAlternates(alternates) ? alternates : []).map((alt) => [alt.locale, alt]))
 
   return list.map((menu) => {
-    if (menu?.purpose !== 'language') return menu
+    if (!isLanguageMenu(menu)) return menu
     const items: PublicMenuItem[] = (menu.items ?? []).flatMap((item) => {
       const alt = item?.locale ? byLocale.get(item.locale) : undefined
       if (!alt) return []
