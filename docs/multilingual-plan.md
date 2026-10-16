@@ -86,8 +86,28 @@ alternates (`previewLanguages.ts`).
 
 **Not covered:** the preview shows the shared (primary) header and footer on a
 translated page — the layout overlay is applied by the CMS, not by the preview
-yet. An end-to-end push against a real CMS was not run: the local CMS database
-isn't migrated for P3 (`php artisan migrate` there first).
+yet.
+
+**End to end (2026-10-16).** Local CMS migrated (the two P3 migrations only),
+the branch API served from the cms-api worktree, uniquekindies generated as
+`separate` en + zh-Hans (home, about, privacy + 2 translations) and pushed
+with the real push code. First push without the plan feature: 3 pages, 3
+translation drafts with a warning, `/zh/about` a 301 to `/about`. On Growth:
+3 translations published, `/zh/about` served in Chinese (38/38 strings, own
+canonical, en + zh alternates, Chinese menu labels); translated element ids ⊆
+the English page's, the difference exactly the hidden headline accent. An
+update push re-published all three and reused 17 of 19 photos. Rendered by
+webtree-public: `<html lang="zh-Hans">`, and — after the fix below — the
+switcher on both pages, each item pointing at the reader's own page with
+`hreflang`/`lang`, the current one `aria-current`.
+
+Two defects it found, both fixed: the CMS localised the language menu's own
+links (English → `/zh`; cms-api 60c6cb0), and **no header archetype had a
+node for the utility slot the language menu rides**, so it was pushed and
+rendered nowhere (builder c23833c, site-generator 3682242 — see CLAUDE.md).
+Not fixed: the phone Menu sheet titles the languages "Utility"; on a site with
+no CTA the sheet's button is the brand-name link (pre-existing, every site);
+a header archetype swapped in the builder carries no language node (P6).
 
 ### P4 (webtree-public + preview mirror, 2026-10-16)
 
