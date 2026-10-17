@@ -139,7 +139,7 @@ async def test_existing_art_direction_call_creates_palette_from_business_evidenc
     monkeypatch.setattr(settings, "design_language_enabled", True)
     model = Model(PALETTES[1])
     direction = await resolve_direction(brand_name="Calm Acorns", mood="friendly", industry="childcare",
-        logo_hex="#c4775a", brand_colors=["#c4775a", "#65766b"], audience="parents seeking calm learning",
+        palette_design_mode="shared", logo_hex="#c4775a", brand_colors=["#c4775a", "#65766b"], audience="parents seeking calm learning",
         reference_colors=["#eee6d9"], image_colors=["#8a9973"], llm=model)
     assert len(model.calls) == 1
     prompt = model.calls[0]["user_prompt"]
@@ -324,7 +324,7 @@ async def test_model_failure_uses_one_complete_validated_fallback(monkeypatch):
             self.calls += 1
             raise LlmError("Model unavailable")
     model = FailedModel()
-    result = await resolve_direction(brand_name="A new business",mood="friendly",industry="childcare",logo_hex=None,llm=model)
+    result = await resolve_direction(brand_name="A new business",mood="friendly",industry="childcare",logo_hex=None,llm=model,palette_design_mode="shared")
     assert model.calls == 1
     assert result.theme.color_system_version == 2
     derived = derive(result.theme.palette.model_dump())
@@ -490,3 +490,82 @@ async def test_stale_preview_palette_save_cannot_overwrite_current_noncolor_sett
     assert stored['builder_styles']['typography']['headingFont']=='Owner heading font'
     assert stored['builder_styles']['buttons']['radius']==23
     assert stored['builder_styles']['colors']['primary']==PALETTES[1]['primary']
+
+
+@pytest.mark.asyncio
+async def test_separate_calls_keep_earlier_design_prompt_and_pin_noncolor_decisions(monkeypatch):
+    from app.services.design_direction import DESIGN_PROMPT, PALETTE_PROMPT
+    monkeypatch.setattr(settings, "ai_palette_enabled", True)
+    monkeypatch.setattr(settings, "design_schemes_enabled", True)
+    monkeypatch.setattr(settings, "design_language_enabled", True)
+    model = Model(PALETTES[1])
+    direction = await resolve_direction(brand_name="Calm Acorns", mood="friendly", industry="childcare",
+        logo_hex="#c4775a", palette_design_mode="separate", audience="Parents", llm=model)
+    assert len(model.calls) == 2
+    assert model.calls[0]["system_prompt"] == DESIGN_PROMPT
+    assert "Observed brand colors" not in model.calls[0]["user_prompt"]
+    assert model.calls[1]["system_prompt"] == PALETTE_PROMPT
+    assert "Parents" in model.calls[1]["user_prompt"]
+    assert direction.theme.hero_background_height == "full"
+    selected = direction.concepts[0].theme
+    assert direction.theme.typography == selected.typography
+    assert direction.theme.design_scheme == selected.design_scheme
+    assert direction.theme.palette.accent == PALETTES[1]["accent"]
+
+
+@pytest.mark.asyncio
+async def test_manual_override_skips_separate_palette_call(monkeypatch):
+    monkeypatch.setattr(settings, "ai_palette_enabled", True)
+    monkeypatch.setattr(settings, "design_schemes_enabled", True)
+    monkeypatch.setattr(settings, "design_language_enabled", True)
+    model = Model(PALETTES[1])
+    await resolve_direction(brand_name="Acorns", mood="friendly", industry="childcare", logo_hex=None,
+        palette_design_mode="separate", generate_palette=False, llm=model)
+    assert len(model.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_separate_palette_failure_retains_complete_fallback(monkeypatch):
+    monkeypatch.setattr(settings, "ai_palette_enabled", True)
+    monkeypatch.setattr(settings, "design_schemes_enabled", True)
+    monkeypatch.setattr(settings, "design_language_enabled", True)
+    result = await resolve_direction(brand_name="Acorns", mood="friendly", industry="childcare", logo_hex=None,
+        palette_design_mode="separate", llm=Model({"primary":"#abc"}))
+    assert result.theme.palette.accent == result.concepts[0].theme.palette.accent
+    assert result.theme.color_system_version == 2
+
+@pytest.mark.asyncio
+async def test_palette_only_response_cannot_change_design_or_hero(monkeypatch):
+    monkeypatch.setattr(settings, "ai_palette_enabled", True)
+    monkeypatch.setattr(settings, "design_schemes_enabled", True)
+    monkeypatch.setattr(settings, "design_language_enabled", True)
+    class ConflictingModel:
+        calls = 0
+        async def chat_json(self, **kwargs):
+            self.calls += 1
+            return kwargs['schema'].model_validate({
+                'concept': 0 if self.calls == 1 else 2,
+                'hero_height': 'banded' if self.calls == 1 else 'full',
+                'palette': PALETTES[1],
+            })
+    result = await resolve_direction(brand_name="Acorns", mood="friendly", industry="childcare", logo_hex=None,
+        palette_design_mode="separate", llm=ConflictingModel())
+    assert result.theme.hero_background_height == 'banded'
+    assert result.theme.design_scheme == result.concepts[0].theme.design_scheme
+
+
+@pytest.mark.asyncio
+async def test_palette_only_response_cannot_flip_light_dark_design():
+    from app.services.llm import LlmError
+    original = theme(PALETTES[0]); before = original.model_dump()
+    with pytest.raises(LlmError, match="light/dark"):
+        await regenerate_palette(original, {}, llm=Model(PALETTES[4]))
+    assert original.model_dump() == before
+
+
+@pytest.mark.parametrize("mode", ["shared", "separate"])
+def test_generation_request_persists_mode(mode):
+    from app.routers.generate import GenerateRequest
+    request = GenerateRequest(source=SourceContent(source_kind="url", source_ref="https://example.test", raw_text="A business"),
+                              palette_design_mode=mode)
+    assert GenerateRequest.model_validate_json(request.model_dump_json()).palette_design_mode == mode

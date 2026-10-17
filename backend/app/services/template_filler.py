@@ -248,10 +248,10 @@ async def _resolve_image(
 ) -> dict[str, str]:
     """Normalize an image slot value to ``{src, alt}``, resolving a query if needed."""
     if isinstance(value, str):
-        return {"src": value, "alt": ""}
+        return {"src": value.strip(), "alt": ""}
     if not isinstance(value, dict):
         return {"src": "", "alt": ""}
-    src = value.get("src") or ""
+    src = str(value.get("src") or "").strip()
     alt = value.get("alt") or ""
     # {"monogram": name} — a named person with no portrait of their own. Built
     # locally in the brand's colours; never resolved to a stock photo.
@@ -477,6 +477,8 @@ async def _fill_shape(
         node_content = node.get("content")
         slot_base = node_content if isinstance(node_content, dict) else {}
         bound = await _bind_slot(node["type"], value, slot_base, resolve_image, theme)
+        if node["type"] == "image" and not (bound.src or "").strip():
+            return None
         return BuilderElement(id=str(uuid4()), content=bound, **base)
 
     # Container: recurse children in the same scope.

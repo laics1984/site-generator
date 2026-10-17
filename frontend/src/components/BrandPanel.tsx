@@ -45,6 +45,8 @@ interface BrandPanelProps {
   setMood: (mood: BrandMoodChoice) => void
   colorScheme: ColorSchemeChoice
   setColorScheme: (scheme: ColorSchemeChoice) => void
+  paletteDesignMode: 'shared' | 'separate'
+  setPaletteDesignMode: (mode: 'shared' | 'separate') => void
   heroHeight: HeroHeightChoice
   setHeroHeight: (height: HeroHeightChoice) => void
   stockImagesOnly: boolean
@@ -63,6 +65,8 @@ export function BrandPanel({
   setMood,
   colorScheme,
   setColorScheme,
+  paletteDesignMode,
+  setPaletteDesignMode,
   heroHeight,
   setHeroHeight,
   stockImagesOnly,
@@ -146,6 +150,16 @@ export function BrandPanel({
           })}
         </div>
       </div>
+
+      <label className="block space-y-2 text-sm">
+        <span className="font-medium text-slate-700">Design and palette AI calls</span>
+        <select className="w-full rounded-lg border border-slate-200 bg-white p-2"
+          value={paletteDesignMode} onChange={event => setPaletteDesignMode(event.target.value as 'shared' | 'separate')}>
+          <option value="separate">Separate — earlier design selection, then palette</option>
+          <option value="shared">Shared — design and palette together</option>
+        </select>
+        <p className="text-xs text-slate-500">Separate uses an additional palette call and keeps the earlier design-selection prompt. Fresh AI results can still vary.</p>
+      </label>
 
       <div>
         <div className="text-sm font-medium text-slate-700">Color scheme</div>

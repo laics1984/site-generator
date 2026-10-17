@@ -79,6 +79,7 @@ export default function App() {
   // 'auto' → send null so the backend decides from the logo (light logo ⇒ dark).
   const [colorScheme, setColorScheme] = useState<ColorSchemeChoice>('auto')
   // Hero photo-background height, site-wide. 'full' = full-screen hero (default).
+  const [paletteDesignMode, setPaletteDesignMode] = useState<'shared' | 'separate'>('separate')
   const [heroHeight, setHeroHeight] = useState<HeroHeightChoice>('auto')
   // Dress the whole site in Pexels stock and ignore the source's own photos.
   const [stockImagesOnly, setStockImagesOnly] = useState(false)
@@ -528,6 +529,7 @@ export default function App() {
       brand: effectiveBrand(),
       mood_override: chosenMood,
       color_scheme_override: colorScheme === 'auto' ? null : colorScheme,
+      palette_design_mode: paletteDesignMode,
       hero_height: heroHeight === 'auto' ? null : heroHeight,
       stock_images_only: stockImagesOnly,
       detected_brand: detectedBrand,
@@ -785,6 +787,8 @@ export default function App() {
                 setMood={setMood}
                 colorScheme={colorScheme}
                 setColorScheme={setColorScheme}
+                paletteDesignMode={paletteDesignMode}
+                setPaletteDesignMode={setPaletteDesignMode}
                 heroHeight={heroHeight}
                 setHeroHeight={setHeroHeight}
                 stockImagesOnly={stockImagesOnly}

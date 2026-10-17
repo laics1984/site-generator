@@ -5,8 +5,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # AI creates four palette colors in the existing art-direction call.
+    # AI creates four palette colors, jointly with design or in a separate call.
     ai_palette_enabled: bool = True
+    ai_palette_call_mode: Literal["shared", "separate"] = "separate"
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # --- LLM connection ------------------------------------------------------

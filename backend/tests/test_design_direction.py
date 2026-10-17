@@ -143,7 +143,7 @@ class _FakeLLM:
 def _direction(llm=None, **overrides):
     kwargs = dict(
         brand_name="Little Acorns", mood="friendly", industry="childcare",
-        logo_hex="#e11d48", personality=CALM_NATURAL, llm=llm,
+        logo_hex="#e11d48", personality=CALM_NATURAL, llm=llm, generate_palette=False,
     )
     kwargs.update(overrides)
     return asyncio.run(resolve_direction(**kwargs))

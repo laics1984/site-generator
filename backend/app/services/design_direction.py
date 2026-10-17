@@ -32,8 +32,9 @@ With no evidence and no history every score ties, and the brand-seeded
 rotation the fit list always had decides — so a brand still regenerates
 identically, and the deterministic path degrades to exactly the old one.
 
-Then at most ONE reasoning call picks among the top `design_concept_candidates`
-concepts BY INDEX and creates the four creative colors for this business. Code
+A reasoning call picks among the top `design_concept_candidates` concepts BY
+INDEX. Shared mode also chooses colors; separate mode retains the original
+design prompt and follows with a palette-only call. Code
 validates that complete proposal and derives readable variants. A failed or
 malformed proposal keeps the validated concept's palette. The same call states
 the hero height. With creative colors disabled, a one-concept shortlist needs
@@ -252,12 +253,16 @@ async def _freshness(
 # --- the model's pick -------------------------------------------------------------
 
 
-class ConceptChoice(BaseModel):
-    """The model's answer: an index into the concepts it was shown, and the
-    hero height. Either may be null to defer."""
+class DesignChoice(BaseModel):
+    """Legacy design-only answer; creative colors are deliberately absent."""
 
     concept: int | None = None
     hero_height: HeroBackgroundHeight | None = None
+
+
+class PaletteChoice(BaseModel):
+    """A complete creative palette, with invalid proposals discarded together."""
+
     palette: CreativePalette | None = None
 
     @field_validator("palette", mode="before")
@@ -271,7 +276,11 @@ class ConceptChoice(BaseModel):
             return None
 
 
-CONCEPT_PROMPT = """You are an art director choosing the design direction for ONE business's website.
+class ConceptChoice(DesignChoice, PaletteChoice):
+    """Shared-call response: design and palette in a single decision."""
+
+
+_DESIGN_INSTRUCTIONS = """You are an art director choosing the design direction for ONE business's website.
 
 You are given what is known about the business (its name, industry, mood, the
 personality its own content shows, and its logo colour) and a short list of
@@ -291,7 +300,9 @@ content starts near the fold. Choose "full" when the brand sells atmosphere,
 place, craft or emotion and the imagery IS the message; "banded" when the
 visitor arrived to read, compare or act.
 
-Create an intentional palette for THIS business: primary is its identity,
+"""
+
+_PALETTE_INSTRUCTIONS = """Create an intentional palette for THIS business: primary is its identity,
 secondary a harmonious supporting color, accent a selective small emphasis,
 surface a restrained foundation in the requested light/dark scheme. Industry
 and category influence atmosphere, never impose fixed colors. Read personality,
@@ -304,12 +315,20 @@ for technology, teal for healthcare, rainbow for childcare, or one palette per
 industry. Spend accent sparingly; applications derive technical shades and inks.
 Use only four #rrggbb palette values, not separate hover/text/border colors.
 If a direction is pinned, keep its concept and hero height; change colors only.
+"""
 
+DESIGN_PROMPT = _DESIGN_INSTRUCTIONS + """Reply with ONE JSON object, no markdown, no commentary:
+{"concept": <concept number>, "hero_height": "full" | "banded" | null}
+"""
+
+PALETTE_PROMPT = _PALETTE_INSTRUCTIONS + """
+The design is already selected. Return only {"palette":{"primary":"#...","secondary":"#...","accent":"#...","surface":"#..."}} as JSON."""
+
+CONCEPT_PROMPT = _DESIGN_INSTRUCTIONS + _PALETTE_INSTRUCTIONS + """
 Reply with ONE JSON object, no markdown, no commentary:
 {"concept": <concept number>, "hero_height": "full" | "banded" | null,
  "palette": {"primary":"#...", "secondary":"#...", "accent":"#...", "surface":"#..."}}
 """
-
 
 def _concept_prompt(
     concepts: list[Concept],
@@ -326,6 +345,7 @@ def _concept_prompt(
     image_colors: list[str] | None = None,
     design_direction: str | None = None,
     business_context: str | None = None,
+    include_palette_context: bool = True,
 ) -> str:
     lines = [
         f"Business: {brand_name}",
@@ -335,15 +355,16 @@ def _concept_prompt(
     ]
     if positioning:
         lines.append(f"Positioning (inferred): {positioning}")
-    lines.extend([
-        f"Audience: {(audience or 'unknown')[:300]}",
-        f"Observed brand colors: {(brand_colors or [])[:6]}",
-        f"Observed website colors: {(reference_colors or [])[:8]}",
-        f"Measured image colors: {(image_colors or [])[:6]}",
-        f"Explicit design direction: {(design_direction or 'none')[:1000]}",
-        f"Business content and purpose: {(business_context or 'unknown')[:1600]}",
-        f"Requested scheme: {concepts[0].theme.color_scheme if concepts else 'light'}",
-    ])
+    if include_palette_context:
+        lines.extend([
+            f"Audience: {(audience or 'unknown')[:300]}",
+            f"Observed brand colors: {(brand_colors or [])[:6]}",
+            f"Observed website colors: {(reference_colors or [])[:8]}",
+            f"Measured image colors: {(image_colors or [])[:6]}",
+            f"Explicit design direction: {(design_direction or 'none')[:1000]}",
+            f"Business content and purpose: {(business_context or 'unknown')[:1600]}",
+            f"Requested scheme: {concepts[0].theme.color_scheme if concepts else 'light'}",
+        ])
     if personality is not None and personality.known():
         traits = ", ".join(
             f"{axis.replace('_', '↔')} {value:+d}" for axis, value in personality.known().items()
@@ -366,20 +387,20 @@ def _concept_prompt(
 
 
 async def _model_choice(
-    concepts: list[Concept], *, llm: LlmClient | None, **brief: object
+    concepts: list[Concept], *, llm: LlmClient | None, shared: bool = True, **brief: object
 ) -> ConceptChoice | None:
     client = llm or get_reasoning_llm()
     try:
         choice = await client.chat_json(
-            system_prompt=CONCEPT_PROMPT,
-            user_prompt=_concept_prompt(concepts, **brief),  # type: ignore[arg-type]
-            schema=ConceptChoice,
+            system_prompt=CONCEPT_PROMPT if shared else DESIGN_PROMPT,
+            user_prompt=_concept_prompt(concepts, include_palette_context=shared, **brief),  # type: ignore[arg-type]
+            schema=ConceptChoice if shared else DesignChoice,
             temperature=settings.design_temperature,
         )
     except LlmError as exc:
         logger.warning("Concept pick failed, keeping the best-scored concept: %s", exc)
         return None
-    return choice
+    return ConceptChoice.model_validate(choice.model_dump())
 
 
 # --- the direction ----------------------------------------------------------------
@@ -428,6 +449,8 @@ async def resolve_direction(
     content: ContentProfile | None = None,
     hero_height: HeroBackgroundHeight | None = None,
     scheme_choice: str | None = None,
+    palette_design_mode: Literal["shared", "separate"] | None = None,
+    generate_palette: bool = True,
     use_model: bool = True,
     llm: LlmClient | None = None,
 ) -> DesignDirection:
@@ -436,6 +459,8 @@ async def resolve_direction(
     ``use_model`` False is for the callers that must not spend a round-trip
     (the page recipe's preview, plan_to_site's no-theme path); they get the
     best-scored concept, which is also every caller's fallback."""
+    shared = (palette_design_mode or settings.ai_palette_call_mode) == "shared"
+    palette_enabled = settings.ai_palette_enabled and generate_palette and use_model
     seed = brand_name.strip() or "site"
     color_scheme = resolve_color_scheme(
         color_scheme_override, brand_color_scheme, logo_is_light, industry=industry
@@ -454,14 +479,29 @@ async def resolve_direction(
             scheme_choice=scheme_slug,
         )
 
+    palette_brief = {
+        "business": seed, "industry": industry, "mood": mood,
+        "personality": personality.model_dump() if personality else None,
+        "positioning": positioning, "audience": audience,
+        "brand_colors": brand_colors, "reference_colors": reference_colors,
+        "image_colors": image_colors, "business_context": business_context,
+    }
+
+    async def separate_palette(selected: ThemeTokens) -> ThemeTokens:
+        try:
+            return await regenerate_palette(selected, palette_brief, design_direction, llm)
+        except LlmError as exc:
+            logger.warning("Palette pick failed, keeping the selected concept colors: %s", exc)
+            return _creative_theme(selected, None, brand_colors, design_direction)
+
     if not settings.design_schemes_enabled:
         # No languages to choose among: the per-mood defaults, deterministic.
         theme = theme_for(None)
         theme.hero_background_height = resolve_hero_height(
             hero_height, None, mood=mood, industry=industry
         )
-        if settings.ai_palette_enabled and use_model:
-            theme = _creative_theme(theme, None, brand_colors, design_direction)
+        if palette_enabled:
+            theme = await separate_palette(theme)
         return DesignDirection(theme=theme, color_scheme=color_scheme, picked_by="schemes-off")
 
     pinned = design_schemes.SCHEMES_BY_SLUG.get((scheme_choice or "").strip().lower())
@@ -493,10 +533,11 @@ async def resolve_direction(
     picked_by: Literal["score", "model", "pin"] = "pin" if pinned is not None else "score"
     model_height: HeroBackgroundHeight | None = None
     choice: ConceptChoice | None = None
-    if use_model and settings.design_language_enabled and (len(concepts) > 1 or settings.ai_palette_enabled):
+    if use_model and settings.design_language_enabled and (len(concepts) > 1 or (shared and palette_enabled)):
         choice = await _model_choice(
             concepts,
             llm=llm,
+            shared=shared and palette_enabled,
             brand_name=seed,
             mood=mood,
             industry=industry,
@@ -517,11 +558,14 @@ async def resolve_direction(
                 picked_by = "model"
 
     theme = chosen.theme
-    if settings.ai_palette_enabled and use_model:
-        theme = _creative_theme(theme, choice.palette if choice else None, brand_colors, design_direction)
     theme.hero_background_height = resolve_hero_height(
         hero_height, model_height, mood=mood, industry=industry
     )
+    if palette_enabled:
+        if shared:
+            theme = _creative_theme(theme, choice.palette if choice else None, brand_colors, design_direction)
+        else:
+            theme = await separate_palette(theme)
     theme.design_rationale = _rationale(concepts, chosen, picked_by)
     logger.info(
         "Design direction for %s: %s (%s) of %s",
@@ -552,16 +596,19 @@ def _creative_theme(theme: ThemeTokens, palette: CreativePalette | None,
 
 async def regenerate_palette(theme: ThemeTokens, brief: dict, direction: str | None = None,
                              llm: LlmClient | None = None) -> ThemeTokens:
-    """Same art director, with layout/type/hero pinned. One reasoning call."""
+    """Palette-only reasoning; layout, typography and hero remain pinned."""
     client = llm or get_reasoning_llm()
     choice = await client.chat_json(
-        system_prompt=CONCEPT_PROMPT,
+        system_prompt=PALETTE_PROMPT,
         user_prompt=(f"Pinned direction: {theme.design_scheme or theme.mood}; scheme: {theme.color_scheme}. "
                      f"Current palette: {theme.palette.model_dump()}. Keep all non-color decisions.\n"
                      + str(brief)[:6000] + "\nExplicit design direction: " + (direction or "Create another appropriate coherent palette.")[:1000]),
-        schema=ConceptChoice,
+        schema=PaletteChoice,
         temperature=settings.design_temperature,
     )
     if choice.palette is None:
         raise LlmError("The AI did not return a complete valid palette. Your current colors were kept.")
-    return _creative_theme(theme, choice.palette, brief.get("brand_colors"), direction)
+    result = _creative_theme(theme, choice.palette, brief.get("brand_colors"), direction)
+    if result.color_scheme != theme.color_scheme:
+        raise LlmError("The proposed surface changed the selected light/dark design. Current colors were kept.")
+    return result

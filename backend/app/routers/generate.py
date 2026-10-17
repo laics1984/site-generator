@@ -146,6 +146,7 @@ class GenerateRequest(BaseModel):
     """Source content plus optional brand. Brand drives logo + palette + mood."""
 
     source: SourceContent
+    palette_design_mode: Literal["shared", "separate"] | None = None
     palette_override: CreativePalette | None = None
     brand: BrandIdentity | None = None
     mood_override: BrandMood | None = None
@@ -1383,6 +1384,8 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         logo_is_light=brand.logo_is_light if brand else None,
         content=ContentProfile.of(payload.source),
         hero_height=payload.hero_height,
+        palette_design_mode=payload.palette_design_mode,
+        generate_palette=payload.palette_override is None,
         **design_inputs(payload.source, brand),
     )
     theme = direction.theme
@@ -1448,6 +1451,7 @@ class GenerateWithPagesRequest(BaseModel):
     """
 
     source: SourceContent
+    palette_design_mode: Literal["shared", "separate"] | None = None
     palette_override: CreativePalette | None = None
     selected_pages: list[PageScaffold] = Field(min_length=1)
     generation_mode: Literal["full", "two_page_preview", "remaining"] = "full"
@@ -1699,6 +1703,8 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
                 positioning=detected.positioning,
                 content=ContentProfile.of(payload.source),
                 hero_height=payload.hero_height,
+                palette_design_mode=payload.palette_design_mode,
+                generate_palette=payload.palette_override is None,
                 **design_inputs(payload.source, brand, detected),
             )
         theme = direction.theme
@@ -2005,12 +2011,6 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     )
     site.collections = await collections_task if collections_task else None
     site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
-
-    if payload.generation_mode == "two_page_preview" and len(site.pages) != 2:
-        raise HTTPException(status_code=500, detail="Preview generation must produce exactly two pages.")
-
-    site.generation_mode = payload.generation_mode
-    site.palette_brief = {"business": site.site_name, "industry": industry, "positioning": detected.positioning, "personality": detected.personality.model_dump(), **design_inputs(payload.source, brand, detected)}
     # Each translated page was derived from its page's string map; finish what
     # the planner never wrote (default eyebrows, header and footer copy).
     if languages.mode == "separate" and any(page.locale for page in site.pages):
@@ -2022,6 +2022,12 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
                 + ", ".join(incomplete)
                 + ". They are saved as drafts, not published, until finished."
             )
+
+    if payload.generation_mode == "two_page_preview" and len(site.pages) != 2:
+        raise HTTPException(status_code=500, detail="Preview generation must produce exactly two pages.")
+
+    site.generation_mode = payload.generation_mode
+    site.palette_brief = {"business": site.site_name, "industry": industry, "positioning": detected.positioning, "personality": detected.personality.model_dump(), **design_inputs(payload.source, brand, detected)}
     site.planned_page_count = len(planned_scaffolds)
     if payload.generation_mode == "two_page_preview":
         request = payload.model_dump(mode="json", exclude={"frozen_site", "available_scaffolds"})

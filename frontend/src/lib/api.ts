@@ -97,6 +97,7 @@ export async function checkPexelsHealth(): Promise<{ status: string; provider?: 
 }
 
 export interface GeneratePayload {
+  palette_design_mode?: 'shared' | 'separate'
   source: SourceContent
   brand?: BrandIdentity | null
   mood_override?: BrandMood | null
@@ -116,6 +117,7 @@ export async function generateFromSource(payload: GeneratePayload): Promise<Gene
 }
 
 export interface GenerateWithPagesPayload {
+  palette_design_mode?: 'shared' | 'separate'
   palette_override?: CreativePalette | null
   source: SourceContent
   selected_pages: PageScaffold[]

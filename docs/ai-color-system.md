@@ -181,3 +181,56 @@ From webtree-public:
     npm run build
 
 The builder tests are src/lib/builder-styles.test.ts, color-utils.test.ts, surface-ink.test.ts and color-system.test.ts, run with its Vitest Node API and the existing @ alias; build with npm run build. The CMS checks are RePinPublishedPagesTest, PublicSiteEndpointTest and PublicPageEndpointTest via php artisan test. Local visual checks used temporary entry pages through the real preview and Nuxt components; fixtures, harness copies, reports and screenshots are archived in the gallery directory rather than shipped as application routes.
+
+
+### Design/palette call modes
+
+The generator's Brand step exposes **Separate** (default) and **Shared** calls.
+`palette_design_mode` is an optional `shared | separate` request field on both
+source-generation endpoints, persisted with staged generation requests. The
+server default is `AI_PALETTE_CALL_MODE=separate`.
+
+Separate retains the pre-palette design-selection system prompt and business
+inputs. It selects the concept and hero height before a palette-only request;
+that second response cannot specify a concept or hero height. It costs one
+additional reasoning call when a design pick is needed. A palette failure keeps
+the complete selected fallback; a manual palette override skips the palette call.
+The palette-only response must retain the selected light/dark scheme.
+
+Shared selects concept, hero height and four colors together in one request.
+Both modes use business category, personality, audience and brand evidence for
+colors. Separate restores the earlier selection behavior, not an exact replay:
+model responses, diversity history and available stock photos can still vary.
+Palette-derived image searches also remain color-sensitive.
+
+Unresolved catalog image slots are removed before schema serialization, letting
+empty image-only frames collapse. Valid source images and deterministic SVG
+fallbacks are preserved. This does not repair remote URLs that later go offline.
+No CMS endpoint, database migration or public caching contract changes are needed.
+
+Validation of call modes and empty-image handling:
+
+- 227 focused palette, design, template, media and image tests passed.
+- Full backend run before the final five regression cases: 2,797 passed,
+  one skipped, five failed. Three were the previously observed upload mock/DNS
+  failures. Two multilingual CTA-routing failures also reproduced when loading
+  unchanged HEAD versions of design_direction and template_filler; concurrent
+  multilingual changes were preserved.
+- Generator frontend production build passed.
+- Actual React preview renderer inspected with an about-image-split fixture:
+  the SVG fallback loaded at 536 × 402 on desktop; the empty-image frame was
+  absent and remaining copy expanded to 1,120 pixels. At a 390-pixel viewport,
+  the fallback loaded and there was no horizontal overflow.
+- The actual BrandPanel selector was inspected with Separate selected by default
+  and switched successfully to Shared. Temporary QA entries were removed.
+- The reported preview was closed, so its exact blank-image cause could not be
+  confirmed. These checks verify unresolved-slot handling, not remote photo
+  availability or a fresh paid-model generation from the original document.
+
+Files for this change: `config.py` and `.env.example` (server default),
+`design_direction.py` (distinct typed prompts and call orchestration),
+`routers/generate.py` (optional request mode and override optimization),
+`template_filler.py` (unresolved-image pruning), `App.tsx`, `BrandPanel.tsx`
+and `lib/api.ts` (mode selection and payload), `test_ai_palette.py`,
+`test_design_direction.py`, `test_empty_image_slots.py` (regressions), and
+this document. Concurrent multilingual files are outside this change.
