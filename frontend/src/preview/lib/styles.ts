@@ -231,13 +231,22 @@ function extractCssVars(source?: PublicStyleTokens | null): Record<string, strin
   return vars
 }
 
+// Records that ride in BuilderStyles without being style tokens. The design
+// manifest is the generator's decision record: free text (its `seed` is the
+// brand name, its decisions quote the direction brief), read by nothing that
+// styles a page. Flattened, it lands in the root's server-rendered `style`
+// attribute, where one apostrophe ("St. Mary's") opens a CSS string that
+// swallows every declaration after it — the colour and button tokens among
+// them, so buttons fall back to the default blue.
+const NON_TOKEN_KEYS = new Set(['designManifest'])
+
 function flattenStyleTokens(
   source: PublicStyleTokens,
   prefix = '--wt',
   output: Record<string, string> = {}
 ): Record<string, string> {
   for (const [key, value] of Object.entries(source)) {
-    if (key.startsWith('--') || key === 'cssVars' || key === 'variables') {
+    if (key.startsWith('--') || key === 'cssVars' || key === 'variables' || NON_TOKEN_KEYS.has(key)) {
       continue
     }
 
