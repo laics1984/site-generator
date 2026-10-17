@@ -37,6 +37,7 @@ from dataclasses import dataclass
 
 from app.models.builder_schema import BuilderElement, BuilderElementContent, GeneratedSite
 from app.models.design_manifest import DesignManifest, DesignQuality, QualityFinding
+from app.services.image_abstract import abstract_text, is_placeholder_src
 from app.services.style_tokens import IMAGE_SHAPES, SHAPED_IMAGE_NAMES
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ _DIMENSION: dict[str, str] = {
     "font-outside-theme": "coherence",
     "shape-crops-portrait": "imagery",
     "portrait-in-landscape-slot": "imagery",
+    "abstract-featured-image": "imagery",
 }
 
 # ux_audit rules that are SEO, not design: logged, not scored.
@@ -92,6 +94,7 @@ _HEX_IN_RE = re.compile(r"#[0-9a-fA-F]{6}\b")
 _URL_RE = re.compile(r"url\(")
 _SHADOW_BLUR_RE = re.compile(r"(?:-?\d+(?:\.\d+)?px\s+){2}(\d+(?:\.\d+)?)px")
 _CARD_GROUP_HINT = re.compile(r"grid|cards?|list|row", re.IGNORECASE)
+_DATA_SVG_URL_RE = re.compile(r"""url\(\s*["']?(data:image/svg\+xml;utf8,[^"')]+)""")
 
 
 # --- tree helpers -----------------------------------------------------------------
@@ -380,6 +383,39 @@ def _check_imagery(ctx: _Context) -> Iterator[QualityFinding]:
                     )
 
 
+def _paints_behind_copy(section: BuilderElement) -> bool:
+    """The sections whose OWN background may be a surface: a full-bleed hero
+    (or a split hero's wash) and a CTA band."""
+    return (section.name or "").lower().startswith(("hero", "cta"))
+
+
+def _check_abstract_imagery(ctx: _Context) -> Iterator[QualityFinding]:
+    """A featured picture that shows nothing. Abstract imagery (a gradient, a
+    texture, the generator's gradient placeholder) only ever sits behind copy —
+    services/image_abstract. Reported, never corrected: the fix is upstream, in
+    the resolver's gates, and a local change could only delete the picture."""
+    for page in ctx.site.pages:
+        for index, section in enumerate(_body(page)):
+            for node in _walk(section):
+                if node.type == "image" and isinstance(node.content, BuilderElementContent):
+                    if is_placeholder_src(node.content.src) or abstract_text(node.content.alt):
+                        yield _finding(
+                            "abstract-featured-image", "medium",
+                            "a framed image shows an abstract surface, not a subject",
+                            page=page.slug or "/", section=index, node=node.name,
+                        )
+                    continue
+                if node is section and _paints_behind_copy(section):
+                    continue
+                values = " ".join(_bg_values(node))
+                if any(is_placeholder_src(src) for src in _DATA_SVG_URL_RE.findall(values)):
+                    yield _finding(
+                        "abstract-featured-image", "medium",
+                        "a card or tile is painted with the gradient placeholder instead of a photo",
+                        page=page.slug or "/", section=index, node=node.name,
+                    )
+
+
 def _section_title_colors(section: BuilderElement) -> str | None:
     for node in _walk(section):
         if node.htmlTag in ("h1", "h2") or (node.name or "") in ("Heading", "Title"):
@@ -459,6 +495,7 @@ _CHECKS: tuple[Callable[[_Context], Iterator[QualityFinding]], ...] = (
     _check_conversion,
     _check_fonts,
     _check_imagery,
+    _check_abstract_imagery,
     _check_direction,
     _check_originality,
 )

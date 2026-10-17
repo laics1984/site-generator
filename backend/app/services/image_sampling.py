@@ -9,7 +9,7 @@ blind mid-cast: a dark interior shot and a bright beach got the identical wash.
 
 This module closes that gap for the slots where it shows most — a photo painted
 BEHIND copy (a full-bleed hero, a photo CTA, a photo tile) — by downloading the
-photo once and reading three things off it:
+photo once and reading four things off it:
 
   * `dominant_hex` — feeds the existing `overlay_alpha` ramp, so the cast
     adapts to the photograph instead of guessing.
@@ -19,6 +19,10 @@ photo once and reading three things off it:
     for the region the copy sits on, not the frame's average
     (`image_styling._copy_scrim`). Stock photography puts its brightest region
     in the middle of the frame, which is where the copy goes.
+  * `hues` — the colour families the frame actually carries, so an abstract
+    SOURCE background can be held to the theme (`image_abstract.theme_fits`).
+    A median colour cannot answer that: a blue-and-orange texture has a brown
+    median that matches neither.
 
 Deliberately NOT a general pass over the image pool: one download per photo
 painted behind copy. Everything degrades to None, and every caller must treat
@@ -71,6 +75,10 @@ class PhotoSample:
     focal_y: float
     #: How bright the photo is where: what the copy scrim is sized from.
     luminance_map: PhotoLuminance | None = None
+    #: Hue (degrees) of every chromatic pixel of the colour read, and the share
+    #: of pixels that carry a hue at all. See `_chromatic_hues`.
+    hues: tuple[float, ...] = ()
+    chromatic_share: float = 0.0
 
     @property
     def band(self) -> str:
@@ -138,6 +146,7 @@ def _measure(raw: bytes, url: str = "") -> PhotoSample | None:
         lum = relative_luminance(dominant_hex)
     except (ValueError, IndexError):
         return None
+    hues, chromatic_share = _chromatic_hues(pixels)
     return PhotoSample(
         dominant_hex=dominant_hex,
         luminance=round(lum, 4),
@@ -147,7 +156,25 @@ def _measure(raw: bytes, url: str = "") -> PhotoSample | None:
             _LUMINANCE_GRID,
             tuple(round(relative_luminance("#%02x%02x%02x" % cell), 4) for cell in cells),
         ),
+        hues=hues,
+        chromatic_share=chromatic_share,
     )
+
+
+def _chromatic_hues(pixels: list[tuple[int, int, int]]) -> tuple[tuple[float, ...], float]:
+    """(hue of every chromatic pixel, share of pixels that are chromatic).
+
+    "Chromatic" is `theme.has_brand_hue` — chroma, the one test the palette's
+    own colours are judged by, so an image and a theme are measured alike.
+    """
+    from app.services.image_abstract import hue_of
+    from app.services.theme import has_brand_hue
+
+    if not pixels:
+        return (), 0.0
+    hexes = ["#%02x%02x%02x" % p for p in pixels]
+    hues = tuple(round(hue_of(h), 1) for h in hexes if has_brand_hue(h))
+    return hues, round(len(hues) / len(hexes), 4)
 
 
 def _median_hex(pixels: list[tuple[int, int, int]]) -> str:

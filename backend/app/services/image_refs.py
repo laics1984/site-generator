@@ -22,6 +22,7 @@ import logging
 from collections.abc import Iterator
 
 from app.models.content_blocks import ImageMetadata, PagePlan, SourceContent
+from app.services.image_abstract import is_abstract
 from app.services.image_match import _UNPINNABLE_VISION_KINDS, hides_legible_content
 from app.services.source_router import promptable_images
 
@@ -61,6 +62,8 @@ def _unfit_for_kind(meta: ImageMetadata, kind: str, *, layout: str | None) -> st
     background = meta.role == "background" or meta.source_usage == "css_background"
     if background and not full_bleed:
         return "decorative background"
+    if not full_bleed and is_abstract(meta):
+        return "abstract surface"
     if meta.vision_kind in _UNPINNABLE_VISION_KINDS:
         return f"vision_kind={meta.vision_kind}"
     if hides_legible_content(meta, "background" if full_bleed else "inline"):

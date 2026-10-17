@@ -118,7 +118,7 @@ DIRECTIONS: tuple[CreativeDirection, ...] = (
         ),
         imagery=(
             "authentic, warmly lit moments of learning — hands with wooden materials, a "
-            "teacher reading with a small group, natural textures; never posed rows"
+            "teacher reading with a small group, natural materials up close; never posed rows"
         ),
         palette_voice="warm naturals around the brand colour — cream, clay, sage — with one quiet accent",
         personality={"playful_sophisticated": 1, "organic_structured": -1, "calm_energetic": -1, "minimal_expressive": 0},
@@ -334,7 +334,7 @@ DIRECTIONS: tuple[CreativeDirection, ...] = (
             "bold typographic hierarchy and asymmetric layouts with thoughtful whitespace — "
             "a point of view, argued in words, positions the business"
         ),
-        imagery="few, sophisticated images — architecture, people thinking, texture — or none",
+        imagery="few, sophisticated images — architecture, people thinking; texture only as a backdrop — or none",
         palette_voice="ink-on-paper neutrals with the brand colour as a sharp editorial accent",
         personality={"playful_sophisticated": 2, "minimal_expressive": 1, "traditional_contemporary": 1, "calm_energetic": -1},
         cues=("insight", "insights", "research", "perspective", "thinking", "point of view", "ideas"),

@@ -96,6 +96,7 @@ from app.services.source_injection import (
 )
 from app.services.source_path import normalize_source_slug
 from app.services.whatsapp_discovery import build_whatsapp_widget, discover_whatsapp_number
+from app.services.image_abstract import is_abstract
 from app.services.image_graphics import screen_source_images_for_graphics
 from app.services.bio_condense import condense_bios
 from app.services.llm import LlmClient
@@ -2381,6 +2382,11 @@ def _photo_walls_from_metadata(
         if not heading or not meta.url or meta.url in chrome:
             continue
         if meta.role in _NON_PHOTO_ROLES or meta.intent == "logo":
+            continue
+        # Not `source_router.is_content_photo`: its 200px floor is exactly what
+        # hides these tiles (above). The two rules a tile shares with it are
+        # asked directly — a backdrop or a surface is not an album photo.
+        if meta.source_usage == "css_background" or is_abstract(meta):
             continue
         by_heading.setdefault(heading, []).append(meta)
 

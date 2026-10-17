@@ -834,6 +834,73 @@ a hero button used to take the photo's light ink on its own white fill.
 Tests: `test_section_extraction.DeclaredBackgroundLayerTest`/`ContactChannelBoundaryTest`,
 `test_ai_palette.test_a_solid_button_on_a_photo_hero_is_inked_for_the_button`.
 
+## Featured images are never abstract
+
+A featured slot — the split hero's picture ("Hero Image", "Blob Photo"), the
+About image, a card, a gallery tile, a bento tile — shows the reader something
+the business is or does. A gradient, a texture, a wallpaper, bokeh or a 3D
+render shows nothing, so it may only sit **behind copy**: a full-bleed hero or
+CTA background, or the split hero's wash. `services/image_abstract.is_abstract`
+is the one predicate; **featured means `slot_usage != "background"`**, and every
+gate asks it there: `rank_candidates`, the page-local size fallback (which also
+skips `role="background"`), `_unfit_for_featured_pin`, `image_refs._unfit_for_kind`,
+`is_content_photo` / `gallery_photos` / `_photo_walls_from_metadata`, and
+`_search_pexels(featured=)`, which also never searches the atmospheric texture
+fallback.
+
+- **The evidence is words, kind and provenance — no pixels.** Alt, caption,
+  vision caption, platform alt, the Pexels page slug (`PhotoResult.description`)
+  and the filename stem. A head term must survive removing a trailing
+  "on/against/with … background|surface|paper|wall" clause, so *child painting on
+  textured paper* is a painting and *Textured Blue Surface* is a surface. Bare
+  "background" is never a cue. A vision `graphic` (illustration, icon OR pattern)
+  counts only when its words agree — a source's diagram is content. There is no
+  pixel vote: it needs thresholds calibrated on real stock results, which have not
+  been measured, so an unlabelled CSS background the vision pass never saw is not
+  recognised as abstract.
+- **An empty Pexels alt is not the query.** It used to default to the search
+  words, so an undescribed photo scored as a perfect match and won.
+- **`resolve` returns None for a featured slot with nothing real**; only a
+  background slot falls to the gradient placeholder. The catalog closure writes no
+  src, `template_filler` prunes the image node (or leaves a style slot
+  unpainted), and the frame collapses. The catalog CTA declares
+  `slot_usage="background"` (its only template is the full-bleed band), the same as
+  `_build_cta`, so "any" means featured everywhere.
+- **`is_content_photo` refuses abstracts, not CSS backgrounds.**
+  `ContentProfile.has_hero_photo` counts hero photos with it, and a business whose
+  hero photo is a CSS background still has one. Gallery tiles refuse CSS
+  backgrounds themselves. `_photo_walls_from_metadata` asks both rules directly,
+  never `is_content_photo`, whose 200px floor is what hides album tiles declared
+  `width="100%;"`.
+- **The planner names a subject.** `scaffold_enforcement` treats an abstract
+  hero/about `image_query` as blank (topical default), drops an abstract card
+  query so the card searches its title, and the default hero no longer searches
+  "{brand} brand photo" — stock returns wallpaper for a bare name.
+
+**A source background that is abstract must wear the theme's colours.**
+`ImageResolver.vet_source_background` judges the strongest CSS background before
+`plan_site_heroes`: a photograph is never colour-judged; an abstract is read once
+(`_sample`, cached per URL) and held to `image_abstract.theme_fits` — its chromatic
+pixels (`PhotoSample.hues`) within 40° of a chromatic palette colour
+(`theme.has_brand_hue`, chroma not HLS saturation). A clash goes into the
+resolver's `_rejected` set (URL and identity), which every slot honours, the pin
+path included, and the next candidate is judged; `has_source_background` is what
+survives, so a clash lets the creative direction pick the hero. The same verdict
+runs on whatever a background slot actually wins (`_vet_background_pick`), because
+the hero ranker intent-pins the PAGE's CSS background, which need not be the
+strongest. No colour evidence, or no theme, keeps the image as before. The
+manifest records `hero-source-background` (kept photo / kept on-theme abstract /
+dropped clashing abstract / kept, colour unmeasured), naming no URL. A scraped
+background's sampled colour now rides as `avg_color`, so its brand cast reads
+the real photo.
+
+`design_quality` reports `abstract-featured-image` (a framed image with an
+abstract alt or the placeholder src, or a non-hero/CTA node painted with the
+placeholder); `is_placeholder_src` is pinned against the placeholder, monograms,
+icons and the theme grain.
+
+Tests: `test_image_abstract.py`.
+
 ## A signed photo link dies, so nothing is built on a dead one
 
 Facebook's CDN signs every photo URL and the signature carries its own deadline:

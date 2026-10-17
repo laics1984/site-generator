@@ -9,7 +9,14 @@ Picks the best available image for a given query+intent, in this order:
   2. Pexels API (fallback for everything that didn't pass the match threshold,
      plus avatars and CTA backgrounds which never use scraped images).
   3. On-brand gradient placeholder (no key required, last resort — a designed
-     two-tone SVG in the theme's own colours, not a random stock photo).
+     two-tone SVG in the theme's own colours, not a random stock photo) — for a
+     BACKGROUND slot only. A featured slot (anything not painted behind copy)
+     gets no image at all: a gradient framed as a photo shows the reader
+     nothing, so `resolve` returns None and the frame collapses.
+
+Featured slots never take an abstract surface either (services/image_abstract),
+and a source background that is abstract must wear the theme's colours
+(`vet_source_background`).
 
 The legacy `scraped_images: list[str]` constructor argument still works (existing
 callers like the legacy /generate/from-source endpoint pass it). When it's used,
@@ -25,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Literal
 from urllib.parse import quote
 
@@ -34,6 +41,7 @@ import httpx
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
 from app.services.facebook_photo_selection import photo_rejection_reason
+from app.services.image_abstract import is_abstract, theme_fits
 from app.services.image_urls import image_identity, photo_identity
 from app.services.image_match import (
     _UNPINNABLE_VISION_KINDS,
@@ -77,6 +85,26 @@ def _band_fields(
 
 
 ImageIntent = Literal["hero", "about", "cta_bg", "avatar", "feature", "generic"]
+
+# How a source image may be painted behind copy (ImageResolver._background_verdict).
+BackgroundVerdict = Literal[
+    "photo", "on-theme abstract", "clashing abstract", "unmeasured abstract"
+]
+
+# Re-ranks a background slot spends getting past clashing abstracts before it
+# gives up on the source and lets stock or the direction's own hero answer.
+_CLASH_REPICK_BUDGET = 3
+
+
+@dataclass(frozen=True)
+class SourceBackgroundVerdict:
+    """What `ImageResolver.vet_source_background` decided about the source's
+    full-bleed background: the one kept (None: none, or every one clashed), how
+    it was judged, and how many clashing abstracts were dropped on the way."""
+
+    kept: ImageMetadata | None
+    verdict: BackgroundVerdict | None
+    dropped: int = 0
 
 
 _INTENT_TO_ORIENTATION: dict[ImageIntent, Literal["landscape", "portrait", "square"]] = {
@@ -143,7 +171,9 @@ def _unfit_for_featured_pin(
     background pin — that's the source's own art-directed backdrop — but it
     must never win an inline "featured" slot (about, features, services,
     team, gallery, a split-hero side image): it's decorative, not a photo of
-    the section's subject. A `background` slot_usage is exempt outright.
+    the section's subject. An abstract surface (image_abstract.is_abstract)
+    is refused on the same grounds. A `background` slot_usage is exempt
+    outright.
 
     A headshot is rejected on the same grounds unless the slot opted into
     portraits (`allow_portrait`, see image_match.rank_candidates) — a bound
@@ -158,6 +188,8 @@ def _unfit_for_featured_pin(
     if slot_usage == "background":
         return False
     if meta.role == "background" or meta.source_usage == "css_background":
+        return True
+    if is_abstract(meta):
         return True
     return meta.vision_kind in _UNPINNABLE_VISION_KINDS
 
@@ -197,6 +229,7 @@ class ImageResolver:
         primary_hex: str | None = None,
         secondary_hex: str | None = None,
         photo_tone: str | None = None,
+        accent_hex: str | None = None,
     ) -> None:
         # Prefer rich metadata when provided; fall back to wrapping bare URLs.
         if scraped_metadata:
@@ -243,6 +276,13 @@ class ImageResolver:
         # _placeholder_photo) — on-brand instead of a generic grey.
         self._primary_hex = primary_hex or "#64748b"
         self._secondary_hex = secondary_hex or "#1e293b"
+        # The theme an abstract SOURCE background is held to (image_abstract.
+        # theme_fits). Only colours the caller actually stated: a resolver built
+        # without a theme has nothing to judge against, so it judges nothing.
+        self._theme_palette = tuple(h for h in (primary_hex, secondary_hex, accent_hex) if h)
+        # Source images no slot may show (URLs and content identities, like
+        # `_used`): an abstract background whose colours clash with the theme.
+        self._rejected: set[str] = set()
 
     async def _reject_hidden_legible(
         self,
@@ -288,27 +328,33 @@ class ImageResolver:
 
     async def _sampled_fields(
         self, url: str, known_hex: str | None, slot_usage: SlotUsage
-    ) -> tuple[float | None, Literal["light", "dark"] | None, float | None]:
-        """(luminance, band, focal_y) for a scraped photo, reading pixels only
-        when it's worth it.
+    ) -> tuple[float | None, Literal["light", "dark"] | None, float | None, str | None]:
+        """(luminance, band, focal_y, colour) for a scraped photo, reading
+        pixels only when it's worth it.
 
         Scraped images carry no `dominant_color`, so without this every one of
         them lands on `photo_background`'s blind mid-cast and a dead-centre
-        crop. One download buys both the adaptive scrim and the framing — but
-        only for full-bleed slots, where the photo covers the viewport and both
-        actually show. Inline slots keep the metadata-only path.
+        crop. One download buys the adaptive scrim, the brand cast's real colour
+        and the framing — but only for full-bleed slots, where the photo covers
+        the viewport and all three actually show. Inline slots keep the
+        metadata-only path.
         """
         lum, band = _band_fields(known_hex)
         if slot_usage != "background":
-            return lum, band, None
+            return lum, band, None, known_hex
         sample = await self._sample(url)
         if sample is None:
-            return lum, band, None
+            return lum, band, None, known_hex
         # A colour the scraper already knew wins — it describes the source's own
         # rendering; ours is a re-read of the same bytes.
         if known_hex:
-            return lum, band, sample.focal_y
-        return sample.luminance, band_for_luminance(sample.luminance), sample.focal_y
+            return lum, band, sample.focal_y, known_hex
+        return (
+            sample.luminance,
+            band_for_luminance(sample.luminance),
+            sample.focal_y,
+            sample.dominant_hex,
+        )
 
     async def _sample(self, url: str) -> PhotoSample | None:
         """`sample_photo`, read at most once per URL for this site."""
@@ -365,6 +411,113 @@ class ImageResolver:
     def _is_used(self, meta: ImageMetadata) -> bool:
         return meta.url in self._used or image_identity(meta) in self._used
 
+    def _reject(self, meta: ImageMetadata) -> None:
+        """Withdraw a source image from every slot, under its URL and identity."""
+        self._rejected.add(meta.url)
+        identity = image_identity(meta)
+        if identity:
+            self._rejected.add(identity)
+
+    def _is_rejected(self, meta: ImageMetadata) -> bool:
+        return meta.url in self._rejected or image_identity(meta) in self._rejected
+
+    async def _background_verdict(self, meta: ImageMetadata) -> BackgroundVerdict:
+        """How a source image may be painted behind copy, colour-wise.
+
+        A photograph is never colour-judged — it shows the business, whatever
+        colour the business is. An abstract surface shows nothing but its
+        colour, so it must wear the theme's (`image_abstract.theme_fits`). Read
+        from the pixels when they can be read (one download, shared with the
+        painter's own read via `_sample`), else from a colour the source stated;
+        with neither — or no theme to judge against — it is kept, as before.
+        """
+        if not is_abstract(meta):
+            return "photo"
+        if not self._theme_palette:
+            return "unmeasured abstract"
+        sample = await self._sample(meta.url)
+        if sample is not None:
+            fits = theme_fits(
+                sample.hues, self._theme_palette, chromatic_share=sample.chromatic_share
+            )
+        elif meta.dominant_color:
+            from app.services.image_abstract import hue_of
+            from app.services.theme import has_brand_hue
+
+            chromatic = has_brand_hue(meta.dominant_color)
+            fits = theme_fits(
+                [hue_of(meta.dominant_color)] if chromatic else [],
+                self._theme_palette,
+                chromatic_share=1.0 if chromatic else 0.0,
+            )
+        else:
+            logger.info(
+                "Abstract source background %s: colour unmeasured, kept", meta.url[:120]
+            )
+            return "unmeasured abstract"
+        return "on-theme abstract" if fits else "clashing abstract"
+
+    async def _vet_background_pick(
+        self,
+        picked: ImageMetadata | None,
+        query: str | None,
+        intent: str,
+        *,
+        prefer: list[ImageMetadata] | None,
+        min_long_edge: int,
+        allow_portrait: bool,
+    ) -> ImageMetadata | None:
+        """Re-rank past a clashing abstract the background slot just picked.
+
+        `vet_source_background` judges the source's strongest background up
+        front, but the hero ranker intent-pins whichever CSS background the PAGE
+        offers, and a CTA ranks its own — so the image a background slot
+        actually wins is judged here too. Free when it is a photograph (no
+        download); otherwise the one read the painter would make anyway.
+        """
+        for _ in range(_CLASH_REPICK_BUDGET):
+            if picked is None or await self._background_verdict(picked) != "clashing abstract":
+                return picked
+            logger.info(
+                "Abstract source background %s clashes with the theme; re-ranking",
+                picked.url[:120],
+            )
+            self._reject(picked)
+            picked = await self._take_best_scraped(
+                query, intent, prefer=prefer, slot_usage="background",
+                min_long_edge=min_long_edge, allow_portrait=allow_portrait,
+            )
+            picked = await self._reject_hidden_legible(
+                picked, query, intent, prefer=prefer, slot_usage="background",
+                min_long_edge=min_long_edge, allow_portrait=allow_portrait,
+            )
+        if picked is not None and await self._background_verdict(picked) == "clashing abstract":
+            self._reject(picked)
+            return None
+        return picked
+
+    async def vet_source_background(self, min_dim: int = 900) -> SourceBackgroundVerdict:
+        """Judge the source's strongest CSS background before the hero is planned.
+
+        The hero director leads the homepage with a full-bleed background when
+        the source did (`has_source_background`). An abstract one whose colours
+        the theme did not choose — Wix paints its own stock textures as section
+        layers — is withdrawn from every slot and the next candidate judged, so
+        a clash means the creative direction picks the hero instead.
+        """
+        dropped = 0
+        while (candidate := self.strongest_source_background(min_dim)) is not None:
+            verdict = await self._background_verdict(candidate)
+            if verdict != "clashing abstract":
+                return SourceBackgroundVerdict(candidate, verdict, dropped)
+            logger.info(
+                "Source background %s is an abstract that clashes with the theme; dropped",
+                candidate.url[:120],
+            )
+            self._reject(candidate)
+            dropped += 1
+        return SourceBackgroundVerdict(None, None, dropped)
+
     @property
     def attributions(self) -> list[str]:
         # de-dupe but preserve order
@@ -386,8 +539,15 @@ class ImageResolver:
         slot_usage: SlotUsage = "any",
         pinned_url: str | None = None,
         allow_portrait: bool = False,
-    ) -> PhotoResult:
-        """Returns a usable PhotoResult. Always succeeds — the gradient placeholder is the final fallback.
+    ) -> PhotoResult | None:
+        """The photo for one slot, or None when a FEATURED slot has nothing real.
+
+        A background slot (`slot_usage="background"`) always gets something —
+        the on-brand gradient placeholder is its final fallback, because a
+        gradient behind copy is a designed band. Every other slot shows the
+        reader something, so it never takes an abstract surface
+        (services/image_abstract) and never the placeholder: None means "no
+        image here", and the caller collapses the frame.
 
         `prefer`: images that belong to the page being rendered. They're ranked
         ahead of the rest of the site-wide pool so a page's hero/section uses the
@@ -450,9 +610,15 @@ class ImageResolver:
                 and not _unfit_for_featured_pin(
                     meta, slot_usage, allow_portrait=allow_portrait
                 )
+                and not (meta is not None and self._is_rejected(meta))
+                and not (
+                    meta is not None
+                    and slot_usage == "background"
+                    and await self._background_verdict(meta) == "clashing abstract"
+                )
             ):
                 self._reserve(pinned_url, meta)
-                lum, band, focal_y = await self._sampled_fields(
+                lum, band, focal_y, colour = await self._sampled_fields(
                     pinned_url, meta.dominant_color if meta else None, slot_usage
                 )
                 return PhotoResult(
@@ -463,6 +629,7 @@ class ImageResolver:
                     photographer=None,
                     photographer_url=None,
                     source="scraped",
+                    avg_color=colour,
                     luminance=lum,
                     band=band,
                     focal_y=focal_y,
@@ -486,12 +653,19 @@ class ImageResolver:
                 prefer=prefer, slot_usage=slot_usage,
                 min_long_edge=min_long_edge, allow_portrait=allow_portrait,
             )
+            if slot_usage == "background":
+                picked = await self._vet_background_pick(
+                    picked, query, intent, prefer=prefer,
+                    min_long_edge=min_long_edge, allow_portrait=allow_portrait,
+                )
             if picked is not None:
                 self._reserve(picked.url, picked)
                 # Carry the band from the scraper's colour hint when it has one,
                 # else read it off the pixels for a full-bleed slot; None for
                 # everything else → luminance pass applies the §8.4 light default.
-                lum, band, focal_y = await self._sampled_fields(
+                # The colour read rides along as avg_color, so the brand cast
+                # adapts to the photo instead of assuming a mid-tone.
+                lum, band, focal_y, colour = await self._sampled_fields(
                     picked.url, picked.dominant_color, slot_usage
                 )
                 return PhotoResult(
@@ -500,6 +674,7 @@ class ImageResolver:
                     photographer=None,
                     photographer_url=None,
                     source="scraped",
+                    avg_color=colour,
                     luminance=lum,
                     band=band,
                     focal_y=focal_y,
@@ -511,16 +686,29 @@ class ImageResolver:
         # that falls through to stock must not lose that guarantee.
         if query and self._pexels.configured:
             photo = await self._search_pexels(
-                query, orientation, intent, screen_text=(slot_usage == "background")
+                query, orientation, intent,
+                screen_text=(slot_usage == "background"),
+                featured=(slot_usage != "background"),
             )
             if photo is not None:
                 self._seen_pexels_urls.add(photo.url)
                 # avg_color comes free from Pexels → derive the band, no download.
                 lum, band = _band_fields(photo.avg_color)
-                return replace(photo, luminance=lum, band=band)
+                return replace(
+                    photo,
+                    # Rendered alt only: ranking already read the photo's own
+                    # description, so an undescribed photo could not win on ours.
+                    alt=photo.alt or alt_fallback or query,
+                    luminance=lum,
+                    band=band,
+                )
 
-        # 3. Last resort: an on-brand gradient placeholder (no network, no
-        # random stock photo) — see _placeholder_photo. A per-seed nonce keeps
+        # 3. Nothing real. A featured slot shows no image rather than a gradient
+        # framed as a photo; the caller collapses the frame.
+        if slot_usage != "background":
+            return None
+        # A background slot gets an on-brand gradient placeholder (no network,
+        # no random stock photo) — see _placeholder_photo. A per-seed nonce keeps
         # repeated placeholders from rendering the identical gradient on a page.
         seed = query or alt_fallback or "site"
         nonce = self._placeholder_seeds.get(seed, 0)
@@ -625,7 +813,13 @@ class ImageResolver:
         return None, budget
 
     async def _search_pexels(
-        self, query: str, orientation: str, intent: str, *, screen_text: bool = False
+        self,
+        query: str,
+        orientation: str,
+        intent: str,
+        *,
+        screen_text: bool = False,
+        featured: bool = False,
     ) -> PhotoResult | None:
         """Search Pexels, preferring a market-cued query for people-likely slots.
 
@@ -662,15 +856,24 @@ class ImageResolver:
         keyword. If that screen would empty the whole batch (all 15 results
         happened to read negative — rare, the wordlist is narrow), we fall
         back to the unfiltered batch rather than dead-ending the chain here.
+
+        `featured` is every slot not painted behind copy: it never takes an
+        abstract result (image_abstract.is_abstract reads the photo's alt and
+        page slug), and it never searches the atmospheric texture fallback,
+        whose results would all be refused anyway.
         """
         chain = _stock_query_chain(
             query, intent, self._market_cue, self._industry_category, self._place_cue,
             tone=self._photo_tone,
         )
+        if featured:
+            chain = [c for c in chain if c != _GENERIC_ATMOSPHERIC_FALLBACK]
         budget = settings.ocr_verify_budget if screen_text else 0
         for i, candidate in enumerate(chain):
             photos = await self._pexels.search_many(candidate, orientation=orientation)
             fresh = [p for p in photos if p.url not in self._seen_pexels_urls]
+            if featured:
+                fresh = [p for p in fresh if not is_abstract(photo=p)]
             if not fresh:
                 continue
             upbeat = [p for p in fresh if not _has_negative_vibe(p.alt)]
@@ -795,7 +998,8 @@ class ImageResolver:
         """
         candidates = [
             c for c in self._pool
-            if not self._is_used(c) and _looks_like_image(c.url)
+            if not self._is_used(c) and not self._is_rejected(c)
+            and _looks_like_image(c.url)
             and not _below_hero_bg_min(c, min_long_edge)
             # Checked here as well as in the ranker: the page-local size
             # fallback below bypasses ranking.
@@ -830,6 +1034,15 @@ class ImageResolver:
                 eligible = [c for c in local if c.role not in {"decoration", "logo"}]
                 if slot_usage == "inline":
                     eligible = [c for c in eligible if c.source_usage != "css_background"]
+                # A featured slot shows a picture OF something: never a surface,
+                # and never an image the source measured as a backdrop for its
+                # own copy (role "background") — the largest file on a page is
+                # often exactly that.
+                if slot_usage != "background":
+                    eligible = [
+                        c for c in eligible
+                        if c.role != "background" and not is_abstract(c)
+                    ]
                 if (
                     not allow_portrait
                     or slot_usage == "background"
@@ -900,7 +1113,7 @@ class ImageResolver:
         is exactly what a CSS background scrape returns.
         """
         def _qualifies(c: ImageMetadata) -> bool:
-            if c.source_usage != "css_background" or self._is_used(c):
+            if c.source_usage != "css_background" or self._is_used(c) or self._is_rejected(c):
                 return False
             if not _looks_like_image(c.url):
                 return False

@@ -61,6 +61,11 @@ class PhotoResult:
     # needs it: whoever paints the photo behind copy
     # (ImageResolver.photo_luminance).
     luminance_map: PhotoLuminance | None = None
+    # What the photo's own Pexels page calls it — the slug of `photo.url`
+    # ("…/photo/blue-and-white-abstract-painting-1910236/"). Kept apart from
+    # `alt` because it is evidence about the picture, not text to render, and it
+    # survives when the photographer wrote no alt (image_abstract.is_abstract).
+    description: str = ""
 
     @property
     def attribution(self) -> str | None:
@@ -158,10 +163,15 @@ class PexelsClient:
             url = src.get(size) or src.get("large") or src.get("medium")
             if not url:
                 continue
+            description = _slug_words(photo.get("url"))
             results.append(
                 PhotoResult(
                     url=url,
-                    alt=photo.get("alt") or query,
+                    # Never the query: an undescribed photo used to carry the
+                    # search words as its alt, so it scored as a PERFECT match
+                    # for them and outranked every photo that said what it was.
+                    alt=photo.get("alt") or description,
+                    description=description,
                     photographer=photo.get("photographer"),
                     photographer_url=photo.get("photographer_url"),
                     source="pexels",
@@ -171,6 +181,15 @@ class PexelsClient:
         if results:
             _cache_put(cache_key, results)
         return results
+
+
+def _slug_words(page_url: str | None) -> str:
+    """The words of a Pexels photo page's slug, its numeric id dropped."""
+    if not page_url:
+        return ""
+    slug = page_url.rstrip("/").rsplit("/", 1)[-1]
+    words = [w for w in slug.split("-") if w and not w.isdigit()]
+    return " ".join(words)
 
 
 # Results requested per API call. Pexels prices by request, not by result

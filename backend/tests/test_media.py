@@ -715,7 +715,12 @@ class StockOnlyResolverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(photo.source, "pexels")
 
     async def test_falls_to_placeholder_never_to_scraped(self):
-        """No Pexels result ⇒ the gradient, not a source photo."""
+        """No Pexels result ⇒ the gradient behind copy, not a source photo.
+
+        A background slot only: a featured slot with nothing real now shows no
+        image at all rather than a framed gradient (see
+        test_image_abstract.FeaturedSlotShowsNoImageTest) — never the scraped
+        photo either way."""
         resolver = ImageResolver(
             scraped_metadata=self._pool(),
             pexels=FakePexels({}),
@@ -723,9 +728,11 @@ class StockOnlyResolverTest(unittest.IsolatedAsyncioTestCase):
             stock_only=True,
         )
 
-        photo = await resolver.resolve("cafe interior", intent="hero")
+        photo = await resolver.resolve("cafe interior", intent="hero", slot_usage="background")
+        featured = await resolver.resolve("cafe interior", intent="hero")
 
         self.assertEqual(photo.source, "placeholder")
+        self.assertIsNone(featured)
 
     async def test_default_still_prefers_the_source_photo(self):
         """Control: the default must not silently flip."""

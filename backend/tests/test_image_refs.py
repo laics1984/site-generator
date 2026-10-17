@@ -310,7 +310,9 @@ class PinnedResolveTest(unittest.TestCase):
         resolver.mark_used({"https://x/p0.jpg"})
 
         free = asyncio.run(resolver.resolve("kindergarten classroom", intent="about"))
-        self.assertNotEqual(free.url, "https://x/p0.jpg")
+        # None when nothing else is available: a featured slot no longer falls
+        # to the gradient placeholder. Either way, never the reserved photo.
+        self.assertTrue(free is None or free.url != "https://x/p0.jpg")
 
         pinned = asyncio.run(
             resolver.resolve(None, intent="about", pinned_url="https://x/p0.jpg")

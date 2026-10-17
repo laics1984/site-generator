@@ -105,7 +105,12 @@ from app.services.hero_director import (
 from app.services.header_footer import build_footer, build_header
 from app.services.legal_pages import drop_page_title
 from app.services.image_match import SlotUsage
-from app.services.media import ImageIntent, ImageResolver, monogram_avatar_url
+from app.services.media import (
+    ImageIntent,
+    ImageResolver,
+    SourceBackgroundVerdict,
+    monogram_avatar_url,
+)
 from app.services.timing import log_elapsed, stage
 from app.services.pexels import PhotoResult
 from app.config import settings
@@ -1438,6 +1443,17 @@ def _two_col(
     )
 
 
+def _copy_beside(
+    left: list[BuilderElement], picture: BuilderElement | None
+) -> BuilderElement:
+    """Copy with its picture in a second column — or, when the slot resolved
+    no picture (ImageResolver.resolve returned None), the copy alone at full
+    width rather than beside an empty column."""
+    if picture is None:
+        return _container(left, name="Column", styles={"gap": "16px"})
+    return _two_col(left, [picture])
+
+
 def _three_col(
     columns: list[list[BuilderElement]], *, styles: dict[str, Any] | None = None
 ) -> BuilderElement:
@@ -2194,18 +2210,22 @@ def _apply_hero_typography(
 
 
 async def _build_hero(block: HeroBlock, ctx: RenderContext) -> BuilderElement:
+    full_bleed = block.layout == "background"
     photo = await ctx.resolver.resolve(
         block.image_query,
         intent="hero",
         alt_fallback=block.image_alt or block.headline,
+        # Declared, so a full-bleed hero keeps its gradient fallback and a split
+        # one never frames it.
+        slot_usage="background" if full_bleed else "inline",
     )
-    if block.layout == "background":
+    if full_bleed and photo is not None:
         return await _build_hero_background(block, photo, ctx)
     return _build_hero_split(block, photo, ctx)
 
 
 def _build_hero_split(
-    block: HeroBlock, photo: PhotoResult, ctx: RenderContext
+    block: HeroBlock, photo: PhotoResult | None, ctx: RenderContext
 ) -> BuilderElement:
     s = ctx.styles
     left: list[BuilderElement] = []
@@ -2243,16 +2263,18 @@ def _build_hero_split(
         )
     )
 
-    right = [
+    picture = (
         _image_from_photo(
             photo,
             name="Hero Image",
             aspect_ratio="4 / 3",
             border_radius=f"{ctx.theme.buttons.radius + 12}px",
         )
-    ]
+        if photo is not None
+        else None
+    )
 
-    return _section(ctx, [_two_col(left, right)], name="Hero")
+    return _section(ctx, [_copy_beside(left, picture)], name="Hero")
 
 
 async def _build_hero_background(
@@ -2553,10 +2575,14 @@ async def _build_testimonials(
             )
         ]
         row_children: list[BuilderElement] = []
-        if item.avatar_query:
-            avatar = await ctx.resolver.resolve(
+        avatar = (
+            await ctx.resolver.resolve(
                 item.avatar_query, intent="avatar", alt_fallback=item.author
             )
+            if item.avatar_query
+            else None
+        )
+        if avatar is not None:
             row_children.append(
                 _image_from_photo(
                     avatar,
@@ -2629,15 +2655,17 @@ async def _build_about(block: AboutBlock, ctx: RenderContext) -> BuilderElement:
         _text(block.heading, name="Heading", styles=s.heading_lg, mobile=s.heading_mobile),
         _text(block.body, name="Body", styles={**s.body, "fontSize": "17px"}),
     ]
-    right = [
+    picture = (
         _image_from_photo(
             photo,
             name="About Image",
             aspect_ratio="1 / 1",
             border_radius=f"{ctx.theme.buttons.radius + 12}px",
         )
-    ]
-    return _section(ctx, [_two_col(left, right)], name="About")
+        if photo is not None
+        else None
+    )
+    return _section(ctx, [_copy_beside(left, picture)], name="About")
 
 
 async def _build_faq(block: FaqBlock, ctx: RenderContext) -> BuilderElement:
@@ -3257,6 +3285,8 @@ async def _build_gallery(block: GalleryBlock, ctx: RenderContext) -> BuilderElem
             alt_fallback=item.title or item.image_query,
             allow_portrait=True,
         )
+        if photo is None:
+            continue  # no real photo for this tile: a gallery shows pictures
         tile = _image_from_photo(
             photo,
             name="Gallery item",
@@ -3990,6 +4020,48 @@ _PORTRAIT_SLOT_KINDS = frozenset({"team", "profile", "testimonials", "gallery"})
 _GENUINE_PHOTO_SOURCES = frozenset({"scraped", "pexels"})
 
 
+def _source_background_decision(verdict: SourceBackgroundVerdict) -> DesignDecision:
+    """The manifest's record of whether the source's own full-bleed background
+    led the homepage. Names no URL: the manifest rides into the CMS payload."""
+    dropped = (
+        f"; {verdict.dropped} abstract source background(s) dropped for clashing "
+        "with the theme's colours"
+        if verdict.dropped
+        else ""
+    )
+    if verdict.kept is None:
+        return DesignDecision(
+            area="hero-source-background",
+            choice="dropped clashing abstract",
+            rationale=(
+                "every full-bleed background the source offered was an abstract "
+                "surface whose colours clash with the theme; the creative "
+                "direction picks the hero instead" + dropped
+            ),
+            confidence=0.7,
+        )
+    choice, why = {
+        "photo": (
+            "kept photo",
+            "a photograph of the business; photographs are never colour-judged",
+        ),
+        "on-theme abstract": (
+            "kept on-theme abstract",
+            "an abstract surface whose colours sit within the theme's hues",
+        ),
+        "unmeasured abstract": (
+            "kept, colour unmeasured",
+            "an abstract surface whose colours could not be read, kept as before",
+        ),
+    }[verdict.verdict or "photo"]
+    return DesignDecision(
+        area="hero-source-background",
+        choice=choice,
+        rationale=f"the source led with a full-bleed background: {why}{dropped}",
+        confidence=0.7 if verdict.verdict == "unmeasured abstract" else 0.8,
+    )
+
+
 def _abstract_theme_query(ctx: RenderContext) -> str:
     """A deterministic, theme-coloured abstract stock query (e.g. "abstract blue
     gradient mesh texture") for a hero's atmospheric background. The colour word
@@ -4082,7 +4154,7 @@ async def _apply_hero_directive(
         slot_usage="inline",
         pinned_url=block.image_url,
     )
-    if featured.source not in _GENUINE_PHOTO_SOURCES:
+    if featured is None or featured.source not in _GENUINE_PHOTO_SOURCES:
         # No real side image -> let select_template fall back to an imageless
         # variant instead of framing a placeholder gradient as a photo.
         block.image_query = None
@@ -4150,7 +4222,7 @@ async def _apply_hero_photo_policy(
     abstract_query = _abstract_theme_query(ctx)
     primary_hex = ctx.theme.palette.primary
 
-    if featured.source in _GENUINE_PHOTO_SOURCES:
+    if featured is not None and featured.source in _GENUINE_PHOTO_SOURCES:
         if not (block.image_query or "").strip():
             block.image_query = block.image_alt or block.headline or "brand photo"
         if will_split:
@@ -4302,11 +4374,15 @@ async def block_to_element(
         intent = _IMAGE_INTENT.get(block.kind, "generic")
         # These kinds render their catalog image slots as in-flow <img>-style
         # visuals — a photo the source used as a CSS background must not be
-        # cropped into them (CTA backgrounds resolve via intent="cta_bg" and
-        # never touch the scraped pool).
+        # cropped into them. A CTA's only image is the full-bleed band behind
+        # its copy (`cta-background`), so it declares itself a background slot,
+        # exactly as the programmatic `_build_cta` does: that is what lets it
+        # keep an abstract backdrop, while every other kind is FEATURED and
+        # never takes one (image_abstract.is_abstract).
         slot_usage: SlotUsage = (
             "inline"
             if block.kind in {"hero", "about", "features", "services", "team", "gallery"}
+            else "background" if block.kind == "cta"
             else "any"
         )
         # Only sections that are ABOUT people, or that replay the source's own
@@ -4343,6 +4419,11 @@ async def block_to_element(
                     allow_portrait=allow_portrait,
                 )
             )
+            if photo is None:
+                # A featured slot with nothing real: no src, so template_filler
+                # prunes the image node (or leaves a style slot unpainted) and
+                # the frame collapses instead of framing a gradient.
+                return "", None
             # Capture the FIRST resolved image's band as the section's featured
             # image for the luminance pass (Phase 4b). Later images (e.g. grid
             # items) don't override the dominant one.
@@ -4949,21 +5030,22 @@ async def plan_to_site(
         place_cue=place_cue,
         primary_hex=theme.palette.primary,
         secondary_hex=theme.palette.secondary,
+        accent_hex=theme.palette.accent,
         photo_tone=for_theme(theme).photo_tone,
     )
     # Photos already bound to specific sections by the image_ref pass must not
     # be re-picked by free ranking for other slots (pinned resolution itself
     # bypasses the used-set, so the owning slot still renders them).
     if stock_only and not settings.pexels_api_key:
-        # Not fatal: resolve() always succeeds, falling to the on-brand gradient
-        # placeholder. But every content image on the site becomes that gradient,
-        # which looks like a generation fault rather than a missing key — so say
-        # so once here instead of leaving the operator to infer it.
+        # Not fatal: backgrounds fall to the on-brand gradient placeholder and
+        # featured slots to no image at all. But a site with no content photo
+        # anywhere looks like a generation fault rather than a missing key — so
+        # say so once here instead of leaving the operator to infer it.
         import logging
 
         logging.getLogger(__name__).warning(
-            "stock_only requested but PEXELS_API_KEY is unset — every image "
-            "will render as an on-brand gradient placeholder."
+            "stock_only requested but PEXELS_API_KEY is unset — featured images "
+            "will be left out and backgrounds will render as on-brand gradients."
         )
     if reserved_image_urls:
         resolver.mark_used(reserved_image_urls)
@@ -5028,6 +5110,12 @@ async def plan_to_site(
 
     _, site_design_recipe = await asyncio.gather(_prewarm(), _design_recipe())
 
+    # The source's own full-bleed background leads the homepage only if it may:
+    # a photograph always may, an abstract surface only in the theme's colours.
+    # A clashing one is withdrawn from every slot, so the creative direction
+    # picks the hero instead (see ImageResolver.vet_source_background).
+    source_background = await resolver.vet_source_background()
+
     # Heroes are art-directed deterministically, per page, OUTSIDE the design
     # brain (which used to force one identical hero on every page): homepage
     # leads with the mood's signature treatment — full-bleed when the source
@@ -5036,7 +5124,7 @@ async def plan_to_site(
     hero_directives = plan_site_heroes(
         plan.pages,
         mood=effective_brand.mood,
-        has_source_background=resolver.strongest_source_background() is not None,
+        has_source_background=source_background.kept is not None,
         seed=effective_brand.name or plan.site_name,
         # A banded site is a shorter PHOTO hero, not a colour one — the height
         # has to reach the template picker or it lands on a hero that neither
@@ -5105,6 +5193,8 @@ async def plan_to_site(
                 confidence=0.7,
             )
         )
+        if source_background.verdict is not None or source_background.dropped:
+            manifest.decisions.append(_source_background_decision(source_background))
         for _slug, _directive in hero_directives.items():
             _page_plan = next((p for p in plan.pages if p.slug == _slug), None)
             _is_home = bool(_page_plan and (_page_plan.is_homepage or _page_plan.page_type == "home"))

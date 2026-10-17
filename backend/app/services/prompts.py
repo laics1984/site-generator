@@ -159,9 +159,7 @@ SECTION STRATEGY
 - Hero: candid discovery, painting, reading, collaborative play, Montessori toys,
   teacher-child interaction or outdoor exploration. Examples: 'preschool child
   learning natural light', 'teacher reading preschool children'. Avoid group,
-  graduation, posed or cluttered playground shots. A low-noise abstract
-  backdrop in the brand's own colours is an alternative when suitable;
-  use the hero's image_query, not background_query.
+  graduation, posed or cluttered playground shots.
 - About/story: intimate listening, guiding, concentration or reading together;
   alternatives are crayon hands, books, wooden materials or a classroom corner.
   Avoid a generic building unless the real section focuses on the building.
@@ -480,8 +478,8 @@ PER PAGE
   dish, product, project, room or equipment, depict THAT thing instead; do not
   force an unrelated person into galleries, product/menu or portfolio images.
   Never query a bare mood word: include a concrete subject and action/detail.
-  Atmospheric gradients/skylines/textures belong only in CTA/hero-wash backdrops,
-  never a content section's featured photo.
+  Atmospheric gradients/skylines/textures belong only in CTA/hero-wash backdrops;
+  image_query always names a real subject.
 - Never write a negative or downbeat word into any visual query ("stressed",
   "tired", "empty", "alone", "arguing", "sad", "bored"). Aim for confident,
   upbeat energy appropriate to the brand's mood — warm and cheerful for
@@ -508,8 +506,8 @@ _SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
           secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, image_ref?, layout:"split"|"background" }
           (headline_accent: when the headline's final 1-4 words carry its emotional or benefit weight, copy EXACTLY
           those trailing words here — the layout renders them in the brand accent colour; omit when nothing deserves emphasis)""",
-    "features": '- features: { kind:"features", heading, subheading?, items: [{title, description, image_query, image_ref?}] }  (1-6 real items; give EVERY item an image_query so its card carries a photo)',
-    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, audience?, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; give EVERY item an image_query so its card carries a photo; audience = short who-it\'s-for badge like "Ages 2-4" only when the source states it)',
+    "features": '- features: { kind:"features", heading, subheading?, items: [{title, description, image_query, image_ref?}] }  (1-6 real items; image_query only for a real, photographable subject)',
+    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, audience?, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; image_query only for a real, photographable subject; audience = short who-it\'s-for badge like "Ages 2-4" only when the source states it)',
     "testimonials": '- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews with real names only)',
     "about": '- about: { kind:"about", heading, body, image_alt?, image_query, image_ref? }',
     "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (transcribe EVERY genuine Q&A the source page asks — this is the one block where you must NOT curate or pick a "representative" subset; include all of them, up to 50; if the page has no Q&A content, omit the block; NEVER turn people, staff or profile listings into questions)',

@@ -39,6 +39,7 @@ from app.models.content_blocks import (
     TimelineBlock,
 )
 from app.models.industry import PageScaffold
+from app.services.image_abstract import abstract_text
 from app.services.profile_text import (
     clean_team_bio,
     has_sentence_punctuation,
@@ -510,8 +511,9 @@ _HERO_IMAGE_QUERY_BY_PAGE_TYPE: dict[str, str] = {
 def _default_hero_image_query(page_type: str, brand_name: str) -> str:
     """Stock search phrase for a hero with no image_query, by page type.
 
-    Falls back to a brand-name phrase (mirrors _default_block's
-    f"{brand_name} brand photo") for any page type not in the map above.
+    Falls back to a brand-name phrase that still names a real subject ("team at
+    work") for any page type not in the map above — a bare "{brand} brand
+    photo" searches stock for the name alone and comes back as wallpaper.
     """
     return _HERO_IMAGE_QUERY_BY_PAGE_TYPE.get(page_type, f"{brand_name} team at work")
 
@@ -549,14 +551,51 @@ def _backfill_image_query(block: _WithImageQuery, default: str) -> _WithImageQue
     template, and an about loses its image slot entirely — `_featured_image`
     returns None, so `_about_preference` picks the image-less `about-story`.
 
-    A no-op when the block already has a query, or already has a bound
+    A query that names a surface rather than a subject ("abstract gradient
+    backdrop", image_abstract.abstract_text) counts as blank: this is a featured
+    slot, and the generator paints its own abstract backdrops where they belong
+    (the theme-matched wash). Left in, it framed a stock gradient as the photo.
+
+    A no-op when the block already has a real query, or already has a bound
     scraped photo (image_ref/image_url) that resolves independently.
     """
-    if (block.image_query or "").strip():
+    query = (block.image_query or "").strip()
+    if query and not abstract_text(query):
         return block
     if block.image_ref is not None or (block.image_url or "").strip():
         return block
     return block.model_copy(update={"image_query": default})
+
+
+def _subject_item_queries(block: ContentBlock) -> ContentBlock:
+    """A card or tile whose image_query names a surface searches its own
+    subject instead.
+
+    Every item image is a featured slot. Feature and service items drop the
+    query, so `section_content._item_image` searches the card's TITLE and the
+    resolver's chain adds the industry's context query — the card's subject in
+    the business's setting. A gallery item's query is required, so it takes
+    the tile's title or caption when it has one; otherwise it stays, and the
+    resolver's featured gate refuses whatever abstract stock it returns.
+    """
+    items = getattr(block, "items", None)
+    if not isinstance(items, list):
+        return block
+    changed = False
+    fixed = []
+    for item in items:
+        query = getattr(item, "image_query", None)
+        if query and abstract_text(query):
+            if isinstance(block, GalleryBlock):
+                subject = (item.title or item.caption or "").strip()
+                if subject:
+                    item = item.model_copy(update={"image_query": subject})
+                    changed = True
+            else:
+                item = item.model_copy(update={"image_query": None})
+                changed = True
+        fixed.append(item)
+    return block.model_copy(update={"items": fixed}) if changed else block
 
 
 def sanitize_blocks_against_source(
@@ -711,7 +750,7 @@ def align_page_to_scaffold(
                 block = _backfill_image_query(
                     block, _default_about_image_query(brand_name)
                 )
-            aligned_blocks.append(block)
+            aligned_blocks.append(_subject_item_queries(block))
         elif kind in _STRUCTURAL_FALLBACK_KINDS and occurrence[kind] == 1:
             # Only the FIRST occurrence of a structural kind gets a placeholder
             # default. Story pages request `about` several times (one per source
@@ -782,7 +821,7 @@ def _default_block(
             subheadline=page.description or None,
             primary_cta_label="Get in touch",
             primary_cta_href="#contact",
-            image_query=f"{brand_name} brand photo",
+            image_query=_default_hero_image_query(page.page_type, brand_name),
             layout="split",
         )
     if kind == "about":
@@ -817,6 +856,6 @@ def _default_block(
         subheadline=page.description or None,
         primary_cta_label="Get in touch",
         primary_cta_href="#contact",
-        image_query=f"{brand_name} brand photo",
+        image_query=_default_hero_image_query(page.page_type, brand_name),
         layout="split",
     )

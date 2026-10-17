@@ -42,6 +42,7 @@ from urllib.parse import urlparse
 
 from app.models.content_blocks import ImageMetadata
 from app.services.facebook_photo_selection import photo_rejection_reason
+from app.services.image_abstract import is_abstract
 
 if TYPE_CHECKING:
     # Heavy import chain (llm -> config -> pydantic_settings/httpx). Kept lazy so
@@ -393,6 +394,11 @@ def rank_candidates(
     # Words or a code in the picture: a background would overprint them and every
     # other slot would crop them. See hides_legible_content.
     candidates = [c for c in candidates if not hides_legible_content(c, slot_usage)]
+    # A surface (gradient, texture, wallpaper…) only ever sits BEHIND copy; every
+    # other slot shows the reader something, and a surface shows nothing. "any"
+    # counts as featured: every full-bleed caller declares "background".
+    if slot_usage != "background":
+        candidates = [c for c in candidates if not is_abstract(c)]
     # Large featured slots (hero / about) must be real featured photographs. A
     # banner, UI screenshot, graphic or map blown up as the
     # hero/about image reads as a scrape failure, so exclude those here, not

@@ -381,9 +381,16 @@ _UNPROMPTABLE_ROLES = frozenset({"logo", "decoration", "portrait"})
 
 
 def is_content_photo(meta: ImageMetadata) -> bool:
-    """A photograph a content slot may show at all: not a mark, an ornament or
-    a stranger's headshot, and not too small to read."""
-    if meta.role in _UNPROMPTABLE_ROLES or meta.intent == "logo":
+    """A photograph a content slot may show at all: not a mark, an ornament,
+    a stranger's headshot or a surface (image_abstract.is_abstract), and not too
+    small to read.
+
+    A source CSS background is NOT refused here: `design_direction.ContentProfile`
+    counts hero photos with this, and a business whose hero photo is a CSS
+    background still has one. Gallery tiles refuse those themselves."""
+    from app.services.image_abstract import is_abstract
+
+    if meta.role in _UNPROMPTABLE_ROLES or meta.intent == "logo" or is_abstract(meta):
         return False
     return not ((meta.width and meta.width < 200) or (meta.height and meta.height < 120))
 
@@ -403,7 +410,9 @@ def gallery_photos(source: SourceContent) -> list[ImageMetadata]:
     """The source's own photos a gallery can show as a set, in source order.
 
     A gallery tile crops, so a picture whose words are its content (a menu, a
-    poster, a payment code) is left to the passes that show it whole. Asked by
+    poster, a payment code) is left to the passes that show it whole; and a tile
+    is a picture OF something, so a backdrop the source painted behind its copy
+    (a CSS background) is not one. Asked by
     the gate that offers a single-page source a Gallery page AND by the pass
     that fills it, so a page is never offered that would then be empty.
     """
@@ -413,6 +422,7 @@ def gallery_photos(source: SourceContent) -> list[ImageMetadata]:
     return [
         meta for meta in source.image_metadata or []
         if is_content_photo(meta)
+        and meta.source_usage != "css_background"
         and not must_show_whole(meta)
         and photo_rejection_reason(meta, "gallery") is None
     ]

@@ -88,7 +88,9 @@ def test_resolver_rejects_a_weak_explicit_hero_pin():
     weak = _meta(facebook_photo_review=_review(hero_candidate=False))
     resolver = ImageResolver(scraped_metadata=[weak], pexels=NoStock(), use_llm_tiebreaker=False)
     photo = asyncio.run(resolver.resolve("teacher learning", intent="hero", pinned_url=weak.url))
-    assert photo.source != "scraped"
+    # A featured slot with no stock and a refused pin shows no image at all
+    # (resolve returns None) — never the weak pin, and never a framed gradient.
+    assert photo is None or photo.source != "scraped"
 
 
 def test_library_filters_privacy_and_keeps_strongest_near_duplicate():

@@ -60,9 +60,11 @@ class PlaceholderUniquenessTest(unittest.IsolatedAsyncioTestCase):
     async def test_repeated_placeholder_seed_does_not_repeat(self):
         # No scraped pool and no Pexels → both resolutions fall to the gradient
         # placeholder; the same seed must not produce the same image twice.
+        # Background slots only: a featured slot gets no image instead
+        # (test_image_abstract.FeaturedSlotShowsNoImageTest).
         r = ImageResolver(scraped_images=[], pexels=_UnconfiguredPexels())
-        a = await r.resolve("team", intent="generic")
-        b = await r.resolve("team", intent="generic")
+        a = await r.resolve("team", intent="generic", slot_usage="background")
+        b = await r.resolve("team", intent="generic", slot_usage="background")
         self.assertEqual(a.source, "placeholder")
         self.assertEqual(b.source, "placeholder")
         self.assertNotEqual(a.url, b.url)
