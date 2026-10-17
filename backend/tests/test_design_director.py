@@ -489,10 +489,14 @@ class ManifestPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         # The CMS/builder receive builderStyles wholesale; the manifest rides
         # it (same flexible-JSON channel as googleFonts) so a builder save
         # round-trip can preserve the decision record.
+        # The carried copy is the CSS-safe one (models/design_manifest.css_safe):
+        # renderers flatten it into custom properties on the site root.
+        from app.models.design_manifest import builder_styles_manifest
+
         site = await self._site()
         carried = site.builder_styles.get("designManifest")
         self.assertIsNotNone(carried)
-        self.assertEqual(carried, site.design_manifest)
+        self.assertEqual(carried, builder_styles_manifest(site.design_manifest))
 
     async def test_palette_decision_records_curated_slug_when_curated(self):
         # "Acme Studio" has no logo hue → palette_mode="auto" takes the curated
@@ -509,7 +513,7 @@ class ManifestPipelineIntegrationTest(unittest.IsolatedAsyncioTestCase):
         site = await self._site()
         manifest = site.design_manifest
         self.assertIsNotNone(manifest)
-        self.assertEqual(manifest["version"], 1)
+        self.assertEqual(manifest["version"], 2)
         self.assertEqual(manifest["seed"], "Acme Studio")
         areas = {d["area"] for d in manifest["decisions"]}
         self.assertIn("header", areas)

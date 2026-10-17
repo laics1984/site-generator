@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Design benchmark render</title>
+    <style>html, body { margin: 0; padding: 0; }</style>
+  </head>
+  <body>
+    <!-- Dev-only entry for backend/scripts/design_screenshots.py: renders one
+         generated site through the real preview renderer. Not part of the app
+         bundle (vite build only builds index.html). -->
+    <div id="root"></div>
+    <script type="module" src="/src/bench/main.tsx"></script>
+  </body>
+</html>

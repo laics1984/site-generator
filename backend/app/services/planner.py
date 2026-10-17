@@ -52,6 +52,11 @@ from app.config import settings
 from app.models.brand import BrandPersonality
 from app.models.industry import PageScaffold
 from app.services.brand_brief import ground_brief
+from app.services.business_archetype import (
+    TECH_ARCHETYPES,
+    copy_guidance_for,
+    heal_archetype_value,
+)
 from app.services import llm_choice
 from app.services.industry_personality import personality_prompt_lines
 from app.services.generation_guidance import guidance_for_page, legacy_page_guidance
@@ -68,6 +73,7 @@ from app.services.locale import locale_label
 from app.services.prompts import (
     CHILDCARE_VISUAL_PROMPT,
     RESTAURANT_MENU_CONTENT_PROMPT,
+    TECH_VISUAL_PROMPT,
     DETECT_BRAND_PROMPT,
     LEGACY_SYSTEM_PROMPT,
     _SCAFFOLD_BLOCK_SCHEMAS,
@@ -149,6 +155,8 @@ async def plan_site(source: SourceContent, llm: LlmClient | None = None) -> Site
             + CHILDCARE_VISUAL_PROMPT
             + "\n\nApply the following brief ONLY when industry_category is restaurant.\n"
             + RESTAURANT_MENU_CONTENT_PROMPT
+            + "\n\nApply the following brief ONLY when industry_category is saas or agency.\n"
+            + TECH_VISUAL_PROMPT
         ),
         user_prompt=_build_user_prompt(source),
         schema=SitePlan,
@@ -173,6 +181,10 @@ class DetectedBrand(BaseModel):
     primary_color_hint: str | None = None
     audience: str | None = None
     positioning: str | None = None
+    # The sub-type inside the industry (services/business_archetype.py), named
+    # only when the content says what the business is. A design input, like
+    # personality — kept out of copy_payload.
+    archetype: str | None = None
     differentiators: list[str] = Field(default_factory=list)
     personality: BrandPersonality = Field(default_factory=BrandPersonality)
     unknowns: list[str] = Field(default_factory=list)
@@ -181,6 +193,11 @@ class DetectedBrand(BaseModel):
     # known axes, "detected" when the model named it, "industry" for the
     # industry default.
     mood_basis: SkipJsonSchema[Literal["personality", "detected", "industry"] | None] = None
+    # This site's chosen creative direction as the copy planner should read it
+    # (creative_directions.planner_context: brief, imagery, hero). Computed by
+    # the router after the design direction is resolved, never asked of the
+    # model, and not part of copy_payload — it rides beside it.
+    design_context: SkipJsonSchema[dict[str, str] | None] = None
 
     def copy_payload(self) -> dict:
         """What the COPY planner may see of the brief. The identity fields as
@@ -228,6 +245,11 @@ class DetectedBrand(BaseModel):
     @classmethod
     def heal_industry(cls, v: object) -> object:
         return heal_industry_value(v)
+
+    @field_validator("archetype", mode="before")
+    @classmethod
+    def heal_archetype(cls, v: object) -> object:
+        return heal_archetype_value(v)
 
     @model_validator(mode="after")
     def _mood_from_industry(self):
@@ -666,6 +688,35 @@ def _build_batches(
     return batches
 
 
+def _industry_visual_brief(industry: str | None, archetype: str | None) -> str | None:
+    """The industry layer's imagery brief: the honesty, photography and
+    section rules every site of this kind shares, whatever its direction."""
+    if industry == "childcare":
+        return CHILDCARE_VISUAL_PROMPT
+    if industry in ("saas", "agency") or archetype in TECH_ARCHETYPES:
+        return TECH_VISUAL_PROMPT
+    return None
+
+
+def _design_payload(brand: DetectedBrand | None) -> dict:
+    """The design layers of the planner payload, in hierarchy order:
+    industry imagery brief → archetype focus → this site's direction. Each is
+    present only when it has something to say, so an industry with none of them
+    sends exactly what it always did."""
+    if brand is None:
+        return {}
+    out: dict = {}
+    brief = _industry_visual_brief(brand.industry_category, brand.archetype)
+    if brief:
+        out["visual_direction"] = brief
+    focus = copy_guidance_for(brand.archetype)
+    if focus:
+        out["business_focus"] = focus
+    if brand.design_context:
+        out["design_direction"] = brand.design_context
+    return out
+
+
 def _build_scaffolded_user_prompt(
     source: SourceContent,
     brand: DetectedBrand | None,
@@ -701,11 +752,7 @@ def _build_scaffolded_user_prompt(
             "industry_personality": personality_prompt_lines(
                 brand.industry_category if brand else None
             ),
-            **(
-                {"industry_visual_direction": CHILDCARE_VISUAL_PROMPT}
-                if brand and brand.industry_category == "childcare"
-                else {}
-            ),
+            **_design_payload(brand),
             **(
                 {"industry_menu_direction": RESTAURANT_MENU_CONTENT_PROMPT}
                 if brand and brand.industry_category == "restaurant" else {}

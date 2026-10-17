@@ -16,6 +16,7 @@ language, and vary headline phrasing across pages.
 from __future__ import annotations
 
 from app.models.industry_catalog import INDUSTRY_LABELS
+from app.services.business_archetype import prompt_enum as archetype_prompt_enum
 
 _INDUSTRY_ENUM = "|".join(f'"{slug}"' for slug in INDUSTRY_LABELS)
 _INDUSTRY_LIST = ", ".join(INDUSTRY_LABELS)
@@ -121,9 +122,8 @@ interaction, environment and detail alternatives internally, not as extra output
 STYLE AND QUALITY
 Warm, natural, nurturing and trustworthy; premium without corporate stiffness,
 playful without cartoonish clutter. Colour, type and shapes come from the real
-brand and the site's design direction, which differ from school to school —
-choose imagery that sits comfortably with them; never impose a pastel or
-rainbow palette the brand does not have.
+brand and the site's design direction (design_direction in the payload), which
+differ from school to school — choose imagery that sits comfortably with them.
 Prefer candid documentary activity, natural expressions, teacher-child care,
 hands-on learning, daylight, warm lighting and child-eye-level views. Avoid posed
 rows, forced laughter, everyone facing the camera, crowded/unsafe scenes, tight
@@ -203,14 +203,42 @@ Alternate emotional lifestyle imagery, teacher-child care, distinct programme
 activities, materials/details, environments and calm graphic/solid backgrounds.
 Details include wooden toys, alphabet blocks, crayons, books, artwork, play dough,
 backpacks and hands; avoid overusing children's faces or the same visual concept.
-Background textures, when used, follow the brand's own colours and the site's
-direction (a warm paper grain for an earthy brand, a clean flat band for a
-minimal one); never default to pastel, rainbow or paper-cut motifs.
+Background textures and motifs, when used, follow the brand's own colours and
+the site's design direction (soft pastel washes for a gentle one, a warm paper
+grain for an earthy one, a clean flat band for a minimal one).
 Review relevance, authenticity, warmth, composition, usability, quality, brand
 fit and cross-section consistency. Hero prioritises space/composition/emotion;
 programme cards prioritise activity/distinction; backdrops prioritise readable
 text, low noise and brand fit. Do not claim measured image-quality scores from
 queries alone. Fewer purposeful images beat unrelated stock throughout the site.
+"""
+
+# The technology/software/agency counterpart of CHILDCARE_VISUAL_PROMPT: the
+# evidence and anti-default rules every such site shares, whatever its creative
+# direction. The direction's own imagery line (design_direction.imagery in the
+# payload) says what THIS site's pictures should feel like.
+TECH_VISUAL_PROMPT = """TECHNOLOGY, SOFTWARE AND AGENCY VISUAL DIRECTION
+Art-direct for THIS product, firm or studio, never a generic AI template.
+EVIDENCE FIRST: the source's own product screenshots, interface views, diagrams,
+code samples, project images and team photos take precedence (image_ref). Never
+invent a dashboard, product UI, client logo, case study, metric, integration or
+testimonial; what the source does not show is omitted, not illustrated by stock.
+STOCK is illustration only, a concrete 2-6 keyword subject: 'finance team
+reviewing invoices', 'engineer server rack', 'designers reviewing prints'. Never
+'technology abstract', 'futuristic', 'digital network', glowing particles or 3D
+shapes.
+SECTIONS
+- Hero: the offer in one sentence beside a supplied product view or a specific,
+  calm work scene; no floating mockups or glowing backdrops.
+- Features/capabilities: icon and text; omit card image queries unless a card
+  shows a real artefact. Process/how it works: the source's own steps only.
+- Work/portfolio (agencies): real projects first; stock never poses as client work.
+- Pricing, clients, numbers, testimonials: only as supplied, otherwise omit.
+- CTA: one primary action the source offers (trial, demo, consultation, project
+  enquiry, IT assessment, a call).
+AVOID unless the brand itself uses them: purple-to-blue gradients, glow, glass
+everywhere, random blobs, three identical cards per section, slogans like
+"Transform your business".
 """
 
 # --- scaffolded content generation (the main pass) ---------------------------
@@ -312,8 +340,8 @@ use the source content's own language. Names, brands and quotes stay as written.
 INPUT
 1. `source`: entry-page brand context and fallback facts; raw_text may be omitted.
 2. `brand`: detected metadata. `industry_personality` guides voice, eyebrows,
-   headlines and CTAs. `industry_visual_direction`, when supplied, overrides
-   generic imagery/card-photo defaults.
+   headlines and CTAs; `business_focus` says what this visitor needs first.
+   `visual_direction`/`design_direction` override generic imagery defaults.
 3. `pages_requested`: EXACT pages. Each page_source (title, headings, sections,
    text, images) is that page's factual basis; otherwise use source and brand
    summary. Apply copy_guidance within required sections and factual fidelity.
@@ -390,13 +418,12 @@ DESIGN INTENT — you write for an award-calibre layout, not a generic template:
   headlines with the same pattern.
 - Give every hero an `eyebrow` — the small label above the headline
   (e.g. "Family-owned since 1998").
-- Homepage hero `layout`: lean "background" (full-bleed photo, transparent
-  floating header) for visual, brand-led industries — restaurant, hospitality,
-  travel, fitness, ecommerce, agency, and nonprofits leading with an emotional
-  impact photo. Lean "split" (clean two-column text+image) where credibility
-  reads better — saas, professional-services, consultancy, technical/B2B.
-  A default lean, not a rule: follow what the source's own photography and
-  tone actually support.
+- Homepage hero `layout`: follow `design_direction.hero` when the payload
+  gives one. Otherwise lean "background" (full-bleed photo, transparent
+  floating header) for visual, brand-led businesses (food, hospitality, retail,
+  causes) and "split" (two-column text+image) where credibility reads better
+  (professional and technical services). Follow what the source's own
+  photography and tone actually support.
 
 OUTPUT — reply with ONE JSON object, no markdown, no commentary. Follow this
 skeleton EXACTLY; every page MUST have a "blocks" array:
@@ -444,7 +471,7 @@ PER PAGE
   claims to fill length.
 - Fill REQUIRED visual query slots with concrete 2-6 word stock phrases.
   Optional imagery may be omitted when a clean text/icon layout serves the
-  section better. Industry visual direction takes precedence. Stock is
+  section better. The visual/design direction takes precedence. Stock is
   illustration, never evidence of actual projects, staff, customers or facilities;
   never use a stock portrait as a named person's identity. Illustrative stock
   galleries must not claim to depict the business's own work or real people.
@@ -588,6 +615,9 @@ Reply with ONE JSON object matching this schema — no markdown, no commentary:
   "primary_color_hint": string|null,  // hex only when explicitly stated or observed in supplied visual evidence; never infer a hex from industry; else null
   "audience": string|null,            // who it serves, as the content describes them (≤12 words); null if not stated
   "positioning": string|null,         // its approach or angle in one short phrase; null if unclear
+  "archetype": null|__ARCHETYPE_ENUM__,
+       // the closest sub-type, ONLY when the content says what the business is
+       // (a Montessori school, a tuition centre, IT support, a design studio…); else null
   "differentiators": [string],        // ≤5 phrases COPIED VERBATIM from the content that state something
                                       // specific to this business: a named programme, method, facility,
                                       // credential, history. Never paraphrase or invent; [] if none.
@@ -610,7 +640,9 @@ an axis. "evidence" must be a short phrase copied exactly from the content, or n
 """
 
 
-DETECT_BRAND_PROMPT = DETECT_BRAND_PROMPT.replace("__INDUSTRY_ENUM__", _INDUSTRY_ENUM)
+DETECT_BRAND_PROMPT = DETECT_BRAND_PROMPT.replace("__INDUSTRY_ENUM__", _INDUSTRY_ENUM).replace(
+    "__ARCHETYPE_ENUM__", archetype_prompt_enum()
+)
 
 # --- paste structuring (small, fast LLM call) -----------------------------------
 

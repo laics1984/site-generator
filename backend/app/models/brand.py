@@ -315,6 +315,13 @@ class ThemeTokens(BaseModel):
     # slugs above: it becomes the manifest's `scheme` rationale and is not part
     # of BuilderStyles.
     design_rationale: str | None = None
+    # The creative direction (services/creative_directions.py) the scheme was
+    # chosen to realise, and the business archetype it was chosen for
+    # (services/business_archetype.py). Internal, like `design_scheme`: every
+    # pass reads them back with `creative_directions.for_theme(theme)`; NOT part
+    # of BuilderStyles.
+    creative_direction: str | None = None
+    business_archetype: str | None = None
     # The ui-ux-pro-max style this mood embodies (design lineage / debug metadata).
     style: str = ""
     # Section background rotation drives visual rhythm (avoid wall-of-white).

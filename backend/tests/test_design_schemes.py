@@ -579,7 +579,9 @@ class SchemesOnDivergeTest(unittest.TestCase):
         self.assertIn(manifest["design_scheme"], decision["rationale"])
         # It rides into the CMS on the same flexible-JSON channel as the rest of
         # the manifest, so a builder round-trip keeps it.
-        self.assertEqual(site.builder_styles.get("designManifest"), manifest)
+        from app.models.design_manifest import builder_styles_manifest
+
+        self.assertEqual(site.builder_styles.get("designManifest"), builder_styles_manifest(manifest))
 
     def test_the_scheme_slug_stays_out_of_the_wire_theme(self):
         # design_scheme is internal, exactly like palette_slug: the CMS payload

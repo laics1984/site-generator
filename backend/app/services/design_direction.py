@@ -59,7 +59,9 @@ from app.models.brand import (
     default_hero_height,
 )
 from app.models.content_blocks import ImageMetadata, SourceContent
-from app.services import design_schemes
+from app.services import creative_directions, design_schemes
+from app.services.business_archetype import spec_for as archetype_spec
+from app.services.creative_directions import CreativeDirection
 from app.services.design_schemes import DesignScheme
 from app.services.design_fingerprint import (
     FINGERPRINT_WINDOW,
@@ -86,6 +88,9 @@ _FRESHNESS_WEIGHT = 0.3
 _INFERRED_AXIS_WEIGHT = 0.6
 # Fewer known axes than this and alignment is "no evidence", not a score.
 _MIN_AXES_FOR_ALIGNMENT = 2
+# A direction lists its realising schemes best first; that order is taste and
+# is worth this much of a scheme score when choosing among them.
+_REALISER_ORDER_BONUS = 0.08
 # Below this much source prose an editorial, narrative language has nothing to tell.
 _THIN_PROSE_CHARS = 1200
 # From this many source photos a type-led language leaves good material unused.
@@ -139,8 +144,18 @@ class Concept:
     alignment: float | None  # None = no personality evidence to judge by
     content_fit: float
     freshness: float  # 1 = unlike every recent site, 0 = a repeat
+    # The creative direction this concept realises (None: no directions are
+    # authored for the business, and the concept is a bare scheme as before).
+    direction: CreativeDirection | None = None
+    # Why the direction scored as it did: alignment/archetype/evidence/content/freshness.
+    direction_parts: dict[str, float | None] = field(default_factory=dict)
 
     def summary(self) -> str:
+        if self.direction is not None:
+            parts = ", ".join(
+                f"{k} {'n/a' if v is None else f'{v:.2f}'}" for k, v in self.direction_parts.items()
+            )
+            return f"{self.direction.slug} via {self.scheme.slug} {self.score:.2f} ({parts})"
         alignment = "n/a" if self.alignment is None else f"{self.alignment:.2f}"
         return (
             f"{self.scheme.slug} {self.score:.2f} (alignment {alignment}, "
@@ -156,28 +171,103 @@ class DesignDirection:
     picked_by: Literal["score", "model", "pin", "schemes-off"] = "score"
     hero_height_from_model: HeroBackgroundHeight | None = field(default=None)
 
+    @property
+    def creative(self) -> CreativeDirection | None:
+        """The creative direction the chosen theme realises, if any."""
+        return creative_directions.for_theme(self.theme)
+
 
 # --- scoring --------------------------------------------------------------------
 
 
-def brand_alignment(scheme: DesignScheme, personality: BrandPersonality | None) -> float | None:
-    """1.0 when the brand sits exactly on the scheme's target, 0.0 at the far
+def personality_alignment(
+    target: dict[str, int], personality: BrandPersonality | None
+) -> float | None:
+    """1.0 when the brand sits exactly on a target point, 0.0 at the far
     corner. Only axes the source spoke to count, and an inferred axis counts for
     less than an evidenced one. None when too little is known to judge."""
-    if personality is None or not scheme.personality:
+    if personality is None or not target:
         return None
     weighted = total = 0.0
     known = 0
     for axis, reading in personality.readings().items():
-        if reading.value is None or axis not in scheme.personality:
+        if reading.value is None or axis not in target:
             continue
         weight = 1.0 if reading.evidenced else _INFERRED_AXIS_WEIGHT
-        weighted += weight * abs(scheme.personality[axis] - reading.value) / 4
+        weighted += weight * abs(target[axis] - reading.value) / 4
         total += weight
         known += 1
     if known < _MIN_AXES_FOR_ALIGNMENT:
         return None
     return 1.0 - weighted / total
+
+
+def brand_alignment(scheme: DesignScheme, personality: BrandPersonality | None) -> float | None:
+    """The brand's distance from a scheme's own target point."""
+    return personality_alignment(scheme.personality, personality)
+
+
+def score_directions(
+    directions: list[CreativeDirection],
+    *,
+    seed: str,
+    personality: BrandPersonality | None,
+    archetype: str | None,
+    evidence: str | None,
+    photos: int | None,
+    recent: set[str],
+) -> list[tuple[CreativeDirection, float, dict[str, float | None]]]:
+    """Every authored direction scored on what THIS business is, best first.
+
+    What the business is comes first — its personality, the kind of business
+    it is, the words it uses about itself — and freshness only separates
+    near-equals. The brand seed rotates the list before a stable sort, so it
+    decides ties and nothing else: two kindergartens with different evidence
+    land on different directions whatever their names hash to."""
+    if not directions:
+        return []
+    offset = seeded_index(seed, "direction", len(directions))
+    rotated = directions[offset:] + directions[:offset]
+    rows = []
+    for position, direction in enumerate(rotated):
+        alignment = personality_alignment(direction.personality, personality)
+        parts: dict[str, float | None] = {
+            "alignment": alignment,
+            "archetype": creative_directions.archetype_fit(direction, archetype),
+            "evidence": creative_directions.evidence_score(direction, evidence),
+            "content": creative_directions.content_fit(direction, photos),
+            "freshness": 0.0 if direction.slug in recent else 1.0,
+        }
+        score = (
+            creative_directions.ALIGNMENT_WEIGHT * (0.5 if alignment is None else alignment)
+            + creative_directions.ARCHETYPE_WEIGHT * parts["archetype"]  # type: ignore[operator]
+            + creative_directions.EVIDENCE_WEIGHT * parts["evidence"]  # type: ignore[operator]
+            + creative_directions.CONTENT_WEIGHT * parts["content"]  # type: ignore[operator]
+            + creative_directions.FRESHNESS_WEIGHT * parts["freshness"]  # type: ignore[operator]
+        )
+        rows.append((position, direction, round(score, 6), parts))
+    rows.sort(key=lambda row: (-row[2], row[0]))
+    return [(direction, score, parts) for _, direction, score, parts in rows]
+
+
+def direction_realisers(
+    direction: CreativeDirection, mood: BrandMood | None, industry: str | None
+) -> list[str]:
+    """The schemes that can carry a direction for this business, best first.
+
+    The direction's own list, kept to schemes whose hard INDUSTRY gate admits
+    the business; of those, the ones the mood gate also admits when any are —
+    a direction is chosen on the same personality the mood is derived from, so
+    the two usually agree, and when they don't the direction's own list wins
+    rather than leaving it unrealisable."""
+    norm = (industry or "").strip().lower()
+    own = [
+        slug for slug in direction.schemes
+        if (scheme := design_schemes.SCHEMES_BY_SLUG.get(slug)) is not None
+        and (not scheme.industries or norm in scheme.industries)
+    ]
+    admitted = set(design_schemes.candidates_for(mood, industry))
+    return [slug for slug in own if slug in admitted] or own
 
 
 def content_fit(scheme: DesignScheme, content: ContentProfile | None) -> float:
@@ -310,9 +400,11 @@ audience, purpose, imagery and explicit direction. Prefer explicit user directio
 and observed brand colors over inferred industry conventions. Preserve the logo's
 recognizable color; complementary brand colors may inform secondary and accent.
 Choose analogous, complementary, split-complementary, monochromatic, neutral,
-warm/cool or another coherent relationship as appropriate. Avoid automatic blue
-for technology, teal for healthcare, rainbow for childcare, or one palette per
-industry. Spend accent sparingly; applications derive technical shades and inks.
+warm/cool or another coherent relationship as appropriate. When a creative
+direction is given, its colour voice (soft pastel, earth tones, stark neutrals…)
+sets the palette's character; never fall back to one palette per industry or an
+automatic blue for technology or teal for healthcare.
+Spend accent sparingly; applications derive technical shades and inks.
 Use only four #rrggbb palette values, not separate hover/text/border colors.
 If a direction is pinned, keep its concept and hero height; change colors only.
 """
@@ -346,6 +438,7 @@ def _concept_prompt(
     design_direction: str | None = None,
     business_context: str | None = None,
     include_palette_context: bool = True,
+    archetype: str | None = None,
 ) -> str:
     lines = [
         f"Business: {brand_name}",
@@ -353,8 +446,17 @@ def _concept_prompt(
         f"Mood: {mood}",
         f"Logo colour: {logo_hex or 'none'}",
     ]
+    if (spec := archetype_spec(archetype)) is not None:
+        lines.append(f"Kind of business: {spec.label}")
     if positioning:
         lines.append(f"Positioning (inferred): {positioning}")
+    if not include_palette_context:
+        # Who it is for and what it does decide a direction as much as its
+        # personality does; the palette context below repeats them at length.
+        if audience:
+            lines.append(f"Audience: {audience[:300]}")
+        if business_context:
+            lines.append(f"What it does: {business_context[:600]}")
     if include_palette_context:
         lines.extend([
             f"Audience: {(audience or 'unknown')[:300]}",
@@ -377,6 +479,15 @@ def _concept_prompt(
         theme = concept.theme
         heading = theme.typography.heading_font.split(",")[0].strip('"\' ')
         body = theme.typography.body_font.split(",")[0].strip('"\' ')
+        if concept.direction is not None:
+            lines.append(
+                f"  {index}. {creative_directions.prompt_line(concept.direction)}. "
+                f"Realised as {concept.scheme.label} on a {theme.color_scheme} canvas. "
+                f"Palette: primary {theme.palette.primary}, accent {theme.palette.accent}, "
+                f"page {theme.palette.background}. Type: {heading} headings / {body} body. "
+                f"Score {concept.score:.2f} ({concept.summary().split('(', 1)[1]}"
+            )
+            continue
         lines.append(
             f"  {index}. {concept.scheme.label} — {concept.scheme.rationale}. "
             f"Palette: primary {theme.palette.primary}, accent {theme.palette.accent}, "
@@ -426,7 +537,75 @@ def _rationale(direction_concepts: list[Concept], chosen: Concept, picked_by: st
         "score": "best score",
         "pin": "explicitly pinned",
     }[picked_by]
-    return f"{chosen.scheme.label} — {chosen.scheme.rationale}. {how}. Weighed: {weighed}"
+    lead = f"{chosen.scheme.label} — {chosen.scheme.rationale}"
+    if chosen.direction is not None:
+        lead = f"{chosen.direction.label} direction, realised as {lead}"
+    return f"{lead}. {how}. Weighed: {weighed}"
+
+
+async def _direction_concepts(
+    directions: list[CreativeDirection],
+    *,
+    seed: str,
+    mood: BrandMood,
+    industry: str | None,
+    archetype: str | None,
+    personality: BrandPersonality | None,
+    content: ContentProfile | None,
+    evidence: str,
+    theme_for,
+    scheme_for,
+) -> list[Concept]:
+    """One concept per top-scored DIRECTION, each realised by its best scheme.
+
+    Distinct directions, not three realisations of one, is what the model is
+    asked to choose between — a shortlist of three schemes for one direction
+    would ask it to choose a shade. Within a direction its own scheme order is
+    taste (best first) and earns a small bonus; scheme alignment, content fit
+    and fingerprint freshness decide the rest, as they always have."""
+    ranked = score_directions(
+        directions,
+        seed=seed,
+        personality=personality,
+        archetype=archetype,
+        evidence=evidence,
+        photos=content.photos if content is not None else None,
+        recent=await recent_choices("direction", site_key=seed),
+    )
+    concepts: list[Concept] = []
+    for direction, direction_score, parts in ranked[: max(1, settings.design_concept_candidates)]:
+        realisers = direction_realisers(direction, mood, industry)
+        if not realisers:
+            continue
+        canvas = scheme_for(direction)
+        themes = {slug: theme_for(slug, canvas) for slug in realisers}
+        scored = score_schemes(
+            realisers,
+            seed=seed,
+            personality=personality,
+            content=content,
+            freshness=await _freshness(themes, seed=seed),
+        )
+        order = {slug: i for i, slug in enumerate(direction.schemes)}
+
+        def ranked_realiser(row: tuple) -> float:
+            scheme, score = row[0], row[1]
+            return score + _REALISER_ORDER_BONUS * (1 - order.get(scheme.slug, 0) / max(1, len(order)))
+
+        scheme, _score, alignment, fit, fresh = max(scored, key=ranked_realiser)
+        concepts.append(
+            Concept(
+                scheme=scheme,
+                theme=themes[scheme.slug],
+                score=direction_score,
+                alignment=alignment,
+                content_fit=fit,
+                freshness=fresh,
+                direction=direction,
+                direction_parts=parts,
+            )
+        )
+    return concepts
 
 
 async def resolve_direction(
@@ -453,6 +632,7 @@ async def resolve_direction(
     generate_palette: bool = True,
     use_model: bool = True,
     llm: LlmClient | None = None,
+    archetype: str | None = None,
 ) -> DesignDirection:
     """The site's theme, chosen among scored concepts. See the module docstring.
 
@@ -467,14 +647,14 @@ async def resolve_direction(
     )
     avoid_palettes = await recent_choices("palette", site_key=seed)
 
-    def theme_for(scheme_slug: str | None) -> ThemeTokens:
+    def theme_for(scheme_slug: str | None, scheme_override: str | None = None) -> ThemeTokens:
         return build_theme(
             logo_hex,
             mood=mood,
             palette_mode="auto",
             font_seed=seed,
             industry=industry,
-            color_scheme=color_scheme,
+            color_scheme=scheme_override or color_scheme,
             avoid_palettes=avoid_palettes,
             scheme_choice=scheme_slug,
         )
@@ -505,29 +685,49 @@ async def resolve_direction(
         return DesignDirection(theme=theme, color_scheme=color_scheme, picked_by="schemes-off")
 
     pinned = design_schemes.SCHEMES_BY_SLUG.get((scheme_choice or "").strip().lower())
-    candidates = [pinned.slug] if pinned is not None else design_schemes.candidates_for(mood, industry)
-    # Every candidate realised (a handful of pure build_theme calls): freshness
-    # is judged on what the concept would actually look like, not its name.
-    themes = {slug: theme_for(slug) for slug in candidates}
-    scored = score_schemes(
-        candidates,
-        seed=seed,
-        personality=personality,
-        content=content,
-        freshness={} if pinned is not None else await _freshness(themes, seed=seed),
+    directions = (
+        [] if pinned is not None else creative_directions.directions_for(industry, archetype)
     )
-    shortlist = scored[: max(1, settings.design_concept_candidates)]
-    concepts = [
-        Concept(
-            scheme=scheme,
-            theme=themes[scheme.slug],
-            score=score,
-            alignment=alignment,
-            content_fit=fit,
-            freshness=fresh,
+    if directions:
+        concepts = await _direction_concepts(
+            directions,
+            seed=seed,
+            mood=mood,
+            industry=industry,
+            archetype=archetype,
+            personality=personality,
+            content=content,
+            evidence=" ".join(t for t in (positioning, audience, business_context) if t),
+            theme_for=theme_for,
+            scheme_for=lambda d: resolve_color_scheme(
+                color_scheme_override, brand_color_scheme, logo_is_light,
+                industry=industry, direction=d,
+            ),
         )
-        for scheme, score, alignment, fit, fresh in shortlist
-    ]
+    else:
+        candidates = [pinned.slug] if pinned is not None else design_schemes.candidates_for(mood, industry)
+        # Every candidate realised (a handful of pure build_theme calls): freshness
+        # is judged on what the concept would actually look like, not its name.
+        themes = {slug: theme_for(slug) for slug in candidates}
+        scored = score_schemes(
+            candidates,
+            seed=seed,
+            personality=personality,
+            content=content,
+            freshness={} if pinned is not None else await _freshness(themes, seed=seed),
+        )
+        shortlist = scored[: max(1, settings.design_concept_candidates)]
+        concepts = [
+            Concept(
+                scheme=scheme,
+                theme=themes[scheme.slug],
+                score=score,
+                alignment=alignment,
+                content_fit=fit,
+                freshness=fresh,
+            )
+            for scheme, score, alignment, fit, fresh in shortlist
+        ]
 
     chosen = concepts[0]
     picked_by: Literal["score", "model", "pin"] = "pin" if pinned is not None else "score"
@@ -550,6 +750,7 @@ async def resolve_direction(
             image_colors=image_colors,
             design_direction=design_direction,
             business_context=business_context,
+            archetype=archetype,
         )
         if choice is not None:
             model_height = choice.hero_height
@@ -561,6 +762,16 @@ async def resolve_direction(
     theme.hero_background_height = resolve_hero_height(
         hero_height, model_height, mood=mood, industry=industry
     )
+    if chosen.direction is not None:
+        theme.creative_direction = chosen.direction.slug
+        theme.business_archetype = archetype
+        # The palette call hears the direction's colour voice (a gentle
+        # nursery's soft pastels, a studio's stark neutrals) — the one place
+        # the industry's colour knowledge reaches the model, and it is the
+        # direction's, not a rule for the whole industry.
+        palette_brief["creative_direction"] = (
+            f"{chosen.direction.label}: {chosen.direction.palette_voice}"
+        )
     if palette_enabled:
         if shared:
             theme = _creative_theme(theme, choice.palette if choice else None, brand_colors, design_direction)
@@ -569,11 +780,11 @@ async def resolve_direction(
     theme.design_rationale = _rationale(concepts, chosen, picked_by)
     logger.info(
         "Design direction for %s: %s (%s) of %s",
-        seed, chosen.scheme.slug, picked_by, [c.scheme.slug for c in concepts],
+        seed, chosen.summary(), picked_by, [c.summary() for c in concepts],
     )
     return DesignDirection(
         theme=theme,
-        color_scheme=color_scheme,
+        color_scheme=theme.color_scheme,
         concepts=tuple(concepts),
         picked_by=picked_by,
         hero_height_from_model=model_height,

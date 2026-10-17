@@ -204,8 +204,10 @@ Compatibility invariants (verified against both renderers):
 
 Never random:
 
-1. **Fit** — an ordered candidate list per industry (hard pin: childcare,
-   nonprofit) or per mood. Only archetypes that suit the brand enter the list.
+1. **Fit** — an ordered candidate list per mood, narrowed by the design
+   scheme's chrome affinity (no industry pins it any more — the childcare and
+   nonprofit pins were removed by the design-identity plan). Only archetypes
+   that suit the brand enter the list.
 2. **Seeded rotation** — the brand name hashes to a stable index
    (md5, same idiom as `hero_director`), so one brand regenerates identically
    while different brands diverge.
@@ -420,7 +422,7 @@ pipeline** and a new axis is a data edit.
 | `container_max_width` | `PageTokens.max_width` → `--builder-page-max-width` (117 catalog nodes centre against it) |
 | `padding_scale` | `schema_builder.apply_density_scale` — after `modernize_sections`, before the divider pass |
 | card treatment / heading weight+tracking / eyebrow | `style_tokens` (`TypeRamp`, `SpacingScale`, `card_surface`, `eyebrow_styles`) + `_ModernizePlan` |
-| `divider_shape` / `divider_height` | `schema_builder._divider_shape` (industry pin still wins) |
+| `divider_shape` / `divider_height` | `schema_builder._divider_shape` (scheme → mood; no industry pin) |
 | `layout_bias` | `section_content.layout_preference`, prefixed onto the mood order |
 | `hero_policy` | `hero_director.plan_site_heroes` |
 | chrome affinity | `design_director._apply_affinity` |
@@ -475,3 +477,18 @@ fixture's brand name hashed to.
 * **Section-order signatures** — the `design_choices` table is keyed by
   `area`, so page-composition signatures can join the history without a
   schema change.
+
+
+## Creative directions and the design-quality evaluator (2026-10-17)
+
+A layer above the schemes, so an industry's design knowledge reaches the
+decision without pinning one look: `services/business_archetype.py` reads the
+kind of business (Montessori, nursery, IT services, design studio…), and
+`services/creative_directions.py` holds several authored directions per kind,
+each realised by existing schemes. `design_direction.resolve_direction` scores
+directions on evidence before it scores schemes; the manifest records the
+direction (`DesignManifest.direction`) and the finished site's verdict from
+`services/design_quality.py` (`DesignManifest.quality`). The investigation,
+root causes and before/after evidence are in
+[design-intelligence-report.md](design-intelligence-report.md); CLAUDE.md has
+the contracts.

@@ -87,6 +87,13 @@ def _builder_vars(site: GeneratedSite) -> dict[str, str]:
         inks = [colors.get(k) for k in ("secondary", "text", "background")]
         if all(isinstance(c, str) and _HEX_RE.match(c) for c in inks):
             out["--builder-color-heading"] = heading_ink(*inks)
+        # The page canvas sections paint as `var(--builder-page-background, …)`.
+        # Unmapped, every one resolved to its #ffffff fallback, and light copy on
+        # a dark site's page band read as failing contrast on white.
+        page = bs.get("page") if isinstance(bs.get("page"), dict) else {}
+        page_bg = page.get("background") or colors.get("background")
+        if isinstance(page_bg, str) and _HEX_RE.match(page_bg):
+            out["--builder-page-background"] = page_bg
         neutrals = {k: colors.get(k) for k in ("background", "surface", "text", "secondary")}
         if all(isinstance(c, str) and _HEX_RE.match(c) for c in neutrals.values()):
             light, dark = _neutral_inks(SimpleNamespace(**neutrals))
@@ -199,7 +206,14 @@ def _check_leaf(
     if is_image and content.src:
         if not (content.alt and content.alt.strip()):
             _add(out, "alt-text", page, f"image '{el.name}' has no alt text")
-        if not (content.width or content.height or _styles(el).get("aspectRatio")):
+        styles = _styles(el)
+        # A box the CSS sizes on its own (an aspect ratio, or a definite height
+        # like a split hero's `height: 100%` of its column) reserves its space
+        # before the image loads, which is all the rule protects.
+        css_sized = styles.get("aspectRatio") or (
+            isinstance(styles.get("height"), str) and styles["height"] not in ("auto", "")
+        )
+        if not (content.width or content.height or css_sized):
             _add(out, "image-dimensions", page,
                  f"image '{el.name}' declares no width/height (layout shift risk)")
 

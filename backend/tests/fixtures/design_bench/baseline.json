@@ -1,0 +1,1581 @@
+{
+  "sites": [
+    {
+      "key": "traditional-kindergarten",
+      "logo": "#b91c1c",
+      "direction": "contemporary-academic",
+      "archetype": "kindergarten",
+      "mood": "friendly",
+      "scheme": "civic-trust",
+      "hero": "hero-editorial@arch",
+      "header": "classic",
+      "footer": "cta-banner",
+      "canvas": "white",
+      "heading_font": "Manrope",
+      "radius": "round",
+      "sections": [
+        "features-card-grid",
+        "about-image-split",
+        "services-two-col",
+        "testimonials-spotlight",
+        "cta-banner"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "light",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "legibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "color-contrast": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "traditional-kindergarten",
+      "variant": 0
+    },
+    {
+      "key": "traditional-kindergarten~1",
+      "logo": "#16a34a",
+      "direction": "contemporary-academic",
+      "archetype": "kindergarten",
+      "mood": "friendly",
+      "scheme": "civic-trust",
+      "hero": "hero-editorial@arch",
+      "header": "classic",
+      "footer": "cta-banner",
+      "canvas": "white",
+      "heading_font": "Manrope",
+      "radius": "round",
+      "sections": [
+        "features-card-grid",
+        "about-image-split",
+        "services-two-col",
+        "testimonials-spotlight",
+        "cta-banner"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "light",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "traditional-kindergarten",
+      "variant": 1
+    },
+    {
+      "key": "traditional-kindergarten~2",
+      "logo": "#7c3aed",
+      "direction": "contemporary-academic",
+      "archetype": "kindergarten",
+      "mood": "friendly",
+      "scheme": "civic-trust",
+      "hero": "hero-editorial@arch",
+      "header": "classic",
+      "footer": "cta-banner",
+      "canvas": "white",
+      "heading_font": "Manrope",
+      "radius": "round",
+      "sections": [
+        "features-card-grid",
+        "about-image-split",
+        "services-two-col",
+        "testimonials-spotlight",
+        "cta-banner"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "light",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "traditional-kindergarten",
+      "variant": 2
+    },
+    {
+      "key": "traditional-kindergarten~3",
+      "logo": null,
+      "direction": "contemporary-academic",
+      "archetype": "kindergarten",
+      "mood": "friendly",
+      "scheme": "civic-trust",
+      "hero": "hero-editorial@arch",
+      "header": "classic",
+      "footer": "cta-banner",
+      "canvas": "tinted",
+      "heading_font": "Manrope",
+      "radius": "round",
+      "sections": [
+        "features-card-grid",
+        "about-image-split",
+        "services-two-col",
+        "testimonials-spotlight",
+        "cta-banner"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "light",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "traditional-kindergarten",
+      "variant": 3
+    },
+    {
+      "key": "premium-montessori",
+      "logo": "#3f6212",
+      "direction": "contemporary-minimalist",
+      "archetype": "montessori-preschool",
+      "mood": "luxury",
+      "scheme": "airy-luxe",
+      "hero": "hero-editorial@arch",
+      "header": "minimal-line",
+      "footer": "editorial",
+      "canvas": "white",
+      "heading_font": "Cormorant Garamond",
+      "radius": "square",
+      "sections": [
+        "about-image-split",
+        "features-editorial",
+        "gallery-grid",
+        "services-editorial",
+        "cta-minimal"
+      ],
+      "bands": [
+        "tint",
+        "dark",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "premium-montessori",
+      "variant": 0
+    },
+    {
+      "key": "premium-montessori~1",
+      "logo": "#16a34a",
+      "direction": "contemporary-minimalist",
+      "archetype": "montessori-preschool",
+      "mood": "luxury",
+      "scheme": "airy-luxe",
+      "hero": "hero-editorial@arch",
+      "header": "minimal-line",
+      "footer": "editorial",
+      "canvas": "white",
+      "heading_font": "Cormorant Garamond",
+      "radius": "square",
+      "sections": [
+        "about-image-split",
+        "features-editorial",
+        "gallery-grid",
+        "services-editorial",
+        "cta-minimal"
+      ],
+      "bands": [
+        "tint",
+        "dark",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "premium-montessori",
+      "variant": 1
+    },
+    {
+      "key": "premium-montessori~2",
+      "logo": "#7c3aed",
+      "direction": "contemporary-minimalist",
+      "archetype": "montessori-preschool",
+      "mood": "luxury",
+      "scheme": "airy-luxe",
+      "hero": "hero-editorial@arch",
+      "header": "minimal-line",
+      "footer": "editorial",
+      "canvas": "white",
+      "heading_font": "Cormorant Garamond",
+      "radius": "square",
+      "sections": [
+        "about-image-split",
+        "features-editorial",
+        "gallery-grid",
+        "services-editorial",
+        "cta-minimal"
+      ],
+      "bands": [
+        "tint",
+        "dark",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "premium-montessori",
+      "variant": 2
+    },
+    {
+      "key": "premium-montessori~3",
+      "logo": null,
+      "direction": "contemporary-minimalist",
+      "archetype": "montessori-preschool",
+      "mood": "luxury",
+      "scheme": "airy-luxe",
+      "hero": "hero-editorial@arch",
+      "header": "minimal-line",
+      "footer": "editorial",
+      "canvas": "tinted",
+      "heading_font": "Cormorant Garamond",
+      "radius": "square",
+      "sections": [
+        "about-image-split",
+        "features-editorial",
+        "gallery-grid",
+        "services-editorial",
+        "cta-minimal"
+      ],
+      "bands": [
+        "tint",
+        "dark",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "premium-montessori",
+      "variant": 3
+    },
+    {
+      "key": "contemporary-childcare",
+      "logo": "#0ea5e9",
+      "direction": "expressive-contemporary",
+      "archetype": "nursery-daycare",
+      "mood": "playful",
+      "scheme": "bento-modular",
+      "hero": "hero-playful-split@blob",
+      "header": "glass-blur",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Syne",
+      "radius": "pill",
+      "sections": [
+        "features-card-grid",
+        "about-image-split",
+        "services-offer-grid",
+        "testimonials-spotlight",
+        "cta-gradient"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "dark",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "contemporary-childcare",
+      "variant": 0
+    },
+    {
+      "key": "contemporary-childcare~1",
+      "logo": "#16a34a",
+      "direction": "expressive-contemporary",
+      "archetype": "nursery-daycare",
+      "mood": "playful",
+      "scheme": "bento-modular",
+      "hero": "hero-playful-split@blob",
+      "header": "glass-blur",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Syne",
+      "radius": "pill",
+      "sections": [
+        "features-card-grid",
+        "about-image-split",
+        "services-offer-grid",
+        "testimonials-spotlight",
+        "cta-gradient"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "dark",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "contemporary-childcare",
+      "variant": 1
+    },
+    {
+      "key": "contemporary-childcare~2",
+      "logo": "#7c3aed",
+      "direction": "expressive-contemporary",
+      "archetype": "nursery-daycare",
+      "mood": "playful",
+      "scheme": "bento-modular",
+      "hero": "hero-playful-split@blob",
+      "header": "glass-blur",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Syne",
+      "radius": "pill",
+      "sections": [
+        "features-card-grid",
+        "about-image-split",
+        "services-offer-grid",
+        "testimonials-spotlight",
+        "cta-gradient"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "dark",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "contemporary-childcare",
+      "variant": 2
+    },
+    {
+      "key": "contemporary-childcare~3",
+      "logo": null,
+      "direction": "expressive-contemporary",
+      "archetype": "nursery-daycare",
+      "mood": "playful",
+      "scheme": "bento-modular",
+      "hero": "hero-playful-split@blob",
+      "header": "glass-blur",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Syne",
+      "radius": "pill",
+      "sections": [
+        "features-card-grid",
+        "about-image-split",
+        "services-offer-grid",
+        "testimonials-spotlight",
+        "cta-gradient"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "dark",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "legibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "color-contrast": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "contemporary-childcare",
+      "variant": 3
+    },
+    {
+      "key": "enrichment-centre",
+      "logo": "#f59e0b",
+      "direction": "expressive-contemporary",
+      "archetype": "enrichment-centre",
+      "mood": "playful",
+      "scheme": "playroom",
+      "hero": "hero-playful-split@blob",
+      "header": "classic",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Syne",
+      "radius": "pill",
+      "sections": [
+        "services-two-col",
+        "features-card-grid",
+        "gallery-grid",
+        "faq-stacked",
+        "cta-banner"
+      ],
+      "bands": [
+        "tint",
+        "tint",
+        "tint",
+        "tint",
+        "tint"
+      ],
+      "quality": {
+        "score": 86,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 92
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "family-dominates": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "enrichment-centre",
+      "variant": 0
+    },
+    {
+      "key": "enrichment-centre~1",
+      "logo": "#16a34a",
+      "direction": "expressive-contemporary",
+      "archetype": "enrichment-centre",
+      "mood": "playful",
+      "scheme": "playroom",
+      "hero": "hero-playful-split@blob",
+      "header": "classic",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Syne",
+      "radius": "pill",
+      "sections": [
+        "services-two-col",
+        "features-card-grid",
+        "gallery-grid",
+        "faq-stacked",
+        "cta-banner"
+      ],
+      "bands": [
+        "tint",
+        "tint",
+        "tint",
+        "tint",
+        "tint"
+      ],
+      "quality": {
+        "score": 86,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 92
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "family-dominates": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "enrichment-centre",
+      "variant": 1
+    },
+    {
+      "key": "enrichment-centre~2",
+      "logo": "#7c3aed",
+      "direction": "expressive-contemporary",
+      "archetype": "enrichment-centre",
+      "mood": "playful",
+      "scheme": "playroom",
+      "hero": "hero-playful-split@blob",
+      "header": "classic",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Syne",
+      "radius": "pill",
+      "sections": [
+        "services-two-col",
+        "features-card-grid",
+        "gallery-grid",
+        "faq-stacked",
+        "cta-banner"
+      ],
+      "bands": [
+        "tint",
+        "tint",
+        "tint",
+        "tint",
+        "tint"
+      ],
+      "quality": {
+        "score": 86,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 92
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "family-dominates": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "enrichment-centre",
+      "variant": 2
+    },
+    {
+      "key": "enrichment-centre~3",
+      "logo": null,
+      "direction": "expressive-contemporary",
+      "archetype": "enrichment-centre",
+      "mood": "playful",
+      "scheme": "playroom",
+      "hero": "hero-playful-split@blob",
+      "header": "classic",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Syne",
+      "radius": "pill",
+      "sections": [
+        "services-two-col",
+        "features-card-grid",
+        "gallery-grid",
+        "faq-stacked",
+        "cta-banner"
+      ],
+      "bands": [
+        "tint",
+        "tint",
+        "tint",
+        "tint",
+        "tint"
+      ],
+      "quality": {
+        "score": 86,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 92
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "family-dominates": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "enrichment-centre",
+      "variant": 3
+    },
+    {
+      "key": "nursery-gentle",
+      "logo": "#db2777",
+      "direction": "gentle-nurturing",
+      "archetype": "nursery-daycare",
+      "mood": "friendly",
+      "scheme": "soft-nursery",
+      "hero": "hero-playful-split@pebble",
+      "header": "classic",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Atkinson Hyperlegible",
+      "radius": "pill",
+      "sections": [
+        "features-two-col",
+        "about-image-split",
+        "services-offer-grid",
+        "testimonials-spotlight",
+        "cta-banner"
+      ],
+      "bands": [
+        "tint",
+        "tint",
+        "tint",
+        "tint",
+        "tint"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "nursery-gentle",
+      "variant": 0
+    },
+    {
+      "key": "nursery-gentle~1",
+      "logo": "#16a34a",
+      "direction": "gentle-nurturing",
+      "archetype": "nursery-daycare",
+      "mood": "friendly",
+      "scheme": "soft-nursery",
+      "hero": "hero-playful-split@pebble",
+      "header": "classic",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Atkinson Hyperlegible",
+      "radius": "pill",
+      "sections": [
+        "features-two-col",
+        "about-image-split",
+        "services-offer-grid",
+        "testimonials-spotlight",
+        "cta-banner"
+      ],
+      "bands": [
+        "tint",
+        "tint",
+        "tint",
+        "tint",
+        "tint"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "nursery-gentle",
+      "variant": 1
+    },
+    {
+      "key": "nursery-gentle~2",
+      "logo": "#7c3aed",
+      "direction": "gentle-nurturing",
+      "archetype": "nursery-daycare",
+      "mood": "friendly",
+      "scheme": "soft-nursery",
+      "hero": "hero-playful-split@pebble",
+      "header": "classic",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Atkinson Hyperlegible",
+      "radius": "pill",
+      "sections": [
+        "features-two-col",
+        "about-image-split",
+        "services-offer-grid",
+        "testimonials-spotlight",
+        "cta-banner"
+      ],
+      "bands": [
+        "tint",
+        "tint",
+        "tint",
+        "tint",
+        "tint"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "nursery-gentle",
+      "variant": 2
+    },
+    {
+      "key": "nursery-gentle~3",
+      "logo": null,
+      "direction": "gentle-nurturing",
+      "archetype": "nursery-daycare",
+      "mood": "friendly",
+      "scheme": "soft-nursery",
+      "hero": "hero-playful-split@pebble",
+      "header": "classic",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Atkinson Hyperlegible",
+      "radius": "pill",
+      "sections": [
+        "features-two-col",
+        "about-image-split",
+        "services-offer-grid",
+        "testimonials-spotlight",
+        "cta-banner"
+      ],
+      "bands": [
+        "tint",
+        "tint",
+        "tint",
+        "tint",
+        "tint"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "childcare",
+      "base": "nursery-gentle",
+      "variant": 3
+    },
+    {
+      "key": "b2b-saas",
+      "logo": "#2563eb",
+      "direction": "product-led-minimal",
+      "archetype": "saas-product",
+      "mood": "modern",
+      "scheme": "calm-clinical",
+      "hero": "hero-minimal",
+      "header": "glass-blur",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Manrope",
+      "radius": "soft",
+      "sections": [
+        "features-card-grid",
+        "process-steps",
+        "pricing-tiers",
+        "faq-stacked",
+        "cta-gradient"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 96,
+        "subscores": {
+          "rhythm": 92
+        },
+        "corrections": 0,
+        "findings": {
+          "family-dominates": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "saas",
+      "base": "b2b-saas",
+      "variant": 0
+    },
+    {
+      "key": "b2b-saas~1",
+      "logo": "#16a34a",
+      "direction": "product-led-minimal",
+      "archetype": "saas-product",
+      "mood": "modern",
+      "scheme": "calm-clinical",
+      "hero": "hero-minimal",
+      "header": "glass-blur",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Manrope",
+      "radius": "soft",
+      "sections": [
+        "features-card-grid",
+        "process-steps",
+        "pricing-tiers",
+        "faq-stacked",
+        "cta-gradient"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 96,
+        "subscores": {
+          "rhythm": 92
+        },
+        "corrections": 0,
+        "findings": {
+          "family-dominates": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "saas",
+      "base": "b2b-saas",
+      "variant": 1
+    },
+    {
+      "key": "b2b-saas~2",
+      "logo": "#7c3aed",
+      "direction": "product-led-minimal",
+      "archetype": "saas-product",
+      "mood": "modern",
+      "scheme": "calm-clinical",
+      "hero": "hero-minimal",
+      "header": "glass-blur",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Manrope",
+      "radius": "soft",
+      "sections": [
+        "features-card-grid",
+        "process-steps",
+        "pricing-tiers",
+        "faq-stacked",
+        "cta-gradient"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 96,
+        "subscores": {
+          "rhythm": 92
+        },
+        "corrections": 0,
+        "findings": {
+          "family-dominates": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "saas",
+      "base": "b2b-saas",
+      "variant": 2
+    },
+    {
+      "key": "b2b-saas~3",
+      "logo": null,
+      "direction": "product-led-minimal",
+      "archetype": "saas-product",
+      "mood": "modern",
+      "scheme": "calm-clinical",
+      "hero": "hero-minimal",
+      "header": "glass-blur",
+      "footer": "mega",
+      "canvas": "white",
+      "heading_font": "Manrope",
+      "radius": "soft",
+      "sections": [
+        "features-card-grid",
+        "process-steps",
+        "pricing-tiers",
+        "faq-stacked",
+        "cta-gradient"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 96,
+        "subscores": {
+          "rhythm": 92
+        },
+        "corrections": 0,
+        "findings": {
+          "family-dominates": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "saas",
+      "base": "b2b-saas",
+      "variant": 3
+    },
+    {
+      "key": "it-services",
+      "logo": "#0f766e",
+      "direction": "human-centered-tech",
+      "archetype": "it-services",
+      "mood": "technical",
+      "scheme": "calm-clinical",
+      "hero": "hero-modern-split",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Barlow Condensed",
+      "radius": "square",
+      "sections": [
+        "services-two-col",
+        "about-image-split",
+        "process-steps",
+        "faq-stacked",
+        "cta-minimal"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "saas",
+      "base": "it-services",
+      "variant": 0
+    },
+    {
+      "key": "it-services~1",
+      "logo": "#16a34a",
+      "direction": "human-centered-tech",
+      "archetype": "it-services",
+      "mood": "technical",
+      "scheme": "calm-clinical",
+      "hero": "hero-modern-split",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Barlow Condensed",
+      "radius": "square",
+      "sections": [
+        "services-two-col",
+        "about-image-split",
+        "process-steps",
+        "faq-stacked",
+        "cta-minimal"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "saas",
+      "base": "it-services",
+      "variant": 1
+    },
+    {
+      "key": "it-services~2",
+      "logo": "#7c3aed",
+      "direction": "human-centered-tech",
+      "archetype": "it-services",
+      "mood": "technical",
+      "scheme": "calm-clinical",
+      "hero": "hero-modern-split",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Barlow Condensed",
+      "radius": "square",
+      "sections": [
+        "services-two-col",
+        "about-image-split",
+        "process-steps",
+        "faq-stacked",
+        "cta-minimal"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "saas",
+      "base": "it-services",
+      "variant": 2
+    },
+    {
+      "key": "it-services~3",
+      "logo": null,
+      "direction": "human-centered-tech",
+      "archetype": "it-services",
+      "mood": "technical",
+      "scheme": "calm-clinical",
+      "hero": "hero-modern-split",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Barlow Condensed",
+      "radius": "square",
+      "sections": [
+        "services-two-col",
+        "about-image-split",
+        "process-steps",
+        "faq-stacked",
+        "cta-minimal"
+      ],
+      "bands": [
+        "dark",
+        "light",
+        "light",
+        "light",
+        "dark"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "saas",
+      "base": "it-services",
+      "variant": 3
+    },
+    {
+      "key": "creative-agency",
+      "logo": "#e11d48",
+      "direction": "creative-studio",
+      "archetype": "digital-agency",
+      "mood": "editorial",
+      "scheme": "poster-display",
+      "hero": "hero-asymmetric-display",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "dark",
+      "heading_font": "Newsreader",
+      "radius": "square",
+      "sections": [
+        "gallery-grid",
+        "services-editorial",
+        "process-steps",
+        "testimonials-editorial",
+        "cta-banner"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "dark",
+        "dark",
+        "dark"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "agency",
+      "base": "creative-agency",
+      "variant": 0
+    },
+    {
+      "key": "creative-agency~1",
+      "logo": "#16a34a",
+      "direction": "creative-studio",
+      "archetype": "digital-agency",
+      "mood": "editorial",
+      "scheme": "poster-display",
+      "hero": "hero-asymmetric-display",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "dark",
+      "heading_font": "Newsreader",
+      "radius": "square",
+      "sections": [
+        "gallery-grid",
+        "services-editorial",
+        "process-steps",
+        "testimonials-editorial",
+        "cta-banner"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "dark",
+        "dark",
+        "dark"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "agency",
+      "base": "creative-agency",
+      "variant": 1
+    },
+    {
+      "key": "creative-agency~2",
+      "logo": "#7c3aed",
+      "direction": "creative-studio",
+      "archetype": "digital-agency",
+      "mood": "editorial",
+      "scheme": "poster-display",
+      "hero": "hero-asymmetric-display",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "dark",
+      "heading_font": "Newsreader",
+      "radius": "square",
+      "sections": [
+        "gallery-grid",
+        "services-editorial",
+        "process-steps",
+        "testimonials-editorial",
+        "cta-banner"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "dark",
+        "dark",
+        "dark"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "agency",
+      "base": "creative-agency",
+      "variant": 2
+    },
+    {
+      "key": "creative-agency~3",
+      "logo": null,
+      "direction": "creative-studio",
+      "archetype": "digital-agency",
+      "mood": "editorial",
+      "scheme": "poster-display",
+      "hero": "hero-asymmetric-display",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "dark",
+      "heading_font": "Newsreader",
+      "radius": "square",
+      "sections": [
+        "gallery-grid",
+        "services-editorial",
+        "process-steps",
+        "testimonials-editorial",
+        "cta-banner"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "dark",
+        "dark",
+        "dark"
+      ],
+      "quality": {
+        "score": 88,
+        "subscores": {
+          "accessibility": 80,
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "alt-text": 1,
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "agency",
+      "base": "creative-agency",
+      "variant": 3
+    },
+    {
+      "key": "tech-consultancy",
+      "logo": "#1e3a8a",
+      "direction": "premium-enterprise",
+      "archetype": "tech-consultancy",
+      "mood": "luxury",
+      "scheme": "consult-formal",
+      "hero": "hero-modern-split",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Cormorant",
+      "radius": "square",
+      "sections": [
+        "services-offer-grid",
+        "about-image-split",
+        "process-steps",
+        "faq-stacked",
+        "cta-minimal"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "light",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "consultancy",
+      "base": "tech-consultancy",
+      "variant": 0
+    },
+    {
+      "key": "tech-consultancy~1",
+      "logo": "#16a34a",
+      "direction": "premium-enterprise",
+      "archetype": "tech-consultancy",
+      "mood": "luxury",
+      "scheme": "consult-formal",
+      "hero": "hero-modern-split",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Cormorant",
+      "radius": "square",
+      "sections": [
+        "services-offer-grid",
+        "about-image-split",
+        "process-steps",
+        "faq-stacked",
+        "cta-minimal"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "light",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "consultancy",
+      "base": "tech-consultancy",
+      "variant": 1
+    },
+    {
+      "key": "tech-consultancy~2",
+      "logo": "#7c3aed",
+      "direction": "premium-enterprise",
+      "archetype": "tech-consultancy",
+      "mood": "luxury",
+      "scheme": "consult-formal",
+      "hero": "hero-modern-split",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Cormorant",
+      "radius": "square",
+      "sections": [
+        "services-offer-grid",
+        "about-image-split",
+        "process-steps",
+        "faq-stacked",
+        "cta-minimal"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "light",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "consultancy",
+      "base": "tech-consultancy",
+      "variant": 2
+    },
+    {
+      "key": "tech-consultancy~3",
+      "logo": null,
+      "direction": "premium-enterprise",
+      "archetype": "tech-consultancy",
+      "mood": "luxury",
+      "scheme": "consult-formal",
+      "hero": "hero-modern-split",
+      "header": "minimal-line",
+      "footer": "minimal-centered",
+      "canvas": "white",
+      "heading_font": "Cormorant",
+      "radius": "square",
+      "sections": [
+        "services-offer-grid",
+        "about-image-split",
+        "process-steps",
+        "faq-stacked",
+        "cta-minimal"
+      ],
+      "bands": [
+        "dark",
+        "dark",
+        "light",
+        "light",
+        "light"
+      ],
+      "quality": {
+        "score": 98,
+        "subscores": {
+          "rhythm": 96
+        },
+        "corrections": 0,
+        "findings": {
+          "rhythm-monotone": 1
+        }
+      },
+      "industry": "consultancy",
+      "base": "tech-consultancy",
+      "variant": 3
+    }
+  ],
+  "similarity_by_industry": {
+    "childcare": {
+      "mean": 0.244,
+      "max": 0.36,
+      "sites": 5
+    },
+    "saas": {
+      "mean": 0.33,
+      "max": 0.33,
+      "sites": 2
+    }
+  },
+  "similarity_by_business": {
+    "traditional-kindergarten": {
+      "mean": 0.867,
+      "max": 0.95,
+      "sites": 4
+    },
+    "premium-montessori": {
+      "mean": 0.867,
+      "max": 0.95,
+      "sites": 4
+    },
+    "contemporary-childcare": {
+      "mean": 0.892,
+      "max": 1.0,
+      "sites": 4
+    },
+    "enrichment-centre": {
+      "mean": 0.892,
+      "max": 1.0,
+      "sites": 4
+    },
+    "nursery-gentle": {
+      "mean": 0.881,
+      "max": 0.935,
+      "sites": 4
+    },
+    "b2b-saas": {
+      "mean": 0.881,
+      "max": 0.935,
+      "sites": 4
+    },
+    "it-services": {
+      "mean": 0.881,
+      "max": 0.935,
+      "sites": 4
+    },
+    "creative-agency": {
+      "mean": 0.957,
+      "max": 1.0,
+      "sites": 4
+    },
+    "tech-consultancy": {
+      "mean": 0.881,
+      "max": 0.935,
+      "sites": 4
+    }
+  },
+  "distinct": {
+    "directions": 8,
+    "schemes": 8,
+    "heroes": 6,
+    "fonts": 7
+  }
+}

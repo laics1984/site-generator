@@ -19,7 +19,10 @@ INDUSTRIES = get_args(IndustryCategory)
 class LandingPatternIntegrityTest(unittest.TestCase):
     def test_patterns_are_well_formed(self):
         for p in _LANDING_PATTERNS:
-            self.assertTrue(p.industries, f"{p.name}: no industries")
+            # An archetype journey is offered by archetype alone (it needs no
+            # industry: an IT firm is filed under three), but every pattern is
+            # reachable by one or the other.
+            self.assertTrue(p.industries or p.archetypes, f"{p.name}: unreachable")
             self.assertEqual(p.sections[0], "hero", f"{p.name}: must start with hero")
             self.assertEqual(p.sections[-1], "cta", f"{p.name}: must end with cta")
             self.assertEqual(len(p.sections), len(set(p.sections)), f"{p.name}: dup section")

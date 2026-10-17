@@ -97,6 +97,7 @@ PhotoCast = Literal["inherit", "neutral"]
 HeroLead = Literal[
     "background",     # full-bleed photo
     "split-washed",   # photo beside copy on an abstract wash
+    "split-plain",    # photo beside copy on the section's own band (no wash)
     "editorial",      # editorial split
     "bento",          # modular tiles
     "playful-split",  # blob-masked photo beside sticker chips (friendly/playful)
@@ -620,7 +621,10 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
             "it — for brands whose product is what it looks like"
         ),
         moods=frozenset({"friendly", "luxury", "editorial", "playful"}),
-        industries=frozenset({"restaurant", "agency", "ecommerce", "personal"}),
+        # childcare: a centre with a real photo library can be told through it
+        # (the documentary-story direction); content_fit still holds this back
+        # for a source with no photographs.
+        industries=frozenset({"restaurant", "agency", "ecommerce", "personal", "childcare"}),
         radius_scale=1.1,
         card_treatment="elevated",
         shadow_scale="elevated",
@@ -890,6 +894,47 @@ DESIGN_SCHEMES: tuple[DesignScheme, ...] = (
         homepage_hero="editorial",
         type_led_hero="asymmetric",
         alternate_splits=False,
+    ),
+    # The calm pastel voice: playroom's colour without its volume. Soft tints of
+    # the brand's own hues band the page, but one title ink, soft shadows, no
+    # wave seams and quiet motion — a nursery reassures before it delights.
+    # Realises the gentle-nurturing creative direction.
+    DesignScheme(
+        slug="soft-nursery",
+        label="Soft Nursery",
+        rationale=(
+            "soft pastel washes of the brand's own hues, rounded but restrained "
+            "shapes, humanist type and quiet motion — calm, warm and reassuring"
+        ),
+        moods=frozenset({"friendly", "playful"}),
+        industries=frozenset({"childcare"}),
+        radius_scale=1.35,
+        card_treatment="flat",
+        shadow_scale="soft",
+        background_strategy="flat",
+        use_glass=False,
+        divider_shape="curve",
+        divider_height=40,
+        padding_scale=1.15,
+        card_padding_scale=1.15,
+        container_max_width=1200,
+        type_scale_ratio=1.3,
+        heading_weight=600,
+        eyebrow_treatment="sentence",
+        layout_bias=("split", "grid", "steps", "centered"),
+        header_affinity=("classic", "centered-stack"),
+        footer_affinity=("minimal-centered", "mega"),
+        motion_intensity="subtle",
+        palette_strategies=("pastel", "soft-natural", "warm-neutral"),
+        type_directions=("humanist", "rounded"),
+        personality={"playful_sophisticated": -1, "traditional_contemporary": 0, "minimal_expressive": -1, "calm_energetic": -2, "organic_structured": -2, "premium_accessible": 1},
+        photo_tone="gentle",
+        homepage_hero="playful-split",
+        type_led_hero="centered",
+        alternate_splits=True,
+        band_tint="multi-tint",
+        photo_cast="neutral",
+        logo_height="60px",
     ),
 )
 

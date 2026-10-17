@@ -119,6 +119,8 @@ is the cost record.
 | `DESIGN_ENGINE_ENABLED` | `true` | Design director: varies header/footer chrome archetypes per brand (off → legacy classic/mega chrome). |
 | `DIVERSITY_ENGINE_ENABLED` | `true` | SQLite usage history steering consecutive sites away from repeating chrome picks (off → pure seeded rotation). |
 | `DESIGN_SCHEMES_ENABLED` | `true` | Design schemes (`services/design_schemes.py`): each site is built in one of several visual languages — palette strategy, type direction, density, shape, decoration — chosen per brand. Off → every axis defers to the per-mood defaults (byte-identical to the pre-scheme generator). |
+| `CREATIVE_DIRECTIONS_ENABLED` | `true` | Creative directions (`services/creative_directions.py`): the business's archetype (Montessori, nursery, IT services, design studio…) and evidence choose one of several authored directions per industry, realised by design schemes; it sets the homepage hero, image shape, light/dark lean, homepage journey and header CTA. Off → schemes are scored exactly as before. |
+| `DESIGN_QUALITY_ENABLED` | `true` | Design-quality evaluator (`services/design_quality.py`): deterministic checks on the finished site, one bounded round of targeted corrections, report on `design_manifest.quality`. Advisory — never blocks a build. |
 | `HERO_FULLBLEED_ALL_PAGES` | `true` | Full-bleed hero on every page. |
 | `HERO_MIN_BACKGROUND_DIM` | `1200` | Min long-edge (px) for a scraped hero background. |
 | `HERO_BG_MIN_ASPECT` | `1.2` | Min width/height for a scraped hero background. |

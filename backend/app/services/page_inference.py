@@ -1212,8 +1212,14 @@ def infer_page_scaffolds(
     site_name: str | None = None,
     single_page: bool = False,
     homepage_sections_override: list[str] | None = None,
+    archetype: str | None = None,
+    section_emphasis: tuple[str, ...] = (),
 ) -> list[PageScaffold]:
     """Build the inferred scaffold tree.
+
+    ``archetype`` and ``section_emphasis`` (the business's kind and its
+    creative direction's preferred homepage journeys) steer the homepage's
+    landing pattern; absent, it is the industry's seeded pick as always.
 
     Empty or near-empty crawl → industry-template fallback (small sites still
     get the standard core + suggested pages).
@@ -1235,7 +1241,7 @@ def infer_page_scaffolds(
 
     if single_page:
         sections = homepage_sections_override or homepage_sections(
-            industry, seed=site_name
+            industry, seed=site_name, archetype=archetype, emphasis=section_emphasis
         )
         home = _home_scaffold(source, industry, seed=site_name).model_copy(
             update={"sections": sections}
@@ -1263,7 +1269,11 @@ def infer_page_scaffolds(
             s.model_copy(
                 update={
                     "sections": _augment_sections(
-                        homepage_sections(industry, seed=site_name), "home", source
+                        homepage_sections(
+                            industry, seed=site_name, archetype=archetype, emphasis=section_emphasis
+                        ),
+                        "home",
+                        source,
                     )
                 }
             )
@@ -1355,7 +1365,12 @@ def infer_page_scaffolds(
     seen_slugs: set[str] = set()
 
     # 1. Always start with home
-    scaffolds.append(_home_scaffold(by_slug.get("", source), industry, seed=site_name))
+    scaffolds.append(
+        _home_scaffold(
+            by_slug.get("", source), industry, seed=site_name,
+            archetype=archetype, emphasis=section_emphasis,
+        )
+    )
     seen_slugs.add("")
 
     # Where the source's own rosters say their people's pages live. Read before
@@ -1679,6 +1694,8 @@ def _home_scaffold(
     home_source: SourceContent | None,
     industry: IndustryCategory | None = None,
     seed: str | None = None,
+    archetype: str | None = None,
+    emphasis: tuple[str, ...] = (),
 ) -> PageScaffold:
     """Standard homepage scaffold — reuses the crawl's title if it has one."""
     title = "Home"
@@ -1688,7 +1705,7 @@ def _home_scaffold(
     # among equally-fitting patterns so same-industry sites aren't identical. Falls
     # back to the standard order when industry is unknown or unmatched.
     sections = (
-        homepage_sections(industry, seed=seed)
+        homepage_sections(industry, seed=seed, archetype=archetype, emphasis=emphasis)
         if industry is not None
         else ["hero", "features", "testimonials", "cta"]
     )

@@ -1,0 +1,439 @@
+{
+  "_comment": "Design-quality benchmark businesses (scripts/design_benchmark.py). Invented businesses: names, copy and facts are fixtures, not real organisations. `summary` is the evidence a source would carry; the archetype is read from it, never given.",
+  "businesses": [
+    {
+      "key": "traditional-kindergarten",
+      "name": "Tadika Seri Mutiara",
+      "industry": "childcare",
+      "logo": "#b91c1c",
+      "photos": 6,
+      "personality": {
+        "traditional_contemporary": -2,
+        "playful_sophisticated": -1,
+        "premium_accessible": 2,
+        "organic_structured": 1
+      },
+      "positioning": "A community kindergarten in Kajang since 1992, preparing children aged 4 to 6 for primary school.",
+      "audience": "Parents of 4 to 6 year olds in Kajang",
+      "summary": "Tadika Seri Mutiara is a kindergarten in Kajang, Selangor, teaching children aged 4 to 6 since 1992. We follow the KSPK national preschool curriculum in Bahasa Malaysia, English and Mandarin, with reading, writing and counting that prepare every child for primary school. Morning and full-day sessions. Visit us to see the classrooms.",
+      "copy": {
+        "hero": [
+          "Ready for Standard One, the Seri Mutiara way",
+          "KSPK curriculum in three languages for children aged 4 to 6 in Kajang."
+        ],
+        "features": [
+          "Why parents choose Seri Mutiara",
+          [
+            "Three languages every day",
+            "Primary school readiness",
+            "Since 1992 in Kajang"
+          ]
+        ],
+        "services": [
+          "Our sessions",
+          [
+            "Morning session",
+            "Full-day session",
+            "Transit care",
+            "Holiday programme"
+          ]
+        ],
+        "about": [
+          "Thirty years in Kajang",
+          "Founded by two teachers in 1992, we have prepared generations of Kajang children for school with patience and structure."
+        ],
+        "cta": [
+          "Visit our classrooms",
+          "Arrange a visit"
+        ]
+      },
+      "photo_query": "kindergarten classroom children reading"
+    },
+    {
+      "key": "premium-montessori",
+      "name": "Maple & Moss Montessori",
+      "industry": "childcare",
+      "logo": "#3f6212",
+      "photos": 6,
+      "personality": {
+        "playful_sophisticated": 2,
+        "minimal_expressive": -2,
+        "calm_energetic": -2,
+        "premium_accessible": -2,
+        "organic_structured": -1
+      },
+      "positioning": "A premium Montessori casa in Bangsar with AMI-trained guides and a prepared environment.",
+      "audience": "Families seeking an authentic Montessori education",
+      "summary": "Maple & Moss is a Montessori preschool in Bangsar. Our AMI-trained guides work in a calm prepared environment with natural wooden materials, mixed-age classrooms and uninterrupted three-hour work cycles for children from 18 months to 6 years. Practical life, sensorial, language and mathematics. Book a school tour to observe a work cycle.",
+      "copy": {
+        "hero": [
+          "Unhurried mornings, deep concentration",
+          "An authentic Montessori casa in Bangsar, guided by AMI-trained teachers."
+        ],
+        "features": [
+          "The prepared environment",
+          [
+            "Mixed-age classrooms",
+            "Three-hour work cycle",
+            "AMI-trained guides"
+          ]
+        ],
+        "services": [
+          "Our communities",
+          [
+            "Nido (18 months - 3 years)",
+            "Casa (3 - 6 years)",
+            "Parent education evenings"
+          ]
+        ],
+        "about": [
+          "Follow the child",
+          "We observe before we guide, and we let concentration grow without interruption."
+        ],
+        "cta": [
+          "Observe a work cycle",
+          "Book a school tour"
+        ]
+      },
+      "photo_query": "montessori wooden materials child"
+    },
+    {
+      "key": "contemporary-childcare",
+      "name": "Kinderloop",
+      "industry": "childcare",
+      "logo": "#0ea5e9",
+      "photos": 4,
+      "personality": {
+        "traditional_contemporary": 2,
+        "calm_energetic": 1,
+        "minimal_expressive": 1,
+        "playful_sophisticated": -1
+      },
+      "positioning": "A modern childcare centre for working parents in Cyberjaya with extended hours and daily app updates.",
+      "audience": "Working parents in Cyberjaya",
+      "summary": "Kinderloop is a childcare centre and daycare in Cyberjaya for working parents. Infant care from 3 months, toddler and preschool rooms, open 7am to 7pm. Parents get photo updates in our app, and every room has a qualified early childhood educator. WhatsApp us to check availability.",
+      "copy": {
+        "hero": [
+          "Childcare that fits a working day",
+          "Infant, toddler and preschool rooms in Cyberjaya, open 7am to 7pm."
+        ],
+        "features": [
+          "Built around working families",
+          [
+            "Open 7am to 7pm",
+            "Daily photo updates",
+            "Qualified educators in every room"
+          ]
+        ],
+        "services": [
+          "Rooms by age",
+          [
+            "Infant care (3-18 months)",
+            "Toddlers (18 months-3 years)",
+            "Preschool (4-6 years)"
+          ]
+        ],
+        "about": [
+          "Why we started Kinderloop",
+          "Two working parents built the centre they could not find."
+        ],
+        "cta": [
+          "Check availability",
+          "WhatsApp us"
+        ]
+      },
+      "photo_query": "daycare toddlers playing bright room"
+    },
+    {
+      "key": "enrichment-centre",
+      "name": "Brainy Bunch Enrichment",
+      "industry": "childcare",
+      "logo": "#f59e0b",
+      "photos": 6,
+      "personality": {
+        "playful_sophisticated": -2,
+        "calm_energetic": 2,
+        "minimal_expressive": 2,
+        "premium_accessible": 2
+      },
+      "positioning": "After-school and weekend enrichment classes for children aged 5 to 12 in Puchong.",
+      "audience": "Parents of primary school children",
+      "summary": "Brainy Bunch is an enrichment centre in Puchong running after-school and weekend classes for children aged 5 to 12: phonics, coding for kids, art, and abacus mental arithmetic. Small classes, termly schedules, trial class available.",
+      "copy": {
+        "hero": [
+          "After school, the fun kind of learning",
+          "Phonics, coding, art and abacus classes for ages 5 to 12 in Puchong."
+        ],
+        "features": [
+          "Why kids love coming back",
+          [
+            "Small classes",
+            "Hands-on projects",
+            "Termly progress reports"
+          ]
+        ],
+        "services": [
+          "Our classes",
+          [
+            "Phonics",
+            "Coding for kids",
+            "Art studio",
+            "Abacus mental arithmetic"
+          ]
+        ],
+        "about": [
+          "A centre that started with one abacus class",
+          "Ten years later we teach four subjects to over three hundred children."
+        ],
+        "cta": [
+          "Try a class",
+          "Book a trial class"
+        ]
+      },
+      "photo_query": "kids art class painting"
+    },
+    {
+      "key": "nursery-gentle",
+      "name": "Little Nest Nursery",
+      "industry": "childcare",
+      "logo": "#db2777",
+      "photos": 5,
+      "personality": {
+        "calm_energetic": -2,
+        "playful_sophisticated": -1,
+        "organic_structured": -2,
+        "premium_accessible": 1
+      },
+      "positioning": "A small, home-like nursery for babies and toddlers in Petaling Jaya.",
+      "audience": "Parents of babies and toddlers",
+      "summary": "Little Nest is a small home-like nursery and baby care centre in Petaling Jaya for babies and toddlers from 6 months to 3 years. Gentle routines, unhurried naps and feeding on each baby's own schedule, and carers who stay with the same little group every day.",
+      "copy": {
+        "hero": [
+          "A gentle first place away from home",
+          "Baby and toddler care in Petaling Jaya, on your little one's own rhythm."
+        ],
+        "features": [
+          "Small and gentle by design",
+          [
+            "The same carers every day",
+            "Naps on their own schedule",
+            "Six babies per room"
+          ]
+        ],
+        "services": [
+          "Our rooms",
+          [
+            "Babies (6-18 months)",
+            "Toddlers (18 months-3 years)"
+          ]
+        ],
+        "about": [
+          "A nursery that feels like home",
+          "We kept Little Nest small on purpose."
+        ],
+        "cta": [
+          "Come and meet us",
+          "Arrange a visit"
+        ]
+      },
+      "photo_query": "nursery toddler teacher story time"
+    },
+    {
+      "key": "b2b-saas",
+      "name": "Ledgerly",
+      "industry": "saas",
+      "logo": "#2563eb",
+      "photos": 0,
+      "personality": {
+        "traditional_contemporary": 2,
+        "minimal_expressive": -1,
+        "organic_structured": 2,
+        "calm_energetic": -1,
+        "playful_sophisticated": 1
+      },
+      "positioning": "Accounts payable automation for finance teams at growing companies.",
+      "audience": "Finance managers and CFOs",
+      "summary": "Ledgerly is an accounts payable automation platform for finance teams. Capture invoices, route approval workflows and pay suppliers in one place, with integrations for Xero and QuickBooks. Start a free 14-day trial or book a demo.",
+      "copy": {
+        "hero": [
+          "Close the month without chasing invoices",
+          "Capture, approve and pay supplier invoices in one workflow."
+        ],
+        "features": [
+          "What finance teams automate",
+          [
+            "Invoice capture",
+            "Approval workflows",
+            "Xero and QuickBooks sync"
+          ]
+        ],
+        "services": [
+          "Plans",
+          [
+            "Starter",
+            "Growth",
+            "Enterprise"
+          ]
+        ],
+        "about": [
+          "Built by former finance managers",
+          "We spent ten years closing books by hand."
+        ],
+        "cta": [
+          "See Ledgerly on your invoices",
+          "Book a demo"
+        ]
+      },
+      "photo_query": "finance team laptop office"
+    },
+    {
+      "key": "it-services",
+      "name": "Kinetic Systems",
+      "industry": "saas",
+      "logo": "#0f766e",
+      "photos": 3,
+      "personality": {
+        "organic_structured": 2,
+        "calm_energetic": -1,
+        "premium_accessible": 1,
+        "traditional_contemporary": 0
+      },
+      "positioning": "IT managed services and network infrastructure for SMEs in Penang.",
+      "audience": "Owners and office managers of small businesses",
+      "summary": "Kinetic Systems provides IT managed services for SMEs in Penang: helpdesk support, network infrastructure, cloud migration, cybersecurity and CCTV installation, with 24/7 support contracts. Call our support line or request an IT assessment.",
+      "copy": {
+        "hero": [
+          "Your office IT, handled",
+          "Managed IT, networks and cybersecurity for Penang SMEs, with 24/7 support."
+        ],
+        "features": [
+          "Why businesses switch to us",
+          [
+            "24/7 helpdesk",
+            "Local engineers on site",
+            "Fixed monthly pricing"
+          ]
+        ],
+        "services": [
+          "IT services",
+          [
+            "Managed IT support",
+            "Network infrastructure",
+            "Cloud migration",
+            "Cybersecurity"
+          ]
+        ],
+        "about": [
+          "Penang engineers since 2009",
+          "We look after the IT of over 120 local businesses."
+        ],
+        "cta": [
+          "Get an IT assessment",
+          "Request an assessment"
+        ]
+      },
+      "photo_query": "it technician server room"
+    },
+    {
+      "key": "creative-agency",
+      "name": "Studio Halftone",
+      "industry": "agency",
+      "logo": "#e11d48",
+      "photos": 8,
+      "personality": {
+        "minimal_expressive": 2,
+        "playful_sophisticated": 2,
+        "traditional_contemporary": 2,
+        "calm_energetic": 1
+      },
+      "positioning": "An independent design studio for brand identity and web design.",
+      "audience": "Founders and marketing leads of ambitious brands",
+      "summary": "Studio Halftone is an independent design studio in Kuala Lumpur: brand identity, web design and development, and art direction. See selected work and case studies, then start a project with us.",
+      "copy": {
+        "hero": [
+          "Brands with a point of view",
+          "Identity, web and art direction from an independent studio in Kuala Lumpur."
+        ],
+        "features": [
+          "How we work",
+          [
+            "Small senior team",
+            "Strategy before pixels",
+            "Design and build in one place"
+          ]
+        ],
+        "services": [
+          "Capabilities",
+          [
+            "Brand identity",
+            "Web design & development",
+            "Art direction"
+          ]
+        ],
+        "about": [
+          "Independent since 2016",
+          "Six designers and developers who care about craft."
+        ],
+        "cta": [
+          "Have a project in mind?",
+          "Start a project"
+        ]
+      },
+      "photo_query": "graphic design studio work"
+    },
+    {
+      "key": "tech-consultancy",
+      "name": "Meridian Advisory",
+      "industry": "consultancy",
+      "logo": "#1e3a8a",
+      "photos": 2,
+      "personality": {
+        "playful_sophisticated": 2,
+        "minimal_expressive": -1,
+        "organic_structured": 2,
+        "calm_energetic": -2,
+        "premium_accessible": -2
+      },
+      "positioning": "A technology consultancy for banks and insurers.",
+      "audience": "CIOs and transformation leaders in financial services",
+      "summary": "Meridian Advisory is a technology consultancy for banks and insurers: digital transformation strategy, enterprise architecture, cloud adoption and data governance. Our consultants have led core banking programmes across Southeast Asia. Speak to a partner.",
+      "copy": {
+        "hero": [
+          "Technology decisions banks can defend",
+          "Strategy, architecture and data governance for financial institutions."
+        ],
+        "features": [
+          "Where we help",
+          [
+            "Transformation strategy",
+            "Enterprise architecture",
+            "Data governance"
+          ]
+        ],
+        "services": [
+          "Advisory services",
+          [
+            "Digital transformation",
+            "Enterprise architecture",
+            "Cloud adoption",
+            "Data governance"
+          ]
+        ],
+        "about": [
+          "Practitioners, not generalists",
+          "Our partners have run core banking programmes themselves."
+        ],
+        "cta": [
+          "Discuss your programme",
+          "Speak to a partner"
+        ]
+      },
+      "photo_query": "business meeting boardroom"
+    }
+  ],
+  "logo_variants": [
+    "#16a34a",
+    "#7c3aed",
+    null
+  ]
+}

@@ -280,6 +280,72 @@ photo-less source, `--fullbleed on|off` pins the hero policy). Tests:
 `test_design_schemes.GateVocabularyTest`/`TreatmentRenderingTest`,
 `test_brand_brief.py`, `test_design_direction.py`, `test_layout_rhythm.py`.
 
+### Creative directions: industry intelligence, not an industry look
+
+The design-identity work removed the pins that gave every kindergarten one
+look — and with them every trace of what makes a good school or SaaS site:
+the concept call heard only `Industry voice:` and a seeded rotation chose.
+`services/creative_directions.py` puts that knowledge back as DATA: several
+authored directions per kind of business, each realised by existing schemes,
+chosen on evidence (docs/design-intelligence-report.md).
+
+- **The kind of business is an archetype, not a CMS industry.**
+  `services/business_archetype.py` (kindergarten, montessori-preschool,
+  nursery-daycare, enrichment-centre, saas-product, developer-platform,
+  it-services, digital-agency, marketing-agency, tech-consultancy). Read by the
+  detection call that already runs (`DetectedBrand.archetype`) and,
+  deterministically, from the source text — whole-word cues, valid only inside
+  the archetype's own industries. `creative_directions.archetype_for_source` is
+  the one precedence. Never pushed: the CMS taxonomy is unchanged.
+- **Directions are scored before schemes**
+  (`design_direction.score_directions`): personality alignment, archetype,
+  the business's own words (`cues`), material (`min_photos`), freshness. The
+  seed rotates the list before a stable sort, so it decides ties and nothing
+  else. Each top direction is realised by its best scheme
+  (`direction_realisers`: industry gate hard, mood gate when it admits any),
+  and the one concept call picks among DISTINCT directions, each line carrying
+  its brief. No extra model call; `test_design_benchmark` counts.
+- **The direction states, the scheme realises**: the homepage hero
+  (`plan_site_heroes(direction_leads=)`, after the pill and a source
+  background), the framed-photo shape (`apply_image_shape`, borderRadius only,
+  by catalog node name — `SHAPED_IMAGE_NAMES`, walked by `test_image_shapes`;
+  a mat wrapping only the photo takes the same silhouette), light/dark
+  (`resolve_color_scheme(direction=)` replaces the industry lean that made every
+  SaaS site dark), the homepage journey (`homepage_sections(archetype=,
+  emphasis=)`; archetype-only patterns are offered to that archetype alone),
+  the header CTA (`contact_cta_label` — only intents the contact page fulfils),
+  ambient motion, the planner's `design_direction`/`business_focus`/
+  `visual_direction` payload and the design-brain brief (whose menu is cut to
+  the scheme's top-ranked variants so an explicit pick can't contradict it).
+- **No prompt bans a colour voice for an industry.** Pastel and rainbow are
+  directions' choices (gentle-nurturing's soft tints on the `soft-nursery`
+  scheme; expressive-contemporary on `playroom`), via `palette_voice`.
+- **Vocabulary is pinned**: `test_creative_directions` fails on an unknown
+  scheme, archetype, landing pattern, hero lead, image shape or anti-pattern,
+  and on a direction unrealisable for any industry × mood it claims.
+- **Off switches**: `CREATIVE_DIRECTIONS_ENABLED=false` is the scheme path
+  unchanged; `conftest._directionless_suite` pins it off.
+
+### The design-quality evaluator
+
+`services/design_quality.py` runs last in `plan_to_site`: `ux_audit`'s rules
+(reused, SEO kept out of the score) plus composition, conversion, font,
+imagery and the direction's own `anti_patterns`. ONE round of local
+corrections (`_FIXES`), then a final evaluation — never a loop, never a
+regeneration, never a blocked build. The report is `DesignManifest.quality`.
+Benchmark and screenshots: `scripts/design_benchmark.py` (offline, committed
+`tests/fixtures/design_bench/baseline.json`; `--real-stock` for screenshot
+runs) and `scripts/design_screenshots.py` (frontend `bench.html`, dev only).
+
+**The manifest rides in BuilderStyles CSS-safe.** Every renderer flattens
+BuilderStyles' scalars — the manifest's included — into custom properties on
+the site root; in a server-rendered `style` attribute one apostrophe (a brand
+named "St. Mary's", a direction brief) opens a CSS string that swallows every
+later token, colours and buttons included. `builder_styles_manifest` /
+`css_safe` is the one way the manifest enters BuilderStyles;
+`GeneratedSite.design_manifest` keeps the exact text. The upstream fix
+(webtree-public `flattenStyleTokens` skipping the manifest) is still open.
+
 ## Adding a new section block
 
 Catalog entry in the builder + sync, then wire the generator:

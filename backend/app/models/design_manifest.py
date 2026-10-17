@@ -27,7 +27,7 @@ fit entry in the director — nothing else.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -89,6 +89,48 @@ class DesignDecision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)
 
 
+class DirectionSpec(BaseModel):
+    """The creative direction the site was built in (services/creative_directions.py),
+    as the authoritative brief every later pass and reviewer reads: what the
+    look is, what kind of business it was chosen for, and what it must not do.
+    Derived from the direction's data at build time, so the record says what
+    THIS site was built to, even after the library evolves."""
+
+    slug: str
+    label: str
+    archetype: str | None = None
+    brief: str = ""
+    imagery: str = ""
+    palette_voice: str = ""
+    image_shape: str = "soft-rect"
+    hero_leads: list[str] = Field(default_factory=list)
+    section_emphasis: list[str] = Field(default_factory=list)
+    cta_strategy: list[str] = Field(default_factory=list)
+    anti_patterns: list[str] = Field(default_factory=list)
+
+
+class QualityFinding(BaseModel):
+    """One design-quality finding (services/design_quality.py)."""
+
+    code: str
+    severity: Literal["high", "medium", "low"]
+    message: str
+    page: str | None = None  # page slug ("" is the homepage)
+    section: int | None = None  # index of the section on its page
+    node: str | None = None  # element name, when one node is at fault
+    corrected: bool = False  # a targeted correction fixed it during the build
+
+
+class DesignQuality(BaseModel):
+    """The evaluator's verdict on the finished site. Advisory: generation never
+    fails on it (CLAUDE.md: the audit raises the generator, it doesn't block)."""
+
+    score: int = 100  # 0..100
+    subscores: dict[str, int] = Field(default_factory=dict)
+    findings: list[QualityFinding] = Field(default_factory=list)
+    corrections: int = 0  # findings a correction round fixed during the build
+
+
 class DesignManifest(BaseModel):
     """A site's design-decision record. Composed once per generation by
     design_director.compose_design_manifest(), consumed by plan_to_site, and
@@ -98,7 +140,9 @@ class DesignManifest(BaseModel):
     of it without guessing.
     """
 
-    version: int = 1
+    # v2: `direction` and `quality` (both optional, additive — the builder
+    # carries the manifest as an opaque record).
+    version: int = 2
 
     # --- brand DNA inputs the decisions were made from -----------------------
     seed: str = ""  # brand/site name; keys all seeded rotations (idempotent)
@@ -115,8 +159,15 @@ class DesignManifest(BaseModel):
     header_archetype: HeaderArchetype = "classic"
     footer_archetype: FooterArchetype = "mega"
 
+    # The creative direction the scheme realises; None when the business's
+    # industry has no authored directions (or they are switched off).
+    direction: DirectionSpec | None = None
+
     # --- decision log --------------------------------------------------------
     decisions: list[DesignDecision] = Field(default_factory=list)
+
+    # The design-quality evaluator's report on the finished site.
+    quality: DesignQuality | None = None
 
     def decision_for(self, area: str) -> DesignDecision | None:
         for d in self.decisions:
@@ -137,3 +188,36 @@ class DesignManifest(BaseModel):
         ``revealBackgroundOnScroll: false`` and renderers never solidify it.
         """
         return self.header_archetype not in SELF_CHROME_HEADERS
+
+
+# --- the copy that rides in BuilderStyles -------------------------------------
+#
+# Every renderer flattens BuilderStyles' nested scalars into CSS custom
+# properties on the site root (webtree-public lib/styles.ts flattenStyleTokens,
+# vendored to the preview) — the manifest included, as `--wt-design-manifest-*`.
+# The CSSOM tolerates any value, but a server-rendered `style="…"` attribute is
+# re-parsed by the browser, and one unbalanced quote in a value opens a CSS
+# string that swallows EVERY declaration after it — the `--builder-color-*` and
+# button tokens among them. A brand named "St. Mary's" (the manifest's `seed`)
+# or a direction brief ("the studio's own work") was enough. So the BuilderStyles
+# copy carries its text in CSS-inert characters; `GeneratedSite.design_manifest`
+# keeps the exact record.
+_CSS_UNSAFE = str.maketrans({"'": "’", '"': "”", ";": ",", "{": "(", "}": ")", "\\": "/", "<": "‹", ">": "›"})
+
+
+def css_safe(value: Any) -> Any:
+    """`value` with every string's CSS-significant characters replaced by
+    look-alikes that tokenise as plain text."""
+    if isinstance(value, str):
+        return value.translate(_CSS_UNSAFE)
+    if isinstance(value, dict):
+        return {k: css_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [css_safe(v) for v in value]
+    return value
+
+
+def builder_styles_manifest(manifest: "DesignManifest | dict[str, Any]") -> dict[str, Any]:
+    """The manifest as it rides in BuilderStyles (see above)."""
+    record = manifest.model_dump() if isinstance(manifest, DesignManifest) else manifest
+    return css_safe(record)

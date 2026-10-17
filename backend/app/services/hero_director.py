@@ -58,6 +58,9 @@ class HeroDirective:
 # (requirement: a split first-hero never sits on a flat page background).
 _BACKGROUND = HeroDirective("hero-background-bold", "background")
 _SPLIT_WASHED = HeroDirective("hero-modern-split", "split", wants_wash=True)
+# The same split on the section's own band: for a calm or technical direction
+# the abstract wash reads as the generic glowing-backdrop template look.
+_SPLIT_PLAIN = HeroDirective("hero-modern-split", "split")
 _EDITORIAL = HeroDirective("hero-editorial", "split")
 _BENTO = HeroDirective("hero-bento", "split")
 _GRADIENT = HeroDirective("hero-gradient", "split")
@@ -134,6 +137,7 @@ _MOOD_SPECS: dict[BrandMood, _MoodSpec] = {
 _LEADS: dict[str, HeroDirective] = {
     "background": _BACKGROUND,
     "split-washed": _SPLIT_WASHED,
+    "split-plain": _SPLIT_PLAIN,
     "editorial": _EDITORIAL,
     "bento": _BENTO,
     "playful-split": _PLAYFUL_SPLIT,
@@ -276,6 +280,37 @@ def plan_site_compositions(
     return out
 
 
+# Heroes whose catalog entry is mood-gated (the template's own `moods` field):
+# a direction may only name one for a mood the catalog admits.
+_MOOD_GATED_LEADS: dict[str, frozenset[str]] = {"playful-split": frozenset({"friendly", "playful"})}
+
+
+def _direction_lead(
+    leads: tuple[str, ...],
+    *,
+    mood: BrandMood | None,
+    type_led: bool,
+    hero_height: HeroBackgroundHeight,
+) -> HeroDirective | None:
+    """The first of a direction's openings this site can render: one the
+    catalog admits for the mood, imageless when there is no photograph, and
+    photo-showing when the site is "banded" (a shorter PHOTO hero)."""
+    for name in leads:
+        directive = _LEADS.get(name)
+        if directive is None:
+            continue
+        gate = _MOOD_GATED_LEADS.get(name)
+        if gate is not None and (mood or "friendly") not in gate:
+            continue
+        imageless = directive.template_id in IMAGELESS_HERO_IDS
+        if type_led and not imageless:
+            continue
+        if hero_height == "banded" and imageless:
+            continue
+        return directive
+    return None
+
+
 def plan_site_heroes(
     pages: list[PagePlan],
     *,
@@ -286,6 +321,7 @@ def plan_site_heroes(
     force_background: bool = False,
     scheme: DesignScheme | None = None,
     has_hero_photo: bool | None = None,
+    direction_leads: tuple[str, ...] = (),
 ) -> dict[str, HeroDirective]:
     """Assign every page a HeroDirective, keyed by slug.
 
@@ -308,6 +344,11 @@ def plan_site_heroes(
     stands in for the business on its own pages. No industry has a hero spec of
     its own any more; nonprofit's and childcare's art direction is the friendly
     mood's now.
+    ``direction_leads``: the creative direction's homepage openings, best
+    first (services/creative_directions.py). The first one this site can
+    render replaces the scheme's lead — the scheme realises the direction, so
+    the direction states the opening; the pill and a pinned source background
+    still win, and a type-led site only takes an imageless one.
     ``force_background``: the site's chrome REQUIRES a photo hero on every page
     (the floating-pill header: it floats over the first section with its own
     chrome, and only a full-screen or banded photo hero gives it something to
@@ -359,6 +400,9 @@ def plan_site_heroes(
     # --builder-hero-min-height. So a banded site takes the background branch
     # whatever the scheme says, or the height token it emits is read by nothing
     # on the page — the exact bug the comment above records.
+    direction_lead = _direction_lead(
+        direction_leads, mood=mood, type_led=type_led, hero_height=hero_height
+    )
     fullbleed_everywhere = settings.hero_fullbleed_all_pages
     if hero_policy == "fullbleed-all":
         fullbleed_everywhere = True
@@ -377,7 +421,9 @@ def plan_site_heroes(
         # a shorter photo opening, and a type-led lead would quietly turn it
         # into a colour band — the bug the banded comment above records.
         scheme_lead = (
-            _LEADS[scheme.homepage_hero]
+            direction_lead
+            if direction_lead is not None and not force_background
+            else _LEADS[scheme.homepage_hero]
             if scheme.homepage_hero
             and not force_background
             and (
@@ -405,7 +451,7 @@ def plan_site_heroes(
     for page in pages:
         if page.is_homepage or page.page_type == "home":
             if type_led:
-                directives[page.slug] = type_led_hero
+                directives[page.slug] = direction_lead or type_led_hero
                 continue
             directive = _LEADS[scheme.homepage_hero] if scheme.homepage_hero else spec.homepage
             # "hero-led": the homepage still opens on the full-bleed photo — the
@@ -416,6 +462,8 @@ def plan_site_heroes(
             # site's tone, not only on its subpages.
             if hero_policy == "hero-led":
                 directive = _BACKGROUND
+            if direction_lead is not None:
+                directive = direction_lead
             if has_source_background:
                 directive = HeroDirective(
                     "hero-background-bold", "background", pin_source_background=True

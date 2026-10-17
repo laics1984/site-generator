@@ -350,6 +350,23 @@ def fingerprint_of_theme(theme: Any) -> DesignFingerprint:
     )
 
 
+def _hero_shape(hero: BuilderElement) -> str:
+    """"@arch" etc. when the hero's framed photo wears a direction's shape: a
+    blob-masked split and an arched split are two openings, not one."""
+    from app.services.style_tokens import IMAGE_SHAPES, SHAPED_IMAGE_NAMES
+
+    by_radius = {radius: name for name, radius in IMAGE_SHAPES.items() if radius}
+    stack = [hero]
+    while stack:
+        node = stack.pop()
+        if node.type == "image" and node.name in SHAPED_IMAGE_NAMES:
+            shape = by_radius.get((node.styles or {}).get("borderRadius"))
+            return f"@{shape}" if shape else ""
+        if isinstance(node.content, list):
+            stack.extend(c for c in node.content if isinstance(c, BuilderElement))
+    return ""
+
+
 def fingerprint_of(site: GeneratedSite) -> DesignFingerprint:
     """The fingerprint of a built site, read from its homepage and theme."""
     home = next((p for p in site.pages if p.is_homepage), site.pages[0] if site.pages else None)
@@ -371,7 +388,9 @@ def fingerprint_of(site: GeneratedSite) -> DesignFingerprint:
 
     return replace(
         themed,
-        hero=ids[hero_index] if hero_index is not None else "",
+        hero=(
+            ids[hero_index] + _hero_shape(sections[hero_index]) if hero_index is not None else ""
+        ),
         header=str(manifest.get("header_archetype") or ""),
         footer=str(manifest.get("footer_archetype") or ""),
         scheme=str(manifest.get("design_scheme") or themed.scheme),

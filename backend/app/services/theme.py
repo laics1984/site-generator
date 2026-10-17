@@ -1599,10 +1599,12 @@ def _seeded_index(font_seed: str | None, n: int) -> int:
 # resolve_color_scheme). Each entry is the scheme an industry's design brief
 # gravitates toward when nobody chose explicitly:
 #   light — trust/warmth/approachability briefs (kids, causes, corporate-clean).
-#           Childcare bans dark outright (parents are the audience, palette is
-#           pastel); the weight below keeps it light even against a light logo.
+#           Childcare stays light (parents are the audience); the weight below
+#           keeps it light even against a light logo.
 #   dark  — bold/premium/immersive briefs where dark canvases read as on-trend
 #           (modern tech marketing, creative agencies).
+# A site with a creative direction (services/creative_directions.py) takes the
+# DIRECTION's lean instead — this table made every SaaS and agency site dark.
 # Industries left out (restaurant, ecommerce, consultancy, personal, …) have no
 # strong lean and defer to the logo. Keys are IndustryCategory values.
 _INDUSTRY_SCHEME_LEAN: dict[str, str] = {
@@ -1627,6 +1629,8 @@ def resolve_color_scheme(
     brand_color_scheme: str | None = None,
     logo_is_light: bool | None = None,
     industry: str | None = None,
+    *,
+    direction: object | None = None,
 ) -> str:
     """Resolve light vs dark with SOP precedence (most explicit wins):
 
@@ -1644,12 +1648,21 @@ def resolve_color_scheme(
          while a neutral industry leaves the call to the logo. Neither silently
          overrides an explicit choice above.
       4. light — when nothing leans either way.
+
+    A creative direction (services/creative_directions.py), when the site has
+    one, REPLACES the industry lean with its own ``color_scheme_lean`` (None:
+    no lean, the logo decides). The industry lean is what made every SaaS and
+    agency site dark; a developer platform and a premium enterprise firm are
+    both "saas" and want opposite canvases.
     """
     for choice in (override, brand_color_scheme):
         if choice in ("light", "dark"):
             return choice  # type: ignore[return-value]
 
-    industry_lean = _INDUSTRY_SCHEME_LEAN.get((industry or "").strip().lower())
+    if direction is not None:
+        industry_lean = getattr(direction, "color_scheme_lean", None)
+    else:
+        industry_lean = _INDUSTRY_SCHEME_LEAN.get((industry or "").strip().lower())
     industry_vote = {"dark": 1.0, "light": -1.0}.get(industry_lean or "", 0.0)
     # A known light/dark logo votes; an unknown one (None) abstains.
     logo_vote = 0.0 if logo_is_light is None else (1.0 if logo_is_light else -1.0)

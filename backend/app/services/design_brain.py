@@ -46,7 +46,7 @@ from app.models.brand import BrandMood
 from app.services.industry_personality import personality_for
 from app.services.llm import LlmError, LlmClient, get_reasoning_llm
 from app.models.content_blocks import ContentBlock
-from app.services.section_content import selectable_templates
+from app.services.section_content import layout_preference, selectable_templates
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +99,10 @@ SYSTEM_PROMPT = """You are an art director choosing page layouts for a multi-pag
 
 Each page below lists its sections, and each section lists the EXACT template
 ids available for it. Pick ONE template id per section — the layout/composition
-that best suits the brand's mood and keeps the page feeling intentionally
-designed, not generic. The brief includes the industry's design personality —
-favor template variants that express it (e.g. bento grids for saas,
-asymmetric editorial for agencies, quiet minimal grids for professional
-services) while keeping one coherent language. Don't default to the safest-looking option every time:
+that best suits the brand and keeps the page feeling intentionally designed,
+not generic. The brief names the site's design direction and visual language;
+favor variants that express THAT direction while keeping one coherent
+language. Don't default to the safest-looking option every time:
 when a bolder or more editorial variant fits the mood and the section still has
 everything it needs, prefer it. Within a page, different sections should not all
 use the same structural idea (e.g. don't pick a "split" layout for every
@@ -137,10 +136,18 @@ def _variant_label(template: dict) -> str:
     return f"{layout}/{style}".strip("/") or template.get("id", "")
 
 
+# How many variants a section is offered: the ones the site's visual language
+# ranks first. Offering every feasible variant let the model pick a composition
+# the chosen scheme ranks last (an editorial split on a bento-built site), and
+# its explicit pick outranks the scheme's own preference downstream.
+_MAX_OPTIONS = 3
+
+
 def _section_options(
     block: ContentBlock,
     mood: BrandMood | None = None,
     industry: str | None = None,
+    layout_bias: tuple[str, ...] = (),
 ) -> list[str] | None:
     """The indented "- id (variant)" lines for one section, or None when there
     are fewer than two real choices (nothing to decide — skip it).
@@ -152,6 +159,14 @@ def _section_options(
     options = selectable_templates(block, mood=mood, industry=industry)
     if len(options) < 2:
         return None
+    # Only a scheme narrows the menu; the mood alone never did (schemes off is
+    # a true no-op).
+    preference = layout_preference(mood, layout_bias) if layout_bias else []
+    if preference:
+        rank = {family: i for i, family in enumerate(preference)}
+        options = sorted(
+            options, key=lambda t: rank.get(t.get("layoutVariant", ""), len(rank))
+        )[:_MAX_OPTIONS]
     return [f'    - "{t["id"]}" ({_variant_label(t)})' for t in options]
 
 
@@ -160,6 +175,7 @@ def _page_blurb(
     blocks: list[ContentBlock],
     mood: BrandMood | None = None,
     industry: str | None = None,
+    layout_bias: tuple[str, ...] = (),
 ) -> str | None:
     """One page's section/option listing, or None when no section on the page
     has more than one template to choose between.
@@ -171,7 +187,7 @@ def _page_blurb(
     for s_idx, block in enumerate(blocks):
         if block.kind == "hero":
             continue
-        opts = _section_options(block, mood, industry)
+        opts = _section_options(block, mood, industry, layout_bias)
         if opts is None:
             continue
         lines.append(f'  Section {s_idx} ("{block.kind}"):\n' + "\n".join(opts))
@@ -186,6 +202,9 @@ async def generate_site_design_recipe(
     industry: str | None,
     pages: list[list[ContentBlock]],
     llm: LlmClient | None = None,
+    direction: str | None = None,
+    scheme_label: str | None = None,
+    layout_bias: tuple[str, ...] = (),
 ) -> SiteDesignRecipe:
     """Pick a template variant per section for the WHOLE site in one LLM call.
 
@@ -205,16 +224,23 @@ async def generate_site_design_recipe(
     blurbs = [
         blurb
         for p_idx, blocks in enumerate(pages)
-        if (blurb := _page_blurb(p_idx, blocks, mood, industry)) is not None
+        if (blurb := _page_blurb(p_idx, blocks, mood, industry, layout_bias)) is not None
     ]
     if not blurbs:
         return SiteDesignRecipe()
 
     client = llm or get_reasoning_llm()
+    # The direction the site was chosen in leads; the industry's generic
+    # personality line is only the fallback for a business with no direction —
+    # sending it alongside would argue with the chosen look ("bento grids for
+    # saas" on a premium-enterprise site).
+    look = direction or f"Industry design personality: {personality_for(industry).design}"
     user_prompt = (
         f"Brand mood: {mood or 'modern'}\n"
         f"Industry: {industry or 'other'}\n"
-        f"Industry design personality: {personality_for(industry).design}\n\n"
+        f"Design direction: {look}\n"
+        + (f"Visual language: {scheme_label} — built around {', '.join(layout_bias)} layouts\n" if scheme_label and layout_bias else "")
+        + "\n"
         + "\n\n".join(blurbs)
     )
     try:

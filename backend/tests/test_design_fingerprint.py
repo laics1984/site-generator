@@ -182,7 +182,9 @@ class HistoryTest(unittest.TestCase):
         self.assertTrue(0.0 <= float(decision["choice"]) <= 1.0)
         self.assertNotIn("Sunbeam", decision["rationale"])
         # The builder sees the same manifest the site carries.
-        self.assertEqual(second.builder_styles["designManifest"], second.design_manifest)
+        from app.models.design_manifest import builder_styles_manifest
+
+        self.assertEqual(second.builder_styles["designManifest"], builder_styles_manifest(second.design_manifest))
 
     def test_a_concept_that_would_repeat_a_recent_site_is_scored_stale(self):
         from unittest import mock

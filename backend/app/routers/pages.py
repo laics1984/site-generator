@@ -30,6 +30,7 @@ from app.services.page_inference import (
 )
 from app.services.multilingual_strategy import addable_locales, with_plan
 from app.services.planner import detect_brand_cached
+from app.services import creative_directions
 from app.services.design_direction import ContentProfile, resolve_direction
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
@@ -83,12 +84,46 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
         detected.industry_category if detected else None,
     )
 
+    archetype = creative_directions.archetype_for_source(
+        detected.archetype if detected else None, payload.source, industry
+    )
+    if detected is not None:
+        detected = detected.model_copy(update={"archetype": archetype})
+    # Preview theme for the picker: the same design direction /generate/with-pages
+    # resolves (brief, content, history), minus the model's pick — a preview must
+    # not spend a round-trip, and the best-scored concept is the pick's fallback.
+    # No logo palette exists yet here, so the detection's colour hint stands in.
+    # Resolved BEFORE the page tree: its creative direction ranks the homepage's
+    # landing patterns (section_emphasis).
+    preview_direction = await resolve_direction(
+        brand_name=(detected.site_name if detected else None) or payload.source.title or "site",
+        mood=resolve_mood(  # type: ignore[arg-type]
+            override=None,
+            brand_mood=None,
+            detected=detected.brand_mood if detected else None,
+            industry=industry,
+        ),
+        industry=industry,
+        logo_hex=detected.primary_color_hint if detected else None,
+        personality=detected.personality if detected else None,
+        positioning=detected.positioning if detected else None,
+        audience=detected.audience if detected else None,
+        business_context=detected.brand_summary if detected else None,
+        content=ContentProfile.of(payload.source),
+        use_model=False,
+        archetype=archetype,
+    )
+    preview = preview_direction.theme
+    creative = preview_direction.creative
+
     inferred = infer_page_scaffolds(
         payload.source,
         industry=industry,
         site_name=detected.site_name if detected else None,
         single_page=payload.single_page,
         homepage_sections_override=payload.homepage_sections,
+        archetype=archetype,
+        section_emphasis=creative.section_emphasis if creative else (),
     )
     # Every page in every language the plan publishes at its own URLs — the
     # owner's own version where the crawl found it, else translated from ours.
@@ -115,27 +150,6 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
         suggested_pages=[],
         optional_pages=[*offered, *optional_pool_for(industry, inferred)],
     )
-
-    # Preview theme for the picker: the same design direction /generate/with-pages
-    # resolves (brief, content, history), minus the model's pick — a preview must
-    # not spend a round-trip, and the best-scored concept is the pick's fallback.
-    # No logo palette exists yet here, so the detection's colour hint stands in.
-    preview = (
-        await resolve_direction(
-            brand_name=(detected.site_name if detected else None) or payload.source.title or "site",
-            mood=resolve_mood(  # type: ignore[arg-type]
-                override=None,
-                brand_mood=None,
-                detected=detected.brand_mood if detected else None,
-                industry=industry,
-            ),
-            industry=industry,
-            logo_hex=detected.primary_color_hint if detected else None,
-            personality=detected.personality if detected else None,
-            content=ContentProfile.of(payload.source),
-            use_model=False,
-        )
-    ).theme
 
     return PageRecipeResponse(
         industry=industry,

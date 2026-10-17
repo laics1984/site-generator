@@ -338,6 +338,15 @@ class Settings(BaseSettings):
     # (scripts/measure_design_diversity.py) and checked it in the preview: with
     # it off, ten kindergartens shared one typeface and three palettes.
     design_schemes_enabled: bool = True
+    # Creative directions (services/creative_directions.py): the industry's
+    # design intelligence as several distinct, evidence-chosen directions, each
+    # realised by design schemes. Off → schemes are scored exactly as before,
+    # with no direction, archetype guidance or direction-led hero/shape/CTA.
+    creative_directions_enabled: bool = True
+    # The design-quality evaluator (services/design_quality.py): scores the
+    # finished site, applies one round of targeted corrections and records the
+    # report on the design manifest. Off → no corrections, no report.
+    design_quality_enabled: bool = True
 
     # Full-bleed photo/abstract background hero on EVERY page (not just the
     # homepage), so the transparent floating header engages site-wide. Imagery

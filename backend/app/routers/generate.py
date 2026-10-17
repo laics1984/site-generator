@@ -58,6 +58,7 @@ from app.models.industry import PageScaffold
 from app.services.facebook_authority import enforce_facebook_facts
 from app.services.facebook_source import to_contact_dict
 from app.services.industry_templates import gallery_page, get_template
+from app.services import creative_directions
 from app.services.design_direction import ContentProfile, resolve_direction
 from app.services.record_pages import build_record_pages
 from app.services.source_router import gallery_photos, match_scaffolds_to_pages, pages_by_source_slug
@@ -1386,6 +1387,9 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         hero_height=payload.hero_height,
         palette_design_mode=payload.palette_design_mode,
         generate_palette=payload.palette_override is None,
+        archetype=creative_directions.archetype_for_source(
+            None, payload.source, plan.industry_category
+        ),
         **design_inputs(payload.source, brand),
     )
     theme = direction.theme
@@ -1660,7 +1664,12 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     )
     if serves_menus(industry):
         assess_menu_assets(payload.source)
-    detected = detected.model_copy(update={"industry_category": industry})
+    # The kind of business inside the industry (a Montessori casa, an IT
+    # support firm): what the design direction and the planner's focus read.
+    archetype = creative_directions.archetype_for_source(
+        detected.archetype, payload.source, industry
+    )
+    detected = detected.model_copy(update={"industry_category": industry, "archetype": archetype})
     mood = resolve_mood(
         override=payload.mood_override,
         brand_mood=payload.brand.mood if payload.brand else None,
@@ -1705,6 +1714,7 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
                 hero_height=payload.hero_height,
                 palette_design_mode=payload.palette_design_mode,
                 generate_palette=payload.palette_override is None,
+                archetype=archetype,
                 **design_inputs(payload.source, brand, detected),
             )
         theme = direction.theme
@@ -1712,6 +1722,12 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         theme = ThemeTokens.model_validate(payload.frozen_site.theme)
     if payload.palette_override is not None and payload.frozen_site is None:
         theme = apply_creative_palette(theme, payload.palette_override)
+    # The copy planner writes for the look that was chosen: its imagery and
+    # hero follow the direction (planner._design_payload).
+    if (site_direction := creative_directions.for_theme(theme)) is not None:
+        detected = detected.model_copy(
+            update={"design_context": creative_directions.planner_context(site_direction)}
+        )
 
     # Announcement/quick-links strap: claim it BEFORE planning so its text is
     # out of raw_text (the LLM must not also narrate it into a paragraph);

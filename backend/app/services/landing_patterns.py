@@ -42,6 +42,11 @@ class LandingPattern:
     name: str
     industries: tuple[str, ...]
     sections: tuple[str, ...]
+    # Business archetypes (services/business_archetype.py) the pattern was
+    # written for. A pattern with archetypes and no industries is offered ONLY
+    # to those archetypes, so a site whose kind is unknown is offered exactly
+    # the patterns it always was.
+    archetypes: tuple[str, ...] = ()
 
 
 # Ordered so the first pattern matching an industry is its most representative
@@ -90,7 +95,35 @@ _LANDING_PATTERNS: tuple[LandingPattern, ...] = (
                    ("hero", "features", "testimonials", "cta")),
     LandingPattern("minimal", ("other", "personal"),
                    ("hero", "features", "cta")),
+    # --- archetype journeys: what THIS kind of business's visitor asks first ---
+    # A product: what it does → how it works → what it costs → objections.
+    LandingPattern("product-tour", (),
+                   ("hero", "features", "process", "pricing", "faq", "cta"),
+                   archetypes=("saas-product", "developer-platform")),
+    # IT services / technology firms: what we handle → who we are → how an
+    # engagement runs → questions. Not a product's pricing grid.
+    LandingPattern("solutions-led", (),
+                   ("hero", "services", "about", "process", "faq", "cta"),
+                   archetypes=("it-services", "tech-consultancy")),
+    # A consultancy argues before it lists: the point of view, then the work.
+    LandingPattern("insight-led", (),
+                   ("hero", "about", "services", "process", "cta"),
+                   archetypes=("tech-consultancy",)),
+    # A studio leads with the work itself.
+    LandingPattern("work-first", (),
+                   ("hero", "gallery", "services", "process", "testimonials", "cta"),
+                   archetypes=("digital-agency", "marketing-agency")),
+    # Enrichment/tuition: the classes are the product.
+    LandingPattern("class-led", (),
+                   ("hero", "services", "features", "gallery", "faq", "cta"),
+                   archetypes=("enrichment-centre",)),
+    # Montessori and method-led schools explain the approach before the rooms.
+    LandingPattern("approach-led", (),
+                   ("hero", "about", "features", "gallery", "services", "cta"),
+                   archetypes=("montessori-preschool",)),
 )
+
+PATTERN_NAMES: frozenset[str] = frozenset(p.name for p in _LANDING_PATTERNS)
 
 
 def _seeded_index(seed: str | None, n: int) -> int:
@@ -121,15 +154,35 @@ def homepage_sections(
     *,
     extra_sections: list[str] | None = None,
     seed: str | None = None,
+    archetype: str | None = None,
+    emphasis: tuple[str, ...] = (),
 ) -> list[str]:
     """Industry-fit homepage section order.
 
     Deterministic; ``seed`` varies the choice among equally-fitting patterns.
     Falls back to the standard features-led order when no pattern matches the
     industry. ``extra_sections`` are merged in just before the closing CTA.
+
+    ``archetype`` (the kind of business inside its industry) adds the patterns
+    written for it and ranks them first; ``emphasis`` (a creative direction's
+    ``section_emphasis``, best first) ranks within that. The seed then only
+    breaks ties among the best-ranked — with neither given, every candidate
+    ties, which is the plain seeded pick this always was.
     """
     norm = (industry or "").strip().lower()
-    candidates = [p for p in _LANDING_PATTERNS if norm in p.industries]
+    candidates = [
+        p for p in _LANDING_PATTERNS
+        if norm in p.industries or (archetype is not None and archetype in p.archetypes)
+    ]
+
+    def rank(pattern: LandingPattern) -> tuple[int, int]:
+        by_emphasis = emphasis.index(pattern.name) if pattern.name in emphasis else len(emphasis)
+        by_archetype = 0 if archetype is not None and archetype in pattern.archetypes else 1
+        return (by_archetype, by_emphasis)
+
+    if candidates:
+        best = min(rank(p) for p in candidates)
+        candidates = [p for p in candidates if rank(p) == best]
     chosen = (
         candidates[_seeded_index(seed, len(candidates))].sections
         if candidates

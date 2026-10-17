@@ -234,6 +234,23 @@ def _no_design_schemes():
 
 
 @pytest.fixture(autouse=True)
+def _directionless_suite():
+    """Pin creative directions OFF for the suite, like the design schemes above.
+
+    A direction moves the scheme, the hero, the image shape, the homepage
+    sequence and the CTA wording per business, so a structural assertion
+    elsewhere would really be asserting whichever direction its fixture's copy
+    happened to call for. test_creative_directions / test_direction_selection
+    turn it on."""
+    original = settings.creative_directions_enabled
+    settings.creative_directions_enabled = False
+    try:
+        yield
+    finally:
+        settings.creative_directions_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_diversity():
     """Disable the diversity engine's SQLite history for every test.
 

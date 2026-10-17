@@ -473,6 +473,32 @@ def brand_ink(theme: ThemeTokens, surface: str | None = None) -> str:
 # Light enough that the theme's dark ink keeps a wide WCAG margin on every tint
 # (the old fixed pastel set was Tailwind 50/100-class, L ≈ 0.93–0.97).
 _BAND_TINT_LIGHTNESS = 0.94
+
+
+# --- framed image shapes ------------------------------------------------------
+#
+# The silhouette a framed photograph (a split hero's picture, an About split's
+# picture) is cut to — a creative direction's call (creative_directions.
+# CreativeDirection.image_shape). Every shape is a `borderRadius` and nothing
+# else: percentage/elliptical radii render identically in webtree-public, the
+# preview and the builder canvas (hero-playful-split's blob has shipped that
+# way since it existed), while clip-path and mask-image are not guaranteed in
+# all three. "soft-rect" keeps whatever radius the template authored.
+IMAGE_SHAPES: dict[str, str | None] = {
+    "soft-rect": None,
+    # A tall rounded top over a softly rounded base — the doorway/window arch.
+    "arch": "999px 999px 28px 28px",
+    # A gently irregular rounded stone.
+    "pebble": "48% 52% 46% 54% / 56% 44% 56% 44%",
+    # hero-playful-split's organic blob, verbatim.
+    "blob": "42% 58% 62% 38% / 45% 40% 60% 55%",
+}
+
+# The catalog image nodes that ARE a framed photograph — a section's one
+# picture, outside any `$repeat` (a card's photo keeps its card's shape).
+# test_image_shapes walks the catalog: a renamed node would otherwise silently
+# switch the shape off, the same vocabulary trap as the h1 pass's title names.
+SHAPED_IMAGE_NAMES: frozenset[str] = frozenset({"Hero Image", "Blob Photo", "About Image"})
 # Hues a tint set is built from, as rotations off the primary and the accent:
 # the brand's own two colours first, then their neighbours, so a green-and-amber
 # brand gets mint and peach bands and a navy-and-coral one gets sky and blush.

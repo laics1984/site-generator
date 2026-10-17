@@ -34,6 +34,8 @@ import logging
 from app.models.brand import BrandMood
 from app.models.builder_schema import GeneratedSite
 from app.models.design_manifest import (
+    DirectionSpec,
+    builder_styles_manifest,
     OVERLAY_CAPABLE_HEADERS,
     SELF_CHROME_HEADERS,
     DesignDecision,
@@ -41,6 +43,7 @@ from app.models.design_manifest import (
     FooterArchetype,
     HeaderArchetype,
 )
+from app.services.creative_directions import CreativeDirection
 from app.services.design_schemes import NEUTRAL_SCHEME, DesignScheme
 from app.services.diversity import pick_diverse, recent_choices, seeded_index
 
@@ -129,6 +132,8 @@ async def compose_design_manifest(
     footer_override: FooterArchetype | None = None,
     scheme: DesignScheme | None = None,
     scheme_rationale: str | None = None,
+    direction: CreativeDirection | None = None,
+    archetype: str | None = None,
 ) -> DesignManifest:
     """Compose the site's DesignManifest. Pure decision-making — no rendering.
 
@@ -240,6 +245,24 @@ async def compose_design_manifest(
             ),
         )
 
+    spec: DirectionSpec | None = None
+    if direction is not None:
+        spec = direction_spec(direction, archetype)
+        # First of all: the scheme, the chrome and every later pass realise it.
+        decisions.insert(
+            0,
+            DesignDecision(
+                area="direction",
+                choice=direction.slug,
+                rationale=(
+                    f"{direction.label} — {direction.brief}"
+                    + (f"; chosen for a {archetype} " if archetype else "; ")
+                    + "on the business's personality, its own words and its material"
+                ),
+                confidence=0.75,
+            ),
+        )
+
     manifest = DesignManifest(
         seed=seed,
         mood=mood,
@@ -248,6 +271,7 @@ async def compose_design_manifest(
         design_scheme="" if scheme.is_neutral else scheme.slug,
         header_archetype=header,
         footer_archetype=footer,
+        direction=spec,
         decisions=decisions,
     )
     logger.info(
@@ -320,7 +344,24 @@ def demote_self_chrome_header(manifest: DesignManifest, *, reason: str) -> bool:
 # dilute the chrome signal. The scheme earns a slot because it is the widest
 # single choice on the site: two consecutive sites sharing one is exactly the
 # convergence this history exists to break.
-_RECORDED_DECISION_AREAS = frozenset({"palette", "hero-homepage", "scheme"})
+_RECORDED_DECISION_AREAS = frozenset({"palette", "hero-homepage", "scheme", "direction"})
+
+
+def direction_spec(direction: CreativeDirection, archetype: str | None) -> DirectionSpec:
+    """The manifest's record of a creative direction."""
+    return DirectionSpec(
+        slug=direction.slug,
+        label=direction.label,
+        archetype=archetype,
+        brief=direction.brief,
+        imagery=direction.imagery,
+        palette_voice=direction.palette_voice,
+        image_shape=direction.image_shape,
+        hero_leads=list(direction.hero_leads),
+        section_emphasis=list(direction.section_emphasis),
+        cta_strategy=list(direction.cta_strategy),
+        anti_patterns=list(direction.anti_patterns),
+    )
 
 
 async def report_and_record_fingerprint(site: GeneratedSite, manifest: DesignManifest) -> None:
@@ -362,7 +403,7 @@ async def report_and_record_fingerprint(site: GeneratedSite, manifest: DesignMan
         )
         site.design_manifest = manifest.model_dump()
         if site.builder_styles and "designManifest" in site.builder_styles:
-            site.builder_styles["designManifest"] = site.design_manifest
+            site.builder_styles["designManifest"] = builder_styles_manifest(manifest)
     await record_choice("fingerprint", fingerprint.to_json(), site_key=manifest.seed)
 
 

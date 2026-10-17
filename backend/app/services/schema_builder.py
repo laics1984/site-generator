@@ -76,6 +76,7 @@ from app.models.content_blocks import (
     TimelineBlock,
 )
 from app.models.design_manifest import (
+    builder_styles_manifest,
     SELF_CHROME_HEADERS,
     DesignDecision,
     DesignManifest,
@@ -165,7 +166,10 @@ from app.services.design_schemes import (
 )
 # Pure style/CSS helpers live in a sibling module; re-imported here so the public
 # path app.services.schema_builder.<name> is unchanged for callers and tests.
+from app.services import creative_directions
 from app.services.style_tokens import (
+    IMAGE_SHAPES,
+    SHAPED_IMAGE_NAMES,
     StyleTokens,
     _accent_ink_for,
     _fluid,
@@ -591,6 +595,7 @@ def apply_motion(
     *,
     industry: str | None,
     hero_has_photo: bool,
+    allow_ambient: bool | None = None,
 ) -> None:
     """Tag the assembled page's sections with declarative entrance/backdrop
     motion (BuilderElementMotion). Most catalog templates already author their
@@ -607,20 +612,59 @@ def apply_motion(
     overwrites a `.motion` a template already set. Mutates in place."""
     for section in sections:
         if section.motion is None and section.name.startswith("Hero"):
-            _apply_hero_motion(section, industry=industry, hero_has_photo=hero_has_photo)
+            _apply_hero_motion(
+                section, industry=industry, hero_has_photo=hero_has_photo, allow_ambient=allow_ambient
+            )
         _apply_content_group_motion(section)
 
 
 def _apply_hero_motion(
-    section: BuilderElement, *, industry: str | None, hero_has_photo: bool
+    section: BuilderElement,
+    *,
+    industry: str | None,
+    hero_has_photo: bool,
+    allow_ambient: bool | None = None,
 ) -> None:
     """Backdrop motion on the hero's own section element (gsap/webgl tiers
     bypass the entrance-reveal viewport gate, so they're the only presets
-    worth setting on above-the-fold content)."""
+    worth setting on above-the-fold content).
+
+    ``allow_ambient`` is the creative direction's call when the site has one
+    (an aurora backdrop is right for a creative studio and wrong for a
+    premium enterprise); None keeps the industry list it always used."""
     if hero_has_photo:
         section.motion = BuilderElementMotion(preset="parallax-drift")
-    elif industry in _VISUAL_LED_INDUSTRIES:
+    elif allow_ambient if allow_ambient is not None else industry in _VISUAL_LED_INDUSTRIES:
         section.motion = BuilderElementMotion(preset="aurora")
+
+
+def apply_image_shape(sections: list[BuilderElement], shape: str | None) -> None:
+    """Cut every framed photograph on the page to the direction's shape.
+
+    Framed means a section's own picture (``SHAPED_IMAGE_NAMES``: a split
+    hero's, an About split's), never a card's photo inside a ``$repeat`` and
+    never a full-bleed background — one silhouette repeated on the page's
+    feature images is what makes the shape read as the site's, not a sticker.
+    "soft-rect" (or no direction) keeps the radius the template authored.
+    Idempotent; mutates in place."""
+    radius = IMAGE_SHAPES.get(shape or "")
+    if not radius:
+        return
+
+    def walk(node: BuilderElement) -> None:
+        children = [c for c in node.content if isinstance(c, BuilderElement)] if isinstance(node.content, list) else []
+        for child in children:
+            if child.type == "image" and child.name in SHAPED_IMAGE_NAMES:
+                child.styles = {**(child.styles or {}), "borderRadius": radius}
+                # A mat that frames only this photo (hero-modern-split's padded
+                # "Hero Visual Frame") takes the same silhouette, or an arched
+                # photo sits inside a rounded rectangle and reads unfinished.
+                if len(children) == 1 and (node.styles or {}).get("borderRadius"):
+                    node.styles = {**node.styles, "borderRadius": radius}
+            walk(child)
+
+    for section in sections:
+        walk(section)
 
 
 def _apply_content_group_motion(section: BuilderElement) -> None:
@@ -4875,6 +4919,8 @@ async def plan_to_site(
             # theme; its chrome affinity narrows the fit list, never adds to it.
             scheme=for_theme(theme),
             scheme_rationale=getattr(theme, "design_rationale", None),
+            direction=creative_directions.for_theme(theme),
+            archetype=getattr(theme, "business_archetype", None),
         )
     else:
         manifest = DesignManifest(seed=effective_brand.name or plan.site_name)
@@ -4969,6 +5015,15 @@ async def plan_to_site(
                 # is_feasible, which reads the content (a two-item features
                 # section can't use the three-tile bento).
                 pages=[list(p.blocks) for p in plan.pages],
+                # The design manifest's direction and the scheme realising it:
+                # the section pass composes inside that language, not the
+                # industry's generic one.
+                direction=(
+                    creative_directions.prompt_line(d)
+                    if (d := creative_directions.for_theme(theme)) else None
+                ),
+                scheme_label=None if (sch := for_theme(theme)).is_neutral else sch.label,
+                layout_bias=for_theme(theme).layout_bias,
             )
 
     _, site_design_recipe = await asyncio.gather(_prewarm(), _design_recipe())
@@ -5001,6 +5056,11 @@ async def plan_to_site(
         # overrides the per-mood interior rotation (which leads with compact
         # splits) even when the site-wide full-bleed policy is off.
         force_background=wants_self_chrome,
+        # The creative direction states the homepage's opening; the scheme it
+        # is realised by only fills in when the direction's leads can't render.
+        direction_leads=(
+            site_direction.hero_leads if (site_direction := creative_directions.for_theme(theme)) else ()
+        ),
     )
     # With every page on the same full-bleed template, how each hero is COMPOSED
     # is the only axis of variety left — planned site-wide so consecutive pages
@@ -5265,6 +5325,7 @@ async def plan_to_site(
         # dividers (so seam fills read the final tints). Photo/gradient
         # sections are untouched; a dark build has no light tints to give.
         page_scheme = for_theme(theme)
+        page_direction = creative_directions.for_theme(theme)
         if (
             page_scheme.band_tint == "multi-tint"
             and getattr(theme, "color_scheme", "light") != "dark"
@@ -5285,6 +5346,7 @@ async def plan_to_site(
         retune_photo_edge_fades(elements, theme)
         # Asymmetric headers + scroll/backdrop motion — applied last so they
         # read the final band/background each section landed on.
+        apply_image_shape(elements, page_direction.image_shape if page_direction else None)
         apply_heading_alignment(elements, effective_brand.mood)
         strip_title_list_markers(elements)
         # Semantic heading tags: the page's first section title becomes its
@@ -5296,6 +5358,7 @@ async def plan_to_site(
             hero_has_photo=bool(
                 hero_element and (hero_element.styles or {}).get("backgroundImage")
             ),
+            allow_ambient=page_direction.allow_ambient_motion if page_direction else None,
         )
         # Blog / events pages render their content dynamically: the builder's
         # articlesList / eventsList element lists the CMS collection. Appended
@@ -5424,7 +5487,15 @@ async def plan_to_site(
     # affordance at all gets no button rather than a dead one.
     primary_cta = (
         (
-            _CTA_LABEL_BY_INDUSTRY.get(plan.industry_category, "Get in touch"),
+            # The direction's conversion intent when the site has one (a
+            # Montessori casa asks for a tour, an IT firm for an assessment);
+            # the industry's wording otherwise.
+            (
+                creative_directions.contact_cta_label(site_dir)
+                if (site_dir := creative_directions.for_theme(theme)) is not None
+                else None
+            )
+            or _CTA_LABEL_BY_INDUSTRY.get(plan.industry_category, "Get in touch"),
             base_contact_href,
         )
         if base_contact_href
@@ -5517,7 +5588,7 @@ async def plan_to_site(
     theme = canonical_theme
     builder_styles = theme.to_builder_styles()
     if settings.design_engine_enabled:
-        builder_styles["designManifest"] = manifest.model_dump()
+        builder_styles["designManifest"] = builder_styles_manifest(manifest)
 
     # Last, after every pass has finished its counterpart: a translated page is
     # exactly the shared tree plus its overlay — what the CMS will serve.
@@ -5556,30 +5627,35 @@ async def plan_to_site(
         await report_and_record_fingerprint(site, manifest)
         await record_manifest_choices(manifest)
 
-    # Advisory UX/accessibility + SEO audit. Logged only; never mutates or
-    # blocks generation.
-    try:
-        import logging
-
-        from app.services.ux_audit import (
-            audit_copy,
-            audit_design,
-            audit_seo,
-            audit_site,
-            summarize,
-        )
-
-        findings = audit_site(site) + audit_design(site) + audit_copy(site)
-        if settings.seo_audit_enabled:
-            findings += audit_seo(site)
-        if findings:
-            logging.getLogger(__name__).info(
-                "UX+SEO+design audit: %d finding(s) %s", len(findings), summarize(findings)
-            )
-    except Exception:  # noqa: BLE001 — an advisory check must never break a build
-        pass
-
+    # The design-quality evaluator (services/design_quality.py): one round of
+    # targeted corrections, then the verdict recorded on the manifest. After
+    # the fingerprint, which reads the distinctiveness it reports on. Advisory:
+    # it never blocks a build.
+    _evaluate_design_quality(site, manifest)
     return site
+
+
+def _evaluate_design_quality(site: GeneratedSite, manifest: DesignManifest) -> None:
+    import logging
+
+    log = logging.getLogger(__name__)
+    try:
+        from app.services import design_quality
+        from app.services.ux_audit import audit_seo, summarize
+
+        if settings.design_quality_enabled:
+            manifest.quality = design_quality.evaluate_and_correct(site)
+            if settings.design_engine_enabled:
+                site.design_manifest = manifest.model_dump()
+                if site.builder_styles and "designManifest" in site.builder_styles:
+                    site.builder_styles["designManifest"] = builder_styles_manifest(manifest)
+            log.info("Design quality: %s", design_quality.summary(manifest.quality))
+        if settings.seo_audit_enabled:
+            seo = audit_seo(site)
+            if seo:
+                log.info("SEO audit: %d finding(s) %s", len(seo), summarize(seo))
+    except Exception as exc:  # noqa: BLE001 — an advisory check must never break a build
+        log.debug("Design-quality evaluation failed: %s", exc)
 
 
 def _translated_pages(plans: list[PagePlan], pages: list[GeneratedPage]) -> list[GeneratedPage]:
