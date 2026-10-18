@@ -285,6 +285,58 @@ def extract_palette_from_image_bytes(
     )
 
 
+def mark_inks(image_bytes: bytes, *, max_colors: int = 6) -> list[tuple[str, float]]:
+    """The colours a reader actually SEES in the mark, with their shares.
+
+    `extract_palette_from_image_bytes` drops near-white and near-black on
+    purpose — it answers "which colours is this brand", and white is nobody's
+    brand colour. That makes it the wrong witness for "will this mark vanish
+    on a light band": watr's white letters around a red flame extracted as red
+    alone, read 6:1 on cream, and shipped white-on-cream. This keeps every
+    visible pixel (alpha >= 50), groups them by median cut and returns
+    ``(hex, share)`` largest first. An SVG counts its declared colours. Any
+    decode failure is ``[]``.
+    """
+    try:
+        if _looks_like_svg(image_bytes):
+            try:
+                text = image_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                text = image_bytes.decode("latin-1")
+            counts: dict[str, int] = {}
+            for match in _SVG_COLOR_PROP_RE.finditer(text):
+                rgb = _normalize_svg_color(match.group(1))
+                if rgb is not None:
+                    hex_color = _rgb_to_hex(*rgb)
+                    counts[hex_color] = counts.get(hex_color, 0) + 1
+            total = sum(counts.values())
+            return sorted(
+                ((h, n / total) for h, n in counts.items()), key=lambda x: -x[1]
+            ) if total else []
+
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        w, h = img.size
+        if w > 256:
+            img = img.resize((256, max(1, int(h * 256 / w))), Image.Resampling.LANCZOS)
+        visible = [(r, g, b) for r, g, b, a in img.getdata() if a >= 50]
+        if not visible:
+            return []
+        flat = Image.new("RGB", (len(visible), 1))
+        flat.putdata(visible)
+        quantised = flat.quantize(colors=max_colors, method=Image.Quantize.MEDIANCUT)
+        palette_data = quantised.getpalette() or []
+        inks: dict[str, int] = {}
+        for count, idx in quantised.getcolors() or []:
+            r, g, b = palette_data[idx * 3 : idx * 3 + 3]
+            hex_color = _rgb_to_hex(r, g, b)
+            inks[hex_color] = inks.get(hex_color, 0) + count
+        return sorted(
+            ((hx, n / len(visible)) for hx, n in inks.items()), key=lambda x: -x[1]
+        )
+    except Exception:  # noqa: BLE001 — a mark we cannot read has no inks
+        return []
+
+
 def _to_data_url(image_bytes: bytes, image_format: str) -> str:
     fmt = image_format.lower()
     if fmt in ("svg", "svg+xml"):

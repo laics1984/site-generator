@@ -11,7 +11,10 @@ feels like one cohesive design system, not a stack of independent sections.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from typing import Any
+from urllib.parse import unquote
 from uuid import uuid4
 
 from app.models.brand import BrandIdentity, ThemeTokens
@@ -27,6 +30,7 @@ from app.models.design_manifest import (
     HeaderArchetype,
 )
 from app.services.design_schemes import for_theme
+from app.services.logo import mark_inks
 from app.services.menu_builder import has_menu_groups
 from app.services.template_filler import (
     fill_chrome_template,
@@ -390,10 +394,10 @@ def logo_band(brand: BrandIdentity, theme: ThemeTokens, default_bg: str) -> str:
     The bar keeps `default_bg` when the mark reads on it (`_mark_reads_on` —
     the mark's own colours at the graphics floor). Otherwise it moves to the
     palette token on the OPPOSITE side of light/dark that the mark reads on
-    best: a white or white-and-green mark gets a dark bar instead of vanishing
-    into a light one, and the logo stays. Only a rendered logo leads; with no
-    mark, or one that reads on neither side, the bar is `default_bg` and the
-    footer falls back to the text wordmark as before.
+    best: a white or white-and-red mark gets a dark bar instead of vanishing
+    into a light one, and the logo stays. When no band lets every ink read, the
+    band where the weakest ink is strongest wins. Only a rendered logo leads;
+    with no mark the bar is `default_bg`.
 
     `logo_is_light` alone used to decide the header (it needs 60% near-white
     pixels, so a two-tone light mark read as dark and stayed on white), and the
@@ -409,10 +413,12 @@ def logo_band(brand: BrandIdentity, theme: ThemeTokens, default_bg: str) -> str:
         c for c in dict.fromkeys((p.secondary, p.text, p.background, p.surface))
         if _is_hex_colour(c) and (_text_for_background(c) == "#ffffff") is not default_dark
     ]
-    readable = [c for c in opposite if _mark_reads_on(brand, c)]
-    if not readable:
-        return default_bg
-    return max(readable, key=lambda c: _mark_contrast(brand, c))
+    if not _mark_colours(brand):
+        # Nothing to measure: the light/dark reading picks the side.
+        return next((c for c in opposite if _mark_reads_on(brand, c)), default_bg)
+    # Where no band lets every ink read, the band where the weakest ink is
+    # strongest wins — the default only when it genuinely is that band.
+    return max([default_bg, *opposite], key=lambda c: _mark_contrast(brand, c))
 
 
 # --- header ---------------------------------------------------------------------
@@ -617,7 +623,7 @@ def build_footer(
     # light). Same gate as the header (_logo_mark): a mark the header declined
     # is not good enough for the footer either.
     logo_src = (brand.logo_url or brand.logo_data_url) if brand.logo_render_ok else None
-    if logo_src and not _mark_reads_on(brand, footer_bg):
+    if logo_src and not _mark_dominant_reads_on(brand, footer_bg):
         logo_src = None
     show_wordmark = not logo_src
     logo_el: BuilderElement | None = None
@@ -704,27 +710,69 @@ def build_footer(
 _MARK_MIN_CONTRAST = 3.0
 
 
-def _mark_reads_on(brand: BrandIdentity, band_hex: str) -> bool:
-    """Whether the logo's own colours read against a band.
+# An ink under this share of the visible mark is an anti-aliasing edge or a
+# speck, not a part of the logo a reader looks for.
+_MARK_MIN_SHARE = 0.10
 
-    Judged from the extracted palette — the mark's opaque pixels, clustered —
-    because a two-tone mark defeats a light/dark reading: a white-and-green
-    wordmark is under 60% near-white, so `logo_is_light` called it dark and the
-    footer printed the site's name under a logo that was perfectly legible on
-    its dark band. A mark reads when its strongest colour clears the graphics
-    contrast floor. With no palette to measure, the light/dark reading stands.
+
+def _mark_inks(brand: BrandIdentity) -> list[tuple[str, float]]:
+    """The mark's visible inks, measured from the logo the brand already
+    carries (`logo_data_url` is set whenever a logo was extracted), so a
+    cached scrape and a brand the frontend posts back are judged the same way
+    with no re-crawl. `extracted_palette` cannot answer this: it drops
+    near-white and near-black by design (see `logo.mark_inks`)."""
+    data_url = brand.logo_data_url or ""
+    if not data_url.startswith("data:") or "," not in data_url:
+        return []
+    header, payload = data_url.split(",", 1)
+    try:
+        raw = (
+            base64.b64decode(payload)
+            if ";base64" in header
+            else unquote(payload).encode("utf-8")
+        )
+    except (ValueError, binascii.Error):
+        return []
+    return [(h, s) for h, s in mark_inks(raw) if s >= _MARK_MIN_SHARE]
+
+
+def _mark_colours(brand: BrandIdentity) -> list[str]:
+    inks = _mark_inks(brand)
+    if inks:
+        return [h for h, _ in inks]
+    return [c for c in (brand.extracted_palette or [])[:3] if _is_hex_colour(c)]
+
+
+def _mark_reads_on(brand: BrandIdentity, band_hex: str) -> bool:
+    """Whether EVERY visible part of the logo reads against a band.
+
+    Judged from the mark's own inks at the graphics floor. A mark reads only
+    when its weakest significant ink clears it: watr's red flame reads on
+    cream at 6:1 while its white letters vanish, and "the strongest colour
+    reads" called that legible. Falls back to the extracted brand palette, and
+    with nothing to measure, to the light/dark reading.
     """
-    colours = [c for c in (brand.extracted_palette or [])[:3] if _is_hex_colour(c)]
+    colours = _mark_colours(brand)
     if not colours:
         band_is_dark = _text_for_background(band_hex) == "#ffffff"
         return brand.logo_is_light is band_is_dark
-    return max(_contrast(c, band_hex) for c in colours) >= _MARK_MIN_CONTRAST
+    return _mark_contrast(brand, band_hex) >= _MARK_MIN_CONTRAST
 
 
 def _mark_contrast(brand: BrandIdentity, band_hex: str) -> float:
-    """How strongly the mark's best colour stands off a band (for ranking)."""
-    colours = [c for c in (brand.extracted_palette or [])[:3] if _is_hex_colour(c)]
-    return max((_contrast(c, band_hex) for c in colours), default=0.0)
+    """How well the mark's WEAKEST significant ink stands off a band (ranking)."""
+    colours = _mark_colours(brand)
+    return min((_contrast(c, band_hex) for c in colours), default=0.0)
+
+
+def _mark_dominant_reads_on(brand: BrandIdentity, band_hex: str) -> bool:
+    """Whether the mark's largest ink reads — the bar for keeping the logo at
+    all. A two-tone mark whose accent is weak on the best band keeps its logo;
+    one whose main body vanishes gives way to the wordmark."""
+    inks = _mark_inks(brand)
+    if inks:
+        return _contrast(inks[0][0], band_hex) >= _MARK_MIN_CONTRAST
+    return _mark_reads_on(brand, band_hex)
 
 
 def _is_hex_colour(value: object) -> bool:

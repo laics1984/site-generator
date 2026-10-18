@@ -1002,8 +1002,15 @@ and the light/dark reading stands only when there is no palette to measure.
 archetype's band, the band moves to the palette token on the opposite
 light/dark side the mark reads best on (secondary/text for a light mark,
 background/surface for a dark one) and the logo stays — a light logo never
-sits on a light footer or header bar. Only a mark that reads on neither band
-gives way to the wordmark, rather than joining it. No renderable logo
+sits on a light footer or header bar. **The judge is the mark's visible ink**
+(`logo.mark_inks`, decoded from `logo_data_url` at build time, so cached scrapes
+and posted-back brands need no re-crawl), never `extracted_palette`: that
+palette drops near-white and near-black by design, so watr's white letters
+around a red flame were judged by the red alone (6:1 on cream) and shipped
+invisible. A mark reads when its WEAKEST ink of ≥10% share clears 3:1; failing
+that, the band where the weakest ink is strongest wins. Only a mark whose
+DOMINANT ink reads on no band gives way to the wordmark, rather than joining
+it. No renderable logo
 (`logo_render_ok`) means no change. The header used to branch on
 `logo_is_light`, the 60%-white flag this section opens by retiring. And the
 mega grid is columns of grouped pages beside the brand column: a
@@ -1016,7 +1023,7 @@ brain closes with a CTA — which is the one the complaint came from. The banner
 survives: `chrome-footer-minimal-centered` gained an optional, centred one
 gated on a `has_cta` flag (edited in the builder catalog, then synced), so the
 degrade costs the site nothing. Tests: `test_header_footer.FooterMarkTest` /
-`FlatSiteFooterTest` / `HeaderBackgroundContrastTest`.
+`FlatSiteFooterTest` / `HeaderBackgroundContrastTest`, `test_mark_inks.py`.
 
 ## The brand mark is not content
 
