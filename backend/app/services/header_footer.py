@@ -547,6 +547,41 @@ def _header_tokens(
 # --- footer ---------------------------------------------------------------------
 
 
+def _laid_out_footer_archetype(
+    archetype: FooterArchetype, page_tree: list[PageNode] | None
+) -> FooterArchetype:
+    """The archetype the footer is actually laid out as: `mega` and `cta-banner`
+    degrade to the centred stack on a site with no grouped page (see
+    build_footer)."""
+    if archetype in ("mega", "cta-banner") and not has_menu_groups(page_tree):
+        return "minimal-centered"
+    return archetype
+
+
+def footer_band(
+    brand: BrandIdentity,
+    theme: ThemeTokens,
+    archetype: FooterArchetype,
+    page_tree: list[PageNode] | None,
+) -> str:
+    """The colour the footer is painted — the one answer build_footer uses and
+    the body asks before it is styled, so a closing CTA band can stand apart
+    from the footer under it (schema_builder.contrast_cta_bands).
+
+    Chrome per archetype: the dark archetypes sit on `secondary` (the dark,
+    primary-hued neutral) with white ink; the light archetypes sit on `surface`
+    with the band's contrast-correct ink. On a dark color scheme `surface` is
+    itself dark, so the "light" archetypes stay coherent there. The logo leads:
+    a mark that would vanish on this band moves the band to the opposite side
+    rather than being dropped for the wordmark."""
+    archetype = _laid_out_footer_archetype(archetype, page_tree)
+    if archetype in ("minimal-centered", "editorial"):
+        default = theme.palette.surface
+    else:
+        default = theme.palette.secondary
+    return logo_band(brand, theme, default)
+
+
 def build_footer(
     brand: BrandIdentity,
     theme: ThemeTokens,
@@ -594,20 +629,8 @@ def build_footer(
     # centered carries an optional, centred one), so a flat site keeps the
     # closing CTA the design brain chose for it.
     shows_cta = archetype == "cta-banner"
-    if archetype in ("mega", "cta-banner") and not has_menu_groups(page_tree):
-        archetype = "minimal-centered"
-
-    # Chrome per archetype: the dark archetypes sit on `secondary` (the dark,
-    # primary-hued neutral) with white ink; the light archetypes sit on
-    # `surface` with the band's contrast-correct ink. On a dark color scheme
-    # `surface` is itself dark, so the "light" archetypes stay coherent there.
-    if archetype in ("minimal-centered", "editorial"):
-        footer_bg = theme.palette.surface
-    else:
-        footer_bg = theme.palette.secondary
-    # The logo leads: a mark that would vanish on this band moves the band to
-    # the opposite side rather than being dropped for the wordmark.
-    footer_bg = logo_band(brand, theme, footer_bg)
+    archetype = _laid_out_footer_archetype(archetype, page_tree)
+    footer_bg = footer_band(brand, theme, archetype, page_tree)
     ink = _text_for_background(footer_bg)
     footer_is_dark = ink == "#ffffff"
     # Exact legacy literals on dark so the default mega output stays

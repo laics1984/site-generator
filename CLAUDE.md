@@ -250,17 +250,35 @@ account into the manifest's `scheme` decision. `resolve_hero_height` lives here.
   never fired when the repeat was the mood's top family.
 - **The zigzag is the scheme's** (`alternate_splits`); restrained languages hold
   one side.
-- **A card section floats on its neighbour's background**
-  (`schema_builder.blend_panelled_sections`, after the band passes, before the
-  dividers). A section whose content is ONE rounded, self-filled card
-  (`section_content.inset_panel_of`, structural — never a template name) takes
-  the flat colour of the section above, else below, else the page — the first
-  the card stands off (1.5:1, so a dark card never melts into a dark band).
-  watr's CTA card shipped on a cream band tint between two white sections,
-  with a white wedge cut into it: a stripe that framed nothing. Full-width
-  bands keep their colour; that alternation is the rhythm. And a boundary
-  between two flat sections of ONE colour gets no shaped divider
+- **A CTA band stands apart from its neighbours and the footer**
+  (`schema_builder.contrast_cta_bands`, after the band passes, before the
+  dividers). The band passes alternate per section and never knew the footer,
+  so a closing CTA shipped on the footer's own colour, or on a tint barely off
+  the section above. A flat CTA band (`template_id_of` → `cta-*`) must reach
+  1.25:1 against each flat neighbour — the section before, the section after,
+  and the footer when it closes the page (cream on white, ~1.17, is a tint, not
+  a contrast); a card CTA (`section_content.inset_panel_of`) must also keep its
+  card 1.5:1 off the band, and the band must carry its copy at AA with the
+  palette's own ink. A band that passes is kept; otherwise the first palette
+  band that does (surface, background, band tints, secondary, then the brand
+  hues — a mid-tone brand band is the last resort, since neither ink reads far
+  past AA on it; a `multi-tint` scheme speaks in colour, so there the hues come
+  before the dark neutral). Copy on a recoloured band that falls under AA takes `ink_on`
+  for it (`_reink_for_band`); a node with an opaque fill keeps its own. The
+  footer's colour is `header_footer.footer_band` — the one answer
+  `build_footer` also paints — asked BEFORE the body is styled, from a page
+  tree drawn from the plans. A photo/gradient CTA keeps its picture. A
+  boundary between two flat sections of ONE colour gets no shaped divider
   (`_boundary_edge`): a wedge filled with the colour it cuts into is invisible.
+- **A shaped edge is the colour of the section it reveals, by construction.**
+  `sync_divider_fills` restates every edge from its neighbour's FINAL
+  `backgroundColor` as the last body pass (after the v2 rebind), and drops an
+  edge whose neighbour no longer paints a flat colour. `bind_theme_styles` used
+  to bind an edge in its photo carrier's context (`photo-scrim`, navy) while
+  the neighbour bound to `surface-inverse` (brown-black): one input, two roles.
+  Offline builds never showed it — no Pexels, no photo carrier — so the
+  end-to-end test mocks a hero photo. `scripts/audit_site_inks.py` reports
+  `DIVIDER` and `CTA-BAND` alongside its ink findings.
 - `ux_audit.audit_design` flags 3+ consecutive body sections of one
   `section_content.visual_weight` (advisory, `rhythm-monotone`).
   `design_fingerprint.template_id_of` is the one "which template built this".

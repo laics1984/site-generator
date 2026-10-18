@@ -232,10 +232,6 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
                     node.styles.pop("opacity", None)
             except ValueError:
                 pass
-        if node.divider:
-            for edge in (node.divider.top, node.divider.bottom):
-                if edge and edge.color:
-                    edge.color = str(css(edge.color, "backgroundColor", photo))
         return has_copy
     for element in elements:
         element.classes = ((element.classes or "") + " wt-color-system-v2").strip()

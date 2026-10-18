@@ -102,7 +102,8 @@ from app.services.hero_director import (
     plan_site_compositions,
     plan_site_heroes,
 )
-from app.services.header_footer import build_footer, build_header
+from app.services.design_fingerprint import template_id_of
+from app.services.header_footer import build_footer, build_header, footer_band
 from app.services.legal_pages import drop_page_title
 from app.services.image_match import SlotUsage
 from app.services.media import (
@@ -134,13 +135,13 @@ from app.services.section_content import (
     enforce_text_contrast,
     hero_scroll_anchor,
     inset_panel_of,
+    opaque_surface_of,
     band_of_surface,
     painted_band,
     painted_surface_of,
     section_visual_input_for,
     style_whatsapp_links,
     surface_of,
-    _paints_its_own_surface,
     _parse_color,
     _to_hex,
 )
@@ -968,8 +969,7 @@ def _boundary_edge(
       fill would land as a stripe of unrelated colour between the two — the
       artefact this rule exists to prevent);
     - neither does, and both are one colour → no divider: a wedge filled with
-      the colour it cuts into is invisible (a card section takes its
-      neighbour's backdrop, `blend_panelled_sections`);
+      the colour it cuts into is invisible;
     - neither does → ``preferred`` picks the carrier, keeping the hero's bottom
       edge and the CTA's top edge where they have always been.
     """
@@ -1098,50 +1098,148 @@ def apply_section_dividers(
         )
 
 
-# A card section's backdrop must still let the card read as a card.
+# A CTA band must read as its own band against the bands around it. Cream on
+# white is ~1.17:1 — a tint, not a contrast — so it does not count.
+_BAND_DISTINCT_CONTRAST = 1.25
+# A card section's band must still let the card read as a card.
 _PANEL_BACKDROP_MIN_CONTRAST = 1.5
+_AA_TEXT = 4.5
 
 
-def blend_panelled_sections(sections: list[BuilderElement], theme: ThemeTokens) -> None:
-    """A section whose content is ONE floating card (`inset_panel_of`) takes its
-    neighbour's background, so the card sits on the page instead of on a band of
-    its own. watr's CTA card shipped inside a cream band tint between two white
-    sections, with a white wedge cut into its top: a stripe that framed nothing.
+def _opaque_hex(value: str | None, theme: ThemeTokens) -> str | None:
+    parsed = _parse_color(value, theme) if value else None
+    return _to_hex(parsed[0]) if parsed and parsed[1] >= 0.999 else None
 
-    The backdrop is the section above's flat colour, else the section below's,
-    else the page background — the first the card stands off (so a dark card
-    never melts into a dark hero band). Run after the band passes, which paint
-    the stripe, and before the dividers, which then see two matching sides and
-    put no seam between them. A section that paints its own photo or gradient
-    keeps it; nothing changes when no backdrop lets the card read. In place."""
+
+def contrast_cta_bands(
+    sections: list[BuilderElement], theme: ThemeTokens, footer_bg: str | None
+) -> None:
+    """A CTA is the page's ask, so its band stands apart from the bands around
+    it: the section before, the section after, and — when it closes the page —
+    the footer under it. The band passes alternate light/dark per section and
+    know nothing of the footer, so a closing CTA routinely shipped on the
+    footer's own colour (white on a pale `surface` footer, the dark band on the
+    dark footer), and a card CTA on a tint barely off its neighbour.
+
+    A band that already stands apart (`_BAND_DISTINCT_CONTRAST` against every
+    flat neighbour) and carries its copy at AA is kept. Otherwise the first
+    palette band that does — surface, background, the band tints, secondary,
+    the brand hues (hues first on a multi-tint scheme) — and, for a card
+    section (`inset_panel_of`), still lets the card stand off it. None does:
+    the legible one whose closest neighbour is furthest. A photo or gradient
+    neighbour already reads as different and sets no constraint; a CTA that
+    paints its own photo or gradient keeps it. Copy on the new band is
+    re-inked by `_reink_for_band`, a button that melts into it by
+    `_restate_button_fill`. Run after the band passes and before the dividers,
+    so seams fill with the final colour. In place."""
+    palette = theme.palette
+    # Neutrals before brand hues: a mid-tone brand band is ambiguous ground —
+    # neither ink reads far past AA on it — so it is the answer only when no
+    # light or dark band stands apart (a dark footer under a dark section).
+    # A multi-tint scheme (playroom) speaks in colour, so there the brand hues
+    # come before the dark neutral: its ask stays in its own voice.
+    hues = [palette.primary, palette.accent]
+    pool = [palette.surface, palette.background, *band_tints(theme),
+            *((hues + [palette.secondary]) if for_theme(theme).band_tint == "multi-tint"
+              else ([palette.secondary] + hues))]
     for index, section in enumerate(sections):
+        if not template_id_of(section).startswith("cta"):
+            continue
+        if section.painted_surface or _section_edge_color(section) is None:
+            continue
+        current = _opaque_hex((section.styles or {}).get("backgroundColor"), theme)
+        if current is None:
+            continue
+        neighbours = [
+            _opaque_hex(_section_edge_color(sections[i]), theme)
+            for i in (index - 1, index + 1) if 0 <= i < len(sections)
+        ]
+        if index == len(sections) - 1:
+            neighbours.append(_opaque_hex(footer_bg, theme))
+        neighbours = [n for n in neighbours if n]
+        if not neighbours:
+            continue
         panel = inset_panel_of(section)
-        if panel is None:
+        card = surface_of(panel, theme) if panel is not None else None
+
+        def closest(band: str) -> float:
+            return min(_contrast(band, n) for n in neighbours)
+
+        def legible(band: str) -> bool:
+            # Copy must reach AA on the band with the palette's own ink, and a
+            # card must still read as a card on it. A mid-tone brand band
+            # (#16a34a, where the palette's light ink reads 3.1:1) stands apart
+            # from everything and still cannot carry the page's ask.
+            if card and _contrast(card, band) < _PANEL_BACKDROP_MIN_CONTRAST:
+                return False
+            return _contrast(ink_on(palette, band), band) >= _AA_TEXT
+
+        def fits(band: str) -> bool:
+            return legible(band) and closest(band) >= _BAND_DISTINCT_CONTRAST
+
+        if fits(current):
             continue
-        styles = section.styles or {}
-        decorated = getattr(section, "backgroundTexture", None) not in (None, "flat")
-        if section.painted_surface or (_paints_its_own_surface(section) and not decorated):
-            continue
-        card = surface_of(panel, theme)
-        if card is None:
-            continue
-        candidates = [
-            _section_edge_color(sections[i])
-            for i in (index - 1, index + 1)
-            if 0 <= i < len(sections)
-        ] + [theme.page.background]
-        for value in candidates:
-            parsed = _parse_color(value, theme) if value else None
-            if parsed is None or parsed[1] < 0.999:
+        candidates = list(dict.fromkeys(c.lower() for c in pool if _opaque_hex(c, theme)))
+        chosen = next((c for c in candidates if fits(c)), None)
+        if chosen is None:
+            chosen = max((c for c in candidates if legible(c)), key=closest, default=None)
+            if chosen is None or closest(chosen) <= closest(current):
                 continue
-            if _contrast(card, _to_hex(parsed[0])) < _PANEL_BACKDROP_MIN_CONTRAST:
+        _flatten_section_texture(section)
+        new_styles = dict(section.styles or {})
+        new_styles["backgroundColor"] = chosen
+        new_styles.pop("borderTop", None)
+        section.styles = new_styles
+        _reink_for_band(section, chosen, theme)
+
+
+def _reink_for_band(section: BuilderElement, band: str, theme: ThemeTokens) -> None:
+    """Copy that sits on a recoloured band and reads under AA there takes the
+    palette's ink for it (`ink_on`) — at AA, not merely the large-text floor
+    `enforce_text_contrast` holds a headline to: dark copy left on a band that
+    went dark, or the light copy of a dark band that went light, would clear
+    3:1 and still read poorly. A node with an opaque fill of its own (a card, a
+    solid button) keeps its copy: that copy sits on its fill, not the band. A
+    card wrapper with only a radius is not a fill, so its copy is the band's."""
+    ink = ink_css(theme.palette, ink_on(theme.palette, band))
+
+    def walk(node: BuilderElement) -> None:
+        for child in node.content if isinstance(node.content, list) else []:
+            if not isinstance(child, BuilderElement) or opaque_surface_of(child, theme):
                 continue
-            _flatten_section_texture(section)
-            new_styles = dict(section.styles or {})
-            new_styles["backgroundColor"] = value
-            new_styles.pop("borderTop", None)
-            section.styles = new_styles
-            break
+            if child.type in ("text", "link"):
+                parsed = _parse_color((child.styles or {}).get("color"), theme)
+                if parsed and _contrast(_to_hex(parsed[0]), band) < _AA_TEXT:
+                    child.styles = {**(child.styles or {}), "color": ink}
+            walk(child)
+
+    walk(section)
+
+
+def sync_divider_fills(sections: list[BuilderElement]) -> None:
+    """A shaped edge is filled with the colour of the section it reveals —
+    restated from that section's FINAL background, last, so no later pass can
+    leave a wedge of one colour cut into a band of another. Colour system v2
+    used to bind an edge with its carrier's photo context (`photo-scrim`) while
+    the neighbour's own background bound to `surface-inverse`: one input, two
+    roles, a navy wedge on a brown-black band. An edge whose neighbour no longer
+    paints a flat colour is dropped — no flat fill can match it. In place."""
+    for index, section in enumerate(sections):
+        divider = section.divider
+        if divider is None:
+            continue
+        edges = {}
+        for side, other in (("top", index - 1), ("bottom", index + 1)):
+            edge = getattr(divider, side)
+            if edge is None:
+                edges[side] = None
+                continue
+            color = _section_edge_color(sections[other]) if 0 <= other < len(sections) else None
+            edges[side] = edge.model_copy(update={"color": color}) if color else None
+        section.divider = (
+            SectionDivider(top=edges["top"], bottom=edges["bottom"])
+            if edges["top"] or edges["bottom"] else None
+        )
 
 
 def _section_edge_color(section: BuilderElement) -> str | None:
@@ -5313,6 +5411,18 @@ async def plan_to_site(
         for _block in _page_plan.blocks:
             _resolve_block_cta_hrefs(_block, index=_base_href_index, contact_href=base_contact_href)
 
+    # The footer's colour, known before the body is styled, so a closing CTA
+    # band can stand apart from it (contrast_cta_bands). Same inputs
+    # build_footer reads below; the tree is drawn from the plans because the
+    # pages do not exist yet — only its grouping matters here.
+    footer_bg = footer_band(
+        effective_brand,
+        theme,
+        manifest.footer_archetype,
+        _nav_tree_from_source(source_navigation) if source_navigation
+        else _build_page_tree(primary_plans),
+    )
+
     # Build each page's body
     pages: list[GeneratedPage] = []
     # A page in another language is not rendered: it is its counterpart's
@@ -5482,10 +5592,10 @@ async def plan_to_site(
         # recolour doesn't overwrite them; each is held to AA on its own band.
         if page_scheme.heading_ink == "per-section-accent":
             apply_section_title_inks(elements, section_title_inks(theme))
-        # A card section floats on its neighbour's background, not on a band of
-        # its own — after the band passes (which paint that band) and before the
-        # dividers, so they see two matching sides and add no seam.
-        blend_panelled_sections(elements, theme)
+        # The CTA band stands apart from the section before it and the footer
+        # under it — after the band passes (which paint it) and before the
+        # dividers, so seams fill with the final colour.
+        contrast_cta_bands(elements, theme, footer_bg)
         # Shaped section dividers — the picture section carries the edge and the
         # fill is the flat neighbour's exact colour; a boundary with a picture on
         # both sides gets no divider at all, since no flat fill could match it.
@@ -5736,6 +5846,10 @@ async def plan_to_site(
         for generated_page in [*pages, *outside_pages]:
             bind_theme_styles(generated_page.body_schema.elements, canonical_theme, theme)
         bind_theme_styles([c for c in (header, footer) if isinstance(c, BuilderElement)], canonical_theme, theme)
+    # Last body pass: every shaped edge restated from the section it reveals,
+    # after the v2 rebind and every recolour, so a wedge always matches it.
+    for generated_page in [*pages, *outside_pages]:
+        sync_divider_fills(generated_page.body_schema.elements)
     theme = canonical_theme
     builder_styles = theme.to_builder_styles()
     if settings.design_engine_enabled:

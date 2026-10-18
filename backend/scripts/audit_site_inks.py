@@ -8,6 +8,11 @@ against the surface it actually sits on (`section_content._own_fill`, the
 model every ink pass uses): under 4.5:1 (3:1 at 24px and up) is reported, and
 so is a solid button under 3:1 against its band.
 
+Two band checks ride along. DIVIDER: a shaped edge whose fill is not the colour
+of the section it reveals (a wedge of one colour cut into a band of another).
+CTA-BAND: a flat CTA band under 1.25:1 against the section before it, or —
+when it closes the page — against the footer.
+
 Colour tokens resolve the way the RENDERER resolves them: a colour-system v2
 token (`var(--builder-color-on-surface-inverse, …)`) through `color_system.derive`
 over the site's palette, the same derivation `preview/lib/colorSystem.ts`
@@ -58,7 +63,8 @@ def _resolver(theme: ThemeTokens):
 
 
 def _px(value: object) -> float:
-    m = re.match(r"\s*([\d.]+)px", str(value or ""))
+    # A fluid size (`clamp(38px, 4.74vw, 61px)`) is judged at its minimum.
+    m = re.search(r"([\d.]+)px", str(value or ""))
     return float(m.group(1)) if m else 16.0
 
 
@@ -112,16 +118,69 @@ def audit(site: GeneratedSite) -> list[str]:
                     walk(child, bg, here, inherited)
 
     page_bg = tuple(int(theme.page.background[i : i + 2], 16) for i in (1, 3, 5))
+    footer = _band_of(site.footer_schema, theme, resolve) if site.footer_schema else None
     for page in site.pages:
         for index, element in enumerate(page.body_schema.elements):
             before = len(lines)
             walk(element, page_bg, [f"/{page.slug} #{index}"])
             if len(lines) > before:
                 lines.insert(before, f"--- page /{page.slug}, section {index} ({element.name})")
+        lines.extend(_band_findings(page, theme, resolve, footer))
     if mismatches:
         lines.append("--- tokens the generator and the renderer resolve differently")
         lines.extend(sorted(set(mismatches)))
     return lines
+
+
+def _flat_hex(value: object, theme: ThemeTokens, resolve) -> str | None:
+    parsed = sc._parse_color(resolve(value), theme) if isinstance(value, str) else None
+    return sc._to_hex(parsed[0]) if parsed and parsed[1] >= 0.999 else None
+
+
+def _band_of(node: BuilderElement | None, theme: ThemeTokens, resolve) -> str | None:
+    """The flat colour a section (or the footer) paints, first opaque fill down
+    its wrapper chain; None for a photo or gradient band."""
+    while node is not None:
+        styles = node.styles or {}
+        image = str(styles.get("backgroundImage") or "")
+        if "url(" in image and "data:" not in image or "gradient(" in str(styles.get("background") or image):
+            return None
+        own = _flat_hex(styles.get("backgroundColor") or styles.get("background"), theme, resolve)
+        if own:
+            return own
+        kids = [c for c in node.content if isinstance(c, BuilderElement)] if isinstance(node.content, list) else []
+        node = kids[0] if len(kids) == 1 else None
+    return None
+
+
+def _band_findings(page, theme: ThemeTokens, resolve, footer: str | None) -> list[str]:
+    from app.services.design_fingerprint import template_id_of
+
+    sections = page.body_schema.elements
+    found: list[str] = []
+    for index, section in enumerate(sections):
+        divider = section.divider
+        for side, edge, other in (("top", divider and divider.top, index - 1),
+                                  ("bottom", divider and divider.bottom, index + 1)):
+            if not edge or not edge.color:
+                continue
+            fill = _flat_hex(edge.color, theme, resolve)
+            neighbour = _band_of(sections[other], theme, resolve) if 0 <= other < len(sections) else None
+            if fill != neighbour:
+                found.append(f"DIVIDER /{page.slug} #{index} {side} edge {fill} reveals "
+                             f"#{other} painted {neighbour} ({section.name})")
+        if not template_id_of(section).startswith("cta"):
+            continue
+        band = _band_of(section, theme, resolve)
+        if band is None:
+            continue
+        before = _band_of(sections[index - 1], theme, resolve) if index else None
+        after = footer if index == len(sections) - 1 else None
+        for label, other in (("section before", before), ("footer", after)):
+            if other and _contrast(band, other) < 1.25:
+                found.append(f"CTA-BAND /{page.slug} #{index} {band} is {_contrast(band, other):.2f}:1 "
+                             f"against the {label} {other}")
+    return found
 
 
 def main(path: str) -> None:
