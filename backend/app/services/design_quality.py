@@ -73,6 +73,7 @@ _DIMENSION: dict[str, str] = {
     "shape-crops-portrait": "imagery",
     "portrait-in-landscape-slot": "imagery",
     "abstract-featured-image": "imagery",
+    "button-blends-band": "legibility",
 }
 
 # ux_audit rules that are SEO, not design: logged, not scored.
@@ -416,6 +417,60 @@ def _check_abstract_imagery(ctx: _Context) -> Iterator[QualityFinding]:
                     )
 
 
+def _theme_tokens(site: GeneratedSite):
+    from app.models.brand import ThemeTokens
+
+    theme = site.theme
+    if isinstance(theme, ThemeTokens):
+        return theme
+    try:
+        return ThemeTokens.model_validate(theme) if isinstance(theme, dict) else None
+    except Exception:  # noqa: BLE001 — an old or partial theme is simply not judged
+        return None
+
+
+def _check_button_bands(ctx: _Context) -> Iterator[QualityFinding]:
+    """A solid button whose fill melts into the band it sits on (under the
+    3:1 non-text floor). `enforce_text_contrast` restates such fills, so this
+    is the regression net for a tree that skipped or predates that pass."""
+    from app.services import section_content as sc
+
+    theme = _theme_tokens(ctx.site)
+    if theme is None:
+        return
+
+    def walk(node: BuilderElement, band, page: str, index: int):
+        # `band` is the RGB behind this node, None once a photo nobody measured
+        # in this tree sits behind it (a measured scrim is not serialized), so
+        # a button on a photo hero is never judged against the page colour.
+        if node.type == "link" and band is not None:
+            fill = sc.opaque_surface_of(node, theme)
+            if fill and _contrast_ratio(fill, sc._to_hex(band)) < 3.0:
+                yield _finding(
+                    "button-blends-band", "medium",
+                    "a solid button's fill barely stands off the band behind it",
+                    page=page, section=index, node=node.name,
+                )
+        own = sc._own_fill(node, theme, band)
+        if own is sc._UNREADABLE:
+            band = None
+        elif own is not sc._NO_FILL:
+            band = own
+        for child in _children(node):
+            yield from walk(child, band, page, index)
+
+    page_rgb = sc._hex_to_rgb(sc._expand_hex(theme.page.background))
+    for page in ctx.site.pages:
+        for index, section in enumerate(_body(page)):
+            yield from walk(section, page_rgb, page.slug or "/", index)
+
+
+def _contrast_ratio(a: str, b: str) -> float:
+    from app.services.theme import _contrast
+
+    return _contrast(a, b)
+
+
 def _section_title_colors(section: BuilderElement) -> str | None:
     for node in _walk(section):
         if node.htmlTag in ("h1", "h2") or (node.name or "") in ("Heading", "Title"):
@@ -496,6 +551,7 @@ _CHECKS: tuple[Callable[[_Context], Iterator[QualityFinding]], ...] = (
     _check_fonts,
     _check_imagery,
     _check_abstract_imagery,
+    _check_button_bands,
     _check_direction,
     _check_originality,
 )

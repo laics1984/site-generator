@@ -377,23 +377,42 @@ def _header_chrome(
     from the same six-token palette every other surface draws from, never an
     arbitrary shade, and it fixes the whole bar instead of patching the mark.
     """
-    background = theme.palette.background
-    foreground = _text_for_background(background)
-    if _contrast(background, foreground) < 4.5:
-        foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
-
-    header_is_dark = foreground == "#ffffff"
-    if brand.logo_is_light is False and header_is_dark:
-        background = theme.palette.text
-    elif brand.logo_is_light is True and not header_is_dark:
-        background = theme.palette.secondary
-    else:
-        return background, foreground
-
+    background = logo_band(brand, theme, theme.palette.background)
     foreground = _text_for_background(background)
     if _contrast(background, foreground) < 4.5:
         foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
     return background, foreground
+
+
+def logo_band(brand: BrandIdentity, theme: ThemeTokens, default_bg: str) -> str:
+    """The band a chrome bar (header, footer) sits on, led by the logo.
+
+    The bar keeps `default_bg` when the mark reads on it (`_mark_reads_on` —
+    the mark's own colours at the graphics floor). Otherwise it moves to the
+    palette token on the OPPOSITE side of light/dark that the mark reads on
+    best: a white or white-and-green mark gets a dark bar instead of vanishing
+    into a light one, and the logo stays. Only a rendered logo leads; with no
+    mark, or one that reads on neither side, the bar is `default_bg` and the
+    footer falls back to the text wordmark as before.
+
+    `logo_is_light` alone used to decide the header (it needs 60% near-white
+    pixels, so a two-tone light mark read as dark and stayed on white), and the
+    footer never moved its band at all — it dropped the logo instead.
+    """
+    if not (brand.logo_render_ok and (brand.logo_url or brand.logo_data_url)):
+        return default_bg
+    if _mark_reads_on(brand, default_bg):
+        return default_bg
+    default_dark = _text_for_background(default_bg) == "#ffffff"
+    p = theme.palette
+    opposite = [
+        c for c in dict.fromkeys((p.secondary, p.text, p.background, p.surface))
+        if _is_hex_colour(c) and (_text_for_background(c) == "#ffffff") is not default_dark
+    ]
+    readable = [c for c in opposite if _mark_reads_on(brand, c)]
+    if not readable:
+        return default_bg
+    return max(readable, key=lambda c: _mark_contrast(brand, c))
 
 
 # --- header ---------------------------------------------------------------------
@@ -579,6 +598,9 @@ def build_footer(
         footer_bg = theme.palette.surface
     else:
         footer_bg = theme.palette.secondary
+    # The logo leads: a mark that would vanish on this band moves the band to
+    # the opposite side rather than being dropped for the wordmark.
+    footer_bg = logo_band(brand, theme, footer_bg)
     ink = _text_for_background(footer_bg)
     footer_is_dark = ink == "#ffffff"
     # Exact legacy literals on dark so the default mega output stays
@@ -697,6 +719,12 @@ def _mark_reads_on(brand: BrandIdentity, band_hex: str) -> bool:
         band_is_dark = _text_for_background(band_hex) == "#ffffff"
         return brand.logo_is_light is band_is_dark
     return max(_contrast(c, band_hex) for c in colours) >= _MARK_MIN_CONTRAST
+
+
+def _mark_contrast(brand: BrandIdentity, band_hex: str) -> float:
+    """How strongly the mark's best colour stands off a band (for ranking)."""
+    colours = [c for c in (brand.extracted_palette or [])[:3] if _is_hex_colour(c)]
+    return max((_contrast(c, band_hex) for c in colours), default=0.0)
 
 
 def _is_hex_colour(value: object) -> bool:

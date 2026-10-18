@@ -9,11 +9,14 @@ from app.services.theme import _hex_to_rgb, build_theme
 
 class HeaderContrastTest(unittest.TestCase):
     def test_light_logo_on_light_site_switches_whole_header_to_dark_secondary(self):
+        # A white mark: its own colours (the extracted palette) are what the
+        # header judges, at the graphics floor, not the light/dark flag alone.
         brand = BrandIdentity(
             name="Acme",
             logo_data_url="data:image/png;base64,abc",
-            extracted_palette=["#2563eb"],
+            extracted_palette=["#ffffff", "#f1f5f9"],
             logo_is_light=True,
+            logo_render_ok=True,
         )
         theme = build_theme("#2563eb")
 
@@ -46,20 +49,22 @@ class HeaderBackgroundContrastTest(unittest.TestCase):
     never a decoration on the mark. See `_header_chrome`."""
 
     def _header(self, *, dark, logo_is_light):
+        # The mark's own colours: white for a light logo, near-black for a dark one.
         brand = BrandIdentity(
             name="Acme",
             logo_data_url="data:image/png;base64,abc",
-            extracted_palette=["#2563eb"],
+            extracted_palette=["#ffffff"] if logo_is_light else ["#0b1120"],
             logo_is_light=logo_is_light,
+            logo_render_ok=True,
         )
         theme = build_theme("#2563eb", color_scheme="dark" if dark else "light")
         return build_header(brand, theme, nav_items=[]), theme
 
     def test_dark_logo_on_dark_site_switches_header_to_light_text_token(self):
         header, theme = self._header(dark=True, logo_is_light=False)
-        # No light token exists in a dark palette except `text` (guaranteed
-        # high-contrast against the dark background by construction) — the
-        # bar switches to it wholesale rather than patching the logo.
+        # The bar moves to the palette's light side — the light token the dark
+        # mark stands off best (`text`, high-contrast against the dark
+        # background by construction) — wholesale, never patching the logo.
         self.assertEqual(header.styles.get("backgroundColor"), theme.palette.text)
         self.assertIsNone(_find(header, "Logo lockup"))
         logo = _find(header, "Brand Logo")
@@ -811,21 +816,46 @@ class FooterMarkTest(unittest.TestCase):
         self.assertIsNotNone(_find(footer, "Brand Logo"))
         self.assertIsNone(_find(footer, "Brand"))
 
-    def test_a_mark_that_would_vanish_gives_way_to_the_wordmark(self):
+    def test_a_mark_that_would_vanish_moves_the_band_and_stays(self):
+        # The logo leads: a dark mark on the dark band moves the footer to the
+        # palette's light side instead of being swapped for the wordmark.
         theme = build_theme("#62a812")
         near_band = theme.palette.secondary  # the band's own colour: invisible on it
         footer = self._dark_footer(self._brand([near_band]), theme)
-        self.assertIsNone(_find(footer, "Brand Logo"))
-        self.assertIsNotNone(_find(footer, "Brand"))
+        self.assertIsNotNone(_find(footer, "Brand Logo"))
+        self.assertIsNone(_find(footer, "Brand"))
+        self.assertNotEqual(footer.styles.get("backgroundColor"), theme.palette.secondary)
+
+    def test_a_light_mark_puts_a_light_footer_on_the_dark_band(self):
+        from app.models.builder_schema import PageNode
+        theme = build_theme("#62a812")
+        flat = [PageNode(slug="about", title="About")]  # centred stack, light band by default
+        footer = build_footer(self._brand(["#ffffff"]), theme, nav_items=[],
+                              page_tree=flat, archetype="minimal-centered")
+        self.assertIsNotNone(_find(footer, "Brand Logo"))
+        band = footer.styles.get("backgroundColor")
+        self.assertNotEqual(band, theme.palette.surface)
+        from app.services.theme import _contrast
+        self.assertGreaterEqual(_contrast("#ffffff", band), 3.0)
 
     def test_without_a_palette_the_light_dark_reading_still_decides(self):
         theme = build_theme("#62a812")
-        # A light mark on the dark band reads; a dark one does not.
+        # A light mark on the dark band reads as it is; a dark one moves the
+        # band to the light side and keeps the logo.
         light = self._dark_footer(self._brand([], logo_is_light=True), theme)
         dark = self._dark_footer(self._brand([], logo_is_light=False), theme)
         self.assertIsNotNone(_find(light, "Brand Logo"))
-        self.assertIsNone(_find(dark, "Brand Logo"))
-        self.assertIsNotNone(_find(dark, "Brand"))
+        self.assertEqual(light.styles.get("backgroundColor"), theme.palette.secondary)
+        self.assertIsNotNone(_find(dark, "Brand Logo"))
+        self.assertNotEqual(dark.styles.get("backgroundColor"), theme.palette.secondary)
+
+    def test_a_mark_with_no_reading_at_all_gives_way_to_the_wordmark(self):
+        theme = build_theme("#62a812")
+        unknown = BrandIdentity(name="WebTree", logo_url="https://example.com/logo.png",
+                                logo_render_ok=True, logo_is_light=None)
+        footer = self._dark_footer(unknown, theme)
+        self.assertIsNone(_find(footer, "Brand Logo"))
+        self.assertIsNotNone(_find(footer, "Brand"))
 
 
 class FlatSiteFooterTest(unittest.TestCase):

@@ -1872,6 +1872,44 @@ def _layer_over(layer: str, theme: ThemeTokens, below: _RGB | None) -> _RGB | No
     return _over(parsed[0], parsed[1], below) if parsed else _NO_FILL
 
 
+def _gradient_ramp(node: BuilderElement, theme: ThemeTokens, below: _RGB | None) -> list[_RGB] | None:
+    """The stops of the top OPAQUE gradient `node` paints — the colours copy
+    on it actually crosses. `_own_fill` reports their average,
+    which is the right question for WHICH ink and the wrong one for whether it
+    reads: a navy-to-blue hero averages to a mid-blue that dark ink clears,
+    while the headline over the navy end does not. None for no gradient, a
+    photo, or a stop that lets an unreadable surface through."""
+    if node.painted_surface:
+        return None
+    styles = node.styles if isinstance(node.styles, dict) else {}
+    if _has_real_photo(styles):
+        return None
+    for value in (styles.get("backgroundImage"), styles.get("background")):
+        if not isinstance(value, str):
+            continue
+        for layer in _split_layers(value):
+            if "gradient(" not in layer:
+                continue
+            inner = layer[layer.index("(") + 1 : layer.rindex(")")]
+            stops = [
+                parsed
+                for arg in _split_layers(inner)
+                if (parsed := _parse_color(_STOP_POSITION.sub("", arg).strip(), theme))
+            ]
+            # Only an OPAQUE ramp is a surface. A translucent layer is a sheen
+            # over whatever lies beneath (`cta-gradient`'s radial highlight on
+            # its brand ramp): skip it and keep looking down the stack.
+            if not stops or any(a < 0.999 for _, a in stops):
+                continue
+            return [rgb for rgb, _ in stops]
+    return None
+
+
+# A button is a control, so its fill must stand off the band it sits on
+# (WCAG 1.4.11 non-text contrast), whatever its label reads at.
+_CONTROL_MIN = 3.0
+
+
 def _own_fill(node: BuilderElement, theme: ThemeTokens, below: _RGB | None) -> _RGB | object:
     """The colour `node`'s own fill presents to the text on it, over `below`
     (None: an unreadable surface). `_NO_FILL` when it paints nothing,
@@ -2003,13 +2041,17 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
     }
     changed = 0
 
-    def walk(node: BuilderElement, bg_rgb: _RGB | None) -> None:
+    def walk(node: BuilderElement, bg_rgb: _RGB | None, ramp: list[_RGB] | None) -> None:
         nonlocal changed
+        band_rgb = bg_rgb
+        if node.type == "link" and band_rgb is not None and _restate_button_fill(node, band_rgb):
+            changed += 1
         fill = _own_fill(node, theme, bg_rgb)
         if fill is _UNREADABLE:
-            bg_rgb = None
+            bg_rgb, ramp = None, None
         elif fill is not _NO_FILL:
             bg_rgb = fill  # type: ignore[assignment]
+            ramp = _gradient_ramp(node, theme, band_rgb)
 
         styles = node.styles if isinstance(node.styles, dict) else {}
         content = node.content
@@ -2019,6 +2061,23 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
                 fg = _parse_color(raw, theme)
                 if fg is not None:
                     fg_hex, bg_hex = _to_hex(fg[0]), _to_hex(bg_rgb)
+                    # Every colour the copy crosses: a gradient's stops, else
+                    # the flat surface. Judged by the WORST of them.
+                    stop_hexes = [_to_hex(s) for s in ramp] if ramp else [bg_hex]
+
+                    def worst(ink: str) -> float:
+                        return min(_contrast(ink, b) for b in stop_hexes)
+
+                    def worst_stop(ink: str) -> str:
+                        return min(stop_hexes, key=lambda b: _contrast(ink, b))
+
+                    def ink_for_ramp() -> str:
+                        # `ink_on` reads the average; across a ramp take the
+                        # palette ink whose worst stop is best.
+                        first = ink_on(theme.palette, bg_hex)
+                        second = ink_on(theme.palette, worst_stop(first))
+                        return max((first, second), key=worst)
+
                     need = _COPY_MIN_LARGE if _is_large_text(styles) else _COPY_MIN
                     safe: str | None = None
                     if theme.color_system_version == 2:
@@ -2030,29 +2089,31 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
                         except ValueError:
                             pass
                         painted = _to_hex(_composite(fg[0], alpha, bg_rgb))
-                        if _contrast(painted, bg_hex) < need:
-                            safe = ensure_contrast(fg_hex, bg_hex, need)
+                        if worst(painted) < need:
+                            safe = ensure_contrast(fg_hex, worst_stop(painted), need)
+                            if worst(safe) < need:
+                                safe = ink_for_ramp()
                             if "opacity" in styles:
                                 styles = dict(styles)
                                 styles.pop("opacity", None)
                                 node.styles = styles
                     elif fg[0] in brand_rgb:
-                        if _contrast(fg_hex, bg_hex) < need:
-                            safe = _accent_ink_for(bg_hex, fg_hex)
+                        if worst(fg_hex) < need:
+                            safe = _accent_ink_for(worst_stop(fg_hex), fg_hex)
                             # Near the light/dark pivot only a pure white or
                             # black reaches AA, so no shade of a hue can: the
                             # lift bleaches to a white nobody chose. Copy there
                             # wears the palette's ink, like any other copy.
-                            if not _chroma(safe) or _contrast(safe, bg_hex) < need:
-                                safe = ink_on(theme.palette, bg_hex)
+                            if not _chroma(safe) or worst(safe) < need:
+                                safe = ink_for_ramp()
                     else:
                         hard_coded = isinstance(raw, str) and bool(_LITERAL_WHITE.match(raw))
-                        # Only "wrong-side" text — the same luminance tone as
-                        # its band — is the vanishing-text bug (dark-on-dark /
-                        # light-on-light).
-                        wrong_side = (_relative_luminance(fg_hex) < 0.5) == (
-                            _relative_luminance(bg_hex) < 0.5
-                        ) and _contrast(fg_hex, bg_hex) < 4.5
+                        # Copy under its floor on any colour it crosses is
+                        # re-inked. This used to be "wrong side" by a 0.5
+                        # luminance split, which left a mid-tone ink beside a
+                        # mid-tone band at ~1.5:1 because the two fell either
+                        # side of the line.
+                        wrong_side = worst(fg_hex) < need
                         # A neutral ink on the right side can still fail once
                         # its translucency lets the surface through: a 92%
                         # paragraph on a photo's solved scrim (which is solved
@@ -2062,7 +2123,7 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
                         ) < need
                         neutral = hard_coded or _is_neutral_ink(raw, fg[0], theme)
                         if hard_coded or wrong_side or (neutral and faded):
-                            safe = ink_on(theme.palette, bg_hex)
+                            safe = ink_for_ramp()
                     written = ink_css(theme.palette, safe) if safe is not None else None
                     if written is not None and written.lower() != str(raw).lower():
                         # The author's translucency is a nicety, kept only where
@@ -2086,10 +2147,34 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
         elif isinstance(content, list):
             for child in content:
                 if isinstance(child, BuilderElement):
-                    walk(child, bg_rgb)
+                    walk(child, bg_rgb, ramp)
+
+    def _restate_button_fill(node: BuilderElement, band_rgb: _RGB) -> bool:
+        """A solid button whose fill melts into its band takes a fill that
+        stands off it: the theme's button colour when that clears the control
+        floor on this band, else the palette ink for the band (the inverse of
+        the band). Its label is then re-inked for the new fill by the text pass
+        below. A ghost button (no opaque fill) is the text rule's."""
+        fill = opaque_surface_of(node, theme)
+        if fill is None:
+            return False
+        band_hex = _to_hex(band_rgb)
+        if _contrast(fill, band_hex) >= _CONTROL_MIN:
+            return False
+        candidates = [theme.buttons.background, ink_on(theme.palette, band_hex)]
+        new_fill = next(
+            (c for c in candidates if _contrast(c, band_hex) >= _CONTROL_MIN), candidates[-1]
+        )
+        styles = dict(node.styles or {})
+        if isinstance(styles.get("background"), str):
+            styles["background"] = new_fill
+        styles.pop("backgroundImage", None)
+        styles["backgroundColor"] = new_fill
+        node.styles = styles
+        return True
 
     for el in elements:
-        walk(el, page_rgb)
+        walk(el, page_rgb, None)
     return changed
 
 

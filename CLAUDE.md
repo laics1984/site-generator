@@ -997,8 +997,16 @@ printed "WebTree" under a logo that was perfectly legible. `_mark_reads_on`
 judges the mark by its own colours — the extracted palette, the mark's opaque
 pixels clustered — against the band, at the graphics contrast floor (3:1),
 and the light/dark reading stands only when there is no palette to measure.
-When the mark would vanish, the wordmark takes its place rather than joining
-it. And the mega grid is columns of grouped pages beside the brand column: a
+**The band follows the logo first** (`header_footer.logo_band`, asked by
+`_header_chrome` and `build_footer` alike): when the mark would vanish on the
+archetype's band, the band moves to the palette token on the opposite
+light/dark side the mark reads best on (secondary/text for a light mark,
+background/surface for a dark one) and the logo stays — a light logo never
+sits on a light footer or header bar. Only a mark that reads on neither band
+gives way to the wordmark, rather than joining it. No renderable logo
+(`logo_render_ok`) means no change. The header used to branch on
+`logo_is_light`, the 60%-white flag this section opens by retiring. And the
+mega grid is columns of grouped pages beside the brand column: a
 flat site gives it a single row of links stranded beside the logo, so
 `build_footer` degrades **both** `mega` and `cta-banner` to `minimal-centered`
 for a site with no grouped page (`menu_builder.has_menu_groups`), the way
@@ -1008,7 +1016,7 @@ brain closes with a CTA — which is the one the complaint came from. The banner
 survives: `chrome-footer-minimal-centered` gained an optional, centred one
 gated on a `has_cta` flag (edited in the builder catalog, then synced), so the
 degrade costs the site nothing. Tests: `test_header_footer.FooterMarkTest` /
-`FlatSiteFooterTest`.
+`FlatSiteFooterTest` / `HeaderBackgroundContrastTest`.
 
 ## The brand mark is not content
 
@@ -2082,7 +2090,21 @@ item brings a cover nobody measured. The selection is the tree's copy after the
 seam, or the panel's next write would undo a sheet. `band-markers.ts` reads the
 same surface model (it mirrored the old "photo or opaque gradient is dark").
 
-Tests: `test_surface_ink.py` (including an every-scheme matrix asserting no
+**A gradient is judged by its worst stop, and a button by its band.** The
+averaged surface still decides WHICH ink, but AA is checked against the stop
+the ink reads worst on (`_gradient_ramp` — the top OPAQUE gradient layer only;
+a translucent sheen is not the surface), and "wrong side" means *under the
+floor* rather than across a 0.5 luminance split, which left mid-tone inks on
+mid-tone bands at ~1.5:1. Where no neutral ink reaches 4.5:1 across a ramp
+(white is 3.7:1 on `#3b82f6`), the ink with the better worst stop wins — a
+limit of the colours, not of the pass. A link whose OPAQUE fill is under 3:1
+against its band (WCAG 1.4.11) is restated by `_restate_button_fill` — the
+theme's button fill when it stands off, else `ink_on(band)` — and its label is
+then re-inked on the new fill; a ghost button keeps no fill and its label
+follows the band. `design_quality` reports `button-blends-band`, and skips a
+button on an unmeasured photo (the painted surface is not serialized).
+
+Tests: `test_contrast_extremes.py`, `test_surface_ink.py` (including an every-scheme matrix asserting no
 hard-coded white, nothing under 3:1 and no section label under 4.5:1 on a known
 surface, whatever form the colour is written in; `BrandInkHeldToItsSurfaceTest`),
 `test_surface_ink_mirror.py` (cross-repo constants, tokens, no literal white in
