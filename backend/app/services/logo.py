@@ -285,17 +285,81 @@ def extract_palette_from_image_bytes(
     )
 
 
-def mark_inks(image_bytes: bytes, *, max_colors: int = 6) -> list[tuple[str, float]]:
-    """The colours a reader actually SEES in the mark, with their shares.
+@dataclass(frozen=True)
+class MarkReading:
+    """What a reader sees of a logo file.
+
+    `inks` are the MARK's colours with their shares; `backdrop` is the colour
+    of an opaque plate the file carries around the mark (a white JPEG
+    background, a filled badge), or None when the mark sits on transparency.
+    The plate is never an ink: white letters must move a light band, a white
+    rectangle must not.
+    """
+
+    inks: list[tuple[str, float]]
+    backdrop: str | None = None
+
+
+# A border is a plate when this share of its pixels is opaque and one colour.
+_BACKDROP_BORDER_SHARE = 0.9
+# Max per-channel distance for "the same colour" as the plate (JPEG noise).
+_BACKDROP_TOLERANCE = 24
+
+
+def _near(a: tuple[int, int, int], b: tuple[int, int, int]) -> bool:
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]), abs(a[2] - b[2])) <= _BACKDROP_TOLERANCE
+
+
+def _backdrop_pixels(
+    pixels: list[tuple[int, int, int, int]], w: int, h: int
+) -> tuple[set[int], tuple[int, int, int] | None]:
+    """Indices of the plate around the mark, and its colour.
+
+    A plate is what the BORDER says: nearly every border pixel opaque and one
+    colour. It is then flood-filled inward from the border through that
+    colour, so a white letter enclosed by the red mark — not connected to the
+    edge through white — stays part of the mark. A transparent border means
+    no plate; every opaque pixel is the mark.
+    """
+    border = (
+        [i for i in range(w)] + [(h - 1) * w + i for i in range(w)]
+        + [r * w for r in range(1, h - 1)] + [r * w + w - 1 for r in range(1, h - 1)]
+    )
+    opaque = [pixels[i][:3] for i in border if pixels[i][3] >= 250]
+    if len(opaque) < _BACKDROP_BORDER_SHARE * len(border):
+        return set(), None
+    ranked = sorted(opaque, key=lambda c: c[0] + c[1] + c[2])
+    plate = ranked[len(ranked) // 2]
+    if sum(1 for c in opaque if _near(c, plate)) < _BACKDROP_BORDER_SHARE * len(border):
+        return set(), None
+    seen: set[int] = set()
+    stack = [i for i in border if pixels[i][3] >= 250 and _near(pixels[i][:3], plate)]
+    seen.update(stack)
+    while stack:
+        i = stack.pop()
+        x, y = i % w, i // w
+        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+            if 0 <= nx < w and 0 <= ny < h:
+                j = ny * w + nx
+                if j not in seen and pixels[j][3] >= 250 and _near(pixels[j][:3], plate):
+                    seen.add(j)
+                    stack.append(j)
+    return seen, plate
+
+
+def read_mark(image_bytes: bytes, *, max_colors: int = 6) -> MarkReading:
+    """The colours a reader actually SEES in the mark, with their shares, and
+    the plate (if any) the file paints behind it.
 
     `extract_palette_from_image_bytes` drops near-white and near-black on
     purpose — it answers "which colours is this brand", and white is nobody's
     brand colour. That makes it the wrong witness for "will this mark vanish
     on a light band": watr's white letters around a red flame extracted as red
     alone, read 6:1 on cream, and shipped white-on-cream. This keeps every
-    visible pixel (alpha >= 50), groups them by median cut and returns
-    ``(hex, share)`` largest first. An SVG counts its declared colours. Any
-    decode failure is ``[]``.
+    visible pixel (alpha >= 50) except the plate, groups them by median cut
+    and returns ``(hex, share)`` largest first. An SVG counts its declared
+    colours (a background <rect> is not told apart). Any decode failure is an
+    empty reading.
     """
     try:
         if _looks_like_svg(image_bytes):
@@ -310,17 +374,24 @@ def mark_inks(image_bytes: bytes, *, max_colors: int = 6) -> list[tuple[str, flo
                     hex_color = _rgb_to_hex(*rgb)
                     counts[hex_color] = counts.get(hex_color, 0) + 1
             total = sum(counts.values())
-            return sorted(
+            return MarkReading(sorted(
                 ((h, n / total) for h, n in counts.items()), key=lambda x: -x[1]
-            ) if total else []
+            ) if total else [])
 
         img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
         w, h = img.size
         if w > 256:
             img = img.resize((256, max(1, int(h * 256 / w))), Image.Resampling.LANCZOS)
-        visible = [(r, g, b) for r, g, b, a in img.getdata() if a >= 50]
+            w, h = img.size
+        pixels = list(img.getdata())
+        plate_idx, plate = _backdrop_pixels(pixels, w, h)
+        visible = [
+            (r, g, b) for i, (r, g, b, a) in enumerate(pixels)
+            if a >= 50 and i not in plate_idx
+        ]
+        backdrop = _rgb_to_hex(*plate) if plate else None
         if not visible:
-            return []
+            return MarkReading([], backdrop)
         flat = Image.new("RGB", (len(visible), 1))
         flat.putdata(visible)
         quantised = flat.quantize(colors=max_colors, method=Image.Quantize.MEDIANCUT)
@@ -330,11 +401,17 @@ def mark_inks(image_bytes: bytes, *, max_colors: int = 6) -> list[tuple[str, flo
             r, g, b = palette_data[idx * 3 : idx * 3 + 3]
             hex_color = _rgb_to_hex(r, g, b)
             inks[hex_color] = inks.get(hex_color, 0) + count
-        return sorted(
-            ((hx, n / len(visible)) for hx, n in inks.items()), key=lambda x: -x[1]
+        return MarkReading(
+            sorted(((hx, n / len(visible)) for hx, n in inks.items()), key=lambda x: -x[1]),
+            backdrop,
         )
     except Exception:  # noqa: BLE001 — a mark we cannot read has no inks
-        return []
+        return MarkReading([])
+
+
+def mark_inks(image_bytes: bytes, *, max_colors: int = 6) -> list[tuple[str, float]]:
+    """The mark's inks alone (see `read_mark`); a plate is never one."""
+    return read_mark(image_bytes, max_colors=max_colors).inks
 
 
 def _to_data_url(image_bytes: bytes, image_format: str) -> str:

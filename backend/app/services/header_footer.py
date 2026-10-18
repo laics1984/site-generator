@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from functools import lru_cache
 from typing import Any
 from urllib.parse import unquote
 from uuid import uuid4
@@ -30,7 +31,7 @@ from app.models.design_manifest import (
     HeaderArchetype,
 )
 from app.services.design_schemes import for_theme
-from app.services.logo import mark_inks
+from app.services.logo import MarkReading, read_mark
 from app.services.menu_builder import has_menu_groups
 from app.services.template_filler import (
     fill_chrome_template,
@@ -715,15 +716,21 @@ _MARK_MIN_CONTRAST = 3.0
 _MARK_MIN_SHARE = 0.10
 
 
-def _mark_inks(brand: BrandIdentity) -> list[tuple[str, float]]:
-    """The mark's visible inks, measured from the logo the brand already
+def _mark_reading(brand: BrandIdentity) -> MarkReading:
+    """What a reader sees of the logo, measured from the file the brand already
     carries (`logo_data_url` is set whenever a logo was extracted), so a
     cached scrape and a brand the frontend posts back are judged the same way
     with no re-crawl. `extracted_palette` cannot answer this: it drops
-    near-white and near-black by design (see `logo.mark_inks`)."""
-    data_url = brand.logo_data_url or ""
+    near-white and near-black by design (see `logo.read_mark`)."""
+    return _reading_of(brand.logo_data_url or "")
+
+
+@lru_cache(maxsize=32)
+def _reading_of(data_url: str) -> MarkReading:
+    # One header and one footer ask a dozen questions of the same file; decode
+    # it once. Callers only read the reading.
     if not data_url.startswith("data:") or "," not in data_url:
-        return []
+        return MarkReading([])
     header, payload = data_url.split(",", 1)
     try:
         raw = (
@@ -732,8 +739,21 @@ def _mark_inks(brand: BrandIdentity) -> list[tuple[str, float]]:
             else unquote(payload).encode("utf-8")
         )
     except (ValueError, binascii.Error):
-        return []
-    return [(h, s) for h, s in mark_inks(raw) if s >= _MARK_MIN_SHARE]
+        return MarkReading([])
+    return read_mark(raw)
+
+
+def _mark_is_plated(brand: BrandIdentity) -> bool:
+    """A logo file that paints its own opaque plate (a white JPEG background, a
+    filled badge) brings its own surface: its mark reads on that plate on any
+    band, so the band never moves for it. Its plate is not white INK — moving a
+    cream bar to dark for it would only frame a white rectangle."""
+    return _mark_reading(brand).backdrop is not None
+
+
+def _mark_inks(brand: BrandIdentity) -> list[tuple[str, float]]:
+    """The mark's significant inks — never its plate."""
+    return [(h, s) for h, s in _mark_reading(brand).inks if s >= _MARK_MIN_SHARE]
 
 
 def _mark_colours(brand: BrandIdentity) -> list[str]:
@@ -752,6 +772,8 @@ def _mark_reads_on(brand: BrandIdentity, band_hex: str) -> bool:
     reads" called that legible. Falls back to the extracted brand palette, and
     with nothing to measure, to the light/dark reading.
     """
+    if _mark_is_plated(brand):
+        return True
     colours = _mark_colours(brand)
     if not colours:
         band_is_dark = _text_for_background(band_hex) == "#ffffff"
@@ -769,6 +791,8 @@ def _mark_dominant_reads_on(brand: BrandIdentity, band_hex: str) -> bool:
     """Whether the mark's largest ink reads — the bar for keeping the logo at
     all. A two-tone mark whose accent is weak on the best band keeps its logo;
     one whose main body vanishes gives way to the wordmark."""
+    if _mark_is_plated(brand):
+        return True
     inks = _mark_inks(brand)
     if inks:
         return _contrast(inks[0][0], band_hex) >= _MARK_MIN_CONTRAST

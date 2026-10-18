@@ -193,6 +193,12 @@ NOT_PROCESS_LOCAL: tuple[tuple[str, str, str], ...] = (
         "Deterministic, a few KB per worker.",
     ),
     (
+        "app.services.header_footer",
+        "_reading_of",
+        "Pure memo of decoding a logo data URL (`logo.read_mark`), keyed by the "
+        "URL itself. Deterministic, no I/O, bounded to 32 small readings.",
+    ),
+    (
         "app.services.template_filler",
         "load_catalog",
         "Pure memo of a file read. Deterministic, so per-worker duplication is "
