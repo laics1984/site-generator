@@ -2996,8 +2996,24 @@ such a crawl found no pages — otherwise the generator silently builds the
 industry template under the brand's name, which reads as "the pages weren't
 scraped".
 
+**Some vendors send no header** and answer 200 with a script challenge.
+Imunify360 WebShield (cPanel hosts; mykiddyland.com, Oct 2026) serves "One
+moment, please..." with an inline check that probes `navigator.webdriver`,
+headless user agents and plugin spoofing, so a headless browser fails it every
+time. It used to surface as "Could not extract enough text", which sent the
+operator looking for a scraper bug. `polite.is_challenge_page` is the body twin
+of `is_bot_challenge`: a vendor's **structural** tokens (the field names its
+script posts — `wsidchk` + `failedChecks`), all inside a `<script>`, on a page
+with under 200 characters of visible text. Never the visible wording, which any
+page could say, and never a token in copy. It runs on the httpx body, on the
+rendered page in `browser.rendered_page`, and in `_parse_rendered_html` before
+the 80-character error; a challenged ENTRY page stops at once rather than
+launching Chromium to be challenged again. Add a vendor as one tuple in
+`_CHALLENGE_PAGE_MARKERS`, from a captured page.
+
 `stop_reason` is mirrored as `CrawlStopReason` in `frontend/src/lib/types.ts` —
-change both. Tests: `test_bot_challenge.py`, `test_crawl_pool.CrawlStopReasonTest`,
+change both. Tests: `test_bot_challenge.py` (incl. `ChallengePageTest`, fixture
+`tests/fixtures/challenge_imunify.html`), `test_crawl_pool.CrawlStopReasonTest`,
 `test_crawl_job_reuse.test_a_crawl_the_host_refused_is_never_reused`.
 
 ## Record pages: plan once, fill many

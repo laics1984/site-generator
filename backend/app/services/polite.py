@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import AsyncIterator
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +191,56 @@ RETRIABLE_STATUS_CODES: frozenset[int] = frozenset({429, 503, 502, 504})
 _CHALLENGE_SIGNATURES: tuple[tuple[str, str], ...] = (
     ("cf-mitigated", "challenge"),
 )
+
+
+# Bot-protection layers that answer 200 with a challenge page and NO header to
+# say so. Matched on STRUCTURAL tokens the vendor's challenge script uses —
+# form field names, never the visible copy ("One moment, please...", which any
+# page could say) — and only on a page with almost no visible text, so a real
+# page that happens to mention a token is never mistaken for one. Every token in
+# an entry must appear inside a <script>. Add a vendor as one tuple.
+_CHALLENGE_PAGE_MARKERS: tuple[tuple[str, ...], ...] = (
+    # Imunify360 WebShield (cPanel hosts): its JS check posts `wsidchk` and
+    # reports `failedChecks` (webdriver / headless / spoofing probes).
+    # mykiddyland.com, Oct 2026.
+    ("wsidchk", "failedChecks"),
+)
+# A challenge interstitial says one sentence; a real page says more than this.
+_CHALLENGE_PAGE_MAX_TEXT = 200
+
+_SCRIPT_RE = re.compile(r"<script\b[^>]*>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
+_NON_TEXT_RE = re.compile(
+    r"<(script|style|noscript|template)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def is_challenge_page(html: str | None) -> bool:
+    """True when `html` is a bot-protection challenge served without a header.
+
+    The body twin of `is_bot_challenge`, for vendors that document no header.
+    Same contract: detection only — the remedy is the site owner allowlisting
+    the crawler, never getting past the check.
+    """
+    if not html:
+        return False
+    scripts = "\n".join(_SCRIPT_RE.findall(html))
+    if not scripts or not any(
+        all(token in scripts for token in marker) for marker in _CHALLENGE_PAGE_MARKERS
+    ):
+        return False
+    text = " ".join(_TAG_RE.sub(" ", _NON_TEXT_RE.sub(" ", html)).split())
+    return len(text) < _CHALLENGE_PAGE_MAX_TEXT
+
+
+def challenge_message(url: str) -> str:
+    """What the operator is told when a host answers with a challenge page."""
+    host = urlparse(url).hostname or url
+    return (
+        f"{host} answered with a bot-verification page instead of the site (its "
+        "firewall blocks automated browsers). Ask the site owner to allowlist the "
+        "crawler, try again later, or paste the content into the paste box."
+    )
 
 
 def is_bot_challenge(headers: Mapping[str, str]) -> bool:

@@ -106,7 +106,12 @@ from app.services.section_extraction import (
     is_decorative_image as _is_decorative_image,
 )
 from app.services.platform_routes import is_template_page_path
-from app.services.polite import RETRIABLE_STATUS_CODES, get_politeness
+from app.services.polite import (
+    RETRIABLE_STATUS_CODES,
+    challenge_message,
+    get_politeness,
+    is_challenge_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2346,6 +2351,8 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
 
     extracted_text = _extract_body_text(html, soup)
 
+    if require_text and is_challenge_page(html):
+        raise ScrapeError(challenge_message(final_url), status=403, challenged=True)
     if require_text and len(extracted_text.strip()) < 80:
         raise ScrapeError(
             "Could not extract enough text content from that page. "
@@ -3069,6 +3076,10 @@ async def scrape_url(
         final_url: str
         html: str
         fast_entry = await try_fast_fetch(url, timeout_seconds=10.0)
+        if getattr(fast_entry, "reason", None) == FastFetchSkipReason.CHALLENGED:
+            # The host challenged us; a headless render is challenged too, so
+            # stop here rather than spend a Chromium launch learning it again.
+            raise ScrapeError(challenge_message(url), status=403, challenged=True)
         if isinstance(fast_entry, FastFetchResult):
             final_url, html = fast_entry.final_url, fast_entry.html
             logger.info("entry httpx-fast for %s", url)

@@ -24,7 +24,7 @@ import trafilatura
 from bs4 import BeautifulSoup
 
 from app.config import settings
-from app.services.polite import is_bot_challenge
+from app.services.polite import is_bot_challenge, is_challenge_page
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,12 @@ async def try_fast_fetch(
     if not html:
         return FastFetchSkipped(
             reason=FastFetchSkipReason.TOO_SHORT, http_status=response.status_code
+        )
+    # A challenge served as 200 with no header: the browser gets it too, so it
+    # is a stop, not a thin page to retry through Playwright.
+    if is_challenge_page(html):
+        return FastFetchSkipped(
+            reason=FastFetchSkipReason.CHALLENGED, http_status=response.status_code
         )
 
     # The substance judgment is pure CPU (trafilatura + several lxml parses) —

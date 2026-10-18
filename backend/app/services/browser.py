@@ -30,7 +30,7 @@ from typing import AsyncIterator, NamedTuple
 from playwright.async_api import async_playwright
 
 from app.config import settings
-from app.services.polite import is_bot_challenge
+from app.services.polite import challenge_message, is_bot_challenge, is_challenge_page
 from app.services.url_guard import UnsafeUrlError, assert_public_url
 
 logger = logging.getLogger(__name__)
@@ -182,6 +182,8 @@ async def rendered_page(context, url: str, *, timeout_ms: int) -> AsyncIterator:
             await page.wait_for_load_state("networkidle", timeout=3000)
         except Exception:
             pass
+        if is_challenge_page(await page.content()):
+            raise RenderError(challenge_message(url), status=403, challenged=True)
         yield page
     finally:
         await page.close()
