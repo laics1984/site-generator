@@ -312,6 +312,38 @@ def test_explicit_solid_fills_keep_readable_copy_even_on_a_dark_theme(fill):
     assert contrast(_to_hex(_parse_color(label.styles["color"],t)[0]),fill) >= 4.5
 
 
+def test_a_gradient_panel_inside_a_raw_band_is_inked_for_the_panel():
+    """watr's CTA: the section paints a raw-hex band tint, the `cta-banner`
+    panel inside it a raw-hex gradient that the pass retokenises to the dark
+    surface-inverse. The band's fixed surface used to leak through the panel,
+    so the copy took dark ink for the cream band — 1.03:1 on the panel."""
+    import re
+    from app.services.palette_styles import bind_theme_styles, rendering_theme
+    t = apply_creative_palette(build_theme("#b91c1c", mood="friendly", industry="nonprofit"),
+                               {"primary": "#b91c1c", "secondary": "#2b2620",
+                                "accent": "#d97706", "surface": "#f5ece3"})
+    rendered = rendering_theme(t)
+    heading = BuilderElement(id="h", name="Heading", type="text",
+                             styles={"color": "var(--builder-color-ink-light, #ffffff)"},
+                             content=BuilderElementContent(innerText="Ready to succeed"))
+    body = BuilderElement(id="b", name="Body", type="text", styles={"color": "#fef9f5"},
+                          content=BuilderElementContent(innerText="Join us."))
+    panel = BuilderElement(id="p", name="CTA Banner", type="container", content=[heading, body],
+                           styles={"background": f"linear-gradient(135deg, {rendered.palette.secondary}, {t.palette.primary})"})
+    section = BuilderElement(id="s", name="CTA - Banner", type="container", content=[panel],
+                             styles={"backgroundColor": "#eedfd0"})
+    bind_theme_styles([section], t, rendered)
+    derived = derive(t.palette.model_dump())
+
+    def live(value):  # what the renderer paints: the token's derived value
+        m = re.search(r"var\(--builder-color-([a-z0-9-]+)", value)
+        return derived[m.group(1)] if m else value
+
+    panel_fill = live(panel.styles["background"])
+    for node in (heading, body):
+        assert contrast(live(node.styles["color"]), panel_fill) >= 4.5, node.styles["color"]
+
+
 @pytest.mark.asyncio
 async def test_model_failure_uses_one_complete_validated_fallback(monkeypatch):
     from app.services.llm import LlmError

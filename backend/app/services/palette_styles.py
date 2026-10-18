@@ -138,13 +138,19 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
             # a photo or not: a solid hero button is inked for the BUTTON, not
             # the photo's scrim (white label on a white button otherwise).
             opaque = opaque_surface_of(node, rendered)
+            flat = (not known_fill and not uses_button and "var(" not in str(own or "")
+                    and "gradient(" not in str(styles.get("backgroundImage") or own))
             if opaque:
                 photo = False
-                if not known_fill and not uses_button and "var(" not in str(own or "") and "gradient(" not in str(styles.get("backgroundImage") or own):
-                    fixed_surface = opaque
+                # The node's own fill replaces whatever its parent fixed: a
+                # gradient panel inside a raw-hex band was inked for the BAND
+                # (watr's CTA: dark copy for #eedfd0 on a near-black panel).
+                fixed_surface = opaque if flat else None
             painted = opaque or (None if photo else surface_of(node, rendered))
             if painted and not known_fill and not uses_button:
                 surface = "surface-inverse" if luminance(painted) < .35 else "surface"
+                if not flat:
+                    fixed_surface = None
         raw_ink = styles.get("color")
         node.styles = {key: css(value, key, photo, surface) for key, value in styles.items()}
         # Runtime blocks (menus/forms) inherit the pair for their actual band,

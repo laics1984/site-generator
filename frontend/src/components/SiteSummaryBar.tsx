@@ -115,6 +115,7 @@ export function SiteSummaryBar({
             Publish
           </Button>
           <OverflowMenu
+            site={site}
             onStartOver={onStartOver}
             onExport={onExport}
             exportBusy={exportBusy}
@@ -126,12 +127,26 @@ export function SiteSummaryBar({
   )
 }
 
+/** Saves the generated site exactly as the preview holds it, so a defect seen
+ * here can be audited offline (backend/scripts/audit_site_inks.py). */
+function downloadSiteJson(site: GeneratedSite) {
+  const blob = new Blob([JSON.stringify(site, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${(site.site_name || 'site').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-site.json`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 function OverflowMenu({
+  site,
   onStartOver,
   onExport,
   exportBusy,
   disabled,
 }: {
+  site: GeneratedSite
   onStartOver: () => void
   onExport: () => void
   exportBusy: boolean
@@ -191,6 +206,20 @@ function OverflowMenu({
             {exportBusy ? 'Preparing document…' : 'Export content as .docx'}
             <span className="mt-0.5 block text-[11px] text-ink-faint">
               Edit the brief offline, then re-upload it in Document mode.
+            </span>
+          </button>
+          <button
+            role="menuitem"
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              downloadSiteJson(site)
+            }}
+            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-ink-soft transition hover:bg-surface-sunken hover:text-ink"
+          >
+            Download site JSON
+            <span className="mt-0.5 block text-[11px] text-ink-faint">
+              The generated tree as-is, for debugging a layout or colour.
             </span>
           </button>
           <button

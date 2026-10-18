@@ -2115,7 +2115,18 @@ then re-inked on the new fill; a ghost button keeps no fill and its label
 follows the band. `design_quality` reports `button-blends-band`, and skips a
 button on an unmeasured photo (the painted surface is not serialized).
 
-Tests: `test_contrast_extremes.py`, `test_surface_ink.py` (including an every-scheme matrix asserting no
+**On an AI palette the last ink pass is `palette_styles.bind_theme_styles`**, which runs
+AFTER `enforce_text_contrast` and rebinds every colour to colour-system v2 roles. A parent
+with a raw-hex fill pins its children's `fixed_surface`; a child that paints its OWN fill
+must replace it, or a `cta-banner` panel (retokenised to the dark `surface-inverse`) inside a
+raw band tint inks its copy for the cream band — watr shipped 1.03:1. Offline builds never
+reach this pass (no LLM, no `apply_creative_palette`), so the every-scheme matrices above
+cannot see it. `scripts/audit_site_inks.py <site.json>` judges a downloaded site (preview
+overflow menu → "Download site JSON") the way the renderer paints it — v2 tokens through
+`color_system.derive`, inherited `color` followed — and lists copy under AA, buttons under 3:1,
+and tokens the generator and the renderer resolve differently.
+
+Tests: `test_contrast_extremes.py`, `test_ai_palette.test_a_gradient_panel_inside_a_raw_band_is_inked_for_the_panel`, `test_surface_ink.py` (including an every-scheme matrix asserting no
 hard-coded white, nothing under 3:1 and no section label under 4.5:1 on a known
 surface, whatever form the colour is written in; `BrandInkHeldToItsSurfaceTest`),
 `test_surface_ink_mirror.py` (cross-repo constants, tokens, no literal white in
