@@ -1217,33 +1217,40 @@ def _radius_px(styles: dict[str, Any]) -> float:
     return float(m.group(1)) if m else 0.0
 
 
-def _lone_inset_panel(node: BuilderElement) -> bool:
-    """True when exactly ONE of `node`'s children is a rounded, self-filled
-    container — the inset-panel shape. A card GRID never matches: its cards are
+def _lone_inset_panel(node: BuilderElement) -> BuilderElement | None:
+    """The one rounded, self-filled container among `node`'s children — the
+    inset-panel shape — or None. A card GRID never matches: its cards are
     self-filled siblings, so the count is >1. Buttons never match either: they
     are `link`s, not containers."""
     children = node.content if isinstance(node.content, list) else []
     surfaced = [
         c for c in children if c.type == "container" and _is_own_surface(c.styles or {})
     ]
-    return len(surfaced) == 1 and _radius_px(surfaced[0].styles or {}) >= _PANEL_MIN_RADIUS_PX
+    if len(surfaced) == 1 and _radius_px(surfaced[0].styles or {}) >= _PANEL_MIN_RADIUS_PX:
+        return surfaced[0]
+    return None
 
 
-def _has_inset_panel(node: BuilderElement, depth: int = 0) -> bool:
-    """Whether a section is panelled (see `_lone_inset_panel`). Descends only
-    through fill-less wrapper containers — a template may centre its panel in a
-    plain max-width wrapper — and stops at the first element that paints
-    something, so nothing nested inside a panel or card counts."""
-    if _lone_inset_panel(node):
-        return True
-    if depth >= 2:
-        return False
+def inset_panel_of(node: BuilderElement, depth: int = 0) -> BuilderElement | None:
+    """The card a panelled section's content sits in (see `_lone_inset_panel`),
+    or None. Descends only through fill-less wrapper containers — a template may
+    centre its panel in a plain max-width wrapper — and stops at the first
+    element that paints something, so nothing nested inside a panel or card
+    counts."""
+    panel = _lone_inset_panel(node)
+    if panel is not None or depth >= 2:
+        return panel
     children = node.content if isinstance(node.content, list) else []
-    return any(
-        _has_inset_panel(c, depth + 1)
-        for c in children
-        if c.type == "container" and not _is_own_surface(c.styles or {})
-    )
+    for c in children:
+        if c.type == "container" and not _is_own_surface(c.styles or {}):
+            found = inset_panel_of(c, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _has_inset_panel(node: BuilderElement) -> bool:
+    return inset_panel_of(node) is not None
 
 
 def _recolor_text_for_dark(
@@ -1630,9 +1637,7 @@ def polish_inset_panels(sections: list[BuilderElement]) -> None:
     the fill it actually sits on.
     """
     for section in sections:
-        if not _has_inset_panel(section):
-            continue
-        panel = _find_panel(section)
+        panel = inset_panel_of(section)
         if panel is None:
             continue
         st = dict(panel.styles or {})
@@ -1649,24 +1654,6 @@ def polish_inset_panels(sections: list[BuilderElement]) -> None:
                 "marginRight": "auto",
                 "textWrap": "balance",
             }
-
-
-def _find_panel(node: BuilderElement, depth: int = 0) -> BuilderElement | None:
-    """The inset panel `_has_inset_panel` matched (same walk, returns the node)."""
-    children = node.content if isinstance(node.content, list) else []
-    surfaced = [
-        c for c in children if c.type == "container" and _is_own_surface(c.styles or {})
-    ]
-    if len(surfaced) == 1 and _radius_px(surfaced[0].styles or {}) >= _PANEL_MIN_RADIUS_PX:
-        return surfaced[0]
-    if depth >= 2:
-        return None
-    for child in children:
-        if child.type == "container" and not _is_own_surface(child.styles or {}):
-            found = _find_panel(child, depth + 1)
-            if found is not None:
-                return found
-    return None
 
 
 def _fill_is_dark(styles: dict[str, Any]) -> bool:

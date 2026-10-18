@@ -396,9 +396,10 @@ class ChildcareDividerTest(unittest.TestCase):
         return [
             BuilderElement(
                 name=name, type="section",
-                styles={"backgroundColor": "#ffffff", "width": "100%"}, content=[],
+                styles={"backgroundColor": bg, "width": "100%"}, content=[],
             )
-            for name in ("Hero", "Features", "CTA")
+            # Two colours, or there is no seam to shape.
+            for name, bg in (("Hero", "#ffffff"), ("Features", "#fdf2f8"), ("CTA", "#ffffff"))
         ]
 
     def test_mood_decides_without_a_scheme(self):

@@ -133,12 +133,16 @@ from app.services.section_content import (
     block_to_section,
     enforce_text_contrast,
     hero_scroll_anchor,
+    inset_panel_of,
     band_of_surface,
     painted_band,
     painted_surface_of,
     section_visual_input_for,
     style_whatsapp_links,
     surface_of,
+    _paints_its_own_surface,
+    _parse_color,
+    _to_hex,
 )
 from app.services.template_filler import PhotoComposition, fill_template
 from app.services.image_styling import (
@@ -963,6 +967,9 @@ def _boundary_edge(
     - both sides paint one → no flat fill can match either, so no divider (a
       fill would land as a stripe of unrelated colour between the two — the
       artefact this rule exists to prevent);
+    - neither does, and both are one colour → no divider: a wedge filled with
+      the colour it cuts into is invisible (a card section takes its
+      neighbour's backdrop, `blend_panelled_sections`);
     - neither does → ``preferred`` picks the carrier, keeping the hero's bottom
       edge and the CTA's top edge where they have always been.
     """
@@ -971,6 +978,10 @@ def _boundary_edge(
     rich_lower = _section_surface(sections[lower]) != "flat"
     if rich_upper and rich_lower:
         return None
+    if not rich_upper and not rich_lower and (
+        _section_edge_color(sections[upper]) == _section_edge_color(sections[lower])
+    ):
+        return None  # one colour both sides: an edge would be invisible geometry
     if rich_upper:
         return (upper, "bottom", lower)
     if rich_lower:
@@ -1085,6 +1096,52 @@ def apply_section_dividers(
             top=edge if side == "top" else (existing.top if existing else None),
             bottom=edge if side == "bottom" else (existing.bottom if existing else None),
         )
+
+
+# A card section's backdrop must still let the card read as a card.
+_PANEL_BACKDROP_MIN_CONTRAST = 1.5
+
+
+def blend_panelled_sections(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """A section whose content is ONE floating card (`inset_panel_of`) takes its
+    neighbour's background, so the card sits on the page instead of on a band of
+    its own. watr's CTA card shipped inside a cream band tint between two white
+    sections, with a white wedge cut into its top: a stripe that framed nothing.
+
+    The backdrop is the section above's flat colour, else the section below's,
+    else the page background — the first the card stands off (so a dark card
+    never melts into a dark hero band). Run after the band passes, which paint
+    the stripe, and before the dividers, which then see two matching sides and
+    put no seam between them. A section that paints its own photo or gradient
+    keeps it; nothing changes when no backdrop lets the card read. In place."""
+    for index, section in enumerate(sections):
+        panel = inset_panel_of(section)
+        if panel is None:
+            continue
+        styles = section.styles or {}
+        decorated = getattr(section, "backgroundTexture", None) not in (None, "flat")
+        if section.painted_surface or (_paints_its_own_surface(section) and not decorated):
+            continue
+        card = surface_of(panel, theme)
+        if card is None:
+            continue
+        candidates = [
+            _section_edge_color(sections[i])
+            for i in (index - 1, index + 1)
+            if 0 <= i < len(sections)
+        ] + [theme.page.background]
+        for value in candidates:
+            parsed = _parse_color(value, theme) if value else None
+            if parsed is None or parsed[1] < 0.999:
+                continue
+            if _contrast(card, _to_hex(parsed[0])) < _PANEL_BACKDROP_MIN_CONTRAST:
+                continue
+            _flatten_section_texture(section)
+            new_styles = dict(section.styles or {})
+            new_styles["backgroundColor"] = value
+            new_styles.pop("borderTop", None)
+            section.styles = new_styles
+            break
 
 
 def _section_edge_color(section: BuilderElement) -> str | None:
@@ -5425,6 +5482,10 @@ async def plan_to_site(
         # recolour doesn't overwrite them; each is held to AA on its own band.
         if page_scheme.heading_ink == "per-section-accent":
             apply_section_title_inks(elements, section_title_inks(theme))
+        # A card section floats on its neighbour's background, not on a band of
+        # its own — after the band passes (which paint that band) and before the
+        # dividers, so they see two matching sides and add no seam.
+        blend_panelled_sections(elements, theme)
         # Shaped section dividers — the picture section carries the edge and the
         # fill is the flat neighbour's exact colour; a boundary with a picture on
         # both sides gets no divider at all, since no flat fill could match it.

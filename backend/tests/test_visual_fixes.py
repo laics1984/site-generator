@@ -170,8 +170,10 @@ class DividerMeshTest(unittest.TestCase):
     def test_shaped_divider_neighbours_are_flat_and_seam_is_solid(self):
         theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
         page_bg = theme.page.background
+        # A seam needs two colours: one colour on both sides is no edge at all.
+        surface = theme.palette.surface
         hero = self._section("Hero", page_bg)
-        content = self._section("Features", page_bg)  # the revealed neighbour
+        content = self._section("Features", surface)  # the revealed neighbour
         cta = self._section("CTA", page_bg)
 
         # Real build order: modernize tags textures, then dividers enforce flat.
@@ -192,11 +194,12 @@ class DividerMeshTest(unittest.TestCase):
         # accent must land on the only non-neighbour band (index 2).
         theme = build_theme("#2563eb").model_copy(update={"background_strategy": "mesh"})
         page_bg = theme.page.background
+        surface = theme.palette.surface  # alternating bands: each seam is real
         secs = [
             self._section("Hero", page_bg),
-            self._section("Features", page_bg),
+            self._section("Features", surface),
             self._section("Services", page_bg),
-            self._section("About", page_bg),
+            self._section("About", surface),
             self._section("CTA", page_bg),
         ]
 
@@ -216,7 +219,7 @@ class DividerMeshTest(unittest.TestCase):
         theme = build_theme("#2563eb").model_copy(update={"background_strategy": "flat"})
         page_bg = theme.page.background
         hero = self._section("Hero", page_bg)
-        revealed = self._section("Revealed", page_bg)
+        revealed = self._section("Revealed", theme.palette.surface)
 
         modernize_sections([hero, revealed], theme)
         apply_section_dividers([hero, revealed], "modern")

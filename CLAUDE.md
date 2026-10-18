@@ -250,6 +250,17 @@ account into the manifest's `scheme` decision. `resolve_hero_height` lives here.
   never fired when the repeat was the mood's top family.
 - **The zigzag is the scheme's** (`alternate_splits`); restrained languages hold
   one side.
+- **A card section floats on its neighbour's background**
+  (`schema_builder.blend_panelled_sections`, after the band passes, before the
+  dividers). A section whose content is ONE rounded, self-filled card
+  (`section_content.inset_panel_of`, structural — never a template name) takes
+  the flat colour of the section above, else below, else the page — the first
+  the card stands off (1.5:1, so a dark card never melts into a dark band).
+  watr's CTA card shipped on a cream band tint between two white sections,
+  with a white wedge cut into it: a stripe that framed nothing. Full-width
+  bands keep their colour; that alternation is the rhythm. And a boundary
+  between two flat sections of ONE colour gets no shaped divider
+  (`_boundary_edge`): a wedge filled with the colour it cuts into is invisible.
 - `ux_audit.audit_design` flags 3+ consecutive body sections of one
   `section_content.visual_weight` (advisory, `rhythm-monotone`).
   `design_fingerprint.template_id_of` is the one "which template built this".
