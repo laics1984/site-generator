@@ -34,6 +34,7 @@ from pydantic.json_schema import SkipJsonSchema
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
 from app.models.facebook_photos import FacebookPhotoReview
+from app.services.asset_fetch import get_asset
 from app.services.url_guard import is_public_url
 
 if TYPE_CHECKING:
@@ -370,13 +371,13 @@ async def _fetch_image_bytes(
         return None
     try:
         if client is not None:
-            response = await client.get(url)
+            response = await get_asset(client, url)
             response.raise_for_status()
         else:
             async with httpx.AsyncClient(
                 timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
             ) as owned:
-                response = await owned.get(url)
+                response = await get_asset(owned, url)
                 response.raise_for_status()
     except httpx.HTTPError:
         logger.debug("Vision image fetch failed: %s", url[:120])

@@ -170,6 +170,13 @@ async def get_politeness(
         return instance
 
 
+def existing_politeness(host: str) -> HostPoliteness | None:
+    """The host's politeness if a crawl registered it, else None — never creates
+    one. Lets a file download share the crawl's budget for the site it is
+    crawling without throttling every CDN it happens to touch."""
+    return _registry.get(host)
+
+
 def reset_politeness(host: str | None = None) -> None:
     """Clear a host's state (or all hosts). Mainly used by tests and on
     explicit user request via UI ('Reset crawl politeness')."""

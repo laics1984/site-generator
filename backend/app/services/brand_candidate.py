@@ -21,16 +21,12 @@ import httpx
 
 from app.config import settings
 from app.models.brand import BrandIdentity
+from app.services.asset_fetch import get_asset
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.logo_extraction import LogoCandidate, is_renderable
 from app.services.url_guard import is_public_url
 
 logger = logging.getLogger(__name__)
-
-# Plain identifying UA for asset fetches — these endpoints aren't WAF-gated the
-# way page HTML is, so there's no reason to present as Chrome.
-_ASSET_USER_AGENT = "WebtreeSiteGenerator/0.2 (+contact: hello@example.com)"
-
 
 async def build_brand_candidate(
     site_name: str | None,
@@ -70,9 +66,8 @@ async def build_brand_candidate(
             async with httpx.AsyncClient(
                 timeout=settings.robots_fetch_timeout_seconds,
                 follow_redirects=True,
-                headers={"User-Agent": _ASSET_USER_AGENT},
             ) as client:
-                resp = await client.get(logo_url)
+                resp = await get_asset(client, logo_url)
                 resp.raise_for_status()
                 image_bytes = resp.content
         except httpx.HTTPError as exc:

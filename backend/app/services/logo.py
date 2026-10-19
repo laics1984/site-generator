@@ -33,6 +33,8 @@ from dataclasses import dataclass
 import httpx
 from PIL import Image
 
+from app.services.asset_fetch import get_asset
+
 logger = logging.getLogger(__name__)
 
 
@@ -442,12 +444,10 @@ async def fetch_logo_from_url(url: str) -> bytes | None:
         f"{base}/favicon.png",
         f"{base}/favicon.ico",
     ]
-    async with httpx.AsyncClient(
-        timeout=10.0, follow_redirects=True, headers={"User-Agent": "WebtreeSiteGen/0.1"}
-    ) as client:
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
         for candidate in candidates:
             try:
-                r = await client.get(candidate)
+                r = await get_asset(client, candidate)
                 if r.status_code == 200 and r.content:
                     ctype = r.headers.get("content-type", "")
                     if "image" in ctype or candidate.endswith((".ico", ".png", ".jpg")):

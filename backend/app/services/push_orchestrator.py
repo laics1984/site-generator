@@ -60,6 +60,7 @@ from app.models.builder_schema import (
     PageSeo,
 )
 from app.models.content_blocks import ContentCollections
+from app.services.asset_fetch import get_asset
 from app.services.cms_client import CmsApiError, CmsClient
 from app.services.cms_sync import (
     ExistingPage,
@@ -1848,10 +1849,10 @@ async def _resolve_to_bytes(
     # https URL: fetch (with the caller's pooled client when provided)
     try:
         if client is not None:
-            resp = await client.get(src)
+            resp = await get_asset(client, src)
         else:
             async with httpx.AsyncClient(timeout=20, follow_redirects=True) as one_shot:
-                resp = await one_shot.get(src)
+                resp = await get_asset(one_shot, src)
         if resp.status_code >= 400:
             raise _ResolveSkip(f"http {resp.status_code}")
     except httpx.HTTPError as exc:
@@ -1878,7 +1879,7 @@ async def _resolve_document_to_bytes(
     """
     await _assert_fetchable(href)
     try:
-        resp = await client.get(href)
+        resp = await get_asset(client, href)
         if resp.status_code >= 400:
             raise _ResolveSkip(f"http {resp.status_code}")
     except httpx.HTTPError as exc:

@@ -421,7 +421,7 @@ class _FakeClient:
     async def __aexit__(self, *exc):
         return False
 
-    async def get(self, _url):
+    async def get(self, _url, **_kwargs):
         return _FakeResponse(self._content)
 
 

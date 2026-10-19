@@ -648,7 +648,7 @@ class _FakeClient:
     def __init__(self, response: _FakeResponse):
         self._response = response
 
-    async def get(self, _href: str) -> _FakeResponse:
+    async def get(self, _href: str, **_kwargs) -> _FakeResponse:
         return self._response
 
 
