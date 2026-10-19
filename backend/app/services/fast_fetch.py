@@ -51,7 +51,7 @@ _SUBSTANTIVE_TEXT_THRESHOLD = 500
 
 @dataclass
 class FastFetchResult:
-    """Output of a successful httpx fetch."""
+    """Retrieved HTML, from HTTP or the opt-in verification fallback."""
 
     final_url: str
     html: str
@@ -125,6 +125,28 @@ async def try_fast_fetch(
             reason=FastFetchSkipReason.CHALLENGED, http_status=response.status_code
         )
 
+    # Narrow opt-in: ordinary browser execution for known Imunify360 markup,
+    # never a general retry for errors, rate limits or authentication failures.
+    if (
+        settings.playwright_fallback_enabled
+        and response.status_code in {200, 403, 503}
+        and ("html" in response.headers.get("content-type", "").lower()
+             or response.text.lstrip().startswith("<"))
+        and is_challenge_page(response.text)
+    ):
+        from app.services.browser_verification import fetch_verified_html
+
+        result = await fetch_verified_html(str(response.url))
+        if result.html is not None:
+            return FastFetchResult(
+                final_url=result.final_url, html=result.html, http_status=result.http_status
+            )
+        return FastFetchSkipped(
+            reason=FastFetchSkipReason.CHALLENGED,
+            http_status=response.status_code,
+            detail=result.failure,
+        )
+
     if response.status_code >= 400:
         return FastFetchSkipped(
             reason=FastFetchSkipReason.HTTP_ERROR, http_status=response.status_code
@@ -143,8 +165,7 @@ async def try_fast_fetch(
         return FastFetchSkipped(
             reason=FastFetchSkipReason.TOO_SHORT, http_status=response.status_code
         )
-    # A challenge served as 200 with no header: the browser gets it too, so it
-    # is a stop, not a thin page to retry through Playwright.
+    # Disabled/unsupported verification retains the established stop behavior.
     if is_challenge_page(html):
         return FastFetchSkipped(
             reason=FastFetchSkipReason.CHALLENGED, http_status=response.status_code

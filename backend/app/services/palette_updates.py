@@ -42,6 +42,13 @@ def palette_patch(site: GeneratedSite, palette: CreativePalette) -> PalettePatch
     original = current_theme(site)
     updated = apply_creative_palette(original, palette)
     styles = merge_palette_styles(site.builder_styles or {}, original, updated)
+    # Compound backgrounds follow the live palette, so their foregrounds must
+    # be remeasured too. The existing cssVars channel avoids rewriting pages or
+    # expanding the color-only patch contract.
+    from app.services.palette_styles import site_surface_foregrounds
+    surface_vars = site_surface_foregrounds(site, updated, builder_styles=styles)
+    if surface_vars:
+        styles["cssVars"] = {**styles.get("cssVars", {}), **surface_vars}
     return PalettePatch(theme=updated, builder_styles=styles,
                         primary_color=updated.palette.primary, secondary_color=updated.palette.secondary)
 

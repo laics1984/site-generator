@@ -50,7 +50,7 @@ from app.models.content_blocks import (
     VideoEmbed,
 )
 from app.services.brand_candidate import build_brand_candidate
-from app.services.browser import RenderError, browser_context, rendered_page
+from app.services.browser import RenderError, lazy_browser_context, rendered_page
 from app.services.site_url import crawl_key, is_same_site, rebase_to_origin
 from app.services.source_outline import text_blocks
 from app.services.source_preview import ImageCandidate
@@ -2809,10 +2809,8 @@ async def _crawl_extra_pages(
                     logger.info("crawl httpx-parse failed %s: %s", url, exc)
                     # Fall through to Playwright
 
-            # A bot challenge is the host's verdict on this client, not on this
-            # page: a headless render is challenged too, so falling through to
-            # Playwright only spends a 3-5s render to fail again and dig the
-            # client's bot score deeper.
+            # Verification was disabled, unsupported or unsuccessful at the
+            # HTTP boundary. Do not launch another browser attempt here.
             if isinstance(fast, FastFetchSkipped) and fast.reason == FastFetchSkipReason.CHALLENGED:
                 _record_challenge(url)
                 return depth, None
@@ -3070,15 +3068,15 @@ async def scrape_url(
             status=403,
         )
 
-    async with browser_context() as context:
+    async with lazy_browser_context() as context:
         # Try httpx-first for the entry too — same speed-win as for crawl
         # pages. Only spin up the Chromium tab when we actually need it.
         final_url: str
         html: str
         fast_entry = await try_fast_fetch(url, timeout_seconds=10.0)
         if getattr(fast_entry, "reason", None) == FastFetchSkipReason.CHALLENGED:
-            # The host challenged us; a headless render is challenged too, so
-            # stop here rather than spend a Chromium launch learning it again.
+            # The HTTP boundary already decided verification is unavailable
+            # or failed. Keep the existing stop contract without a second try.
             raise ScrapeError(challenge_message(url), status=403, challenged=True)
         if isinstance(fast_entry, FastFetchResult):
             final_url, html = fast_entry.final_url, fast_entry.html
@@ -3211,7 +3209,7 @@ async def extend_crawl(
     except UnsafeUrlError as exc:
         raise ScrapeError(str(exc), status=400) from exc
 
-    async with browser_context() as context:
+    async with lazy_browser_context() as context:
         outcome = await _crawl_extra_pages(
             context,
             entry_final_url=entry_url,

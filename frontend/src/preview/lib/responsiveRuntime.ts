@@ -438,7 +438,20 @@ export function getResponsiveNodeStyles(
     if (!hasDeviceOverride('minHeight')) mergedStyles.minHeight = '0px'
   }
 
-  if (hasFixedPixelWidth && !isRootSection && !isBrandLogoElement && !isHeaderImage) {
+  // Fixed circular number badges are decorations, not fluid layout boxes.
+  // Widening their 44px mobile / 48px tablet square to 100% turns them into
+  // capsules. Preserve the authored square while keeping ordinary cards fluid.
+  const isFixedCircularBadge =
+    type === 'container' &&
+    mergedStyles.display === 'inline-flex' &&
+    widthPx !== null && widthPx > 0 && widthPx <= canvasWidth &&
+    parsePixelValue(mergedStyles.height) === widthPx &&
+    (
+      mergedStyles.borderRadius === '50%' ||
+      (parsePixelValue(mergedStyles.borderRadius) ?? 0) >= widthPx / 2
+    )
+
+  if (hasFixedPixelWidth && !isRootSection && !isBrandLogoElement && !isHeaderImage && !isFixedCircularBadge) {
     mergedStyles.width = '100%'
     mergedStyles.maxWidth = '100%'
     mergedStyles.left = '0'

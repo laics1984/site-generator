@@ -32,6 +32,184 @@ def theme(palette=PALETTES[0], scheme="light"):
     return apply_creative_palette(build_theme(palette["primary"], color_scheme=scheme), CreativePalette(**palette))
 
 
+def _surface_copy(color="var(--builder-color-on-primary, #ffffff)"):
+    return BuilderElement(name="Step Body", type="text", styles={
+        "color": color, "fontSize": "15px", "lineHeight": "1.7",
+    }, content=BuilderElementContent(innerText="Find your campus"))
+
+
+def _assert_surface_copy(root, active, variables=None):
+    """Read the foreground channel a renderer receives, including palette patches."""
+    import re
+    from app.services.section_content import _parse_color, _hex_to_rgb, _to_hex, _composite, surface_samples
+    variables = variables or {}
+
+    def visit(node, below):
+        painted = surface_samples(node, active, below)
+        if node.type in ("text", "link") and painted:
+            raw = node.styles.get("color")
+            match = re.fullmatch(r"var\((--builder-contrast-[\w-]+),\s*(.+)\)", raw or "")
+            if match:
+                raw = variables.get(match[1], match[2])
+            parsed = _parse_color(raw, active)
+            assert parsed, (node.name, raw)
+            for bg in painted:
+                ink = _to_hex(_composite(parsed[0], parsed[1], bg))
+                assert contrast(ink, _to_hex(bg)) >= 4.5, (node.name, raw, _to_hex(bg))
+        if isinstance(node.content, list):
+            for child in node.content:
+                visit(child, painted)
+    visit(root, [_hex_to_rgb(active.page.background)])
+
+
+@pytest.mark.parametrize("template_id", ["process-enrollment-steps", "services-programs-age", "hero-playful-split"])
+def test_mixed_card_surfaces_and_nested_badges_follow_all_palette_colors(template_id):
+    from app.services.template_filler import get_template
+    from app.services.palette_styles import bind_theme_styles, rendering_theme, surface_foregrounds
+    root = BuilderElement.model_validate(get_template(template_id)["tree"])
+    active = theme({"primary":"#a22a2f", "secondary":"#2b1b18", "accent":"#f5b50a", "surface":"#fff8f2"})
+    bind_theme_styles([root], active, rendering_theme(active))
+    _assert_surface_copy(root, active)
+    before = root.model_dump()
+    # Recolouring must refresh inks without rebuilding or mutating the schema.
+    for palette in PALETTES:
+        edited = theme(palette)
+        variables = surface_foregrounds([root], edited)
+        _assert_surface_copy(root, edited, variables)
+        assert root.model_dump() == before
+
+
+@pytest.mark.parametrize("parent", ["#102030", "#fffdfb"])
+def test_translucent_cards_use_their_parent_and_keep_readable_copy(parent):
+    from app.services.palette_styles import surface_foregrounds
+    active = theme()
+    readable = _surface_copy("#112233" if parent == "#fffdfb" else "#ffffff")
+    badge = BuilderElement(name="Number badge", type="container", styles={
+        "backgroundColor":"#a22a2f", "borderRadius":"999px",
+    }, content=[_surface_copy("#ffffff")])
+    card = BuilderElement(name="Card", type="container", styles={
+        "backgroundColor":"color-mix(in srgb, #ffffff 6%, transparent)",
+        "border":"2px dashed #a22a2f", "padding":"30px 24px",
+    }, content=[readable, badge])
+    root = BuilderElement(name="Section", type="container", styles={"backgroundColor":parent}, content=[card])
+    before = copy.deepcopy(root.model_dump())
+    surface_foregrounds([root], active, bind=True)
+    _assert_surface_copy(root, active)
+    # Only foreground bindings may change; the original badge remains white.
+    assert readable.styles["color"].endswith(f', {before["content"][0]["content"][0]["styles"]["color"]})')
+    assert card.styles == before["content"][0]["styles"]
+    assert badge.styles == before["content"][0]["content"][1]["styles"]
+
+
+def test_layered_gradient_checks_intervals_and_not_the_average():
+    from app.services.palette_styles import surface_foregrounds
+    active = theme()
+    label = _surface_copy("#aaaaaa")
+    root = BuilderElement(name="Layered card", type="container", styles={
+        "backgroundColor":"#102030",
+        "backgroundImage":"linear-gradient(90deg, #102030, #405468)",
+    }, content=[label])
+    assert contrast("#aaaaaa", "#283a4c") >= 4.5  # the average would falsely pass
+    assert contrast("#aaaaaa", "#405468") < 4.5
+    original = dict(root.styles)
+    surface_foregrounds([root], active, bind=True)
+    _assert_surface_copy(root, active)
+    assert root.styles == original
+
+
+def test_unmeasured_photo_is_not_assumed_light_but_opaque_child_is_measurable():
+    from app.services.palette_styles import surface_foregrounds
+    active = theme()
+    unknown = _surface_copy("#ffffff")
+    known = _surface_copy("#ffffff")
+    card = BuilderElement(name="Opaque card", type="container", styles={"backgroundColor":"#ffffff"}, content=[known])
+    photo = BuilderElement(name="Photo", type="container", styles={"backgroundImage":"url(https://example.test/photo.jpg)"}, content=[unknown,card])
+    before = photo.model_dump()
+    surface_foregrounds([photo], active, bind=True)
+    assert unknown.model_dump() == before["content"][0]
+    assert photo.styles == before["styles"]
+    _assert_surface_copy(photo, active)
+
+
+def test_compound_foreground_variables_refresh_through_the_existing_palette_patch():
+    from app.services.palette_styles import surface_foregrounds
+    from app.models.builder_schema import GeneratedPage, BodySchema
+    active = theme()
+    label = _surface_copy()
+    card = BuilderElement(name="Card",type="container",styles={
+        "backgroundColor":"color-mix(in srgb, var(--builder-color-primary) 6%, var(--builder-color-background))",
+    },content=[label])
+    surface_foregrounds([card], active, bind=True)
+    generated = site(active)
+    generated.pages = [GeneratedPage(title="Home",slug="",seo={"title":"Home"},body_schema=BodySchema(elements=[card]))]
+    before = copy.deepcopy(generated.pages)
+    patch = palette_patch(generated, CreativePalette(**PALETTES[4]))
+    _assert_surface_copy(card, patch.theme, patch.builder_styles["cssVars"])
+    assert generated.pages == before
+
+
+def test_color_mix_resolves_both_weights_and_premultiplied_alpha():
+    from app.services.section_content import _parse_color
+    active = theme()
+    assert _parse_color("color-mix(in srgb, #ff0000 6%, #ffffff 94%)",active) == ((255,240,240),1)
+    assert _parse_color("color-mix(in srgb, rgba(255,0,0,0) 50%, #ffffff)",active) == ((255,255,255),.5)
+    assert _parse_color("unsupported(var(--builder-color-primary))",active) is None
+    assert _parse_color("color-mix(in srgb, transparent 50%, #ffffff 50%)",active) == ((255,255,255),.5)
+
+
+def test_raw_preview_repair_is_bounded_and_idempotent():
+    from scripts.repair_preview_inks import repair
+    active = theme()
+    generated = site(active)
+    from app.models.builder_schema import GeneratedPage, BodySchema
+    card = BuilderElement(name="Card",type="container",styles={
+        "backgroundColor":"color-mix(in srgb, var(--builder-color-primary) 6%, var(--builder-color-background))",
+        "border":"2px dashed pink", "padding":"30px 24px",
+    },content=[_surface_copy()])
+    generated.pages = [GeneratedPage(title="Home",slug="",seo={},body_schema=BodySchema(elements=[card]))]
+    raw = generated.model_dump(mode="json")
+    raw["extra_owner_metadata"] = {"confidence":1, "keep":True}
+    repaired = repair(raw)
+    assert repair(repaired) == repaired
+    before = copy.deepcopy(raw)
+    after = copy.deepcopy(repaired)
+    after["pages"][0]["body_schema"]["elements"][0]["content"][0]["styles"]["color"] = card.content[0].styles["color"]
+    after["builder_styles"].pop("cssVars", None)
+    assert after == before
+
+
+def test_catalogue_mixed_surfaces_remain_readable_after_palette_changes():
+    from app.services.template_filler import load_catalog
+    from app.services.palette_styles import bind_theme_styles, rendering_theme, surface_foregrounds
+    active = theme()
+    for template in load_catalog()["sections"]:
+        if "color-mix(" not in json.dumps(template["tree"]):
+            continue
+        root = BuilderElement.model_validate(template["tree"])
+        bind_theme_styles([root], active, rendering_theme(active))
+        for palette in PALETTES:
+            edited = theme(palette)
+            _assert_surface_copy(root, edited, surface_foregrounds([root], edited))
+
+
+def test_surface_foregrounds_measure_custom_button_fill_without_changing_it():
+    from app.services.palette_styles import site_surface_foregrounds
+    from app.models.builder_schema import GeneratedPage, BodySchema
+    active = theme()
+    label = _surface_copy("#ffffff")
+    button = BuilderElement(name="Badge",type="container",styles={
+        "backgroundColor":"var(--builder-button-background)",
+    },content=[label])
+    generated = site(active)
+    generated.builder_styles["buttons"]["background"] = "#ffffff"
+    generated.pages = [GeneratedPage(title="Home",slug="",seo={},body_schema=BodySchema(elements=[button]))]
+    original = copy.deepcopy(generated.builder_styles)
+    site_surface_foregrounds(generated, active, bind=True)
+    effective = active.model_copy(update={"buttons":active.buttons.model_copy(update={"background":"#ffffff"})})
+    _assert_surface_copy(button,effective)
+    assert generated.builder_styles == original
+
+
 def site(t=None):
     t = t or theme()
     return GeneratedSite(site_name="Little Acorns", pages=[], theme=t,

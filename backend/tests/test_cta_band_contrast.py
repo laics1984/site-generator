@@ -7,13 +7,18 @@ cut into a brown-black band (`surface-inverse`) — the edge bound in its photo
 carrier's context, the band in its own."""
 
 import unittest
+from copy import deepcopy
+from typing import get_args
 
-from app.models.brand import BrandIdentity
+import pytest
+
+from app.models.brand import BrandIdentity, BrandMood
 from app.models.builder_schema import (
     BuilderElement,
     BuilderElementContent,
     SectionDivider,
     SectionDividerEdge,
+    ResponsiveStyles,
 )
 from app.services.header_footer import build_footer, footer_band
 from app.services.palette_styles import bind_theme_styles
@@ -22,10 +27,57 @@ from app.services.schema_builder import (
     _BAND_DISTINCT_CONTRAST,
     _boundary_edge,
     contrast_cta_bands,
+    unify_cta_backgrounds,
     sync_divider_fills,
 )
 from app.services.theme import _contrast, apply_creative_palette, build_theme
 from app.models.builder_schema import PageNode
+
+
+@pytest.mark.parametrize("mood", get_args(BrandMood))
+@pytest.mark.parametrize("v2", [False, True])
+def test_one_cta_surface_in_every_mood_preserves_content_layout_and_button(mood, v2):
+    from app.services.template_filler import get_template
+    from app.services.section_content import surface_samples, _hex_to_rgb, _parse_color, _to_hex
+    from app.services.palette_styles import surface_foregrounds
+    theme = build_theme("#a22a2f", mood=mood)
+    if v2:
+        theme = apply_creative_palette(theme, {
+            "primary":"#a22a2f", "secondary":"#2b1b18",
+            "accent":"#f5b50a", "surface":"#fff8f2",
+        })
+    cta = BuilderElement.model_validate(get_template("cta-banner")["tree"])
+    cta.styles["backgroundColor"] = theme.palette.primary
+    panel = cta.content[0]
+    panel.styles.update(boxShadow="0 8px 24px #0006", outline="1px solid red")
+    panel.responsiveStyles = ResponsiveStyles(mobile={
+        **(panel.responsiveStyles.mobile or {}), "backgroundColor":"#000000",
+        "borderTop":"2px solid red", "boxShadow":"0 2px 4px black",
+    })
+    original = deepcopy(cta.model_dump())
+    button = deepcopy(panel.content[-1].model_dump())
+    unify_cta_backgrounds([cta], theme)
+    assert cta.styles == original["styles"]
+    expected = {k:v for k,v in original["content"][0]["styles"].items()
+                if k not in ("background", "backgroundColor", "backgroundImage", "border", "outline", "boxShadow")}
+    assert panel.styles == {**expected, "border":"none", "outline":"none", "boxShadow":"none"}
+    assert "backgroundColor" not in panel.responsiveStyles.mobile
+    assert "borderTop" not in panel.responsiveStyles.mobile
+    assert panel.responsiveStyles.mobile["boxShadow"] == "none"
+    assert panel.content[-1].model_dump() == button
+    first = cta.model_dump()
+    unify_cta_backgrounds([cta], theme)
+    assert cta.model_dump() == first
+    contrast_cta_bands([cta], theme, footer_bg=None)
+    if v2:
+        bind_theme_styles([cta], theme, rendering_theme(theme))
+        surface_foregrounds([cta], theme, bind=True)
+    parent = surface_samples(cta, theme, [_hex_to_rgb(theme.page.background)])
+    assert surface_samples(panel, theme, parent) == parent
+    for text in panel.content[:2]:
+        ink = _parse_color(text.styles["color"], theme)
+        assert ink is not None
+        assert _contrast(_to_hex(ink[0]), _to_hex(parent[0])) >= 4.5
 
 
 def _text(inner):
@@ -82,12 +134,12 @@ class CtaBandStandsApartTest(unittest.TestCase):
         contrast_cta_bands([_band("About", "#ffffff"), cta], self.theme, footer_bg=None)
         self.assertNotEqual(self._bg(cta), "#f4ebe0")
 
-    def test_the_card_still_stands_off_the_new_band(self):
+    def test_the_cta_panel_shares_its_selected_outer_band(self):
         card = "#171009"
         cta = _cta("#ffffff", card=card)
         contrast_cta_bands([_band("About", "#ffffff"), cta], self.theme,
                            footer_bg=self.theme.palette.secondary)
-        self.assertGreaterEqual(_contrast(card, self._bg(cta)), 1.5)
+        self.assertNotIn("backgroundColor", cta.content[0].styles)
         self.assertGreaterEqual(_contrast(self._bg(cta), "#ffffff"), _BAND_DISTINCT_CONTRAST)
 
     def test_a_photo_neighbour_sets_no_constraint(self):
@@ -217,6 +269,11 @@ class EverySchemeBandsTest(unittest.IsolatedAsyncioTestCase):
                                                  seo_title="H", seo_description="H")]),
                         brand=BrandIdentity(name="WATR", mood="friendly"), theme=theme,
                     )
+                    for section in site.pages[0].body_schema.elements:
+                        if section.name == "CTA - Banner":
+                            panel = section.content[0]
+                            self.assertFalse({"background", "backgroundColor", "backgroundImage"} & panel.styles.keys())
+                            self.assertEqual(panel.backgroundTexture, "flat")
                     lines = audit(GeneratedSite.model_validate(json.loads(site.model_dump_json())))
                     bad = [l.splitlines()[0] for l in lines
                            if l.startswith(("TEXT", "BUTTON", "DIVIDER", "CTA-BAND"))]

@@ -1101,14 +1101,57 @@ def apply_section_dividers(
 # A CTA band must read as its own band against the bands around it. Cream on
 # white is ~1.17:1 — a tint, not a contrast — so it does not count.
 _BAND_DISTINCT_CONTRAST = 1.25
-# A card section's band must still let the card read as a card.
-_PANEL_BACKDROP_MIN_CONTRAST = 1.5
 _AA_TEXT = 4.5
 
 
 def _opaque_hex(value: str | None, theme: ThemeTokens) -> str | None:
     parsed = _parse_color(value, theme) if value else None
     return _to_hex(parsed[0]) if parsed and parsed[1] >= 0.999 else None
+
+
+def unify_cta_backgrounds(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """The inset CTA has one mood/scheme-selected surface, in every mood.
+
+    The inner wrapper still owns its padding, radius and content layout, but
+    paints neither a panel nor a frame. Run before CTA band selection so
+    that selection judges neighbouring sections, not contrast with its own
+    panel. Photo CTAs and other section/card templates retain their treatments.
+    """
+    for section in sections:
+        if template_id_of(section) != "cta-banner":
+            continue
+        # Some scheme passes have already made the panel transparent. It still
+        # needs an explicit flat texture so the renderer cannot inherit a wash.
+        panel = inset_panel_of(section) or next(
+            (child for child in _children(section) if child.name == "CTA Banner"), None
+        )
+        if panel is None or _has_real_photo(section.styles or {}) or _has_real_photo(panel.styles or {}):
+            continue
+        for node in (section, panel):
+            # Explicitly flat also prevents the renderer's theme texture from
+            # introducing another painted layer in this colour-only CTA.
+            node.backgroundTexture = "flat"
+            keys = ("background", "backgroundImage")
+            if node is panel:
+                keys += ("backgroundColor",)
+            variants = [node.styles]
+            if node.responsiveStyles:
+                variants += [node.responsiveStyles.mobile, node.responsiveStyles.tablet]
+            for styles in variants:
+                if not isinstance(styles, dict):
+                    continue
+                for key in list(styles):
+                    frame = node is panel and (
+                        (key.startswith("border") and "Radius" not in key)
+                        or key.startswith("outline") or key == "boxShadow"
+                    )
+                    if key in keys or frame:
+                        styles.pop(key, None)
+                if node is panel:
+                    # Explicit resets prevent theme/class or device rules from
+                    # restoring a visible card frame around the CTA content.
+                    styles.update(border="none", outline="none", boxShadow="none")
+        section.styles.setdefault("backgroundColor", theme.page.background)
 
 
 def contrast_cta_bands(
@@ -1124,14 +1167,15 @@ def contrast_cta_bands(
     A band that already stands apart (`_BAND_DISTINCT_CONTRAST` against every
     flat neighbour) and carries its copy at AA is kept. Otherwise the first
     palette band that does — surface, background, the band tints, secondary,
-    the brand hues (hues first on a multi-tint scheme) — and, for a card
-    section (`inset_panel_of`), still lets the card stand off it. None does:
+    the brand hues (hues first on a multi-tint scheme). An inset CTA's wrapper
+    is transparent; it cannot force a competing second surface. None fits:
     the legible one whose closest neighbour is furthest. A photo or gradient
     neighbour already reads as different and sets no constraint; a CTA that
     paints its own photo or gradient keeps it. Copy on the new band is
     re-inked by `_reink_for_band`, a button that melts into it by
     `_restate_button_fill`. Run after the band passes and before the dividers,
     so seams fill with the final colour. In place."""
+    unify_cta_backgrounds(sections, theme)
     palette = theme.palette
     # Neutrals before brand hues: a mid-tone brand band is ambiguous ground —
     # neither ink reads far past AA on it — so it is the answer only when no
@@ -1150,6 +1194,9 @@ def contrast_cta_bands(
         current = _opaque_hex((section.styles or {}).get("backgroundColor"), theme)
         if current is None:
             continue
+        # Removing a panel changes the surface behind its copy even when the
+        # existing outer band is kept or there are no flat neighbours.
+        _reink_for_band(section, current, theme)
         neighbours = [
             _opaque_hex(_section_edge_color(sections[i]), theme)
             for i in (index - 1, index + 1) if 0 <= i < len(sections)
@@ -1159,19 +1206,13 @@ def contrast_cta_bands(
         neighbours = [n for n in neighbours if n]
         if not neighbours:
             continue
-        panel = inset_panel_of(section)
-        card = surface_of(panel, theme) if panel is not None else None
-
         def closest(band: str) -> float:
             return min(_contrast(band, n) for n in neighbours)
 
         def legible(band: str) -> bool:
-            # Copy must reach AA on the band with the palette's own ink, and a
-            # card must still read as a card on it. A mid-tone brand band
+            # Copy must reach AA on the one shared band. A mid-tone brand band
             # (#16a34a, where the palette's light ink reads 3.1:1) stands apart
             # from everything and still cannot carry the page's ask.
-            if card and _contrast(card, band) < _PANEL_BACKDROP_MIN_CONTRAST:
-                return False
             return _contrast(ink_on(palette, band), band) >= _AA_TEXT
 
         def fits(band: str) -> bool:
@@ -5897,6 +5938,11 @@ async def plan_to_site(
     # the fingerprint, which reads the distinctiveness it reports on. Advisory:
     # it never blocks a build.
     _evaluate_design_quality(site, manifest)
+    if theme.color_system_version == 2:
+        from app.services.palette_styles import site_surface_foregrounds
+        variables = site_surface_foregrounds(site, theme, bind=True)
+        if variables:
+            site.builder_styles["cssVars"] = {**site.builder_styles.get("cssVars", {}), **variables}
     return site
 
 

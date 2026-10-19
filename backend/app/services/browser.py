@@ -23,8 +23,9 @@ silently found nothing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncIterator, NamedTuple
 
 from playwright.async_api import async_playwright
@@ -106,11 +107,14 @@ async def block_heavy_resources(route, request) -> None:
 
 
 @asynccontextmanager
-async def browser_context(*, storage_state: dict | None = None) -> AsyncIterator:
+async def browser_context(*, storage_state: dict | None = None, ordinary: bool = False) -> AsyncIterator:
     """A configured Chromium context, torn down on exit.
 
     Every caller wants the same launch args, stealth patch, headers and resource
     blocking — differences between them were drift, not intent.
+
+    `ordinary=True` is reserved for the opt-in verification reader and never
+    applies the existing browser identity/stealth overrides or storage state.
 
     `storage_state` is a Playwright session (cookies + local storage) captured
     elsewhere, letting a render see what a signed-in visitor sees. It is the one
@@ -118,9 +122,25 @@ async def browser_context(*, storage_state: dict | None = None) -> AsyncIterator
     configured, so one optional argument here reaches every reader. `None` — the
     default every existing caller takes — is an ordinary anonymous context.
     """
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True, args=_LAUNCH_ARGS)
-        context = await browser.new_context(
+    # The verification fallback uses Chromium's own identity and defaults, no
+    # authoring/login state or fingerprint overrides. Keep established readers'
+    # settings unchanged. Register cleanup immediately after every acquisition,
+    # including when new_context or route setup fails.
+    async with AsyncExitStack() as stack:
+        manager = async_playwright()
+        pw = await manager.start()
+        stack.push_async_callback(_close_resource, pw.stop, ordinary)
+        launch_options = {"headless": True, "args": _LAUNCH_ARGS}
+        if ordinary:
+            # Block secondary browsing targets rather than relying on the
+            # browser's heuristic popup blocker (Playwright disables it).
+            launch_options = {
+                "headless": True, "args": ["--no-sandbox", "--block-new-web-contents"],
+                "ignore_default_args": ["--disable-popup-blocking"],
+            }
+        browser = await pw.chromium.launch(**launch_options)
+        stack.push_async_callback(_close_resource, browser.close, ordinary)
+        options = {"service_workers": "block"} if ordinary else dict(
             user_agent=BROWSER_USER_AGENT,
             viewport=_VIEWPORT,
             ignore_https_errors=True,
@@ -128,13 +148,52 @@ async def browser_context(*, storage_state: dict | None = None) -> AsyncIterator
             extra_http_headers=BROWSER_HEADERS,
             storage_state=storage_state,
         )
-        await context.add_init_script(STEALTH_INIT_SCRIPT)
-        await context.route("**/*", block_heavy_resources)
+        context = await browser.new_context(**options)
+        stack.push_async_callback(_close_resource, context.close, ordinary)
+        if not ordinary:
+            await context.add_init_script(STEALTH_INIT_SCRIPT)
+            await context.route("**/*", block_heavy_resources)
+        yield context
+
+
+async def _close_resource(close, bounded: bool) -> None:
+    if not bounded:
+        await close()
+        return
+    # Allow bounded cleanup even when the retrieval deadline/caller cancels.
+    task = asyncio.create_task(asyncio.wait_for(close(), timeout=2.0))
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
         try:
-            yield context
-        finally:
-            await context.close()
-            await browser.close()
+            await task
+        except Exception:
+            pass
+        raise
+    except Exception:
+        logger.debug("verification browser resource cleanup failed")
+
+
+class _LazyBrowserContext:
+    """Only the new_page boundary is needed by the existing crawler renderer."""
+
+    def __init__(self, stack: AsyncExitStack):
+        self._stack = stack
+        self._lock = asyncio.Lock()
+        self._context = None
+
+    async def new_page(self):
+        async with self._lock:
+            if self._context is None:
+                self._context = await self._stack.enter_async_context(browser_context())
+        return await self._context.new_page()
+
+
+@asynccontextmanager
+async def lazy_browser_context() -> AsyncIterator:
+    """Keep the crawler's established browser lazy and shared across workers."""
+    async with AsyncExitStack() as stack:
+        yield _LazyBrowserContext(stack)
 
 
 @asynccontextmanager

@@ -1326,13 +1326,12 @@ _RGBA = _re.compile(
     r"rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)"
 )
 _HEX6 = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
-_VAR_TOKEN = _re.compile(r"var\(\s*(--builder-[a-z0-9-]+)")
 # The catalog's only color-mix() shape: two colors (each independently a
 # var(--builder-*, #fallback) or a literal hex) blended in sRGB by a literal
 # percent — the second may be `transparent`, which makes the mix the first
 # colour at that alpha (the catalog's theme-following muted ink and translucent
-# fills). Must be checked before _VAR_TOKEN below — a bare .search() there
-# would otherwise grab the var() embedded inside this expression and treat
+# fills). Must be checked before the whole-var matcher below — a bare .search()
+# would grab the var() embedded inside this expression and treat
 # the whole mix as that token's raw, fully-opaque color.
 _COLOR_MIX = _re.compile(
     r"color-mix\(\s*in\s+srgb\s*,\s*(.+?)\s+([\d.]+)%\s*,\s*(.+?)\s*\)\s*$",
@@ -1389,7 +1388,7 @@ def _to_hex(rgb: tuple[int, int, int]) -> str:
 def _parse_color(
     value: object, theme: ThemeTokens
 ) -> tuple[tuple[int, int, int], float] | None:
-    """Resolve a CSS colour (hex / rgb(a) / `var(--builder-*)`) to ((r,g,b), alpha).
+    """Resolve hex / rgb(a) / whole var() / sRGB color-mix() to ((r,g,b), alpha).
 
     Returns None for gradients, url()s, `transparent`, keywords, or anything we
     can't read as a flat colour — callers treat those as "not a solid surface"."""
@@ -1402,29 +1401,41 @@ def _parse_color(
         return None
     cm = _COLOR_MIX.match(v)
     if cm:
-        c1 = _parse_color(cm.group(1).strip(), theme)
+        first = cm.group(1).strip()
+        c1 = ((0, 0, 0), 0.0) if first.lower() == "transparent" else _parse_color(first, theme)
         pct = max(0.0, min(100.0, float(cm.group(2)))) / 100.0
-        if cm.group(3).strip().lower() == "transparent":
-            # Mixing toward transparent keeps the hue and scales its alpha.
-            return (c1[0], pct * c1[1]) if c1 is not None else None
-        c2 = _parse_color(cm.group(3).strip(), theme)
+        second = cm.group(3).strip()
+        # CSS allows both percentages. Do not fall through to the first var()
+        # when an explicit second weight is present.
+        weight = _re.fullmatch(r"(.+?)\s+([\d.]+)%", second)
+        total = 1.0
+        if weight:
+            second = weight[1].strip()
+            total = pct + float(weight[2]) / 100
+            if total <= 0:
+                return (0, 0, 0), 0.0
+            pct /= total
+        c2 = ((0, 0, 0), 0.0) if second.lower() == "transparent" else _parse_color(second, theme)
         if c1 is None or c2 is None:
             return None
         (r1, g1, b1), a1 = c1
         (r2, g2, b2), a2 = c2
-        rgb = (
-            round(pct * r1 + (1 - pct) * r2),
-            round(pct * g1 + (1 - pct) * g2),
-            round(pct * b1 + (1 - pct) * b2),
-        )
-        return rgb, pct * a1 + (1 - pct) * a2
-    m = _VAR_TOKEN.search(v)
+        alpha = pct * a1 + (1 - pct) * a2
+        # CSS mixes premultiplied alpha; a transparent colour must not stain
+        # the opaque component before the result is composited over its parent.
+        rgb = tuple(round((pct * c1 * a1 + (1 - pct) * c2 * a2) / alpha)
+                    if alpha else 0 for c1, c2 in zip((r1, g1, b1), (r2, g2, b2)))
+        return rgb, alpha * min(total, 1.0)
+    m = _re.fullmatch(r"var\(\s*(--builder-[a-z0-9-]+)\s*(?:,\s*(.+))?\)", v)
     if m:
         hexv = _token_hex(m.group(1), theme)
-        return (_hex_to_rgb(_expand_hex(hexv)), 1.0) if hexv else None
+        return (_hex_to_rgb(_expand_hex(hexv)), 1.0) if hexv else _parse_color(m[2], theme)
+    # Unsupported expressions are unmeasurable, not the first embedded token.
+    if "var(" in v or "color-mix(" in v:
+        return None
     if _HEX6.match(v):
         return _hex_to_rgb(_expand_hex(v)), 1.0
-    mm = _RGBA.search(v)
+    mm = _RGBA.fullmatch(v)
     if mm:
         a = float(mm.group(4)) if mm.group(4) is not None else 1.0
         rgb = (int(float(mm.group(1))), int(float(mm.group(2))), int(float(mm.group(3))))
@@ -1931,6 +1942,70 @@ def _own_fill(node: BuilderElement, theme: ThemeTokens, below: _RGB | None) -> _
     if not painted:
         return _NO_FILL
     return rgb if rgb is not None else _UNREADABLE
+
+
+def surface_samples(node: BuilderElement, theme: ThemeTokens,
+                    below: list[_RGB] | None) -> list[_RGB] | None:
+    """Colours copy may cross, retaining parent surfaces through transparency.
+
+    Unlike _own_fill's band-classification average, this samples every gradient
+    interval as well as its stops. Layer combinations are conservative: a label
+    must read on all of them. Photos without a measured surface remain unknown.
+    """
+    if node.painted_surface:
+        return [_hex_to_rgb(_expand_hex(node.painted_surface))]
+    styles = node.styles or {}
+    if _has_real_photo(styles):
+        return None
+    shorthand = styles.get("background")
+    # A shorthand resets backgroundColor, even when both are present.
+    samples = below
+
+    def over(rgb: _RGB, alpha: float, base: list[_RGB] | None) -> list[_RGB] | None:
+        if alpha >= .999:
+            return [rgb]
+        return list(dict.fromkeys(_composite(rgb, alpha, bg) for bg in base)) if base else None
+
+    if not shorthand:
+        raw = styles.get("backgroundColor")
+        flat = _parse_color(raw, theme)
+        if flat:
+            samples = over(*flat, samples)
+        elif raw and str(raw).strip().lower() not in ("transparent", "none", "inherit"):
+            samples = None  # unsupported paint is not the parent's surface
+    for value in (shorthand, styles.get("backgroundImage")):
+        if not isinstance(value, str):
+            continue
+        for layer in reversed(_split_layers(value)):
+            if "gradient(" in layer:
+                inner = layer[layer.index("(") + 1:layer.rindex(")")]
+                stops = []
+                for arg in _split_layers(inner):
+                    color = _STOP_POSITION.sub("", arg).strip()
+                    parsed = ((0, 0, 0), 0.0) if color == "transparent" else _parse_color(color, theme)
+                    if parsed:
+                        stops.append(parsed)
+                if len(stops) < 2:
+                    return None
+                ramp = []
+                for (a, aa), (b, ab) in zip(stops, stops[1:]):
+                    for i in range(17):
+                        t = i / 16
+                        alpha = aa * (1 - t) + ab * t
+                        rgb = tuple(round((x * aa * (1 - t) + y * ab * t) / alpha)
+                                    if alpha else 0 for x, y in zip(a, b))
+                        painted = over(rgb, alpha, samples)
+                        if painted is None:
+                            return None
+                        ramp.extend(painted)
+                samples = list(dict.fromkeys(ramp))
+            else:
+                parsed = _parse_color(layer, theme)
+                if parsed:
+                    samples = over(*parsed, samples)
+                elif layer.strip().lower() not in ("transparent", "none") and "data:" not in layer:
+                    return None
+    return samples
 
 
 def _is_neutral_ink(raw: object, rgb: _RGB, theme: ThemeTokens) -> bool:

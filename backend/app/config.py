@@ -623,6 +623,11 @@ class Settings(BaseSettings):
     fast_fetch_timeout_seconds: float = 8.0
     robots_fetch_timeout_seconds: float = 10.0
     playwright_goto_timeout_ms: int = 15000
+    # Opt-in, ordinary-browser retrieval of structurally identified Imunify360
+    # verification pages. Existing JS-shell rendering is independent of this.
+    playwright_fallback_enabled: bool = False
+    playwright_fallback_timeout_seconds: float = Field(default=25.0, gt=0, le=120)
+    playwright_fallback_max_concurrency: int = Field(default=1, ge=1, le=4)
     cms_timeout_seconds: float = 30.0
     cms_media_upload_timeout_seconds: float = 120.0
 

@@ -9,7 +9,7 @@ import re
 import math
 
 from app.models.brand import ThemeTokens
-from app.models.builder_schema import BuilderElement
+from app.models.builder_schema import BuilderElement, GeneratedSite
 from app.services.color_system import derive, oklch, luminance, ensure_contrast, contrast
 
 
@@ -127,7 +127,10 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
         if isinstance(own, str):
             known_fill = known_fill or own.lower() in backgrounds
             surface = backgrounds.get(own.lower(), surface)
-            found = re.search(r"var\(--builder-color-([a-z0-9-]+)(?=[,\s)])", own)
+            # A token INSIDE color-mix()/a gradient is only one ingredient.
+            # Treating 6% primary + 94% background as solid primary selects
+            # white ink for a nearly white card. Only a whole var() is a fill.
+            found = re.fullmatch(r"\s*var\(\s*--builder-color-([a-z0-9-]+)\s*(?:,\s*[^()]+)?\)\s*", own)
             if found and found[1] in colors:
                 known_fill = True
                 surface = "surface-inverse" if found[1] == "secondary" else found[1]
@@ -236,3 +239,103 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
     for element in elements:
         element.classes = ((element.classes or "") + " wt-color-system-v2").strip()
         walk(element)
+    # Binding is the last generation colour pass. Validate its OUTPUT, not
+    # the earlier authoring colours; binding can otherwise undo the AA pass.
+    surface_foregrounds(elements, canonical, bind=True)
+
+
+def surface_foregrounds(elements: list[BuilderElement], theme: ThemeTokens, *,
+                        bind: bool = False) -> dict[str, str]:
+    """Foreground-only correction for complete, inherited painted surfaces.
+
+    The existing cssVars channel carries per-node inks on palette updates.
+    Their fallback is an ordinary semantic token, so schemas also render
+    correctly before a patch arrives. No backgrounds, outlines or layout change.
+    Unmeasured photographs are left alone; an opaque child starts a new surface.
+    """
+    import logging
+    from app.services.section_content import (
+        _composite, _hex_to_rgb, _parse_color, _to_hex, surface_samples,
+    )
+
+    if theme.color_system_version != 2:
+        return {}
+    colors = derive(theme.palette.model_dump())
+    result: dict[str, str] = {}
+    binding = re.compile(r"^var\((--builder-contrast-[\w-]+),\s*(.+)\)$")
+
+    def walk(node: BuilderElement, below, inherited: str | None, dynamic: bool) -> None:
+        styles = node.styles or {}
+        samples = surface_samples(node, theme, below)
+        raw_fill = str(styles.get("background") or styles.get("backgroundColor") or "")
+        # Descendants of a mixed/translucent/gradient surface need rechecking
+        # when a palette changes, even if they happen to pass today.
+        if raw_fill or styles.get("backgroundImage"):
+            dynamic = dynamic or "color-mix(" in raw_fill or "rgba(" in raw_fill or "gradient(" in str(styles)
+        raw = styles.get("color", inherited)
+        matched = binding.fullmatch(raw) if isinstance(raw, str) else None
+        original = matched[2] if matched else raw
+        parsed = _parse_color(original, theme)
+        if node.type in ("text", "link") and samples and parsed:
+            def worst(ink: str, alpha: float = 1) -> float:
+                rgb = _hex_to_rgb(ink)
+                return min(contrast(_to_hex(_composite(rgb, alpha, bg)), _to_hex(bg)) for bg in samples)
+
+            # Descriptions AND headings clear 4.5, including mobile headings
+            # that fall below the large-text threshold at narrower widths.
+            passes = worst(_to_hex(parsed[0]), parsed[1]) >= 4.5
+            chosen = original
+            if not passes:
+                brand = next((name for name in ("primary", "accent")
+                              if isinstance(original, str) and
+                              (f"--builder-color-{name}" in original or original.lower() == colors[name])), None)
+                roles = ([f"{brand}-ink-on-{s}" for s in ("background", "surface", "surface-inverse", "primary", "accent")]
+                         if brand else [])
+                roles += ["on-background", "on-surface", "on-surface-inverse", "ink-dark", "ink-light"]
+                role = next((r for r in roles if worst(colors[r]) >= 4.5), None)
+                if role:
+                    chosen = f"var(--builder-color-{role}, {colors[role]})"
+                else:
+                    # A mid-tone or layered surface may need an adjusted ink.
+                    # Never repaint it to manufacture a passing contrast ratio.
+                    candidates = [ensure_contrast(_to_hex(parsed[0]), _to_hex(bg)) for bg in samples]
+                    candidates += ["#000000", "#ffffff"]
+                    safe = max(candidates, key=worst)
+                    if worst(safe) >= 4.5:
+                        chosen = safe
+                    else:
+                        logging.getLogger(__name__).warning(
+                            "No single AA foreground spans surface on %s (%s); visual review required", node.name, node.id)
+            if matched or (bind and (dynamic or chosen != original)):
+                key = matched[1] if matched else f"--builder-contrast-{node.id}"
+                result[key] = chosen
+                if bind:
+                    node.styles["color"] = f"var({key}, {chosen})"
+        if isinstance(node.content, list):
+            for child in node.content:
+                walk(child, samples, original, dynamic)
+
+    for element in elements:
+        walk(element, [_hex_to_rgb(theme.page.background)], None, False)
+    return result
+
+
+def site_surface_foregrounds(site: GeneratedSite, theme: ThemeTokens, *, bind: bool = False,
+                             builder_styles: dict | None = None) -> dict[str, str]:
+    """Refresh only derived foreground variables; palette patches keep page identity."""
+    # Owner button/page overrides use an existing customization channel. Measure
+    # those actual fills, rather than the defaults stored on the theme object.
+    styles = site.builder_styles if builder_styles is None else builder_styles
+    button = (styles or {}).get("buttons", {})
+    page = (styles or {}).get("page", {})
+    theme = theme.model_copy(update={
+        "buttons": theme.buttons.model_copy(update={key: button[key] for key in ("background", "text") if button.get(key)}),
+        "page": theme.page.model_copy(update={"background": page.get("background") or theme.page.background}),
+    })
+    variables: dict[str, str] = {}
+    for page in site.pages:
+        variables.update(surface_foregrounds(page.body_schema.elements, theme, bind=bind))
+    for chrome in (site.header_schema, site.footer_schema):
+        if isinstance(chrome, BuilderElement):
+            variables.update(surface_foregrounds([chrome], theme, bind=bind))
+    return variables

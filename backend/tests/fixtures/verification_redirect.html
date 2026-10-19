@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><title>Browser verification</title></head>
+<body><p>Please wait while your request is verified.</p>
+<script>
+// Local fixture for ordinary JS execution, not a real vendor challenge solver.
+var wsidchk = 'fixture', failedChecks = [];
+setTimeout(function () {
+    document.cookie = 'fixture_verified=1; path=/; SameSite=Lax';
+    window.location.replace('/content');
+}, 150);
+</script></body></html>
