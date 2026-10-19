@@ -1945,6 +1945,6 @@ def apply_creative_palette(theme: ThemeTokens, creative: object) -> ThemeTokens:
         "palette": colors, "color_system_version": 2,
         "color_scheme": "dark" if luminance(colors.background) < .2 else "light",
         "palette_slug": "ai-"+hashlib.sha256("|".join(palette.model_dump().values()).encode()).hexdigest()[:12],
-        "buttons": theme.buttons.model_copy(update={"background": colors.primary, "text": derived["on-primary"]}),
+        "buttons": theme.buttons.model_copy(update={"background": derived["primary-button"], "text": derived["on-primary-button"]}),
         "page": theme.page.model_copy(update={"background": colors.background}),
     })

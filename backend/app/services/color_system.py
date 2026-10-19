@@ -126,6 +126,27 @@ def readable(background: str, dark: str, light: str, target: float = 4.5) -> str
     return ensure_contrast(candidate, background, target)
 
 
+# How far a button's fill may deepen, in OKLCH lightness, so a light label
+# reaches AA on it. WCAG 2's ratio prefers black on every mid-tone brand
+# (teal, sky, green, orange: ~5:1 black against ~3.6:1 white), and a near-black
+# label on a saturated fill reads as dark-on-dark however the ratio scores it.
+# One shade step keeps the brand recognisably itself (teal-600 moves 0.055,
+# orange-500 0.132); past it (cyan, emerald, amber, lime, yellow: 0.15-0.30)
+# the fill would become another colour, so the light brand keeps its dark label.
+BUTTON_MAX_DEEPEN = .14
+
+
+def button_pair(color: str, dark: str, light: str) -> tuple[str, str]:
+    """A brand button's (fill, label): the light label on the brand fill,
+    deepened along its own hue until that label reaches 4.5:1 — unless that
+    takes more than BUTTON_MAX_DEEPEN, when the fill stays and the label is the
+    readable ink for it."""
+    fill = ensure_contrast(color, light)
+    if contrast(light, fill) >= 4.5 and oklch(color)[0] - oklch(fill)[0] <= BUTTON_MAX_DEEPEN:
+        return fill, light
+    return color, readable(color, dark, light)
+
+
 def creative_colors(values: dict[str, str]) -> dict[str, str]:
     values = {key: normalize_hex(values[key]) for key in ("primary", "secondary", "accent", "surface")}
     # The four creative choices stay canonical, including a manually selected
@@ -162,6 +183,7 @@ def _derive(values: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
     out["border-strong"] = ensure_contrast(mix(bg, out["text"], .40), bg, 3.)
     for name in ("background", "surface", "surface-elevated", "surface-muted", "surface-alternate", "surface-inverse"):
         out["on-"+name] = readable(out[name], dark, light)
+    out["primary-button"], out["on-primary-button"] = button_pair(p["primary"], dark, light)
     for name in ("primary", "secondary", "accent"):
         color = p[name]
         l, c, h = oklch(color)

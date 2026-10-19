@@ -2075,6 +2075,25 @@ same shortcut and is not yet on the pair.
 No backend, schema or catalog change. Tests: `test_contact_form_ink.py`;
 `webtree-public/lib/styles.test.ts`, `builder/src/lib/builder-styles.test.ts`.
 
+### A brand button wears a light label
+
+WCAG 2's ratio prefers black on every mid-tone brand — teal, sky, green,
+orange, red, pink score ~5:1 black against ~3.6:1 white — so v2's
+`on-primary` put a near-black label on a saturated fill, which reads as dark
+on dark. `color_system.button_pair` (`primary-button` / `on-primary-button`
+in `derive`, mirrored as `buttonPair` in all three `colorSystem.ts` copies,
+shared fixtures) gives the button the light ink and deepens the FILL along
+its own hue until that ink reaches 4.5:1 — at most `BUTTON_MAX_DEEPEN` (0.14
+OKLCH L, one shade step). Past that (cyan, emerald, amber, lime, yellow) the
+fill would become another colour, so it stays with its dark label. Only the
+button pair moves: `primary` and `on-primary` (bands, chips) are unchanged.
+`apply_creative_palette` stores the pair; a recolour (`merge_palette_styles`,
+and the builder's `mergeBuilderStyles`) carries a button still on a palette
+default — raw primary or the pair — to the new pair, keeping an owner's fill
+and holding an owner's label to AA. Already-published sites keep their stored
+pair until regenerated or recoloured. Tests: `test_ai_palette.py`
+(button-pair block); `builder/src/lib/builder-styles.test.ts`.
+
 
 Tests: `test_floating_pill_heroes.BandMarkerTest`/`BandClassificationTest`,
 `test_header_footer.FloatingPillAdaptiveInkTest`, `test_preview_layout.py`;

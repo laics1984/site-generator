@@ -60,12 +60,16 @@ def merge_palette_styles(existing: dict, original: ThemeTokens, updated: ThemeTo
     styles["colorSystemVersion"] = 2
     styles["colors"] = {**styles.get("colors", {}), **generated["colors"]}
     buttons = styles.setdefault("buttons", {})
-    if buttons.get("background") in (None, original.palette.primary):
-        previous_default_ink = derive(original.palette.model_dump())["on-primary"]
+    # A button follows the palette while it still wears a palette default: the
+    # raw primary (sites made before color_system.button_pair) or the derived
+    # button fill. An owner-chosen fill is theirs and is left alone.
+    previous = derive(original.palette.model_dump())
+    if buttons.get("background") in (None, original.palette.primary, previous["primary-button"]):
         chosen_ink = buttons.get("text")
         buttons["background"] = generated["buttons"]["background"]
-        buttons["text"] = (generated["buttons"]["text"] if chosen_ink in (None, previous_default_ink)
-                           else ensure_contrast(chosen_ink, updated.palette.primary))
+        buttons["text"] = (generated["buttons"]["text"]
+                           if chosen_ink in (None, previous["on-primary"], previous["on-primary-button"])
+                           else ensure_contrast(chosen_ink, buttons["background"]))
     page = styles.setdefault("page", {})
     if page.get("background") in (None, original.palette.background):
         page["background"] = updated.page.background

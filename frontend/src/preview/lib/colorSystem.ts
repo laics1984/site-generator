@@ -86,6 +86,15 @@ export const ensureColorContrast = (fg: string, bg: string, target=4.5): string 
 }
 const readable = (bg: string, dark: string, light: string) =>
   ensureColorContrast(colorContrast(dark,bg)>=colorContrast(light,bg) ? dark : light,bg)
+/** How far a button's fill may deepen (OKLCH lightness) so a light label
+ * reaches AA: Python's BUTTON_MAX_DEEPEN, which states why. */
+export const BUTTON_MAX_DEEPEN = .14
+/** A brand button's [fill, label]. Python parity: color_system.button_pair. */
+export const buttonPair = (color: string, dark: string, light: string): [string, string] => {
+  const fill = ensureColorContrast(color, light)
+  if (colorContrast(light, fill) >= 4.5 && toOklch(color)[0]-toOklch(fill)[0] <= BUTTON_MAX_DEEPEN) return [fill, light]
+  return [color, readable(color, dark, light)]
+}
 const cache = new Map<string, Readonly<Record<string,string>>>()
 export function deriveThemeColors(input: ThemeColors): Readonly<Record<string,string>> {
   const values = fields.map(k => normalizeHex(input[k]))
@@ -106,6 +115,7 @@ export function deriveThemeColors(input: ThemeColors): Readonly<Record<string,st
   out.border=mixPerceptual(bg,out.text,.18)
   out['border-strong']=ensureColorContrast(mixPerceptual(bg,out.text,.40),bg,3)
   for (const name of ['background','surface','surface-elevated','surface-muted','surface-alternate','surface-inverse']) out['on-'+name]=readable(out[name],dark,light)
+  ;[out['primary-button'], out['on-primary-button']]=buttonPair(p.primary,dark,light)
   for (const name of ['primary','secondary','accent'] as const) {
     const color=p[name], [l,c,h]=toOklch(color), direction=l<.4?.045:-.045
     out[name+'-hover']=fromOklch(l+direction,c,h); out[name+'-active']=fromOklch(l+direction*1.8,c,h)

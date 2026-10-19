@@ -779,3 +779,65 @@ def test_generation_request_persists_mode(mode):
     request = GenerateRequest(source=SourceContent(source_kind="url", source_ref="https://example.test", raw_text="A business"),
                               palette_design_mode=mode)
     assert GenerateRequest.model_validate_json(request.model_dump_json()).palette_design_mode == mode
+
+
+# --- the brand button: a light label on the brand, deepened only as needed --
+
+_TEAL = {"primary": "#0d9488", "secondary": "#0f172a", "accent": "#ec4899", "surface": "#f0fdfa"}
+
+
+@pytest.mark.parametrize("primary", ["#0d9488", "#3b82f6", "#16a34a", "#ef4444", "#ec4899", "#f97316", "#0ea5e9", "#9989d7"])
+@pytest.mark.parametrize("surface", ["#f0fdfa", "#172131"])
+def test_a_mid_tone_brand_button_takes_a_light_label_on_its_own_hue(primary, surface):
+    # WCAG 2's ratio scores black higher on every one of these; a near-black
+    # label on a saturated fill reads as dark on dark.
+    d = derive(creative_colors({**_TEAL, "primary": primary, "surface": surface}))
+    fill, label = d["primary-button"], d["on-primary-button"]
+    assert label == d["ink-light"]
+    assert contrast(label, fill) >= 4.5
+    (l0, c0, h0), (l1, c1, h1) = oklch(primary), oklch(fill)
+    assert 0 <= l0 - l1 <= .14
+    assert abs((h1 - h0 + 3.1416) % 6.2832 - 3.1416) < .05  # same hue, only darker
+
+
+@pytest.mark.parametrize("primary", ["#facc15", "#f59e0b", "#84cc16", "#06b6d4"])
+def test_a_light_brand_keeps_its_fill_and_a_dark_label(primary):
+    # Deepening these far enough for white would make them another colour.
+    d = derive(creative_colors({**_TEAL, "primary": primary}))
+    assert d["primary-button"] == primary
+    assert d["on-primary-button"] == d["ink-dark"]
+    assert contrast(d["on-primary-button"], primary) >= 4.5
+
+
+def test_a_dark_brand_button_is_left_exactly_as_it_is():
+    d = derive(creative_colors({**_TEAL, "primary": "#10253f"}))
+    assert (d["primary-button"], d["on-primary-button"]) == ("#10253f", d["ink-light"])
+
+
+def test_the_generated_button_wears_the_pair():
+    t = theme(_TEAL)
+    d = derive(t.palette.model_dump())
+    assert (t.buttons.background, t.buttons.text) == (d["primary-button"], d["on-primary-button"])
+    assert t.buttons.background != t.palette.primary  # teal is deepened for its white label
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["derived-pair", "raw-primary"])
+def test_a_recolour_moves_a_default_button_to_the_new_pair(legacy):
+    original = site(theme(_TEAL))
+    if legacy:  # a site generated before the pair: raw primary, black label
+        d = derive(original.theme.palette.model_dump())
+        original.builder_styles["buttons"].update(background=d["primary"], text=d["on-primary"])
+    patch = palette_patch(original, CreativePalette(**{**_TEAL, "primary": "#3b82f6"}))
+    d = derive(patch.theme.palette.model_dump())
+    assert patch.builder_styles["buttons"]["background"] == d["primary-button"]
+    assert patch.builder_styles["buttons"]["text"] == d["on-primary-button"]
+
+
+def test_an_owner_label_on_a_default_button_is_kept_and_held_to_aa():
+    original = site(theme(_TEAL))
+    original.builder_styles["buttons"]["text"] = "#fff7d6"
+    patch = palette_patch(original, CreativePalette(**{**_TEAL, "primary": "#3b82f6"}))
+    buttons = patch.builder_styles["buttons"]
+    assert buttons["background"] == derive(patch.theme.palette.model_dump())["primary-button"]
+    assert contrast(buttons["text"], buttons["background"]) >= 4.5
+    assert oklch(buttons["text"])[0] > .8  # still the owner's light label
