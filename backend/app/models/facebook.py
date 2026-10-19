@@ -13,6 +13,7 @@ section, never a padded one.
 
 from __future__ import annotations
 
+import hashlib
 from enum import StrEnum
 from typing import Literal
 
@@ -128,6 +129,22 @@ class FacebookPost(BaseModel):
     post_id: str | None = None
     photos: list[FacebookPhoto] = Field(default_factory=list)
     videos: list[FacebookVideo] = Field(default_factory=list)
+
+    @property
+    def key(self) -> str | None:
+        """What names this post within one read: its id, else its link, else
+        its words. None for a post with none of the three."""
+        if self.post_id or self.permalink:
+            return self.post_id or self.permalink
+        if self.message:
+            return "text:" + hashlib.sha1(self.message.encode()).hexdigest()[:16]
+        return None
+
+    @property
+    def is_tile(self) -> bool:
+        """A picture the Page showed outside any post — a Photos-tab tile: no
+        words, no date, no post id. Its link is the photo's, not a story's."""
+        return not (self.message or self.created_time or self.post_id)
 
     @property
     def photo_sources(self) -> list[FacebookPhoto]:

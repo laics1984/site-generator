@@ -27,19 +27,22 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Collection
+from datetime import date, datetime, timezone
 from textwrap import indent
 from typing import Any, Awaitable, Callable, Protocol, Sequence
 
 from app.config import settings
 from app.models.brand import BrandIdentity
 from app.models.content_blocks import ImageMetadata, NavLink, SectionType, SourceContent
-from app.models.facebook import FacebookPage, FactLabel
+from app.models.facebook import FacebookEvent, FacebookPage, FactLabel
 from app.models.industry import IndustryCategory
 from app.services.brand_candidate import build_brand_candidate
 from app.services.facebook_photo_profiles import context_for
 from app.services.facebook_urls import FacebookRef
 from app.services.logo_extraction import LogoCandidate
 from app.services.nav_extraction import social_link_for_href
+from app.services.offering_pages import MIN_OFFERINGS
 from app.services.source_preview import ImageCandidate, candidates_from_source, source_preview_payload
 from app.services.source_router import gallery_photos
 
@@ -108,7 +111,8 @@ class _RenderFetcher:
 # serving reads cached under the old rules. 4: inline-payload originals, full
 # captions, Intro facts, recommendations. 5: the Page's own posts read whole from
 # its feeds' data (About-page reels included), videos, Facebook's alt text.
-READER_VERSION = 5
+# 6: photo provenance and measured quality, quality-ranked inventory.
+READER_VERSION = 6
 
 
 def reader_options() -> dict[str, Any]:
@@ -354,7 +358,40 @@ def industry_for(page: FacebookPage) -> IndustryCategory:
 # --- the fact digest ------------------------------------------------------------
 
 
-def build_raw_text(page: FacebookPage) -> str:
+# A chat assistant's preamble pasted along with the reply it introduced:
+# "ChatGPT said: A little wood, some leaves…" — measured on a real Page.
+_ASSISTANT_PREAMBLE_RE = re.compile(
+    r"^\s*(?:chatgpt|copilot|gemini|claude|meta ai|assistant)\s+said\s*:\s*", re.I,
+)
+# A run of two or more hashtags with nothing else around it — a tag wall at
+# the end of a caption, or a line of its own.
+_HASHTAG_RUN_RE = re.compile(r"(?:^|(?<=\s))(?:#[\w\u00c0-\uffff]+[\s,]*){2,}$", re.M)
+_SEE_MORE_RE = re.compile(r"(?:…|\.\.\.)?\s*see more\s*$", re.I)
+
+
+def clean_caption(text: str | None) -> str:
+    """A post's words without what is not the business's words: a pasted
+    assistant preamble, a wall of hashtags, a clipped "See more". The one
+    caption cleaner, asked by the digest and by every caption a photo carries,
+    so the grounding text and the planner's evidence agree."""
+    cleaned = _ASSISTANT_PREAMBLE_RE.sub("", text or "")
+    cleaned = _SEE_MORE_RE.sub("", cleaned.strip())
+    cleaned = _HASHTAG_RUN_RE.sub("", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def event_is_past(event: FacebookEvent, today: date) -> bool:
+    """An event whose stated start is before `today`. Undated events are not."""
+    start = (event.start_time or "")[:10]
+    try:
+        return date.fromisoformat(start) < today
+    except ValueError:
+        return False
+
+
+def build_raw_text(
+    page: FacebookPage, *, exclude: Collection[str] = (), today: date | None = None,
+) -> str:
     """Every retrieved fact, labelled, in a fixed order — and nothing else.
 
     This is the single most consequential output of the whole feature. It is the
@@ -362,7 +399,12 @@ def build_raw_text(page: FacebookPage) -> str:
     against, so a fact absent here cannot survive into the site, and a sentence
     that isn't a fact should never be added here. Every label is a `FactLabel`,
     because `landing_source` splits this text back into sections at them.
+
+    What is no longer true stays out: a past event always (its date says so),
+    and the posts `exclude` names by `FacebookPost.key` — the time-bound ones
+    `facebook_knowledge` found stale. Captions go through `clean_caption`.
     """
+    today = today or datetime.now(timezone.utc).date()
     lines: list[str] = []
 
     headline = page.name
@@ -396,19 +438,23 @@ def build_raw_text(page: FacebookPage) -> str:
     # Indented as a block, every line of it: a multi-line caption is one fact,
     # and an unindented "Price: RM10" inside it would read as a label of the
     # digest's own to `landing_source`.
-    posts = page.posts_with_text
+    posts = [
+        caption for p in page.posts_with_text
+        if p.key not in exclude and (caption := clean_caption(p.message))
+    ]
     if posts:
         lines.append(f"{FactLabel.UPDATES}:")
-        lines.extend(indent((p.message or "").strip(), "  ") for p in posts)
+        lines.extend(indent(caption, "  ") for caption in posts)
 
-    if page.events:
+    events = [event for event in page.events if not event_is_past(event, today)]
+    if events:
         lines.append(f"{FactLabel.EVENTS}:")
         lines.extend(
             indent("\n".join(part for part in (
                 f"{event.name} ({event.start_time[:10]})" if event.start_time else event.name,
                 (event.description or "").strip(),
             ) if part), "  ")
-            for event in page.events
+            for event in events
         )
 
     if page.reviews:
@@ -480,13 +526,21 @@ _KEEP_ORDER: tuple[SectionType, ...] = (
 )
 
 
-def homepage_sections_for(page: FacebookPage, *, photo_count: int | None = None) -> list[SectionType]:
+def homepage_sections_for(
+    page: FacebookPage, *, photo_count: int | None = None, offering_count: int | None = None,
+) -> list[SectionType]:
     """The landing page's sections, each gated on its own evidence.
 
     This is the structural half of the no-fabrication guarantee: rather than
     asking the model for an industry-standard rhythm and hoping the fidelity
     rules hold, we only ever *ask* for a section the Page can ground. A Page
     with no reviews never gets a testimonials slot to fill.
+
+    `features` asks what the business offers: its stated products, or — once
+    `facebook_knowledge` has read the Page (`offering_count` not None) — at
+    least two offerings it found. Unread, the old proxy stands (enough
+    captioned posts to say something), so a read whose understanding call is
+    off or failed keeps the homepage it always had.
 
     Capped by landing_patterns._MAX_HOMEPAGE_SECTIONS (8) — a homepage is one
     LLM call and overflowing its token budget fails the whole generation. The
@@ -500,7 +554,10 @@ def homepage_sections_for(page: FacebookPage, *, photo_count: int | None = None)
         photo_count = len(page.post_photo_urls) + (1 if page.cover_photo_url else 0)
     grounded = {
         "about": bool(page.about or page.description or page.mission),
-        "features": bool(page.products) or len(page.posts_with_text) >= _MIN_POSTS_FOR_FEATURES,
+        "features": bool(page.products) or (
+            len(page.posts_with_text) >= _MIN_POSTS_FOR_FEATURES if offering_count is None
+            else offering_count >= MIN_OFFERINGS  # the same bar that earns a page
+        ),
         "stats": len(stat_items(page)) >= _MIN_STATS,
         "gallery": photo_count >= _MIN_PHOTOS_FOR_GALLERY,
         "testimonials": bool(page.reviews),
@@ -552,10 +609,12 @@ def to_image_metadata(page: FacebookPage) -> list[ImageMetadata]:
                 role="content",
                 source_usage="inline",
                 context_heading=page.name,
+                origin="cover",
             )
         )
     seen: set[str] = {page.cover_photo_url or ""}
     for post in page.posts:
+        caption = clean_caption(post.message)
         # A video's frame is a picture of the business like any photo, and it
         # illustrates the same caption: measured on a Page that posts reels
         # only, the frames were the only pictures any caption described.
@@ -567,12 +626,16 @@ def to_image_metadata(page: FacebookPage) -> list[ImageMetadata]:
                 ImageMetadata(
                     url=photo.url, width=photo.width, height=photo.height,
                     selection_context=context,
-                    alt=f"{page.name} activity photo" if childcare else _post_alt(post.message, f"{page.name} photo"),
+                    alt=f"{page.name} activity photo" if childcare else _post_alt(caption, f"{page.name} photo"),
                     role="content", source_usage="inline",
-                    context_heading="" if childcare else _post_alt(post.message, ""),
+                    context_heading="" if childcare else _post_alt(caption, ""),
                     # Caption evidence for the existing text-model planning call.
-                    caption=(post.message or "")[:500],
+                    caption=caption[:500],
                     platform_alt=photo.auto_alt or "",
+                    source_post_id=post.post_id,
+                    source_post_url=post.permalink,
+                    published_at=post.created_time,
+                    origin="photos_tab" if post.is_tile else "post",
                 )
             )
     return out
@@ -731,7 +794,9 @@ async def _looks_like_photograph(url: str) -> bool:
 # --- the preview payload --------------------------------------------------------
 
 
-async def to_preview_payload(page: FacebookPage) -> dict[str, Any]:
+async def to_preview_payload(
+    page: FacebookPage, *, on_progress: ProgressFn | None = None,
+) -> dict[str, Any]:
     """The canonical scrape-result shape, plus the Facebook facts.
 
     Matches `crawl_orchestrator._result_to_payload` field for field — that is
@@ -740,11 +805,15 @@ async def to_preview_payload(page: FacebookPage) -> dict[str, Any]:
     so the frontend can round-trip it into /generate, where the authority pass
     needs the verified values.
     """
+    from app.services.facebook_knowledge import understand_page
     from app.services.facebook_photo_selection import review_photo_library
 
     source_content = to_source_content(page)
     brand = await build_brand(page)
     photo_review = await review_photo_library(source_content, page)
+    if on_progress is not None:
+        await on_progress(85, "Understanding the Page")
+    knowledge = await understand_page(page, source_content)
 
     return source_preview_payload(
         url=page.canonical_url,
@@ -761,7 +830,8 @@ async def to_preview_payload(page: FacebookPage) -> dict[str, Any]:
             # Counted by the gallery's own predicate, after the photo review:
             # a menu sheet or a poster is a photo a gallery tile can't show.
             "facebook_sections": homepage_sections_for(
-                page, photo_count=len(gallery_photos(source_content))
+                page, photo_count=len(gallery_photos(source_content)),
+                offering_count=len(knowledge.offerings) if knowledge.structured_by == "llm" else None,
             ),
             **({"facebook_photo_selection": photo_review} if photo_review else {}),
         },

@@ -1605,6 +1605,101 @@ Tests: `test_facebook_dom.py`, `test_facebook_photo_collection.py`,
 `test_facebook_single_page.EvidencePagesTest`,
 `test_image_walls.EarnedGalleryPageTest`.
 
+**Every photo knows where it came from and how sharp it is.** `ImageMetadata`
+carries `source_post_id`/`source_post_url`/`published_at`/`origin` (cover, post,
+or a bare Photos-tab tile — `FacebookPost.is_tile`) and `quality`
+(`photo_quality`: Laplacian sharpness on a 512px grey copy plus exposure, from
+bytes the pixel pass already holds; calibrated on 24 real photos, where a 2px
+blur at 512 never scored above 35 against originals up to 1650). Quality
+**ranks, never rejects** — a phone photo of the real classroom beats stock.
+`photo_rank` (captioned, vision score, quality, area) orders the pool, so the
+12 the planner sees are the best 12, and hero intent-pins break a size-bucket
+tie on it. The selection report is the read's **inventory** (`found`,
+`usable`, per-photo provenance and reason) and is typed and shown; its
+`section_image_plan` was read by nothing and is gone.
+`_PIXEL_CACHE` is keyed by **rendition** (`photo_identity` + `stp`): the URL
+key missed on every re-read, and identity alone would hand a square crop's size
+to its portrait original. Every row besides childcare (restaurant, health,
+home services, generic) is **vocabulary only** — the generic hero rule stays —
+and a `Subject` carries the label a gallery group of it takes. A caption-hint
+classification fills `context_heading` only into a gap: a generic Page's post
+words used to be overwritten by subject names.
+
+The opt-in vision step (D5) is a **second look**, not a mode: with a Claude
+model picked for reasoning, at most `FACEBOOK_VISION_MAX_IMAGES` uncaptioned
+photos whose measurements alone would qualify for a hero go to it with the
+profile's reviewer prompt (`annotate_image_pool(enabled=True)` — the caller
+brings the client; the local `LLM_VISION_MODEL` gate is unchanged). A local
+choice makes no call; a failure keeps the measured review.
+
+Tests: `test_photo_quality.py`, `test_facebook_vision_second_look.py`.
+
+### Understanding the Page, once
+
+`services/facebook_knowledge.understand_page` is the one structuring call, in
+`to_preview_payload` after the photo review ("Understanding the Page"). The
+Page's facts become numbered units (About, products, each post, each event);
+the model answers **in unit numbers** — per unit a category from the profile's
+vocabulary, `relevant`, `lasting`/`time_bound`; offerings and facilities with
+their units. Validation discards and never patches: one out-of-range index
+discards the reply whole, an unknown category is dropped, a name must be a
+verbatim span of one of its own units (`is_grounded_in_source`). Bodies are the
+units' own lines; nothing the call writes reaches the site. Measured live
+(Qwen, 12–14s, cached): CORE's ten activity posts name no programme and the
+call finds none — correctly; a Page whose About names three programmes gets
+exactly those three, verbatim, each with its own post's photo.
+
+It lands on `SourceContent.page_knowledge` (`models/page_knowledge.py`), **not
+`section_candidates`**: six consumers read the primary source's tree (the
+landing journey, landing order, `_sections_from_tree`, the planner prompt, the
+image-wall injector — which would have put gallery walls on the homepage), so
+structure there would have rewritten the homepage. Photos are stored by
+identity and looked up in the live pool, so a renewed link still matches and a
+stock-only or expired cut can't bring one back.
+
+**What is no longer true stays out of the grounding text** (`is_stale`, one
+predicate): a past event always (`facebook_source.event_is_past`, so with the
+call off too), and a `time_bound` post older than `FACEBOOK_STALE_POST_DAYS`
+(60). The digest is rebuilt without them (`build_raw_text(exclude=, today=)`);
+their photos stay with the caption, alt and context taken off. Undated posts
+are never stale. `clean_caption` is the one caption cleaner (assistant
+preambles — CORE's posts open "ChatGPT said:" — tag walls, "See more"), asked
+by the digest and every photo caption so the haystack and the planner's
+evidence agree. Each photo takes its post's category (`ImageMetadata.category`),
+its caption hint when the call is off.
+
+`services/offering_pages.py` turns it into a page, gate and filler in one
+module: ≥`MIN_OFFERINGS` (2) earns **Programmes** (childcare) / **Services**,
+pre-ticked via `evidence_pages`; an offering gets a child page only with
+≥300 chars no other offering shares and a photo of its own. Each earned page is
+planned from `offering_source` — a private view (the `homepage_source`
+precedent) holding only its offerings' text, one `card_kind="offerings"` tree
+and their photos — at `match_scaffolds_to_pages`' fallback, so
+`discovered_pages` stays empty and nothing keyed on it moves.
+`pin_offering_photos` writes an offering card's `image_ref` to its own post's
+photo **before** `verify_many`/`bind_image_refs`, so it is screened and bound
+like the model's own picks. `features` is earned by products or ≥2 offerings —
+the old "≥3 captioned posts" proxy stands only when the call did not answer.
+The earned Gallery page groups into headed walls (`_category_walls`: ≥2
+categories of ≥4, ≤4 per post, best first, the rest as "More photos").
+
+Not done: facilities are not source-only. There is no facilities section type,
+and `section_content._item_image` deliberately backfills every card from its
+title so photo grids stay feasible — a "facility" card can still resolve stock.
+
+After generation, `services/source_coverage.coverage_report` (advisory, the
+`ux_audit` precedent; Facebook sources only) states each fact, review,
+offering and usable photo as placed or missing with a reason, keyed by
+`image_identity` over `_collect_image_srcs` — `GeneratedSite.coverage`, shown
+as "What made it onto the site". The publish drawer requires a consent tick
+when a childcare site carries Page photos (D4, frontend only).
+`conftest._offline_facebook_knowledge` pins the call off.
+`scripts/measure_facebook_read.py --understand` reports categories, offerings,
+stale items and gallery groups on the captures.
+
+Tests: `test_facebook_knowledge.py`, `test_offering_pages.py`,
+`test_facebook_allocation.py`, `test_source_coverage.py`.
+
 ### Signing in once
 
 **A session is a rescue, not an upgrade — the logged-out render reads more.**

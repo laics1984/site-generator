@@ -83,8 +83,12 @@ def photo_rejection_reason(meta: ImageMetadata | None, section: str) -> str | No
     return None
 
 
-def metadata_hero_rejection_reason(meta: ImageMetadata, profile: PhotoProfile) -> str | None:
-    """Measured eligibility only: never claims to know faces/negative space."""
+def metadata_hero_rejection_reason(
+    meta: ImageMetadata, profile: PhotoProfile, *, require_caption: bool = True,
+) -> str | None:
+    """Measured eligibility only: never claims to know faces/negative space.
+    `require_caption=False` asks the measurements alone — whether a photo with
+    no words of its own would qualify if someone could say what it shows."""
     review = meta.facebook_photo_review
     if review is None or not review.pixel_checks_complete:
         return "pixel checks incomplete"
@@ -98,14 +102,85 @@ def metadata_hero_rejection_reason(meta: ImageMetadata, profile: PhotoProfile) -
         return "insufficient hero resolution"
     if meta.width / meta.height < settings.hero_bg_min_aspect:
         return "not a suitable landscape shape"
-    if not review.caption_hero_context:
+    if require_caption and not review.caption_hero_context:
         return ("caption lacks suitable activity context" if profile.hero_requires_caption
                 else "caption rules out a hero")
     return None
 
 
+async def _vision_second_look(metadata: list[ImageMetadata], profile: PhotoProfile) -> None:
+    """The opt-in vision step (decision D5), on top of the measured pass.
+
+    A profile that needs a caption to call a photo a hero (childcare) can't
+    use a strong photo the Page posted without words. When the reasoning model
+    picked in the UI is a Claude model, the uncaptioned photos whose
+    measurements alone would qualify — at most `FACEBOOK_VISION_MAX_IMAGES`,
+    best first — are sent to it with the profile's own reviewer prompt. Off
+    for a local reasoning choice, so the default read makes no vision call; a
+    failed call keeps the measured review.
+    """
+    from app.services import llm_choice
+
+    cap = settings.facebook_vision_max_images
+    if not profile.vision_prompt or cap <= 0 or llm_choice.current().reasoning == llm_choice.LOCAL:
+        return
+    candidates = sorted((
+        meta for meta in metadata
+        if not meta.caption.strip() and meta.facebook_photo_review
+        and meta.facebook_photo_review.method == "metadata"
+        and metadata_hero_rejection_reason(meta, profile, require_caption=False) is None
+    ), key=photo_rank, reverse=True)[:cap]
+    if not candidates:
+        return
+    from app.services.image_vision import annotate_image_pool
+    from app.services.llm import get_reasoning_llm
+
+    measured = {meta.url: meta.facebook_photo_review for meta in candidates}
+    for meta in candidates:
+        meta.facebook_photo_review = None  # a stored review short-circuits the pass
+    try:
+        await annotate_image_pool(candidates, llm=get_reasoning_llm(), max_images=cap, enabled=True)
+    except Exception:
+        logger.exception("Facebook vision step failed; keeping the measured reviews")
+    for meta in candidates:
+        if meta.facebook_photo_review is None:
+            meta.facebook_photo_review = measured[meta.url]
+
+
+def photo_rank(meta: ImageMetadata) -> tuple:
+    """The order photos are offered in: a photo the Page captioned first (its
+    words are what lets the planner place it), then a vision score when one
+    ran, then measured quality, then size. This decides which copy of a
+    near-duplicate is kept and which 12 the planner is shown
+    (`source_router.MAX_PROMPT_IMAGES`) — area alone used to choose both."""
+    review = meta.facebook_photo_review
+    return (
+        bool(meta.caption.strip()),
+        review.scores.overall if review and review.method == "vision" and review.scores else 0,
+        meta.quality or 0,
+        (meta.width or 0) * (meta.height or 0),
+    )
+
+
+def _provenance(meta: ImageMetadata) -> dict:
+    """Where a photo came from, as the inventory reports it — read off the
+    photo's own metadata, the one record of it."""
+    return {
+        "source_image_url": meta.url,
+        "source_post_id": meta.source_post_id,
+        "source_post_url": meta.source_post_url,
+        "date": meta.published_at,
+        "origin": meta.origin,
+        "quality": meta.quality,
+    }
+
+
 async def review_photo_library(source: SourceContent, page: FacebookPage) -> dict:
-    """Default to CPU/caption assessment, retaining opt-in vision compatibility."""
+    """Review, rank and de-duplicate the Page's photos, and report the result.
+
+    The report is the read's photo inventory: every photo found, each kept or
+    rejected with its reason and provenance. Defaults to CPU/caption
+    assessment, retaining opt-in vision compatibility."""
     from app.services.image_vision import annotate_image_pool, vision_enabled
 
     photo_profile = next(
@@ -137,23 +212,19 @@ async def review_photo_library(source: SourceContent, page: FacebookPage) -> dic
             from app.services.facebook_photo_metadata import assess_photo_metadata
 
             await assess_photo_metadata(source.image_metadata)
+            await _vision_second_look(source.image_metadata, photo_profile)
         else:
             await annotate_image_pool(source.image_metadata)
     except Exception:
         logger.exception("Facebook photo review failed; leaving photos unreviewed")
 
-    records = [{"source_image_url": meta.url, "decision": "reject", "reason": "duplicate",
+    found = len(source.image_metadata) + len(duplicates)
+    records = [{**_provenance(meta), "decision": "reject", "reason": "duplicate",
                 "hero_candidate": False, "gallery_candidate": False,
                 "recommended_sections": [], "scores": {}} for meta in duplicates]
     rejected = Counter({"duplicate": len(duplicates)})
     accepted: list[ImageMetadata] = []
-    posts = {photo.url: post for post in page.posts for photo in post.pictures}
-    # Strongest version wins duplicate groups; source order is the tie-breaker.
-    ordered = sorted(source.image_metadata, key=lambda meta: (
-        meta.facebook_photo_review.scores.overall
-        if meta.facebook_photo_review and meta.facebook_photo_review.scores else 0,
-        (meta.width or 0) * (meta.height or 0),
-    ), reverse=True)
+    ordered = sorted(source.image_metadata, key=photo_rank, reverse=True)
     seen: set[str] = set()
     for meta in ordered:
         review = meta.facebook_photo_review
@@ -175,23 +246,20 @@ async def review_photo_library(source: SourceContent, page: FacebookPage) -> dic
             meta.intent = "hero" if hero else "generic"
             if review and review.method == "metadata":
                 review.hero_candidate = hero
-                if review.classification:
+                # Only into a gap: a photo whose post's own words already say
+                # what it shows keeps them over a vocabulary of subject names.
+                if review.classification and not meta.context_heading:
                     meta.context_heading = " ".join(review.classification)
                 if hero and "hero" not in review.recommended_sections:
                     review.recommended_sections.insert(0, "hero")
             if meta.vision_caption:
                 meta.alt = meta.vision_caption
                 meta.context_heading = " ".join(review.classification) if review else ""
-        post = posts.get(meta.url)
         scores = review.scores.model_dump() if review and review.method == "vision" and review.scores else {}
         if scores:
             scores["overall"] = review.scores.overall
         records.append({
-            "source_image_url": meta.url,
-            "source_post_id": post.post_id if post else None,
-            "source_post_url": post.permalink if post else None,
-            "date": post.created_time if post else None,
-            "source_type": "post" if post else "cover",
+            **_provenance(meta),
             "width": meta.width, "height": meta.height,
             "classification": review.classification if review else [],
             "caption": meta.vision_caption or "",
@@ -223,30 +291,6 @@ async def review_photo_library(source: SourceContent, page: FacebookPage) -> dic
             colour for review in reviews for colour in review.palette
         ).most_common(6)],
     }
-    section_plan = []
-    for section in photo_profile.plan_sections:
-        matches = [record for record in records if record["decision"] != "reject"
-                   and section in record["recommended_sections"]
-                   and (section != "hero" or record["hero_candidate"])]
-        matches.sort(key=lambda record: record["scores"].get("overall", 0), reverse=True)
-        authentic_only = section in {"facilities", "teachers", "gallery"}
-        decorative = section in {"testimonials", "contact", "faq", "footer"}
-        if decorative:
-            preferred_source, reason = "none", "minimal styling"
-        elif matches:
-            preferred_source, reason = "facebook", "source photos available"
-        elif authentic_only:
-            preferred_source, reason = "none", "authentic source photo required"
-        else:
-            preferred_source = "stock"
-            reason = "no suitable reviewed source photo; use existing stock/abstract fallback"
-        section_plan.append({
-            "section": section,
-            "preferred_source": preferred_source,
-            "facebook_image_ids": [record["source_image_url"] for record in matches[:6]],
-            "fallback_required": not matches and not decorative and not authentic_only,
-            "reason": reason,
-        })
     return {
         "page": {"name": page.name, "facebook_url": page.canonical_url},
         "review_status": ("metadata_assessed" if method == "metadata" and assessed
@@ -255,5 +299,5 @@ async def review_photo_library(source: SourceContent, page: FacebookPage) -> dic
         "assessment_method": method,
         "hero_stock_fallback": not any(record["hero_candidate"] for record in records),
         "visual_profile": profile, "images": records,
-        "section_image_plan": section_plan, "rejected_summary": dict(rejected),
+        "found": found, "usable": len(accepted), "rejected_summary": dict(rejected),
     }

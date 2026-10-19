@@ -1,6 +1,7 @@
 # Facebook Page → whole-business site: assessment and implementation plan
 
-Status: **approved 2026-10-11 with all six decisions; in progress.**
+Status: **approved 2026-10-11 with all six decisions; P0–P7 and D3–D5 done
+2026-10-19. D6 (video embeds) and the facilities source-only rule remain.**
 Written 2026-10-11 against the working tree on `main` (including the uncommitted
 Facebook photo work: `facebook_dom.py`, `facebook_photo_*`, `landing_source.py`).
 
@@ -16,6 +17,41 @@ Full suite green. Details are in CLAUDE.md:
 - "A signed photo link dies, so nothing is built on a dead one";
 - "The Page's posts are in the data it already sent";
 - the dedupe note under "One photo pass".
+
+**Done 2026-10-19** (branch `feature/facebook-understanding`; details in
+CLAUDE.md "Every photo knows where it came from" and "Understanding the Page,
+once"):
+- P2: provenance and measured quality on every photo, quality-ranked pool,
+  rendition-keyed pixel cache, the inventory typed and shown,
+  `section_image_plan` deleted;
+- P7a/P7b: `source_coverage` (facts, reviews, offerings, photos);
+- P3: restaurant, health, home-services and generic vocabularies; D5 as a
+  Claude second look capped at 6;
+- P4: `facebook_knowledge` (one index-answering call) plus the stale rule —
+  stale posts and past events leave the grounding text (decision of
+  2026-10-19), with a read-only "What we understood" report;
+- P5: earned Programmes/Services page and child pages, planned from
+  `offering_source`;
+- P6: grouped Gallery walls, offering cards pinned to their own post's photo,
+  hero pins tie-broken on quality;
+- D4: the consent tick in the publish drawer.
+
+**Corrections from that round:**
+- The knowledge lives on `SourceContent.page_knowledge`, not
+  `section_candidates` as §8 proposed. Six consumers read the primary
+  source's tree, and the image-wall injector would have put gallery walls on
+  the homepage. The earned page's planning view projects it into a tree, where
+  that is safe.
+- `features` keeps the "≥3 captioned posts" proxy when the call didn't answer.
+  Replacing it outright would have dropped features from every read with the
+  call off.
+- Facilities are NOT source-only (P6 verify step). No facilities section type
+  exists, and card images deliberately backfill stock from the title to keep
+  photo grids feasible. Enforcing it is a separate design change.
+- Measured live on CORE: the call categorises 10 photos (hints alone: 4) and
+  finds no offering. Its posts are one-off activities, which is the right
+  answer.
+- The Facebook data-export reader (from the 2026-10-19 brief) is deferred.
 
 **What the real captures corrected in this plan:**
 

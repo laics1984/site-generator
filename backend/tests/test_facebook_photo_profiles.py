@@ -76,8 +76,35 @@ def test_every_photo_context_has_a_profile_row():
 
 
 def test_an_industry_without_a_row_reads_the_default():
-    assert context_for("restaurant") == "facebook"
+    assert context_for("agency") == "facebook"
     assert context_for("childcare") == "facebook_childcare"
+    assert context_for("restaurant") == "facebook_restaurant"
+
+
+def test_every_profile_subject_is_a_classification_and_has_a_label():
+    """A caption hint lands in `FacebookPhotoReview.classification`, so a
+    subject outside that vocabulary fails validation the first time it fires;
+    its label is the heading a gallery group of it takes."""
+    from app.models.facebook_photos import FacebookPhotoReview
+
+    vocabulary = set(get_args(get_args(FacebookPhotoReview.model_fields["classification"].annotation)[0]))
+    for context, profile in PROFILES.items():
+        names = [subject.name for subject in profile.subject_hints]
+        assert len(names) == len(set(names)), context
+        for subject in profile.subject_hints:
+            assert subject.name in vocabulary, (context, subject.name)
+            assert subject.label and subject.phrases, (context, subject.name)
+        assert profile.setting_subjects <= set(names), context
+
+
+def test_a_generic_caption_keeps_its_own_words_as_the_photo_context():
+    url = "https://cdn.example/workshop.jpg"
+    source = _review(FacebookPage(name="Bright Studio", canonical_url="https://www.facebook.com/bright",
+                                  category="Agency", posts=[_post(url, "Our workshop on brand strategy")]),
+                     {url: (1600, 1000)})
+    meta = source.image_metadata[0]
+    assert meta.facebook_photo_review.classification == ["event"]
+    assert meta.context_heading == "Our workshop on brand strategy"
 
 
 def test_a_generic_hero_is_decided_by_measurement_not_by_a_caption():

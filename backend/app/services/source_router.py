@@ -182,7 +182,17 @@ def match_scaffolds_to_pages(
             )
             continue
 
-        # 5. Final fallback — entry source, so the LLM always has *something*.
+        # 5. A page a single-page source EARNED from its offerings is planned
+        # from those offerings alone, never the whole digest.
+        from app.services.offering_pages import offering_source
+
+        view = offering_source(primary_source, scaffold)
+        if view is not None:
+            out[scaffold.slug] = view
+            logger.debug("Routed scaffold %r to its offerings view", scaffold.slug)
+            continue
+
+        # 6. Final fallback — entry source, so the LLM always has *something*.
         out[scaffold.slug] = primary_source
         logger.debug("Routed scaffold %r to entry source (fallback)", scaffold.slug)
 

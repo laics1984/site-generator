@@ -1,4 +1,4 @@
-import type { FacebookFacts } from '@/lib/types'
+import type { FacebookFacts, FacebookPhotoInventory, PageKnowledge } from '@/lib/types'
 
 /**
  * What we actually read off the Page — and the promise that nothing else will
@@ -13,6 +13,23 @@ import type { FacebookFacts } from '@/lib/types'
 
 interface Props {
   facts: FacebookFacts
+  knowledge?: PageKnowledge | null
+  photos?: FacebookPhotoInventory
+}
+
+const REJECTION_LABELS: Record<string, string> = {
+  duplicate: 'duplicates',
+  low_quality: 'too small',
+  privacy_risk: 'privacy risk',
+  poster_or_text_graphic: 'posters or text graphics',
+}
+
+/** "17 usable of 24 · 5 duplicates · 2 too small". */
+function photoSummary(photos: FacebookPhotoInventory): string {
+  const rejected = Object.entries(photos.rejected_summary)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${count} ${REJECTION_LABELS[reason] ?? reason.replace(/_/g, ' ')}`)
+  return [`${photos.usable} usable of ${photos.found}`, ...rejected].join(' · ')
 }
 
 interface Fact {
@@ -88,7 +105,60 @@ const MISSING_LABELS: Record<string, string> = {
   reviews: 'customer recommendations',
 }
 
-export function FacebookFactsPanel({ facts }: Props) {
+function UnderstandingPanel({ knowledge, photos }: { knowledge?: PageKnowledge | null; photos?: FacebookPhotoInventory }) {
+  const offerings = knowledge?.offerings ?? []
+  const facilities = knowledge?.facilities ?? []
+  const stale = knowledge?.stale ?? []
+  if (!offerings.length && !facilities.length && !stale.length && !photos) return null
+
+  return (
+    <div className="rounded-xl border border-line bg-surface p-3 text-xs">
+      <h3 className="font-semibold text-ink-soft">What we understood</h3>
+      {offerings.length > 0 && (
+        <div className="mt-2">
+          <div className="font-medium text-ink">Offerings</div>
+          <ul className="mt-1 space-y-0.5">
+            {offerings.map((offering) => (
+              <li key={offering.name} className="flex items-baseline gap-1.5">
+                <span aria-hidden className="text-emerald-600">✓</span>
+                <span className="text-ink">{offering.name}</span>
+                <span className="text-ink-faint">{offering.kind}</span>
+                {offering.link && (
+                  <a href={offering.link} target="_blank" rel="noreferrer" className="text-ink-muted underline">
+                    source post{offering.published_at ? ` · ${offering.published_at.slice(0, 10)}` : ''}
+                  </a>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {facilities.length > 0 && (
+        <p className="mt-2 text-ink-muted">
+          <span className="font-medium text-ink">Facilities:</span> {facilities.map((f) => f.name).join(', ')}
+        </p>
+      )}
+      {photos && (
+        <p className="mt-2 text-ink-muted">
+          <span className="font-medium text-ink">Photos:</span> {photoSummary(photos)}
+        </p>
+      )}
+      {stale.length > 0 && (
+        <div className="mt-2 text-ink-muted">
+          <span className="font-medium text-ink">Left out as no longer current:</span>{' '}
+          {stale.map((item) => (item.date ? `${item.label} (${item.date})` : item.label)).join('; ')}
+        </div>
+      )}
+      {knowledge?.structured_by === 'none' && (
+        <p className="mt-2 text-ink-faint">
+          Offerings weren't worked out for this read, so the site is planned from the facts above.
+        </p>
+      )}
+    </div>
+  )
+}
+
+export function FacebookFactsPanel({ facts, knowledge, photos }: Props) {
   const items = factList(facts)
   const found = items.filter((f) => f.value)
   const missing = items.filter((f) => !f.value)
@@ -133,6 +203,8 @@ export function FacebookFactsPanel({ facts }: Props) {
           content</span> above and they join these facts.
         </p>
       </div>
+
+      <UnderstandingPanel knowledge={knowledge} photos={photos} />
 
       {facts.partial && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">

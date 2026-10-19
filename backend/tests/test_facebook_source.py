@@ -261,7 +261,8 @@ class ImageTest(unittest.TestCase):
         metas = to_image_metadata(page)
         self.assertEqual([m.intent for m in metas], ["generic", "generic"])
         self.assertEqual([m.role for m in metas], ["content", "content"])
-        self.assertEqual({m.selection_context for m in metas}, {"facebook"})
+        # A café reads the restaurant vocabulary; its hero rule is the generic one.
+        self.assertEqual({m.selection_context for m in metas}, {"facebook_restaurant"})
         self.assertEqual(metas[1].alt, "Latte art class this Saturday")
 
     def test_the_profile_picture_is_not_in_the_photo_pool(self):

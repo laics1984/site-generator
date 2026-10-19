@@ -1124,14 +1124,19 @@ def evidence_pages(source: SourceContent, industry: IndustryCategory) -> list[Pa
 
     A Facebook Page (or a one-page document) carries one homepage's worth of
     TEXT, which is why it gets no template fan-out. Material is a different
-    question: a full set of the business's own photos is a Gallery page, and a
-    restaurant's menu sheets are a Menu page. Both are filled from the source
+    question: a full set of the business's own photos is a Gallery page, a
+    restaurant's menu sheets are a Menu page, and two or more offerings the
+    Page itself states are a Programmes / Services page (`offering_pages`). Both are filled from the source
     verbatim — the photos by `routers.generate._inject_image_walls`, the
     sheets by `menu_assets.inject_menu_assets` — so neither asks the model to
     write anything it can't see. Each gate asks the same predicate its filler
     uses, so an earned page is never empty.
     """
-    pages: list[PageScaffold] = []
+    from app.services.offering_pages import offering_scaffolds
+
+    # What the business offers, read from its own posts (`facebook_knowledge`):
+    # a page of programmes or services, filled from those posts alone.
+    pages: list[PageScaffold] = offering_scaffolds(source, industry)
     if len(gallery_photos(source)) >= GALLERY_PAGE_MIN_PHOTOS:
         pages.append(gallery_page())
     if serves_menus(industry) and any(

@@ -135,6 +135,27 @@ export interface SourceContent {
   declared_lang?: string | null
   /** Set on the top-level source by every reader's preview. */
   language_profile?: LanguageProfile | null
+  /** What a Facebook Page offers, from its own words. Mirrors
+   * backend/app/models/page_knowledge.py. */
+  page_knowledge?: PageKnowledge | null
+}
+
+export interface PageOffering {
+  name: string
+  kind: 'programme' | 'service' | 'product'
+  body: string
+  link?: string | null
+  published_at?: string | null
+  photo_ids: string[]
+  own_chars: number
+}
+
+export interface PageKnowledge {
+  offerings: PageOffering[]
+  facilities: { name: string; body: string; photo_ids: string[] }[]
+  /** Time-bound posts and past events left out of what the site may say. */
+  stale: { label: string; date?: string | null }[]
+  structured_by: 'llm' | 'none'
 }
 
 export interface SourceNavLink {
@@ -312,11 +333,29 @@ export interface BrandExtractionResult {
   google_fonts: string[]
 }
 
+/** Mirrors backend/app/models/coverage.py. */
+export type CoverageKind = 'fact' | 'photo' | 'review' | 'offering'
+
+export interface CoverageItem {
+  kind: CoverageKind
+  label: string
+  value?: string
+  placed: boolean
+  reason?: string
+}
+
+export interface SourceCoverage {
+  items: CoverageItem[]
+  summary: Partial<Record<CoverageKind, { read: number; placed: number }>>
+}
+
 export interface GeneratedSite {
   /** How the site presents its languages; absent on single-language sites built before P2. */
   multilingual?: MultilingualPlan | null
   palette_brief?: Record<string, unknown> | null
   generation_warnings?: string[]
+  /** What the source said and whether this site says it too. Advisory. */
+  coverage?: SourceCoverage | null
   site_name: string
   tagline?: string | null
   primary_color?: string | null
@@ -623,6 +662,32 @@ export interface ScrapePreview {
   facebook_facts?: FacebookFacts
   facebook_contact?: Record<string, string>
   facebook_sections?: string[]
+  /** The read's photo inventory (`facebook_photo_selection.review_photo_library`). */
+  facebook_photo_selection?: FacebookPhotoInventory
+}
+
+/** One photo the Page read, kept or rejected, with where it came from. */
+export interface FacebookPhotoRecord {
+  source_image_url: string
+  source_post_id?: string | null
+  source_post_url?: string | null
+  date?: string | null
+  origin?: 'cover' | 'post' | 'photos_tab' | null
+  /** Measured sharpness and exposure, 0..1. Ranks; never rejects. */
+  quality?: number | null
+  decision: 'accept' | 'reject' | 'backup'
+  reason: string
+  hero_candidate: boolean
+  gallery_candidate: boolean
+}
+
+export interface FacebookPhotoInventory {
+  found: number
+  usable: number
+  /** Rejected photos by reason: duplicate, low_quality, privacy_risk… */
+  rejected_summary: Record<string, number>
+  hero_stock_fallback: boolean
+  images: FacebookPhotoRecord[]
 }
 
 export interface SitemapProbeResult {

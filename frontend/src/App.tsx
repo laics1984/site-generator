@@ -2,6 +2,7 @@ import { PalettePanel } from './components/PalettePanel'
 import { useEffect, useMemo, useState } from 'react'
 
 import { BrandPanel } from '@/components/BrandPanel'
+import { CoveragePanel } from '@/components/CoveragePanel'
 import { CrawlProgress } from '@/components/CrawlProgress'
 import { PageList } from '@/components/PageList'
 import { PagePicker } from '@/components/PagePicker'
@@ -663,6 +664,12 @@ export default function App() {
             <Banner tone="warn" title="Menu images need review">
               {site.generation_warnings.map((warning, index) => <p key={index}>{warning}</p>)}
             </Banner>
+          </div>
+        )}
+
+        {site.coverage && (
+          <div className="px-4 pt-3 sm:px-6">
+            <CoveragePanel coverage={site.coverage} />
           </div>
         )}
 

@@ -3,6 +3,7 @@ transport; no network anywhere."""
 
 import asyncio
 import unittest
+from datetime import date
 
 import httpx
 
@@ -235,8 +236,10 @@ class UploadsAndEventsTest(unittest.TestCase):
         ])
         self.assertEqual([(e.name, e.place, e.url) for e in page.events],
                          [("Sports Day", "Taman Tasik", "https://www.facebook.com/events/77")])
-        digest = build_raw_text(page)
+        digest = build_raw_text(page, today=date(2025, 7, 1))
         self.assertIn("Events from the Page:\n  Sports Day (2025-07-12)\n  Races and games for every class.", digest)
+        # Once it has happened it is history, not something the site may announce.
+        self.assertNotIn("Sports Day", build_raw_text(page, today=date(2025, 7, 13)))
 
 
 class _NoWait:

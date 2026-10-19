@@ -37,6 +37,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 from app.models.facebook_photos import FacebookPhotoReview
+from app.models.page_knowledge import PageKnowledge
 from app.models.industry_catalog import IndustryCategoryLiteral
 
 
@@ -1842,6 +1843,14 @@ class SourceContent(BaseModel):
             "None on discovered pages and on payloads from before P1."
         ),
     )
+    page_knowledge: PageKnowledge | None = Field(
+        default=None,
+        description=(
+            "What a single-page source is about — offerings, facilities, stale "
+            "posts left out — structured from its own words "
+            "(services/facebook_knowledge.py). Top-level Facebook sources only."
+        ),
+    )
     multilingual: MultilingualPlan | None = Field(
         default=None,
         description=(
@@ -1877,7 +1886,10 @@ class SourceConflict(BaseModel):
 
 # Which `facebook_photo_profiles` row a Facebook photo was read under. A row of
 # its own per industry that needs one; "facebook" for the rest.
-PhotoContext = Literal["facebook", "facebook_childcare"]
+PhotoContext = Literal[
+    "facebook", "facebook_childcare", "facebook_restaurant", "facebook_health",
+    "facebook_home_services",
+]
 
 
 class ImageMetadata(BaseModel):
@@ -1919,6 +1931,22 @@ class ImageMetadata(BaseModel):
     # text". Evidence about the pixels for matching and screening; machine-made
     # and hedged, so never alt text or copy.
     platform_alt: str = ""
+    # Where a platform photo came from — set by the Facebook reader, None for
+    # every other source. The post it illustrated (id, permalink, date) is what
+    # ties a picture back to the words that describe it; `origin` says whether
+    # the Page showed it as its cover, inside a post, or as a bare Photos-tab
+    # tile with no post of its own.
+    source_post_id: str | None = None
+    source_post_url: str | None = None
+    published_at: str | None = None
+    origin: Literal["cover", "post", "photos_tab"] | None = None
+    # The category the post's words put the photo in
+    # (`facebook_knowledge`), in its photo profile's vocabulary. None unknown.
+    category: str | None = None
+    # Measured technical quality, 0..1 (`photo_quality`): sharpness and
+    # exposure from the bytes the pixel pass already read. Ranks photos; never
+    # rejects one, and says nothing about how good the picture looks.
+    quality: float | None = None
     # Vision-pass annotations (services/image_vision.py). All None until the
     # opt-in pass runs. vision_caption feeds the matcher's lexical scoring so
     # alt-less, hash-named images can still be ranked against slot queries.

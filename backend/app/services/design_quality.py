@@ -105,10 +105,6 @@ def _children(el: BuilderElement) -> list[BuilderElement]:
     return [c for c in el.content if isinstance(c, BuilderElement)] if isinstance(el.content, list) else []
 
 
-def _walk(el: BuilderElement) -> Iterator[BuilderElement]:
-    yield el
-    for child in _children(el):
-        yield from _walk(child)
 
 
 def _bg_values(el: BuilderElement) -> list[str]:
@@ -119,7 +115,7 @@ def _bg_values(el: BuilderElement) -> list[str]:
 def _has_gradient_fill(section: BuilderElement) -> bool:
     """A gradient band with no photograph in it (a scrim over a photo is the
     photo's, not a gradient band)."""
-    values = [v for node in _walk(section) for v in _bg_values(node)]
+    values = [v for node in section.walk() for v in _bg_values(node)]
     if any(_URL_RE.search(v) for v in values):
         return False
     return any(_GRADIENT_RE.search(v) for v in values)
@@ -292,7 +288,7 @@ def _check_composition(ctx: _Context) -> Iterator[QualityFinding]:
             )
 
         for index, section in enumerate(sections):
-            for node in _walk(section):
+            for node in section.walk():
                 content = node.content
                 if isinstance(content, BuilderElementContent) and node.type == "text":
                     text = content.innerText or ""
@@ -313,7 +309,7 @@ def _check_composition(ctx: _Context) -> Iterator[QualityFinding]:
 
 
 def _has_action(section: BuilderElement) -> bool:
-    for node in _walk(section):
+    for node in section.walk():
         content = node.content
         if node.type == "link" and isinstance(content, BuilderElementContent) and content.href:
             return True
@@ -345,7 +341,7 @@ def _check_fonts(ctx: _Context) -> Iterator[QualityFinding]:
     for page in ctx.site.pages:
         stray: Counter[str] = Counter()
         for section in _body(page):
-            for node in _walk(section):
+            for node in section.walk():
                 family = _first_family((node.styles or {}).get("fontFamily"))
                 if family and family not in ctx.fonts and family not in ("system-ui", "inherit", "monospace", "sans-serif", "serif"):
                     stray[family] += 1
@@ -361,7 +357,7 @@ def _check_imagery(ctx: _Context) -> Iterator[QualityFinding]:
     organic = {v for k, v in IMAGE_SHAPES.items() if v and k in ("blob", "pebble")}
     for page in ctx.site.pages:
         for index, section in enumerate(_body(page)):
-            for node in _walk(section):
+            for node in section.walk():
                 if node.type != "image" or not isinstance(node.content, BuilderElementContent):
                     continue
                 width, height = _px(node.content.width), _px(node.content.height)
@@ -397,7 +393,7 @@ def _check_abstract_imagery(ctx: _Context) -> Iterator[QualityFinding]:
     the resolver's gates, and a local change could only delete the picture."""
     for page in ctx.site.pages:
         for index, section in enumerate(_body(page)):
-            for node in _walk(section):
+            for node in section.walk():
                 if node.type == "image" and isinstance(node.content, BuilderElementContent):
                     if is_placeholder_src(node.content.src) or abstract_text(node.content.alt):
                         yield _finding(
@@ -472,7 +468,7 @@ def _contrast_ratio(a: str, b: str) -> float:
 
 
 def _section_title_colors(section: BuilderElement) -> str | None:
-    for node in _walk(section):
+    for node in section.walk():
         if node.htmlTag in ("h1", "h2") or (node.name or "") in ("Heading", "Title"):
             color = (node.styles or {}).get("color")
             if isinstance(color, str):
@@ -508,7 +504,7 @@ def _check_direction(ctx: _Context) -> Iterator[QualityFinding]:
                     yield _finding("wave-dividers", "low", "a wave seam", page=slug, section=index, node=section.name)
             if "ambient-motion" in anti and section.motion is not None and section.motion.preset in _AMBIENT_PRESETS:
                 yield _finding("ambient-motion", "low", f"an ambient '{section.motion.preset}' backdrop", page=slug, section=index, node=section.name)
-            for node in _walk(section):
+            for node in section.walk():
                 styles = node.styles or {}
                 if "glass-cards" in anti and styles.get("backdropFilter"):
                     yield _finding("glass-cards", "low", "frosted-glass panels", page=slug, section=index, node=node.name)
@@ -520,7 +516,7 @@ def _check_direction(ctx: _Context) -> Iterator[QualityFinding]:
                         yield _finding("dramatic-shadows", "low", f"a {max(blurs):.0f}px shadow", page=slug, section=index, node=node.name)
                         break
             if not brand_blue_purple:
-                for value in (v for node in _walk(section) for v in _bg_values(node)):
+                for value in (v for node in section.walk() for v in _bg_values(node)):
                     if not _GRADIENT_RE.search(value) or _URL_RE.search(value):
                         continue
                     stops = _HEX_IN_RE.findall(value)
@@ -629,7 +625,7 @@ def _fix_wave(section: BuilderElement, _f: QualityFinding) -> bool:
 
 def _fix_shadow(section: BuilderElement, _f: QualityFinding) -> bool:
     changed = False
-    for node in _walk(section):
+    for node in section.walk():
         shadow = (node.styles or {}).get("boxShadow")
         if isinstance(shadow, str):
             blurs = [float(b) for b in _SHADOW_BLUR_RE.findall(shadow)]
@@ -641,7 +637,7 @@ def _fix_shadow(section: BuilderElement, _f: QualityFinding) -> bool:
 
 def _fix_shape(section: BuilderElement, finding: QualityFinding) -> bool:
     changed = False
-    for node in _walk(section):
+    for node in section.walk():
         if node.type == "image" and node.name == finding.node:
             node.styles = {**(node.styles or {}), "borderRadius": _SOFT_RECT_RADIUS}
             changed = True

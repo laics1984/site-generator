@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Literal
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -16,7 +17,9 @@ from app.models.content_blocks import ImageMetadata
 from app.models.facebook_photos import FacebookPhotoReview
 from app.services.facebook_photo_profiles import PROFILES, PhotoProfile, profile_for
 from app.services.image_graphics import screen_source_images_for_graphics
+from app.services.image_urls import photo_identity
 from app.services.image_vision import _fetch_image_bytes, _thumbnail_hash
+from app.services.photo_quality import photo_quality
 from app.services.text_detection import prefetch_text_flags
 
 
@@ -34,14 +37,27 @@ class PixelChecks:
     ocr_text: str
     qr_payload: str | None
     is_graphic: bool | None
+    quality: float | None = None
 
     @property
     def complete(self) -> bool:
         return self.has_text is not None and self.is_graphic is not None
 
 
+# Keyed by the rendition, not the link: Facebook re-signs every photo URL on
+# each read, so a URL key missed on every re-read of the same Page.
 _PIXEL_CACHE: dict[str, PixelChecks] = {}
 _PIXEL_CACHE_MAX = 256
+
+
+def _cache_key(url: str) -> str:
+    """One rendition of one picture: the filename names the picture, `stp` the
+    rendition. The picture alone is not enough — a square crop and its
+    portrait original share a filename and measure differently."""
+    identity = photo_identity(url)
+    if identity is None:
+        return url
+    return f"{identity}|{parse_qs(urlparse(url).query).get('stp', [''])[0]}"
 
 
 def _matches(text: str, phrase: str) -> bool:
@@ -53,8 +69,8 @@ def caption_hints(caption: str, profile: PhotoProfile) -> tuple[list[str], bool]
     not assertions about image contents: the page-planning model receives the
     caption itself and decides the final section/ref."""
     text = " ".join(re.findall(r"\w+", caption.lower()))
-    subjects = [subject for subject, phrases in profile.subject_hints
-                if any(_matches(text, phrase) for phrase in phrases)]
+    subjects = [subject.name for subject in profile.subject_hints
+                if any(_matches(text, phrase) for phrase in subject.phrases)]
     excluded = any(_matches(text, phrase) for phrase in profile.hero_exclusions)
     if not profile.hero_requires_caption:
         return subjects[:8], not excluded
@@ -86,6 +102,7 @@ def _stamp(meta: ImageMetadata, checks: PixelChecks) -> None:
     meta.content_hash = checks.content_hash
     meta.ocr_has_text, meta.qr_payload = checks.has_text, checks.qr_payload
     meta.ocr_text = checks.ocr_text
+    meta.quality = checks.quality
     if checks.is_graphic:
         meta.role = "logo"
 
@@ -100,7 +117,7 @@ async def assess_photo_metadata(metadata: list[ImageMetadata]) -> None:
     pending = []
     checks_by_url: dict[str, PixelChecks] = {}
     for meta in selected:
-        checks = _PIXEL_CACHE.get(meta.url)
+        checks = _PIXEL_CACHE.get(_cache_key(meta.url))
         if checks:
             checks_by_url[meta.url] = checks
             _stamp(meta, checks)
@@ -137,11 +154,12 @@ async def assess_photo_metadata(metadata: list[ImageMetadata]) -> None:
             *size, await asyncio.to_thread(_thumbnail_hash, raw),
             hashlib.sha256(raw).hexdigest(), screened[meta.url].ocr_has_text,
             screened[meta.url].ocr_text, screened[meta.url].qr_payload, graphics.get(meta.url),
+            await asyncio.to_thread(photo_quality, raw),
         )
         checks_by_url[meta.url] = checks
         _stamp(meta, checks)
         if checks.complete:
-            _PIXEL_CACHE[meta.url] = checks
+            _PIXEL_CACHE[_cache_key(meta.url)] = checks
             while len(_PIXEL_CACHE) > _PIXEL_CACHE_MAX:
                 _PIXEL_CACHE.pop(next(iter(_PIXEL_CACHE)))
 

@@ -8,12 +8,14 @@ schemas the builder cannot open for editing.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any, Literal, Union
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from app.models.content_blocks import ContentCollections, MultilingualPlan, NavLink
+from app.models.coverage import SourceCoverage
 
 
 EditorBtns = Literal[
@@ -246,6 +248,14 @@ class BuilderElement(BaseModel):
         """Record the colour a painter just laid behind this node's text."""
         self._painted_surface = surface_hex
 
+    def walk(self) -> Iterator["BuilderElement"]:
+        """This node, then every descendant, depth-first in document order."""
+        yield self
+        if isinstance(self.content, list):
+            for child in self.content:
+                if isinstance(child, BuilderElement):
+                    yield from child.walk()
+
 
 BuilderElement.model_rebuild()
 
@@ -358,6 +368,9 @@ class GeneratedSite(BaseModel):
     cms_target_name: str | None = None
     public_url: str | None = None
     generation_warnings: list[str] = Field(default_factory=list)
+    # What the source said and whether this site says it too
+    # (services/source_coverage.py). Advisory; None when not measured.
+    coverage: SourceCoverage | None = None
     media_credits: list[str] = Field(
         default_factory=list,
         description=(

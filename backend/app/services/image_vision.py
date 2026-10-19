@@ -179,8 +179,13 @@ async def annotate_image_pool(
     llm: LlmClient | None = None,
     max_images: int | None = None,
     prefetched: dict[str, str] | None = None,
+    enabled: bool | None = None,
 ) -> dict[str, VisionAnnotation]:
     """Annotate up to `max_images` images; returns {url: annotation}.
+
+    `enabled` overrides the local-vision-model gate: a caller that brings its
+    own multimodal client (the Claude model picked in the UI) enables the pass
+    for that call alone, and the default (`LLM_VISION_MODEL`) is unchanged.
 
     `metadata` entries that get annotated are also enriched in place
     (vision_caption / vision_kind / vision_people / vision_portrait), so the
@@ -190,7 +195,7 @@ async def annotate_image_pool(
     downloaded {url: base64} payloads (from `prefetch_image_pool`); anything
     missing from it is downloaded here as before.
     """
-    if not vision_enabled():
+    if not (vision_enabled() if enabled is None else enabled):
         return {}
 
     # Cap candidates up front (the first `limit` distinct URLs), then resolve

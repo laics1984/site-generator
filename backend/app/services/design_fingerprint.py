@@ -270,11 +270,6 @@ def _radius_class(radius: Any) -> str:
     return "pill"
 
 
-def _walk(element: BuilderElement) -> Iterator[BuilderElement]:
-    yield element
-    if isinstance(element.content, list):
-        for child in element.content:
-            yield from _walk(child)
 
 
 def _band(section: BuilderElement, theme_lights: set[str]) -> str:
@@ -317,7 +312,7 @@ def _title_inks(sections: Sequence[BuilderElement], bands: Sequence[str]) -> int
     for section, band in zip(sections, bands):
         if band not in ("light", "tint"):
             continue
-        for node in _walk(section):
+        for node in section.walk():
             if node.type == "text" and node.name == "Heading":
                 hue = hue_bucket(_css_colour((node.styles or {}).get("color")))
                 if hue != _NEUTRAL_HUE:

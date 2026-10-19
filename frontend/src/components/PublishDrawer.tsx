@@ -96,6 +96,7 @@ export function PublishDrawer({ open, onClose, site, onPublished, paletteOnly = 
     name: site.site_name ?? '',
     url: '',
   })
+  const [photoConsent, setPhotoConsent] = useState(false)
   const [livePalette, setLivePalette] = useState<Awaited<ReturnType<typeof readLivePalette>> | null>(null)
   const [paletteNotice, setPaletteNotice] = useState<string | null>(null)
   const [publication, setPublication] = useState<Awaited<ReturnType<typeof readLivePalette>>['publication']>()
@@ -335,9 +336,18 @@ export function PublishDrawer({ open, onClose, site, onPublished, paletteOnly = 
   }
 
   const loginComplete = Boolean(login.email.trim() && login.password.trim())
+  // Children's photos from a Facebook Page: nothing here can verify that the
+  // families agreed to a website showing them, so the operator states it.
+  // Coverage is measured only for a Facebook source and counts its photos
+  // that reached the site (backend `source_coverage`).
+  const needsPhotoConsent =
+    !paletteOnly &&
+    site.palette_brief?.industry === 'childcare' &&
+    (site.coverage?.summary.photo?.placed ?? 0) > 0
   const canPush =
     connected &&
     !busy &&
+    (!needsPhotoConsent || photoConsent) &&
     (mode === 'create'
       ? newEntity.name.trim().length > 0
       : Boolean(siteToken && (paletteOnly ? livePalette?.layout.versionId : plan && (operation !== 'extend' || chosenSite?.entity_id === site.cms_entity_id))))
@@ -568,6 +578,14 @@ export function PublishDrawer({ open, onClose, site, onPublished, paletteOnly = 
               label="Set site icon"
               description="The source site's favicon, shown in browser tabs and beside the site name in search results."
             />}
+            {needsPhotoConsent && (
+              <Checkbox
+                checked={photoConsent}
+                onChange={(e) => setPhotoConsent(e.target.checked)}
+                label="I have consent to publish these photos"
+                description="The site shows photos of children from the Facebook Page. Publishing them on a website needs the families' permission, which only you can confirm."
+              />
+            )}
             <Checkbox
               checked={operation === 'sync' ? publish : true}
               onChange={(e) => setPublish(e.target.checked)}

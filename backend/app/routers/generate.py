@@ -56,6 +56,8 @@ from app.models.content_blocks import (
 from app.models.facebook import FacebookPage
 from app.models.industry import PageScaffold
 from app.services.facebook_authority import enforce_facebook_facts
+from app.services.offering_pages import pin_offering_photos
+from app.services.source_coverage import coverage_report
 from app.services.facebook_source import to_contact_dict
 from app.services.industry_templates import gallery_page, get_template
 from app.services import creative_directions
@@ -1936,6 +1938,8 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # the same per-page photo lists the planner prompt showed the model. The
     # photos the model chose are screened first, in one batch: a bound card
     # photo never meets the resolver's on-demand screen.
+    # An offering card shows its own post's photo, ahead of the model's pick.
+    pin_offering_photos(plan.pages, source_map)
     await verify_many(referenced_images(plan.pages, source_map))
     if serves_menus(industry):
         menu_assets = assess_menu_assets(payload.source, scraped_metadata)
@@ -2044,6 +2048,8 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         raise HTTPException(status_code=500, detail="Preview generation must produce exactly two pages.")
 
     site.generation_mode = payload.generation_mode
+    if payload.source.source_kind == "facebook":
+        site.coverage = coverage_report(payload.source, site, payload.facebook_facts)
     site.palette_brief = {"business": site.site_name, "industry": industry, "positioning": detected.positioning, "personality": detected.personality.model_dump(), **design_inputs(payload.source, brand, detected)}
     site.planned_page_count = len(planned_scaffolds)
     if payload.generation_mode == "two_page_preview":
@@ -2425,6 +2431,53 @@ def _photo_set_wall(photos: list[ImageMetadata]) -> SectionCandidate:
     )
 
 
+# A category becomes a headed wall of its own at this many photos, and only
+# when at least two categories do: one headed wall is just the gallery with a
+# label on it. No post fills a group alone — a burst of one moment is one memory.
+_CATEGORY_WALL_MIN_PHOTOS = 4
+_CATEGORY_WALL_MIN_GROUPS = 2
+_CATEGORY_WALL_MAX_PER_POST = 4
+
+
+def _category_walls(photos: list[ImageMetadata]) -> list[SectionCandidate]:
+    """The earned Gallery page's photos as one headed wall per category, or []
+    when they don't group. A category is what the photo's post says it shows
+    (`facebook_knowledge`, caption hints as the fallback), headed by its
+    profile's taxonomy label — site chrome, never a claim about the business.
+    Best photos first; what no group holds closes the page as one more wall."""
+    from app.services.facebook_photo_profiles import profile_for, subject_label
+    from app.services.facebook_photo_selection import photo_rank
+
+    groups: dict[str, list[ImageMetadata]] = {}
+    per_post: dict[tuple[str, str], int] = {}
+    for meta in sorted(photos, key=photo_rank, reverse=True):
+        profile = profile_for(meta.selection_context)
+        label = subject_label(profile, meta.category) if profile and meta.category else None
+        if label is None:
+            continue
+        post = meta.source_post_id or meta.source_post_url or meta.url
+        if per_post.get((label, post), 0) >= _CATEGORY_WALL_MAX_PER_POST:
+            continue
+        per_post[(label, post)] = per_post.get((label, post), 0) + 1
+        groups.setdefault(label, []).append(meta)
+    # Largest first: `_place_walls` keeps at most _MAX_GALLERY_BLOCKS.
+    headed = dict(sorted(
+        ((label, metas) for label, metas in groups.items() if len(metas) >= _CATEGORY_WALL_MIN_PHOTOS),
+        key=lambda item: len(item[1]), reverse=True,
+    ))
+    if len(headed) < _CATEGORY_WALL_MIN_GROUPS:
+        return []
+    walls = [
+        _photo_set_wall(metas).model_copy(update={"heading": label})
+        for label, metas in headed.items()
+    ]
+    placed = {meta.url for metas in headed.values() for meta in metas}
+    rest = [meta for meta in photos if meta.url not in placed]
+    if len(rest) >= _MIN_ALBUM_PHOTOS:
+        walls.append(_photo_set_wall(rest).model_copy(update={"heading": "More photos"}))
+    return walls
+
+
 def _merge_album_walls(walls: list[SectionCandidate]) -> list[SectionCandidate]:
     """Fold walls sharing a heading into one, deduping URLs across the page.
 
@@ -2572,7 +2625,9 @@ def _inject_image_walls(
     if not source.discovered_pages and earned in gated_slugs and earned in pages_by_path:
         photos = [meta for meta in gallery_photos(source) if meta.url not in chrome]
         if photos:
-            walls_by_slug.setdefault(earned, []).append(_photo_set_wall(photos))
+            walls_by_slug.setdefault(earned, []).extend(
+                _category_walls(photos) or [_photo_set_wall(photos)]
+            )
 
     for slug, walls in walls_by_slug.items():
         _place_walls(

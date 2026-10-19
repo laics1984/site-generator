@@ -666,6 +666,20 @@ class Settings(BaseSettings):
     # How those photos are screened: measured CPU checks plus caption hints
     # (`metadata`), or the opt-in vision model (`vision`).
     facebook_photo_review_mode: Literal["metadata", "vision"] = "metadata"
+    # The opt-in second look on top of `metadata` (decision D5): when the
+    # reasoning model picked in the UI is a Claude model, at most this many
+    # uncaptioned photos whose measurements alone qualify for a hero are sent
+    # to it with the industry's reviewer prompt. 0 turns it off.
+    facebook_vision_max_images: int = 6
+    # The one structuring call that reads a Page's offerings, facilities and
+    # time-bound posts from its own words (services/facebook_knowledge.py).
+    # Off, or failing, a read has no offerings — exactly as before.
+    facebook_knowledge_enabled: bool = True
+    facebook_knowledge_max_units: int = 40
+    # A post the understanding call marks time-bound (a promotion, a holiday
+    # notice) older than this many days is left out of the grounding text. A
+    # past event always is.
+    facebook_stale_post_days: int = 60
     # Facebook photo links carry a signed deadline (~5 days after the read).
     # Generating a site whose links die within this many hours re-reads the
     # Page first and renews them (services/photo_url_expiry.py), so a site is

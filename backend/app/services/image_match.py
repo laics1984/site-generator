@@ -426,13 +426,16 @@ def rank_candidates(
         if intent_matches:
             # Background slots: the source's own background image outranks any
             # inline photo, whatever its size — it was art-directed to sit
-            # behind text, so it is the authentic full-bleed visual.
+            # behind text, so it is the authentic full-bleed visual. Within a
+            # size bucket, a measured sharper, better-exposed photo leads
+            # (`photo_quality`; None for an unmeasured image, which ties).
             pinned = sorted(
                 (score_candidate(query or "", slot_intent, c) for c in intent_matches),
                 key=lambda s: (
                     slot_usage == "background"
                     and s.candidate.source_usage == "css_background",
                     s.size_bonus,
+                    s.candidate.quality or 0,
                     s.lexical,
                 ),
                 reverse=True,

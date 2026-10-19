@@ -193,6 +193,24 @@ def _offline_record_template():
 
 
 @pytest.fixture(autouse=True)
+def _offline_facebook_knowledge():
+    """Pin the Facebook understanding call off for every test.
+
+    Same reason as `_offline_paste_structure`: the suite runs offline, and every
+    Facebook read would otherwise reach a server. Off, a read has no offerings
+    and the deterministic half (past events, caption categories) still runs.
+    tests/test_facebook_knowledge.py turns it on itself and injects a fake
+    client.
+    """
+    original = settings.facebook_knowledge_enabled
+    settings.facebook_knowledge_enabled = False
+    try:
+        yield
+    finally:
+        settings.facebook_knowledge_enabled = original
+
+
+@pytest.fixture(autouse=True)
 def _offline_bio_condense():
     """Pin the LLM bio-condensing pass off for every test.
 

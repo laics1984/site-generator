@@ -17,17 +17,31 @@ be a second answer to that question.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from app.models.content_blocks import PhotoContext
 from app.models.industry import IndustryCategory
 from app.services.prompts import CHILDCARE_FACEBOOK_PHOTO_PROMPT
 
 
+class Subject(NamedTuple):
+    """One thing a caption can say a photo shows. `name` is the vocabulary
+    (`FacebookPhotoReview.classification`, `ImageMetadata.category`); `label`
+    is the site-chrome heading a gallery group of them takes — a taxonomy
+    word, never a claim about the business; `phrases` are the whole-word
+    caption cues the no-LLM fallback matches."""
+
+    name: str
+    label: str
+    phrases: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class PhotoProfile:
-    # (subject, caption phrases) — keyword hints about what a caption says a
-    # photo shows. Hints for the planner, never assertions about the pixels.
-    subject_hints: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    # What a caption can say a photo shows: keyword hints for the planner and
+    # the categories the understanding call may use, never assertions about
+    # the pixels.
+    subject_hints: tuple[Subject, ...] = ()
     # Subjects that describe a PLACE rather than an activity: they suit a
     # facilities section but never qualify a hero on their own.
     setting_subjects: frozenset[str] = frozenset()
@@ -48,23 +62,21 @@ class PhotoProfile:
     # The opt-in vision mode's reviewer prompt. None: this profile is judged
     # by measurement only, whatever FACEBOOK_PHOTO_REVIEW_MODE says.
     vision_prompt: str | None = None
-    # Sections the selection report plans photos for.
-    plan_sections: tuple[str, ...] = ("hero", "about", "gallery", "cta")
 
 
 _CHILDCARE = PhotoProfile(
     subject_hints=(
-        ("literacy", ("reading", "storytelling", "phonics", "literacy", "membaca")),
-        ("numeracy", ("counting", "numeracy", "mathematics", "mengira")),
-        ("creative_activity", ("painting", "drawing", "craft", "clay", "art activity")),
-        ("stem_activity", ("experiment", "science", "building blocks", "stem")),
-        ("sensory_play", ("sensory", "play dough", "water play")),
-        ("music_activity", ("music", "singing", "rhythm")),
-        ("outdoor_learning", ("gardening", "outdoor learning", "nature exploration")),
-        ("physical_activity", ("balancing", "movement", "physical activity")),
-        ("teacher_child_interaction", ("teacher helping", "teacher guiding", "teacher reading")),
-        ("classroom_activity", ("learning through play", "classroom activity", "hands on learning")),
-        ("facilities", ("classroom", "reading corner", "playground", "school entrance")),
+        Subject("literacy", "Reading and stories", ("reading", "storytelling", "phonics", "literacy", "membaca")),
+        Subject("numeracy", "Numbers and counting", ("counting", "numeracy", "mathematics", "mengira")),
+        Subject("creative_activity", "Arts and crafts", ("painting", "drawing", "craft", "clay", "art activity")),
+        Subject("stem_activity", "Science and discovery", ("experiment", "science", "building blocks", "stem")),
+        Subject("sensory_play", "Sensory play", ("sensory", "play dough", "water play")),
+        Subject("music_activity", "Music and movement", ("music", "singing", "rhythm")),
+        Subject("outdoor_learning", "Outdoor learning", ("gardening", "outdoor learning", "nature exploration")),
+        Subject("physical_activity", "Active play", ("balancing", "movement", "physical activity")),
+        Subject("teacher_child_interaction", "Learning together", ("teacher helping", "teacher guiding", "teacher reading")),
+        Subject("classroom_activity", "In the classroom", ("learning through play", "classroom activity", "hands on learning")),
+        Subject("facilities", "Our spaces", ("classroom", "reading corner", "playground", "school entrance")),
     ),
     setting_subjects=frozenset({"facilities"}),
     activity_sections=("about", "programmes", "learning_approach", "cta"),
@@ -75,25 +87,95 @@ _CHILDCARE = PhotoProfile(
     hero_requires_caption=True,
     strip_legible=True,
     vision_prompt=CHILDCARE_FACEBOOK_PHOTO_PROMPT,
-    plan_sections=(
-        "hero", "about", "programmes", "learning_approach", "facilities",
-        "teachers", "gallery", "testimonials", "cta", "contact", "faq", "footer",
+)
+
+# The rows below add vocabulary only: their hero rule stays the generic
+# measured one, and menus, posters and codes stay in the pool for the placers
+# that show them whole.
+_RESTAURANT = PhotoProfile(
+    subject_hints=(
+        Subject("food", "From the kitchen", (
+            "dish", "dishes", "plate", "dessert", "cake", "noodles", "rice", "burger",
+            "pizza", "pasta", "coffee", "drinks", "signature", "freshly baked")),
+        Subject("dining_room", "The dining room", (
+            "dining area", "dining room", "interior", "seating", "ambience", "our cafe",
+            "our restaurant", "outdoor seating")),
+        Subject("kitchen", "Behind the scenes", ("kitchen", "chef", "cooking", "preparing")),
+        Subject("event", "Events and catering", (
+            "catering", "buffet", "party", "wedding", "private event", "celebration")),
+        Subject("team_at_work", "Our team", ("our team", "our staff", "our crew")),
     ),
+    setting_subjects=frozenset({"dining_room"}),
+    activity_sections=("about", "services"),
+)
+
+_HEALTH = PhotoProfile(
+    subject_hints=(
+        Subject("premises", "Our centre", (
+            "clinic", "treatment room", "reception", "waiting area", "our centre", "our center",
+            "studio")),
+        Subject("equipment", "Equipment", ("equipment", "machine", "device", "scanner")),
+        Subject("treatment", "Treatments", (
+            "treatment", "therapy", "massage", "physio", "physiotherapy", "consultation")),
+        Subject("class", "Classes", ("yoga", "pilates", "class", "workout", "training session")),
+        Subject("team_at_work", "Our team", ("our team", "our doctors", "our therapists", "our staff")),
+    ),
+    setting_subjects=frozenset({"premises", "equipment"}),
+    activity_sections=("about", "services"),
+)
+
+_HOME_SERVICES = PhotoProfile(
+    subject_hints=(
+        Subject("work_in_progress", "On the job", (
+            "installation", "installing", "repair", "repairing", "renovation", "in progress",
+            "fixing", "servicing")),
+        Subject("completed_project", "Completed projects", (
+            "completed", "finished", "before and after", "handover", "project done")),
+        Subject("team_at_work", "Our team", ("our team", "technician", "technicians", "our crew")),
+        Subject("equipment", "Equipment", ("tools", "equipment", "our van", "our truck")),
+    ),
+    setting_subjects=frozenset({"equipment"}),
+    activity_sections=("about", "services"),
+)
+
+# The default row: a vocabulary any business shares, so a Page of a kind with
+# no row of its own still has its photos grouped by what its captions say.
+_GENERIC = PhotoProfile(
+    subject_hints=(
+        Subject("products", "Products", ("product", "products", "new arrival", "collection", "in stock")),
+        Subject("services", "Our work", ("service", "services", "project", "appointment", "session")),
+        Subject("premises", "Visit us", (
+            "our shop", "our store", "our office", "our outlet", "showroom", "our studio")),
+        Subject("event", "Events", ("event", "workshop", "launch", "grand opening", "celebration")),
+        Subject("customers", "Customers", ("customer", "customers", "client", "clients")),
+    ),
+    setting_subjects=frozenset({"premises"}),
 )
 
 PROFILES: dict[PhotoContext, PhotoProfile] = {
-    "facebook": PhotoProfile(),
+    "facebook": _GENERIC,
     "facebook_childcare": _CHILDCARE,
+    "facebook_restaurant": _RESTAURANT,
+    "facebook_health": _HEALTH,
+    "facebook_home_services": _HOME_SERVICES,
 }
 
 # The industries with a row of their own; every other one reads the default.
 _CONTEXT_BY_INDUSTRY: dict[IndustryCategory, PhotoContext] = {
     "childcare": "facebook_childcare",
+    "restaurant": "facebook_restaurant",
+    "health-wellness": "facebook_health",
+    "home-services": "facebook_home_services",
 }
 
 
 def context_for(industry: IndustryCategory) -> PhotoContext:
     return _CONTEXT_BY_INDUSTRY.get(industry, "facebook")
+
+
+def subject_label(profile: PhotoProfile, name: str) -> str | None:
+    """The heading a group of this subject takes, or None for an unknown one."""
+    return next((subject.label for subject in profile.subject_hints if subject.name == name), None)
 
 
 def profile_for(context: str | None) -> PhotoProfile | None:

@@ -169,6 +169,7 @@ when a token is available, a public-page render otherwise.
 | `FACEBOOK_VIEW_SCROLL_STEPS` | `2` | Lazy-load scrolls per view; each waits at most 1.2s for new images. |
 | `FACEBOOK_PHOTO_MAX_IMAGES` | `24` | Distinct photos a read keeps. Originals come from the page's inline data, so a higher cap costs downloads and CPU checks, not page loads. |
 | `FACEBOOK_PHOTO_REVIEW_MODE` | `metadata` | How every Page's photos are screened: measured CPU checks plus caption hints, or `vision` (only for an industry profile with its own reviewer prompt — childcare today). |
+| `FACEBOOK_VISION_MAX_IMAGES` | `6` | With `metadata` review and a Claude model picked for reasoning in the UI, how many uncaptioned photos whose measurements qualify for a hero get a vision second look (industry profiles with a reviewer prompt only). `0` turns it off. |
 | `FACEBOOK_PHOTO_URL_REFRESH_HOURS` | `24` | Facebook photo links are signed and expire ~5 days after a read. Generating a site whose links die within this window re-reads the Page and renews them by photo identity; a link that is dead and can't be renewed is left out with a warning, and the push refuses a dead one instead of stripping it. |
 | `FACEBOOK_LOGO_VISION_CHECK` | `true` | Ask the vision judge whether the profile picture is a mark or a photograph; a photograph is demoted to palette-only so the header falls back to the wordmark. No-op unless `OLLAMA_VISION_MODEL` is set. |
 

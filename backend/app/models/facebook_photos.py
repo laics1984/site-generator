@@ -40,10 +40,15 @@ class FacebookPhotoReview(BaseModel):
         "reading_corner", "facilities", "school_exterior", "teacher_team",
         "parent_child", "child_portrait", "group_activity", "object_detail",
         "childrens_artwork", "learning_materials", "gallery_only", "unsuitable",
+        # Every other `facebook_photo_profiles` row's vocabulary; a drift test
+        # pins each profile subject to a value here.
+        "food", "dining_room", "kitchen", "event", "team_at_work", "premises",
+        "equipment", "treatment", "class", "work_in_progress", "completed_project",
+        "products", "services", "customers",
     ]] = Field(default_factory=list, max_length=8)
     recommended_sections: list[Literal[
         "hero", "about", "programmes", "learning_approach", "facilities",
-        "teachers", "gallery", "cta",
+        "teachers", "gallery", "cta", "services",
     ]] = Field(default_factory=list, max_length=8)
     orientation: Literal["landscape", "portrait", "square"] = "square"
     candid: bool = False

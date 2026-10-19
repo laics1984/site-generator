@@ -159,7 +159,13 @@ export function ScrapePreview({
 
       {sc.language_profile && <LanguageCard profile={sc.language_profile} />}
 
-      {facts && <FacebookFactsPanel facts={facts} />}
+      {facts && (
+        <FacebookFactsPanel
+          facts={facts}
+          knowledge={sc.page_knowledge}
+          photos={preview.facebook_photo_selection}
+        />
+      )}
       {isFacebook && (sc.images?.length ?? 0) === 0 && (
         <p className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           No usable Facebook photos were collected. The site will use stock imagery where
