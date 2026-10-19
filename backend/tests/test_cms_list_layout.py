@@ -167,6 +167,43 @@ class HeadingInkTest(unittest.TestCase):
             self.assertIn(rule, _squash(preview), selector)
             self.assertIn(rule, _squash(builder), selector)
 
+    # Classes a versioned rule targets with no canvas counterpart, and why. Any
+    # other class must be rendered by the builder canvas, or the rule above is
+    # text in index.css that paints nothing in the editor.
+    _V2_CLASSES_WITHOUT_CANVAS_MARKUP = {
+        # The canvas form is a static mock: no validation, help or sent state.
+        "wt-contact-form__error": "no error state on the canvas",
+        "wt-contact-form__help": "no help text on the canvas",
+        "wt-contact-form__success-heading": "no sent state on the canvas",
+        "wt-contact-form__success-body": "no sent state on the canvas",
+        # The canvas mobile sheet lists the primary menu only.
+        "wt-mobile-menu-link--secondary": "no utility section in the canvas sheet",
+        "wt-mobile-menu-section__title": "no utility section in the canvas sheet",
+        # The legacy `hero` element type (HeroBlock.vue) has no canvas component.
+        "wt-ui-pill": "no legacy hero block on the canvas",
+        # Written into element data (palette_styles.bind_theme_styles), which
+        # the canvas wrapper renders from `element.classes`.
+        "wt-theme-action": "stamped on the element, rendered from its classes",
+    }
+
+    def test_versioned_rules_reach_canvas_markup(self):
+        public = _read(_REPOS / "webtree-public" / "app" / "assets" / "css" / "main.css", self)
+        canvas = "\n".join(
+            path.read_text()
+            for path in (_REPOS / "builder" / "src" / "components").rglob("*.tsx")
+        )
+        targeted = {
+            name
+            for selector, _ in re.findall(r"(\.wt-color-system-v2[^{}]+)\{([^{}]+)\}", public)
+            for name in re.findall(r"\.(wt-[a-z0-9_-]+)", selector)
+        } - {"wt-color-system-v2"}
+        self.assertTrue(targeted)
+        for name in sorted(targeted - set(self._V2_CLASSES_WITHOUT_CANVAS_MARKUP)):
+            found = re.search(rf"[\s\"'`]{re.escape(name)}[\s\"'`]", canvas)
+            self.assertIsNotNone(found, f"no canvas element carries .{name}")
+        stale = set(self._V2_CLASSES_WITHOUT_CANVAS_MARKUP) - targeted
+        self.assertFalse(stale, f"allowlisted classes no versioned rule targets: {stale}")
+
 
 if __name__ == "__main__":
     unittest.main()
