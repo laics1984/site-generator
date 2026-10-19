@@ -11,7 +11,7 @@ from app.models.content_blocks import (
 from app.models.page_knowledge import Offering, PageKnowledge
 from app.routers.generate import _category_walls
 from app.services.image_match import rank_candidates
-from app.services.offering_pages import pin_offering_photos
+from app.services.knowledge_cards import pin_knowledge_photos
 
 
 def _photo(name, *, category=None, post=None, quality=0.5, context="facebook_childcare"):
@@ -62,7 +62,7 @@ def test_an_offering_card_takes_its_own_posts_photo_over_the_models_pick():
             ServiceItem(title="Something else", description="d", image_ref=0),
         ]),
     ])
-    assert pin_offering_photos([page], {"programmes": source}) == 1
+    assert pin_knowledge_photos([page], {"programmes": source}) == 1
     items = page.blocks[0].items
     assert items[0].image_ref == 1  # garden, its own post's photo
     assert items[1].image_ref == 0  # not an offering: the model's choice stands
@@ -76,7 +76,7 @@ def test_two_cards_never_share_one_pinned_photo():
     page = PagePlan(slug="", title="Home", page_type="home", blocks=[FeaturesBlock(items=[
         FeatureItem(title="Nursery", description="d"), FeatureItem(title="Preschool", description="d"),
     ])])
-    assert pin_offering_photos([page], {"": source}) == 1
+    assert pin_knowledge_photos([page], {"": source}) == 1
 
 
 def test_a_sharper_hero_photo_leads_within_one_size_bucket():

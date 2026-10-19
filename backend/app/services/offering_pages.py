@@ -22,9 +22,8 @@ the gate and the filler can never disagree:
   page the whole digest. `discovered_pages` stays empty, so nothing that
   assumes a Facebook source has none changes.
 
-A card the model wrote for an offering shows that offering's own photo
-(`pin_offering_photos`): the pass writes the card's `image_ref` before the
-binder runs, so the photo is screened and bound like any the model chose.
+A card the model wrote for an offering shows that offering's own photo —
+`knowledge_cards.pin_knowledge_photos`, which does the same for facilities.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ from __future__ import annotations
 import re
 
 from app.models.content_blocks import (
-    ImageMetadata, PagePlan, SectionCandidate, SourceCard, SourceContent,
+    ImageMetadata, SectionCandidate, SourceCard, SourceContent,
 )
 from app.models.industry import IndustryCategory, PageScaffold
 from app.models.page_knowledge import Offering
@@ -147,43 +146,3 @@ def offering_source(source: SourceContent, scaffold: PageScaffold) -> SourceCont
     tree = [SectionCandidate(heading=match.name, level=2, prose=match.body)]
     return _view(source, match.name, [match], tree)
 
-
-def _normal(text: str) -> str:
-    return " ".join(re.findall(r"\w+", text.casefold()))
-
-
-def pin_offering_photos(pages: list[PagePlan], source_map: dict[str, SourceContent]) -> int:
-    """Point each offering card at the best photo from its own posts.
-
-    A services/features card whose title names an offering takes the first of
-    that offering's photos the page's prompt numbered, ahead of whatever the
-    model picked — a card about outdoor learning shows the outdoor post, not
-    the photo the model happened to bind. One photo per card on a page; a card
-    whose offering has no numbered photo keeps the model's choice. Returns the
-    number of cards pinned."""
-    from app.services.source_router import promptable_images
-
-    pinned = 0
-    for page in pages:
-        source = source_map.get(page.slug)
-        knowledge = source.page_knowledge if source is not None else None
-        if not knowledge or not knowledge.offerings:
-            continue
-        numbered = {picture_id(meta.url): i for i, meta in enumerate(promptable_images(source))}
-        by_name = {_normal(o.name): o for o in knowledge.offerings}
-        taken: set[int] = set()
-        for block in page.blocks:
-            if getattr(block, "kind", None) not in {"services", "features"}:
-                continue
-            for item in block.items:
-                offering = by_name.get(_normal(item.title))
-                if offering is None:
-                    continue
-                ref = next((numbered[pid] for pid in offering.photo_ids
-                            if pid in numbered and numbered[pid] not in taken), None)
-                if ref is None:
-                    continue
-                item.image_ref, item.image_url = ref, None
-                taken.add(ref)
-                pinned += 1
-    return pinned

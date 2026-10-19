@@ -371,6 +371,10 @@ class FeatureItem(BaseModel):
         ),
     )
     image_alt: str | None = None
+    # The pipeline's, never the model's (SkipJsonSchema): the card names one of
+    # the business's facilities, so only a source photo may illustrate it and
+    # an unbound card shows none (services/knowledge_cards.py).
+    source_photo_only: SkipJsonSchema[bool] = False
 
     @field_validator("image_ref", mode="before")
     @classmethod
@@ -420,6 +424,8 @@ class ServiceItem(BaseModel):
         ),
     )
     image_alt: str | None = None
+    # See FeatureItem.source_photo_only.
+    source_photo_only: SkipJsonSchema[bool] = False
 
     @field_validator("image_ref", mode="before")
     @classmethod

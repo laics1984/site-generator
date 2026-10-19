@@ -1676,16 +1676,43 @@ planned from `offering_source` — a private view (the `homepage_source`
 precedent) holding only its offerings' text, one `card_kind="offerings"` tree
 and their photos — at `match_scaffolds_to_pages`' fallback, so
 `discovered_pages` stays empty and nothing keyed on it moves.
-`pin_offering_photos` writes an offering card's `image_ref` to its own post's
-photo **before** `verify_many`/`bind_image_refs`, so it is screened and bound
-like the model's own picks. `features` is earned by products or ≥2 offerings —
+`knowledge_cards.pin_knowledge_photos` writes the `image_ref` of a card that
+names an offering or a facility to that thing's own post's photo **before**
+`verify_many`/`bind_image_refs`, so it is screened and bound like the model's
+own picks. `features` is earned by products or ≥2 offerings —
 the old "≥3 captioned posts" proxy stands only when the call did not answer.
 The earned Gallery page groups into headed walls (`_category_walls`: ≥2
 categories of ≥4, ≤4 per post, best first, the rest as "More photos").
 
-Not done: facilities are not source-only. There is no facilities section type,
-and `section_content._item_image` deliberately backfills every card from its
-title so photo grids stay feasible — a "facility" card can still resolve stock.
+**A facility is shown by its own photo or by none.** There is no facilities
+section type: a facility arrives as a features/services card or an about
+section whose title NAMES it (`knowledge_cards.named_in` — the name's words,
+adjacent and in order, longest name winning; knowledge names are verbatim
+source spans, card titles the model's). After `bind_image_refs`, the first
+point at which "no source photo is bound" is a fact rather than a guess,
+`withhold_stock_photos` clears such a card's `image_query` and marks the item
+`source_photo_only` (`SkipJsonSchema` — the model never sees it; it survives a
+plan round trip). `section_content._item_image` — which otherwise backfills
+every card from its title so photo grids stay feasible — reads that mark as
+"no image", and an about section with neither query nor URL already maps to
+none, so it lands on `about-story`. A stock playground under "Our playground"
+is a false claim about the premises; an **offering** keeps the stock fallback,
+since an activity can be illustrated honestly. Suspended under
+`stock_images_only`, for `_drop_unbound_gallery_items`' reason.
+
+**A section holding one goes text-only** (the user's call, 2026-10-19, over a
+photo grid with an imageless card in it). `is_feasible` holds a
+features/services template whose cards lead with a photo (`_lead_photo_ids`,
+the shape `_leads_with_photo` reads; `_ITEM_IMAGE_KINDS`, the kinds
+`_item_image` fills — a team card with no portrait is a monogram, not a
+hole) to a picture on EVERY card, whatever the catalog declares optional — a card without one reads as a broken image, and a bento
+photo tile's copy is inked for the picture behind it. `_item_image` gives
+every other card a value, so this is a no-op until a card is withheld, and
+because `selectable_templates` and an explicit pick both pass through
+`is_feasible`, the design brain cannot reach a photo grid either. The cost,
+accepted: the sibling cards' own photos go unshown in that section (they
+still appear on their own pages and in the gallery). Tests:
+`test_knowledge_cards.py`.
 
 After generation, `services/source_coverage.coverage_report` (advisory, the
 `ux_audit` precedent; Facebook sources only) states each fact, review,

@@ -56,7 +56,7 @@ from app.models.content_blocks import (
 from app.models.facebook import FacebookPage
 from app.models.industry import PageScaffold
 from app.services.facebook_authority import enforce_facebook_facts
-from app.services.offering_pages import pin_offering_photos
+from app.services.knowledge_cards import pin_knowledge_photos, withhold_stock_photos
 from app.services.source_coverage import coverage_report
 from app.services.facebook_source import to_contact_dict
 from app.services.industry_templates import gallery_page, get_template
@@ -1938,8 +1938,9 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # the same per-page photo lists the planner prompt showed the model. The
     # photos the model chose are screened first, in one batch: a bound card
     # photo never meets the resolver's on-demand screen.
-    # An offering card shows its own post's photo, ahead of the model's pick.
-    pin_offering_photos(plan.pages, source_map)
+    # A card naming an offering or a facility shows its own post's photo,
+    # ahead of the model's pick.
+    pin_knowledge_photos(plan.pages, source_map)
     await verify_many(referenced_images(plan.pages, source_map))
     if serves_menus(industry):
         menu_assets = assess_menu_assets(payload.source, scraped_metadata)
@@ -1954,8 +1955,13 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # failure mode: with no source photography anywhere on the site, a tile
     # resolving its image_query is consistent with every other slot, and
     # deleting the block instead would silently drop a page the user chose.
+    # Same rule for a card that names one of the business's facilities: with
+    # no photo of its own bound, it shows none rather than a stock picture of
+    # someone else's premises (services/knowledge_cards.py). Suspended under
+    # stock_images_only for the gallery's reason.
     if not payload.stock_images_only:
         _drop_unbound_gallery_items(plan.pages)
+        withhold_stock_photos(plan.pages, source_map)
 
     # Translated mirrors clone their counterpart HERE — after image refs are
     # bound and the roster/team passes have run — so a clone inherits the exact

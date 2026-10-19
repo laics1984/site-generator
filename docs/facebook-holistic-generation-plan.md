@@ -1,7 +1,7 @@
 # Facebook Page → whole-business site: assessment and implementation plan
 
 Status: **approved 2026-10-11 with all six decisions; P0–P7 and D3–D5 done
-2026-10-19. D6 (video embeds) and the facilities source-only rule remain.**
+2026-10-19, and the facilities source-only rule. D6 (video embeds) remains.**
 Written 2026-10-11 against the working tree on `main` (including the uncommitted
 Facebook photo work: `facebook_dom.py`, `facebook_photo_*`, `landing_source.py`).
 
@@ -45,9 +45,9 @@ once"):
 - `features` keeps the "≥3 captioned posts" proxy when the call didn't answer.
   Replacing it outright would have dropped features from every read with the
   call off.
-- Facilities are NOT source-only (P6 verify step). No facilities section type
-  exists, and card images deliberately backfill stock from the title to keep
-  photo grids feasible. Enforcing it is a separate design change.
+- Facilities are source-only (found in the P6 verify step, done 2026-10-19 in
+  `services/knowledge_cards.py`): a card naming a facility takes its own photo
+  or shows none, never the title-searched stock fallback.
 - Measured live on CORE: the call categorises 10 photos (hints alone: 4) and
   finds no offering. Its posts are one-off activities, which is the right
   answer.

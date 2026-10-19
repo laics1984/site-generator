@@ -135,10 +135,16 @@ def _item_image(item: Any, alt_fallback: str) -> dict[str, str] | None:
     unbound items resolve their stock image_query. An item the LLM left
     query-less falls back to its title as the stock search — every card must
     carry an image so the photo-topped grid stays feasible (the resolver's
-    industry-context fallback rescues weak title queries)."""
+    industry-context fallback rescues weak title queries).
+
+    The one exception is a card marked `source_photo_only` — it names one of
+    the business's facilities (services/knowledge_cards.py), and a stock photo
+    there is a false claim about the premises — which shows no image."""
     url = getattr(item, "image_url", None)
     if url:
         return {"src": url, "alt": getattr(item, "image_alt", None) or alt_fallback}
+    if getattr(item, "source_photo_only", False):
+        return None
     return _image(getattr(item, "image_query", None) or alt_fallback, alt_fallback)
 
 
@@ -819,6 +825,22 @@ def apply_hero_cta_policy(
 # --- feasibility + selection ----------------------------------------------------
 
 
+# The section kinds whose card photos `_item_image` fills.
+_ITEM_IMAGE_KINDS = frozenset({"features", "services"})
+
+
+def _has_image(value: Any) -> bool:
+    return isinstance(value, dict) and bool(value.get("query") or value.get("src"))
+
+
+def _lead_photo_ids(slot: dict[str, Any]) -> list[str]:
+    """The item image slots a list slot's cards lead with (decorations aside)."""
+    return [
+        i["id"] for i in slot.get("item", [])
+        if i.get("kind") == "image" and i.get("id") not in _DECORATIVE_IMAGE_SLOTS
+    ]
+
+
 def is_feasible(template: dict[str, Any], content: dict[str, Any]) -> bool:
     """True iff every required (non-optional) slot can be filled from ``content``."""
     for slot in template.get("slots", []):
@@ -835,8 +857,25 @@ def is_feasible(template: dict[str, Any], content: dict[str, Any]) -> bool:
             min_items = slot.get("minItems")
             if isinstance(min_items, int) and len(value) < min_items:
                 return False
+            # A features/services grid whose cards lead with a photo needs one
+            # on EVERY card, whatever the template declares optional: a card
+            # with none reads as a broken image, and a photo tile's copy is
+            # inked for the picture behind it. `_item_image` gives every card a
+            # value, so this only bites a card that must show nothing
+            # (`source_photo_only`) — and it gates the design brain's explicit
+            # pick too, since `selectable_templates` asks this. Other kinds keep
+            # their own answer: a team card with no portrait is a monogram.
+            photo_ids = (
+                _lead_photo_ids(slot)
+                if template.get("sectionType") in _ITEM_IMAGE_KINDS else []
+            )
+            if photo_ids and not all(
+                isinstance(item, dict) and _has_image(item.get(pid))
+                for item in value for pid in photo_ids
+            ):
+                return False
         elif kind == "image":
-            if not (isinstance(value, dict) and (value.get("query") or value.get("src"))):
+            if not _has_image(value):
                 return False
         elif kind == "link":
             if not (isinstance(value, dict) and (value.get("innerText") or value.get("label"))):
@@ -2437,15 +2476,10 @@ def _leads_with_photo(template: dict[str, Any] | None) -> bool:
     """
     if not template:
         return False
-    for slot in template.get("slots", []):
-        if slot.get("kind") != "list":
-            continue
-        if any(
-            i.get("kind") == "image" and i.get("id") not in _DECORATIVE_IMAGE_SLOTS
-            for i in slot.get("item", [])
-        ):
-            return True
-    return False
+    return any(
+        slot.get("kind") == "list" and _lead_photo_ids(slot)
+        for slot in template.get("slots", [])
+    )
 
 
 def _policy_template_id(
