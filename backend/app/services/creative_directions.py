@@ -90,6 +90,12 @@ class CreativeDirection:
     # Homepage openings in order of preference; the scheme's own lead is used
     # when none of these is available for the content.
     hero_leads: tuple[HeroLead, ...] = ()
+    # The "background" lead is the business's OWN photograph or nothing: it is
+    # offered only when the source is known to have a hero photo
+    # (homepage_leads). For a direction whose imagery is real people and real
+    # premises, a full-bleed stock office is the generic tech look its brief
+    # rejects — the next lead (a split) serves instead.
+    background_needs_source_photo: bool = False
     # Landing-pattern names (services/landing_patterns.py), best first.
     section_emphasis: tuple[str, ...] = ()
     cta_strategy: tuple[CtaIntent, ...] = ("enquire",)
@@ -360,7 +366,8 @@ DIRECTIONS: tuple[CreativeDirection, ...] = (
         cues=("enterprise", "bank", "banks", "insurers", "compliance", "governance", "regulated", "security", "financial institutions"),
         color_scheme_lean="light",
         image_shape="soft-rect",
-        hero_leads=("split-plain", "editorial"),
+        hero_leads=("background", "split-plain", "editorial"),
+        background_needs_source_photo=True,
         section_emphasis=("solutions-led", "insight-led"),
         cta_strategy=("consult", "assessment", "enquire"),
         anti_patterns=("purple-blue-gradient", "glass-cards", "gradient-heavy", "ambient-motion", "rainbow-titles"),
@@ -426,7 +433,8 @@ DIRECTIONS: tuple[CreativeDirection, ...] = (
         cues=("local", "people", "friendly", "small business", "small businesses", "sme", "smes", "support", "partner", "trusted"),
         color_scheme_lean="light",
         image_shape="soft-rect",
-        hero_leads=("split-plain", "background"),
+        hero_leads=("background", "split-plain"),
+        background_needs_source_photo=True,
         section_emphasis=("solutions-led", "services-process"),
         cta_strategy=("call", "assessment", "enquire"),
         anti_patterns=("purple-blue-gradient", "glass-cards", "gradient-heavy", "ambient-motion"),
@@ -518,12 +526,26 @@ def prompt_line(direction: CreativeDirection) -> str:
     return f"{direction.label} — {direction.brief}"
 
 
-def planner_context(direction: CreativeDirection) -> dict[str, str]:
+def homepage_leads(direction: CreativeDirection, has_hero_photo: bool | None) -> tuple[HeroLead, ...]:
+    """The direction's homepage openings for THIS source: ``hero_leads``
+    without "background" when the direction takes that lead only from the
+    source's own photograph and the source is not known to have one
+    (``ContentProfile.has_hero_photo`` — None, unmeasured or stock-only on
+    purpose, does not count)."""
+    if direction.background_needs_source_photo and has_hero_photo is not True:
+        return tuple(lead for lead in direction.hero_leads if lead != "background")
+    return direction.hero_leads
+
+
+def planner_context(direction: CreativeDirection, has_hero_photo: bool | None = None) -> dict[str, str]:
     """The direction as the copy planner reads it (``design_direction`` in its
     payload): the look in one line, what its pictures should feel like, and
-    which hero layout the homepage opens on. Short on purpose — the planner
-    prompt is token-budgeted, and the scheme owns every styling decision."""
-    hero = "background" if direction.hero_leads[:1] == ("background",) else "split"
+    which hero layout the homepage opens on — read through ``homepage_leads``,
+    so the planner is told the opening the page will actually get. Short on
+    purpose — the planner prompt is token-budgeted, and the scheme owns every
+    styling decision."""
+    leads = homepage_leads(direction, has_hero_photo)
+    hero = "background" if leads[:1] == ("background",) else "split"
     return {"look": prompt_line(direction), "imagery": direction.imagery, "hero": hero}
 
 

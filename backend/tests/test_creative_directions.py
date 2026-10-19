@@ -112,3 +112,80 @@ def test_planner_context_is_small_and_names_a_real_hero_layout() -> None:
         context = cd.planner_context(direction)
         assert context["hero"] in ("split", "background")
         assert sum(len(v) for v in context.values()) < 900
+
+
+# --- the photo hero a people-led tech direction takes from the source --------
+
+_PEOPLE_LED_TECH = ("human-centered-tech", "premium-enterprise")
+
+
+def _site_pages():
+    from app.models.content_blocks import PagePlan
+
+    def page(slug, page_type, homepage=False):
+        return PagePlan(
+            page_type=page_type, slug=slug, title=slug.title(), is_homepage=homepage,
+            blocks=[], seo_title=slug, seo_description=slug,
+        )
+
+    return [page("home", "home", homepage=True), page("services", "services"), page("contact", "contact")]
+
+
+def _homepage_hero(direction, *, has_hero_photo, fullbleed):
+    from unittest import mock
+
+    from app.services.hero_director import plan_site_heroes
+
+    with mock.patch.object(settings, "hero_fullbleed_all_pages", fullbleed):
+        directives = plan_site_heroes(
+            _site_pages(),
+            mood="technical",
+            has_source_background=False,
+            seed="Northwind IT",
+            scheme=SCHEMES_BY_SLUG[direction.schemes[0]],
+            has_hero_photo=has_hero_photo,
+            direction_leads=cd.homepage_leads(direction, has_hero_photo),
+        )
+    return directives["home"]
+
+
+@pytest.mark.parametrize("slug", _PEOPLE_LED_TECH)
+@pytest.mark.parametrize("fullbleed", [True, False], ids=["fullbleed", "per-mood"])
+class TestPeopleLedTechPhotoHero:
+    """A tech direction whose imagery is real people and premises opens on the
+    business's own photograph full-bleed — and never on a stock one."""
+
+    def test_a_known_source_photo_opens_full_bleed(self, slug, fullbleed) -> None:
+        hero = _homepage_hero(cd.by_slug(slug), has_hero_photo=True, fullbleed=fullbleed)
+        assert (hero.template_id, hero.layout) == ("hero-background-bold", "background")
+
+    def test_an_unknown_photo_keeps_the_split(self, slug, fullbleed) -> None:
+        # None: unmeasured, or stock-only on purpose — a stock office is the
+        # generic look the brief rejects.
+        hero = _homepage_hero(cd.by_slug(slug), has_hero_photo=None, fullbleed=fullbleed)
+        assert (hero.template_id, hero.layout) == ("hero-modern-split", "split")
+
+    def test_no_photo_opens_on_type(self, slug, fullbleed) -> None:
+        from app.services.hero_director import IMAGELESS_HERO_IDS
+
+        hero = _homepage_hero(cd.by_slug(slug), has_hero_photo=False, fullbleed=fullbleed)
+        assert hero.template_id in IMAGELESS_HERO_IDS
+
+
+def test_only_people_led_tech_gates_its_background_lead_on_the_source() -> None:
+    # documentary-story leads with "background" unconditionally, as before.
+    gated = {d.slug for d in cd.DIRECTIONS if d.background_needs_source_photo}
+    assert gated == set(_PEOPLE_LED_TECH)
+    for direction in cd.DIRECTIONS:
+        if direction.background_needs_source_photo:
+            assert direction.hero_leads[0] == "background"
+            assert "background" not in cd.homepage_leads(direction, None)
+            assert "background" not in cd.homepage_leads(direction, False)
+        assert cd.homepage_leads(direction, True) == direction.hero_leads
+
+
+@pytest.mark.parametrize("slug", _PEOPLE_LED_TECH)
+def test_the_planner_is_told_the_opening_the_page_gets(slug) -> None:
+    direction = cd.by_slug(slug)
+    assert cd.planner_context(direction, has_hero_photo=True)["hero"] == "background"
+    assert cd.planner_context(direction, has_hero_photo=None)["hero"] == "split"

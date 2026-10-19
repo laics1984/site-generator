@@ -336,7 +336,9 @@ chosen on evidence (docs/design-intelligence-report.md).
   its brief. No extra model call; `test_design_benchmark` counts.
 - **The direction states, the scheme realises**: the homepage hero
   (`plan_site_heroes(direction_leads=)`, after the pill and a source
-  background), the framed-photo shape (`apply_image_shape`, borderRadius only,
+  background; the people-led tech directions open full-bleed only on the
+  source's OWN photo — `background_needs_source_photo` → `homepage_leads`,
+  which the planner's `design_context` reads too), the framed-photo shape (`apply_image_shape`, borderRadius only,
   by catalog node name — `SHAPED_IMAGE_NAMES`, walked by `test_image_shapes`;
   a mat wrapping only the photo takes the same silhouette), light/dark
   (`resolve_color_scheme(direction=)` replaces the industry lean that made every

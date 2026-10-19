@@ -5317,6 +5317,10 @@ async def plan_to_site(
     # leads with the mood's signature treatment — full-bleed when the source
     # itself led with a CSS background image — and interiors rotate within a
     # mood-approved set. See services/hero_director.py.
+    # A source with no photograph opens on type, not on a stock picture
+    # standing in for the business. Unknown under stock-only on purpose: the
+    # operator asked for stock.
+    has_hero_photo = None if stock_only else ContentProfile.of_images(scraped_metadata).has_hero_photo
     hero_directives = plan_site_heroes(
         plan.pages,
         mood=effective_brand.mood,
@@ -5330,20 +5334,19 @@ async def plan_to_site(
         # a pill that has nothing to float over is broken chrome, which outranks
         # any scheme's preference.
         scheme=for_theme(theme),
-        # A source with no photograph opens on type, not on a stock picture
-        # standing in for the business. Unknown under stock-only on purpose:
-        # the operator asked for stock.
-        has_hero_photo=(
-            None if stock_only else ContentProfile.of_images(scraped_metadata).has_hero_photo
-        ),
+        has_hero_photo=has_hero_photo,
         # The floating pill needs something to float over on EVERY page, so it
         # overrides the per-mood interior rotation (which leads with compact
         # splits) even when the site-wide full-bleed policy is off.
         force_background=wants_self_chrome,
         # The creative direction states the homepage's opening; the scheme it
         # is realised by only fills in when the direction's leads can't render.
+        # A lead the direction takes only from the source's own photo is
+        # dropped when the source is not known to have one.
         direction_leads=(
-            site_direction.hero_leads if (site_direction := creative_directions.for_theme(theme)) else ()
+            creative_directions.homepage_leads(site_direction, has_hero_photo)
+            if (site_direction := creative_directions.for_theme(theme))
+            else ()
         ),
     )
     # With every page on the same full-bleed template, how each hero is COMPOSED

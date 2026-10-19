@@ -1729,7 +1729,16 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # hero follow the direction (planner._design_payload).
     if (site_direction := creative_directions.for_theme(theme)) is not None:
         detected = detected.model_copy(
-            update={"design_context": creative_directions.planner_context(site_direction)}
+            update={
+                "design_context": creative_directions.planner_context(
+                    site_direction,
+                    has_hero_photo=(
+                        profile.has_hero_photo
+                        if (profile := ContentProfile.of(payload.source)) is not None
+                        else None
+                    ),
+                )
+            }
         )
 
     # Announcement/quick-links strap: claim it BEFORE planning so its text is
