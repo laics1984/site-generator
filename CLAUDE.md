@@ -2082,11 +2082,15 @@ Rules the v1 removal taught, each a defect production v2 sites already had:
   a lift that keeps under `_MIN_BRAND_INK_CHROMA` is a near-white nobody chose
   and takes the palette's ink.
 
-Known gap: the band roles wash each palette colour 7.5% into the background, so
-`playroom`'s multi-tint rhythm gets one grey band (a neutral secondary) and one
-near-white (the surface) —
-`test_childcare_industry.test_playroom_paints_every_band_a_tint` is an expected
-failure until the band roles change in `derive` and its two mirrors.
+**The band roles are the multi-tint voice** (`color_system.band_fills`,
+mirrored as `bandFills`): a pastel of each of the brand's own hues — primary,
+accent, then their neighbours 40° round the OKLCH wheel, held 22° apart — at a
+fixed light (or, on a dark page, dark) lightness. A neutral colour (OKLCH chroma
+under 0.03: a slate secondary, a white surface) is never a source; it washed
+into a grey band and a near-white one. A brand with no hue at all keeps the
+quiet washes. Only multi-tint schemes (`playroom`, `soft-nursery`) paint
+sections with them, and a CTA may take one when no neutral stands apart, so no
+other scheme moves. `test_playroom_paints_every_band_a_tint` pins it.
 
 ### A brand-tinted chip paints an opaque tint
 

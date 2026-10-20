@@ -681,14 +681,10 @@ class PlayroomIsAChoiceNotADefaultTest(unittest.TestCase):
         self.assertGreaterEqual(fp.title_inks, 2)
         self.assertEqual(fp.divider, "wave")
 
-    @unittest.expectedFailure
     def test_playroom_paints_every_band_a_tint(self):
-        """Known v2 gap: the colour system's band roles wash primary, secondary,
-        accent and surface 7.5% into the background, so a neutral secondary
-        gives a grey band and the surface wash is all but white — playroom's
-        multi-tint rhythm reads as one tint, one grey and near-white. Restoring
-        it is a change to the band roles in color_system.derive and its two
-        TypeScript mirrors."""
+        """The band roles are pastels of the brand's own hues
+        (color_system.band_fills): a neutral secondary or surface is never a
+        source, so no band is grey or near-white."""
         fp = self._build("playroom")
         self.assertTrue(all(b in ("tint", "photo") for b in fp.bands), fp.bands)
 

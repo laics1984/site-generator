@@ -95,6 +95,33 @@ export const buttonPair = (color: string, dark: string, light: string): [string,
   if (colorContrast(light, fill) >= 4.5 && toOklch(color)[0]-toOklch(fill)[0] <= BUTTON_MAX_DEEPEN) return [fill, light]
   return [color, readable(color, dark, light)]
 }
+/** The multi-tint voice: a pastel of each of the brand's own hues (primary,
+ * accent and their OKLCH neighbours, held apart); a neutral colour is never a
+ * source. Python parity: color_system.band_fills, which states why. */
+const BAND_MIN_SOURCE_CHROMA = .03
+const BAND_HUE_STEP = 40*Math.PI/180
+const BAND_MIN_HUE_GAP = 22*Math.PI/180
+const BAND_LIGHTNESS: [number, number] = [.955, .27]
+const BAND_CHROMA: [number, number] = [.025, .045]
+export const bandFills = (p: ThemeColors, darkPage: boolean): string[] => {
+  const sources = (['primary','accent'] as const).map(name => toOklch(p[name]))
+    .filter(([,c]) => c >= BAND_MIN_SOURCE_CHROMA).map(([,c,h]) => [c,h] as [number, number])
+  if (!sources.length) return (['primary','secondary','accent','surface'] as const)
+    .map(name => mixPerceptual(p.background,p[name],darkPage?.15:.075))
+  const candidates: Array<[number, number]> = [...sources]
+  for (const turn of [1,-1,2,-2,3,-3])
+    sources.forEach(([c,h],index) => candidates.push([c, h+(index===0?1:-1)*turn*BAND_HUE_STEP]))
+  const picked: Array<[number, number]> = []
+  for (const [c,h] of candidates) {
+    const gap = picked.length
+      ? Math.min(...picked.map(([,o]) => Math.abs((((h-o+Math.PI)%(2*Math.PI))+2*Math.PI)%(2*Math.PI)-Math.PI)))
+      : Math.PI
+    if (gap >= BAND_MIN_HUE_GAP) picked.push([c,h])
+    if (picked.length === 4) break
+  }
+  const lightness = darkPage ? BAND_LIGHTNESS[1] : BAND_LIGHTNESS[0]
+  return picked.map(([c,h]) => fromOklch(lightness, Math.min(BAND_CHROMA[1], Math.max(BAND_CHROMA[0], c*.3)), h))
+}
 const cache = new Map<string, Readonly<Record<string,string>>>()
 export function deriveThemeColors(input: ThemeColors): Readonly<Record<string,string>> {
   const values = fields.map(k => normalizeHex(input[k]))
@@ -126,9 +153,9 @@ export function deriveThemeColors(input: ThemeColors): Readonly<Record<string,st
     out[name+'-border']=ensureColorContrast(color,bg,3)
     for (const suffix of ['','-hover','-active']) out['on-'+name+suffix]=readable(out[name+suffix],dark,light)
   }
-  ;[p.primary,p.secondary,p.accent,p.surface].forEach((color,i)=>{
-    out['band-'+(i+1)]=mixPerceptual(bg,color,darkPage?.15:.075)
-    out['on-band-'+(i+1)]=readable(out['band-'+(i+1)],dark,light)
+  bandFills(p,darkPage).forEach((band,i)=>{
+    out['band-'+(i+1)]=band
+    out['on-band-'+(i+1)]=readable(band,dark,light)
   })
   for (const surface of ['background','surface','surface-inverse','primary','secondary','accent','band-1','band-2','band-3','band-4']) {
     out['error-ink-on-'+surface]=ensureColorContrast('#dc2626',out[surface])

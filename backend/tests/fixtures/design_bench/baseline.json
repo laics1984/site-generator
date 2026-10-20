@@ -522,7 +522,7 @@
       ],
       "bands": [
         "tint",
-        "light",
+        "tint",
         "tint",
         "tint",
         "tint"
@@ -566,7 +566,7 @@
       ],
       "bands": [
         "tint",
-        "light",
+        "tint",
         "tint",
         "tint",
         "tint"
@@ -610,7 +610,7 @@
       ],
       "bands": [
         "tint",
-        "light",
+        "tint",
         "tint",
         "tint",
         "dark"
@@ -654,7 +654,7 @@
       ],
       "bands": [
         "tint",
-        "light",
+        "tint",
         "tint",
         "tint",
         "tint"
@@ -698,7 +698,7 @@
       ],
       "bands": [
         "tint",
-        "light",
+        "tint",
         "tint",
         "tint",
         "dark"
@@ -739,7 +739,7 @@
       ],
       "bands": [
         "tint",
-        "light",
+        "tint",
         "tint",
         "tint",
         "tint"
@@ -780,7 +780,7 @@
       ],
       "bands": [
         "tint",
-        "light",
+        "tint",
         "tint",
         "tint",
         "dark"
@@ -821,7 +821,7 @@
       ],
       "bands": [
         "tint",
-        "light",
+        "tint",
         "tint",
         "tint",
         "tint"
@@ -1511,8 +1511,8 @@
   ],
   "similarity_by_industry": {
     "childcare": {
-      "mean": 0.259,
-      "max": 0.396,
+      "mean": 0.255,
+      "max": 0.378,
       "sites": 5
     },
     "saas": {

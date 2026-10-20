@@ -160,6 +160,47 @@ def creative_colors(values: dict[str, str]) -> dict[str, str]:
     return {**values, "surface": surface, "background": background, "text": text}
 
 
+# The band roles are the multi-tint voice (a multi-tint scheme paints its
+# sections through them; a CTA may take one when no neutral stands apart): a
+# pastel of each of the brand's own hues. A neutral colour (a slate secondary,
+# a white surface) is never a source — washed into the page it is a grey or
+# near-white band, not a tint. Hues come from primary and accent and their
+# neighbours in OKLCH, held apart so adjacent bands differ.
+BAND_MIN_SOURCE_CHROMA = .03        # below this a colour has no usable hue
+BAND_HUE_STEP = math.radians(40)    # a neighbour sits this far round the wheel
+BAND_MIN_HUE_GAP = math.radians(22) # bands closer than this read as one
+BAND_LIGHTNESS = (.955, .27)        # (light page, dark page)
+BAND_CHROMA = (.025, .045)          # a pastel: visibly tinted, never loud
+
+
+def band_fills(p: dict[str, str], dark_page: bool) -> tuple[str, str, str, str]:
+    """Four band colours for a palette: pastels of its chromatic hues, or —
+    for a brand with no hue at all — its colours washed quietly into the page."""
+    sources = [oklch(p[name]) for name in ("primary", "accent")]
+    sources = [(c, h) for _, c, h in sources if c >= BAND_MIN_SOURCE_CHROMA]
+    if not sources:
+        return tuple(  # type: ignore[return-value]
+            mix(p["background"], p[name], .15 if dark_page else .075)
+            for name in ("primary", "secondary", "accent", "surface")
+        )
+    candidates: list[tuple[float, float]] = list(sources)
+    for turn in (1, -1, 2, -2, 3, -3):
+        for index, (chroma, hue) in enumerate(sources):
+            # primary's neighbours turn one way, the accent's the other
+            sign = 1 if index == 0 else -1
+            candidates.append((chroma, hue + sign * turn * BAND_HUE_STEP))
+    picked: list[tuple[float, float]] = []
+    for chroma, hue in candidates:
+        gap = min((abs((hue - h + math.pi) % (2 * math.pi) - math.pi) for _, h in picked), default=math.pi)
+        if gap >= BAND_MIN_HUE_GAP:
+            picked.append((chroma, hue))
+        if len(picked) == 4:
+            break
+    light = BAND_LIGHTNESS[1] if dark_page else BAND_LIGHTNESS[0]
+    low, high = BAND_CHROMA
+    return tuple(from_oklch(light, min(high, max(low, chroma * .3)), hue) for chroma, hue in picked)  # type: ignore[return-value]
+
+
 @lru_cache(maxsize=256)
 def _derive(values: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
     p = dict(zip(FIELDS, values))
@@ -197,9 +238,9 @@ def _derive(values: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
         out[name+"-border"] = ensure_contrast(color, bg, 3.)
         for suffix in ("", "-hover", "-active"):
             out["on-"+name+suffix] = readable(out[name+suffix], dark, light)
-    for index, color in enumerate((p["primary"], p["secondary"], p["accent"], p["surface"]), 1):
-        out[f"band-{index}"] = mix(bg, color, .15 if dark_page else .075)
-        out[f"on-band-{index}"] = readable(out[f"band-{index}"], dark, light)
+    for index, band in enumerate(band_fills(p, dark_page), 1):
+        out[f"band-{index}"] = band
+        out[f"on-band-{index}"] = readable(band, dark, light)
     for surface in ("background", "surface", "surface-inverse", "primary", "secondary", "accent", "band-1", "band-2", "band-3", "band-4"):
         out[f"error-ink-on-{surface}"] = ensure_contrast("#dc2626", out[surface])
         for brand in ("primary", "secondary", "accent"):
