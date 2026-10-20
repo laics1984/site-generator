@@ -10,7 +10,7 @@ import math
 
 from app.models.brand import ThemeTokens
 from app.models.builder_schema import BuilderElement, GeneratedSite
-from app.services.color_system import derive, oklch, luminance, ensure_contrast, contrast
+from app.services.color_system import derive, oklch, luminance, ensure_contrast, contrast, readable
 
 
 def rendering_theme(theme: ThemeTokens) -> ThemeTokens:
@@ -99,6 +99,18 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
             alpha = float(match[4] or 1)
             return f"color-mix(in srgb, {token(name)} {alpha*100:g}%, transparent)"
         return re.sub(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?\s*\)", rgba_value, value)
+
+    def fixed_ink(brand: str | None, fill: str) -> str:
+        """Copy on a fill that is a raw colour rather than a role (a restated
+        button, a panel inside a raw band tint). Brand copy keeps its hue,
+        lifted to AA; anything else wears the palette ink that READS on the
+        fill — never the dark text lifted just to 4.5:1, which on a dark fill
+        is a muddy mid-grey. Written as the ink's token when it reads as is,
+        so it follows a palette edit."""
+        if brand:
+            return ensure_contrast(getattr(palette, brand), fill)
+        ink = readable(fill, colors["ink-dark"], colors["ink-light"])
+        return next((token(role) for role in ("ink-light", "ink-dark") if colors[role] == ink), ink)
 
     def walk(node: BuilderElement, surface: str = "background", in_photo: bool = False,
              fixed_surface: str | None = None, photo_ink: str = "photo-ink") -> bool:
@@ -203,8 +215,7 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
             parsed_ink = _parse_color(raw_ink, rendered)
             neutral = parsed_ink is not None and oklch(_to_hex(parsed_ink[0]))[1] < .04
             if role in colors and (neutral or brand or raw_ink.lower() in values or "--builder-color-" in raw_ink or raw_ink.lower() in ink_roles):
-                node.styles["color"] = (ensure_contrast(getattr(palette, brand) if brand else palette.text, fixed_surface)
-                                        if fixed_surface else token(role))
+                node.styles["color"] = (fixed_ink(brand, fixed_surface) if fixed_surface else token(role))
                 # Informative text must not inherit a decorative opacity that
                 # invalidates its chosen pair. Photo washes remain on parents.
                 node.styles.pop("opacity", None)

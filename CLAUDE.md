@@ -2336,7 +2336,11 @@ button on an unmeasured photo (the painted surface is not serialized).
 AFTER `enforce_text_contrast` and rebinds every colour to the colour system's roles. A parent
 with a raw-hex fill pins its children's `fixed_surface`; a child that paints its OWN fill
 must replace it, or a `cta-banner` panel (retokenised to the dark `surface-inverse`) inside a
-raw band tint inks its copy for the cream band — watr shipped 1.03:1. Offline builds run
+raw band tint inks its copy for the cream band — watr shipped 1.03:1. Copy on such a raw fill
+wears the palette ink that READS on it (`fixed_ink`: `readable` over `ink-dark`/`ink-light`,
+as a token when un-nudged), never the dark text lifted to exactly AA — on a button restated
+to the band's dark ink (a brand button melting into a brand CTA band) that was a muddy
+`#767c71` on near-black. Offline builds run
 this pass too (there is one colour system), so the every-scheme matrices above see it. `scripts/audit_site_inks.py <site.json>` judges a downloaded site (preview
 overflow menu → "Download site JSON") the way the renderer paints it — v2 tokens through
 `color_system.derive`, inherited `color` followed — and lists copy under AA, buttons under 3:1,

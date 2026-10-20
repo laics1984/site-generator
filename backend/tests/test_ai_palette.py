@@ -863,3 +863,23 @@ def test_a_theme_saved_on_the_old_automatic_button_pair_reads_with_the_new_one()
     assert upgrade_default_buttons(d, "#774422", "#ffffff") == ("#774422", "#ffffff")
     light = derive(creative_colors({**_TEAL, "primary": "#facc15"}))
     assert upgrade_default_buttons(light, light["primary"], light["on-primary"]) == (light["primary"], light["on-primary"])
+
+
+@pytest.mark.parametrize("fill", ["#060e16", "#f4f1ea"])
+def test_copy_on_a_raw_fill_wears_the_palette_ink_that_reads_on_it(fill):
+    # A brand button restated to the band's dark ink (it melted into a brand
+    # CTA band) kept a label lifted from the dark TEXT colour to exactly 4.5:1:
+    # a muddy #767c71 on near-black.
+    from app.services.palette_styles import bind_theme_styles, rendering_theme
+    from app.services.section_content import _parse_color, _to_hex
+    t = theme({**_TEAL, "primary": "#52a02e"})
+    label = BuilderElement(id="cta", name="Link", type="link",
+                           styles={"backgroundColor": fill, "color": "var(--builder-button-text, #ffffff)"},
+                           content=BuilderElementContent(innerText="Request a call"))
+    band = BuilderElement(id="band", name="CTA", type="container",
+                          styles={"backgroundColor": t.palette.primary}, content=[label])
+    bind_theme_styles([band], t, rendering_theme(t))
+    d = derive(t.palette.model_dump())
+    role = "ink-light" if contrast(d["ink-light"], fill) > contrast(d["ink-dark"], fill) else "ink-dark"
+    assert label.styles["color"] == f"var(--builder-color-{role}, {d[role]})"
+    assert contrast(_to_hex(_parse_color(label.styles["color"], t)[0]), fill) >= 7
