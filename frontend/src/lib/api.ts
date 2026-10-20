@@ -169,6 +169,8 @@ export interface PageRecipeOptions {
   homepageSections?: string[]
   /** How to present the source's languages; omitted = automatic. */
   multilingual?: MultilingualChoice | null
+  /** What an earlier recipe for this source detected; re-reads reuse it. */
+  detectedBrand?: DetectedBrand | null
 }
 
 export async function fetchPageRecipe(
@@ -183,6 +185,7 @@ export async function fetchPageRecipe(
       single_page: opts.singlePage ?? false,
       homepage_sections: opts.homepageSections ?? null,
       multilingual: opts.multilingual ?? null,
+      detected_brand: opts.detectedBrand ?? null,
     }),
   })
 }

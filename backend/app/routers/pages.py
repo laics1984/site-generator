@@ -29,7 +29,7 @@ from app.services.page_inference import (
     scaffolds_for_languages,
 )
 from app.services.multilingual_strategy import addable_locales, with_plan
-from app.services.planner import detect_brand_cached
+from app.services.planner import DetectedBrand, detect_brand_cached
 from app.services import creative_directions
 from app.services.design_direction import ContentProfile, resolve_direction
 
@@ -48,6 +48,11 @@ class RecipeRequest(BaseModel):
     # How to present the source's languages; None = automatic. The returned
     # `multilingual` plan is what /generate/with-pages will build.
     multilingual: MultilingualChoice | None = None
+    # The detection an earlier recipe for this source returned. Nothing the
+    # picker changes (languages, scope) changes what the business is, so a
+    # re-read reuses it instead of a fresh detection — minutes on a local
+    # model once the cache has lapsed, during which the page list is stale.
+    detected_brand: DetectedBrand | None = None
 
 
 @router.post("/recipe", response_model=PageRecipeResponse)
@@ -70,8 +75,8 @@ async def page_recipe(payload: RecipeRequest) -> PageRecipeResponse:
     languages = payload.source.multilingual
     assert languages is not None
 
-    detected = None
-    if not payload.industry_override:
+    detected = None if payload.industry_override else payload.detected_brand
+    if detected is None and not payload.industry_override:
         try:
             detected = await detect_brand_cached(payload.source)
         except LlmError as exc:

@@ -157,19 +157,28 @@ export function PagePicker({
   const isFirstLoad = useRef(true)
   const selectedRef = useRef(selectedPages)
   selectedRef.current = selectedPages
+  // The first recipe's brand detection, for this source. A re-read (another
+  // language, another industry) sends it back rather than waiting on the model
+  // again for an answer the change can't affect.
+  const detectionRef = useRef<{ sourceRef: string; brand: DetectedBrand } | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
+    const known = detectionRef.current
     fetchPageRecipe(source, {
       industryOverride: industryOverride ?? undefined,
       singlePage,
       homepageSections,
       multilingual,
+      detectedBrand: known?.sourceRef === source.source_ref ? known.brand : null,
     })
       .then((res) => {
         if (cancelled) return
+        if (res.detected_brand) {
+          detectionRef.current = { sourceRef: source.source_ref, brand: res.detected_brand }
+        }
         setLanguagePlan(res.multilingual ?? null)
         setLocales(res.available_locales ?? [])
         setInferred(res.inferred_pages)
@@ -303,7 +312,9 @@ export function PagePicker({
 
   const subPageCount = inferred.filter((p) => p.parent_slug).length
   const topLevelCount = inferred.filter((p) => !p.parent_slug && !p.is_homepage).length
-  const secondPageChoices = selectedPages.filter((p) => !p.is_homepage && !p.is_legal)
+  // A translation comes along with the page it translates, so it isn't a
+  // second page of its own.
+  const secondPageChoices = selectedPages.filter((p) => !p.is_homepage && !p.is_legal && !p.locale)
   const effectiveSecondSlug = secondPageChoices.some((p) => p.slug === previewSecondSlug)
     ? previewSecondSlug ?? '' : secondPageChoices[0]?.slug ?? ''
 
@@ -393,7 +404,7 @@ export function PagePicker({
               {secondPageChoices.map((page) => <option key={page.slug} value={page.slug}>{page.title} · /{page.slug}</option>)}
             </select>
             <p className="mt-2 text-xs text-slate-600">
-              Generate Home and this page now. The complete source menu stays visible; finish the other planned pages later on the same CMS site.
+              Generate Home and this page now, with their versions in every other language. The complete source menu stays visible; finish the other planned pages later on the same CMS site.
             </p>
           </div>
         )}
@@ -481,13 +492,18 @@ export function PagePicker({
           variant="primary"
           size="lg"
           fullWidth
-          disabled={selectedPages.length === 0 || (generationMode === 'two_page_preview' && !effectiveSecondSlug)}
+          // The page list is the answer to the options above it (a language
+          // change adds every page's translation), so it can't be sent while
+          // that answer is still on its way.
+          disabled={loading || selectedPages.length === 0 || (generationMode === 'two_page_preview' && !effectiveSecondSlug)}
           busy={busy}
           onClick={onConfirm}
         >
           {busy
             ? 'Generating…'
-            : generationMode === 'two_page_preview'
+            : loading
+              ? 'Updating pages…'
+              : generationMode === 'two_page_preview'
               ? 'Generate two-page preview'
               : `Generate ${selectedPages.length} page${selectedPages.length === 1 ? '' : 's'}`}
         </Button>

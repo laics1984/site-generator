@@ -92,8 +92,11 @@ export function PagePreview({
 
   const builderStyles = site.builder_styles as PublicStyleTokens | null | undefined
 
-  const headerSchema = useMemo(() => asPublicSchema(layout?.header), [layout])
-  const footerSchema = useMemo(() => asPublicSchema(layout?.footer), [layout])
+  // A translated page wears its language's chrome: the header, CTA, footer and
+  // menus the CMS will serve on it, not the primary language's.
+  const chrome = (page.locale && layout?.languages?.[page.locale]) || layout
+  const headerSchema = useMemo(() => asPublicSchema(chrome?.header), [chrome])
+  const footerSchema = useMemo(() => asPublicSchema(chrome?.footer), [chrome])
   const bodySchema = useMemo(() => asPublicSchema(page.body_schema), [page.body_schema])
   // The language menu links where it will live: this page in each language.
   const languages = useMemo(() => previewLanguages(site, page), [site, page])
@@ -103,9 +106,9 @@ export function PagePreview({
       builderStyles,
       headerSchema,
       footerSchema,
-      menus: layout?.menus ?? [],
+      menus: chrome?.menus ?? [],
     }),
-    [builderStyles, headerSchema, footerSchema, layout]
+    [builderStyles, headerSchema, footerSchema, chrome]
   )
 
   // Per-node breakpoint rules. Generated from the same schema the published

@@ -205,6 +205,74 @@ class CompleteTranslationsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(layout["f"], {"innerText": "版权所有"})
 
 
+class TranslatedChromeTest(unittest.IsolatedAsyncioTestCase):
+    """A translated page wears its language's header, CTA, footer and menus —
+    in the preview exactly as the CMS will serve them (`localized_layout`)."""
+
+    def site(self) -> GeneratedSite:
+        from app.models.builder_schema import PageNode
+
+        base = [section(text("h", "Welcome"))]
+        about = [section(text("ah", "Our story"))]
+        home_ov = locale_overlay.derive(base, {"Welcome": "欢迎"}, origin="ai")
+        about_ov = locale_overlay.derive(about, {"Our story": "我们的故事"}, origin="ai")
+        return GeneratedSite(
+            site_name="Tadika",
+            pages=[_generated("", base), _generated("about", about, title="About"),
+                   _generated("privacy", [section()], title="Privacy"),
+                   _generated("zh", locale_overlay.apply(base, home_ov), title="首页", locale="zh-Hans",
+                              translation_of="", overlay=home_ov),
+                   _generated("zh/about", locale_overlay.apply(about, about_ov), title="关于我们",
+                              locale="zh-Hans", translation_of="about", overlay=about_ov)],
+            page_tree=[PageNode(slug="", title="Home", is_homepage=True),
+                       PageNode(slug="about", title="About")],
+            header_schema=BuilderElement(id="hdr", name="Header", type="__header",
+                                         content=[link("hcta", "Book a visit", "/about")]),
+            footer_schema=BuilderElement(id="ftr", name="Footer", type="__footer",
+                                         content=[text("f", "All rights reserved")]),
+            multilingual=MultilingualPlan(mode="separate", primary="en", secondary=["zh-Hans"],
+                                          prefixes={"zh-Hans": "zh"}),
+        )
+
+    async def test_every_menu_label_is_translated_at_generation(self):
+        site = self.site()
+        llm = _FakeLlm({"Book a visit": "预约参观", "All rights reserved": "版权所有",
+                        "Home": "首页", "About": "关于", "Privacy": "隐私政策"})
+        self.assertEqual(await complete_translations(site, {}, client=llm), [])
+
+        self.assertEqual(site.menu_label_translations["zh-Hans"], {"About": "关于", "Privacy": "隐私政策"})
+        menu_prompt = next(p for p in llm.prompts if "Privacy" in p)
+        # A language menu's labels are each language's own name; never sent.
+        self.assertNotIn("English", menu_prompt)
+
+    async def test_the_language_layout_is_the_cms_view_of_header_footer_and_menus(self):
+        from app.services.translations import localized_layout
+
+        site = self.site()
+        await complete_translations(site, {}, client=_FakeLlm({
+            "Book a visit": "预约参观", "All rights reserved": "版权所有", "Privacy": "隐私政策"}))
+        layout = localized_layout(site, "zh-Hans")
+
+        def node(tree, id_):
+            if tree.get("id") == id_:
+                return tree
+            children = tree.get("elements") or (tree.get("content") if isinstance(tree.get("content"), list) else [])
+            for child in children:
+                if (found := node(child, id_)) is not None:
+                    return found
+            return None
+
+        cta = node(layout.header, "hcta")["content"]
+        self.assertEqual((cta["innerText"], cta["href"]), ("预约参观", "/zh/about"))
+        self.assertEqual(node(layout.footer, "f")["content"]["innerText"], "版权所有")
+        menus = {m["purpose"]: [(i["label"], i["href"]) for i in m["items"]] for m in layout.menus}
+        # A translated page's own title, linked in this language…
+        self.assertEqual(menus["primary"], [("关于我们", "/zh/about")])
+        # …a page with no translation keeps its link, in this language's words.
+        self.assertEqual(menus["legal"], [("隐私政策", "/privacy")])
+        self.assertEqual(menus["language"], [("English", "/"), ("中文", "/zh")])
+
+
 class SyncTest(unittest.TestCase):
     def site(self):
         return GeneratedSite(site_name="Tadika", pages=[
@@ -309,6 +377,31 @@ class PushLanguagesTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse([c for c in cms.calls if c[0] == "publish"])
         self.assertEqual(report.steps[-1].data["draft"], 2)
         self.assertIn("plan doesn't include more than one language", report.steps[-1].warning)
+
+    async def test_a_link_to_an_untranslated_page_takes_its_labels_translation(self):
+        req = self.req()
+        req.site.menu_label_translations = {"ms": {"Privacy": "Privasi", "About": "Perihal"}}
+        cms = _Cms(entitled=True)
+        menus = [{"id": "menu-legal", "purpose": "legal", "items": [{"id": "l1", "label": "Privacy", "href": "/privacy"}]},
+                 {"id": "menu-primary", "purpose": "primary", "items": [{"id": "i1", "label": "About", "href": "/about"}]}]
+        from app.services.push_orchestrator import PushReport, _LandedPage, _push_languages
+
+        landed = [_LandedPage(page=req.site.pages[1], page_id="p-about", draft_version=1)]
+        await _push_languages(cms, req, PushReport(), landed, menus)
+
+        layout = next(c[4] for c in cms.calls if c[0] == "save" and c[1] == "layout")
+        # The translated page's own title outranks the label map.
+        self.assertEqual(layout["menus"], {"menu-legal": {"l1": {"label": "Privasi"}},
+                                           "menu-primary": {"i1": {"label": "Tentang"}}})
+
+    async def test_a_language_with_no_translated_page_is_named(self):
+        """Nothing to switch to means no switcher; the report says so rather
+        than counting one empty layout overlay as the language's push."""
+        req = self.req()
+        req.site.pages = req.site.pages[:2]
+        report = await self._push(_Cms(entitled=True), req)
+
+        self.assertIn("No pages were translated into", report.steps[-1].warning)
 
     async def test_an_incomplete_translation_stays_a_draft(self):
         cms = _Cms(entitled=True, incomplete={"p-about"})

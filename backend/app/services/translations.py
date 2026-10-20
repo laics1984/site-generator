@@ -499,6 +499,66 @@ def localized_body(
     return locale_overlay.apply(base, overlay, lambda href: localize_href(href, prefix, translated_slugs))
 
 
+def localized_layout(site, locale: str):
+    """The menus, header and footer the CMS will serve on this language's pages:
+    the layout overlay on the shared header/footer, every menu label in the
+    language, and internal links following the reader into it where the page
+    exists. The preview draws a translated page with it, and the push's menu
+    overlay is the same `menu_overlay` call, so the two can't disagree."""
+    from app.services import locale_overlay
+    from app.services.menu_builder import build_layout_payload
+
+    plan = site.multilingual
+    translated = [p for p in site.pages if p.locale == locale and p.translation_of is not None]
+    prefix = (plan.prefixes.get(locale) if plan else None) or (
+        url_prefix_of(translated[0].slug, translated[0].translation_of) if translated else ""
+    )
+    slugs = {p.translation_of for p in translated}
+
+    def localize(href: str) -> str:
+        return localize_href(href, prefix, slugs)
+
+    overlay = site.layout_overlays.get(locale) or {}
+    chrome = site.model_copy(update={
+        "header_schema": _applied(site.header_schema, overlay, localize),
+        "footer_schema": _applied(site.footer_schema, overlay, localize),
+    })
+    payload = build_layout_payload(chrome)
+    menus = locale_overlay.menu_overlay(
+        payload.menus, {p.translation_of: p.title for p in translated},
+        site.menu_label_translations.get(locale) or {},
+    )
+    return payload._replace(menus=locale_overlay.apply_menus(payload.menus, {"menus": menus}, localize))
+
+
+def _applied(element, overlay: dict, localize):
+    from app.services import locale_overlay
+
+    if element is None:
+        return None
+    applied = locale_overlay.apply([element], overlay, localize)
+    return applied[0] if applied else element
+
+
+def menu_labels(site) -> list[str]:
+    """Every label the site's menus show, minus the language menu (each item
+    already in its own language) and social links (platform names)."""
+    from app.services.menu_builder import build_layout_payload
+
+    found: dict[str, None] = {}
+
+    def visit(items: list[dict]) -> None:
+        for item in items or []:
+            if isinstance(item.get("label"), str) and item["label"].strip():
+                found.setdefault(item["label"].strip(), None)
+            visit(item.get("children") or [])
+
+    for menu in build_layout_payload(site).menus:
+        if menu.get("purpose") not in ("language", "social"):
+            visit(menu.get("items") or [])
+    return list(found)
+
+
 def _translated_slugs(site) -> dict[str, set[str]]:
     out: dict[str, set[str]] = {}
     for page in site.pages:
@@ -595,6 +655,16 @@ async def complete_translations(
             chrome, overlay, locale, None, client=llm, label=f"layout:{locale}", origin="ai",
         )
         site.layout_overlays[locale] = overlay
+        # Menu labels by text: the items' ids are minted again by every layout
+        # build, so the push and the preview key them at the time (menu_overlay).
+        # A failed call leaves them in the primary language — the CMS's
+        # completeness test doesn't count menus, so nothing waits on them.
+        labels = menu_labels(site) if len(chrome) == 2 else []
+        rest = [label for label in labels if label not in known]
+        fresh = await translate_strings(rest, locale, None, client=llm, label=f"menus:{locale}") if rest else {}
+        site.menu_label_translations[locale] = {
+            **{label: known[label] for label in labels if label in known}, **(fresh or {}),
+        }
         return f"layout:{locale}" if incomplete else None
 
     locales = sorted({p.locale for p in translated})

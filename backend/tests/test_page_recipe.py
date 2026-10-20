@@ -73,5 +73,29 @@ class RecipeThemePreviewTest(unittest.TestCase):
         )
 
 
+class RecipeReusesDetectionTest(unittest.TestCase):
+    """A re-read (another language, say) sends back the brand the first recipe
+    detected, and is answered without asking the model again — the wait that
+    left a stale page list on screen while Generate was clickable."""
+
+    def test_a_returned_detection_is_used_and_the_model_is_not_asked(self):
+        from unittest.mock import AsyncMock, patch
+
+        from app.services.planner import DetectedBrand
+
+        source = SourceContent(
+            source_kind="url", source_ref="https://example.com",
+            raw_text="Sunny Tadika — a kindergarten in Ipoh.",
+        )
+        known = DetectedBrand(site_name="Sunny Tadika", industry_category="childcare")
+        detect = AsyncMock(side_effect=AssertionError("detected again"))
+        with patch("app.routers.pages.detect_brand_cached", new=detect):
+            res = asyncio.run(page_recipe(RecipeRequest(source=source, detected_brand=known)))
+
+        detect.assert_not_called()
+        self.assertEqual(res.industry, "childcare")
+        self.assertEqual(res.detected_brand["site_name"], "Sunny Tadika")
+
+
 if __name__ == "__main__":
     unittest.main()

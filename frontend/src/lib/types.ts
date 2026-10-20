@@ -445,6 +445,9 @@ export interface PreviewLayout {
   menus: PreviewMenu[]
   header: PreviewHeader
   footer: PreviewFooter
+  /** Each other language's menus, header and footer, as the CMS serves them
+   * on that language's pages (backend translations.localized_layout). */
+  languages?: Record<string, { menus: PreviewMenu[]; header: PreviewHeader; footer: PreviewFooter }>
 }
 
 export interface PageScaffold {

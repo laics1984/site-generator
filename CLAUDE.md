@@ -3169,8 +3169,16 @@ sets `uncertain` and says so; it never silently changes the mode.
   off (the "adoption"). `_push_languages` (after the archive): `PUT languages`,
   then each page and layout overlay saved and, when publishing AND
   `entitled`, published; otherwise drafts with a warning. Menu labels are
-  overlaid at push time from the menus actually pushed (`_menu_overlay`) —
-  item ids are minted per build.
+  translated at generation BY TEXT (`GeneratedSite.menu_label_translations`;
+  language and social menus skipped) and keyed to item ids only against the
+  menus in hand (`locale_overlay.menu_overlay`: a translated page's title
+  first, else the label's translation) — item ids are minted per build.
+- **The preview draws a translated page in its language's chrome.**
+  `translations.localized_layout` is what the CMS serves on that language's
+  pages — the layout overlay on the header/footer, every menu label, internal
+  links into the language where the page exists — and `POST /api/preview/layout`
+  returns one per language (`languages`), which `PagePreview` swaps in by
+  `page.locale`. The push's menu overlay is the same call, so the two agree.
 - **The language menu is `purpose: "language"`** (`menu_builder`), one item per
   language with its `locale` and a stable id; webtree-public points each at
   the reader's own page from `page.alternates`. The preview computes those

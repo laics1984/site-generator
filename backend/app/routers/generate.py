@@ -1585,8 +1585,27 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     payload.source = with_plan(payload.source, payload.multilingual)
     languages = payload.source.multilingual
     assert languages is not None
+    # Separate pages per language asks for every page in every language. A
+    # page list holding NOT ONE translation was read before that choice landed
+    # (the picker re-reads its recipe on a language change), and built as-is it
+    # ships a site whose other language has nothing in it — no switcher, an
+    # untranslated builder view. So it is completed. A partial set is the user
+    # unticking pages and stays as picked; an extension replays a saved plan
+    # that already passed here.
+    stale_selection = (
+        languages.serves_language_urls
+        and payload.generation_mode != "remaining"
+        and not any(s.locale for s in payload.selected_pages)
+    )
+    picked = len(payload.selected_pages)
     payload.selected_pages = scaffolds_for_languages(
-        payload.selected_pages, languages, add_missing=False
+        payload.selected_pages, languages, add_missing=stale_selection
+    )
+    language_warnings = (
+        [f"Added the {', '.join(locale_label(code) for code in languages.secondary)} version of "
+         f"{len(payload.selected_pages) - picked} page(s): separate pages per language was chosen, "
+         "but the page list sent had none."]
+        if len(payload.selected_pages) > picked else []
     )
     # Before the preview narrows the selection: the planned set is what says a
     # Contact page is coming, and the saved project replays this stripped plan.
@@ -1594,10 +1613,17 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     payload.selected_pages = planned_scaffolds
     if payload.generation_mode == "two_page_preview":
         home = next((s for s in planned_scaffolds if s.is_homepage and not s.is_legal), None)
-        second = next((s for s in planned_scaffolds if s.slug == payload.preview_second_slug and not s.is_homepage and not s.is_legal), None)
+        second = next((s for s in planned_scaffolds if s.slug == payload.preview_second_slug and not s.is_homepage and not s.is_legal and not s.locale), None)
         if home is None or second is None:
             raise HTTPException(status_code=422, detail="Choose Home and one other planned page for the preview.")
-        payload.selected_pages = [home, second]
+        # The preview shows the two pages in every language they're planned
+        # in, so the language switch can be tried before the rest is built;
+        # the extension then skips them like the pages they translate.
+        pair = {home.slug, second.slug}
+        payload.selected_pages = [
+            home, second,
+            *(s for s in planned_scaffolds if s.locale and s.translation_of in pair),
+        ]
     if payload.generation_mode != "full":
         await _ensure_source_pages(payload.source, payload.selected_pages)
     # Before anything reads a photo: a Facebook link past its signed deadline
@@ -2046,7 +2072,7 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         languages=languages,
     )
     site.collections = await collections_task if collections_task else None
-    site.generation_warnings = [*live.warnings, *menu_review_warnings(menu_assets)]
+    site.generation_warnings = [*language_warnings, *live.warnings, *menu_review_warnings(menu_assets)]
     # Each translated page was derived from its page's string map; finish what
     # the planner never wrote (default eyebrows, header and footer copy).
     if languages.mode == "separate" and any(page.locale for page in site.pages):
@@ -2059,7 +2085,7 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
                 + ". They are saved as drafts, not published, until finished."
             )
 
-    if payload.generation_mode == "two_page_preview" and len(site.pages) != 2:
+    if payload.generation_mode == "two_page_preview" and sum(1 for page in site.pages if not page.locale) != 2:
         raise HTTPException(status_code=500, detail="Preview generation must produce exactly two pages.")
 
     site.generation_mode = payload.generation_mode

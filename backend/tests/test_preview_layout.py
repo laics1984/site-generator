@@ -210,3 +210,27 @@ def test_preview_layout_rejects_a_site_without_header_schema():
 
     response = TestClient(app).post("/api/preview/layout", json=site)
     assert response.status_code == 422
+
+
+def test_a_separate_language_site_previews_each_languages_chrome():
+    """A translated page is drawn with the header, CTA, footer and menus the
+    CMS will serve on it; a one-language site has no other chrome to send."""
+    from app.models.content_blocks import MultilingualPlan
+
+    site = _site()
+    assert TestClient(app).post("/api/preview/layout", json=site.model_dump(mode="json")).json()["languages"] == {}
+
+    about = site.pages[1]
+    site.pages.append(about.model_copy(update={"slug": "zh/about", "title": "关于", "locale": "zh-Hans",
+                                               "translation_of": "about", "is_homepage": False}))
+    site.multilingual = MultilingualPlan(mode="separate", primary="en", secondary=["zh-Hans"],
+                                         prefixes={"zh-Hans": "zh"})
+    site.menu_label_translations = {"zh-Hans": {"Privacy": "隐私"}}
+    body = TestClient(app).post("/api/preview/layout", json=site.model_dump(mode="json")).json()
+
+    zh = body["languages"]["zh-Hans"]
+    labels = {(item["label"], item["href"]) for menu in zh["menus"] for item in menu["items"]}
+    assert ("关于", "/zh/about") in labels
+    assert ("隐私", "/privacy") in labels
+    # The primary layout is untouched.
+    assert ("About", "/about") in {(i["label"], i["href"]) for m in body["menus"] for i in m["items"]}

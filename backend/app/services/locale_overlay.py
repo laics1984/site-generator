@@ -14,6 +14,9 @@ Three uses, one representation:
   preview body is made, so the preview is the shared tree plus the overlay,
   exactly what the CMS serves, never a second build that could differ.
 - `missing` lists what an overlay doesn't cover yet, the CMS's publish test.
+
+Menus are overlaid by item id too (`menu_overlay` builds that part of a layout
+overlay, `apply_menus` applies it), mirroring OverlayApplier::applyToMenus.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from __future__ import annotations
 import copy
 import hashlib
 from collections.abc import Callable, Iterator
+from typing import Any
 
 from app.models.builder_schema import BuilderElement, BuilderElementContent
 
@@ -193,3 +197,70 @@ def apply(
         return clone
 
     return [kept for element in copy.copy(elements) if (kept := one(element)) is not None]
+
+
+# --- menus ------------------------------------------------------------------------------
+
+# A language menu's items each name their own language and point at that
+# language's home: never relabelled, never localized (OverlayApplier::applyToMenus).
+LANGUAGE_MENU = "language"
+
+
+def menu_overlay(
+    menus: list[dict[str, Any]], titles: dict[str, str], labels: dict[str, str]
+) -> dict[str, dict[str, dict[str, str]]]:
+    """`{menu id: {item id: {"label"}}}` — a layout overlay's `menus`, for the
+    menus as they will be saved (item ids are minted per build, so this is
+    always worked out against the menus actually in hand).
+
+    An item linking a page translated in this language takes that page's
+    title there (`titles`: primary slug → translated title); any other item —
+    a legal link, a group heading, a page not built in this language — takes
+    its label's translation (`labels`: primary label → translation)."""
+    out: dict[str, dict[str, dict[str, str]]] = {}
+
+    def visit(menu_id: str, items: list[dict[str, Any]]) -> None:
+        for item in items or []:
+            href = str(item.get("href") or "")
+            slug = href.split("#", 1)[0].strip("/") if href.startswith("/") else None
+            label = (titles.get(slug) if slug is not None else None) or labels.get(str(item.get("label") or "").strip())
+            if label and item.get("id"):
+                out.setdefault(menu_id, {})[str(item["id"])] = {"label": label}
+            visit(menu_id, item.get("children") or [])
+
+    for menu in menus:
+        if menu.get("purpose") != LANGUAGE_MENU:
+            visit(str(menu.get("id")), menu.get("items") or [])
+    return out
+
+
+def apply_menus(
+    menus: list[dict[str, Any]],
+    overlay: dict | None,
+    localize_href: Callable[[str], str] | None = None,
+) -> list[dict[str, Any]]:
+    """A COPY of `menus` with the overlay's labels and internal links localized —
+    mirrors OverlayApplier::applyToMenus, the language menu included."""
+    labels = (overlay or {}).get("menus") or {}
+
+    def items(entries: list[dict[str, Any]], own: dict, localize: Callable[[str], str] | None) -> list:
+        out = []
+        for entry in entries:
+            item = dict(entry)
+            label = (own.get(str(item.get("id") or "")) or {}).get("label")
+            if isinstance(label, str) and label.strip():
+                item["label"] = label
+            if localize and isinstance(item.get("href"), str):
+                item["href"] = localize(item["href"])
+            if isinstance(item.get("children"), list):
+                item["children"] = items(item["children"], own, localize)
+            out.append(item)
+        return out
+
+    return [
+        {**menu, "items": items(
+            menu.get("items") or [], labels.get(str(menu.get("id"))) or {},
+            None if menu.get("purpose") == LANGUAGE_MENU else localize_href,
+        )}
+        for menu in menus
+    ]

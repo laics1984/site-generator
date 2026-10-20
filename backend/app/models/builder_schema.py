@@ -342,9 +342,14 @@ class GeneratedSite(BaseModel):
     # None on sites generated before P2 = a single-language site.
     multilingual: MultilingualPlan | None = None
     # Per language, the header and footer text as an overlay on the shared
-    # layout (the CMS's `translations/layout/website/{locale}`). Menu labels are
+    # layout (the CMS's `translations/layout/website/{locale}`). Its `menus` are
     # added at push time, from the menus the push itself builds.
     layout_overlays: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Per language, every menu label's translation by TEXT (primary label →
+    # translation): menu item ids are minted per layout build, so the push and
+    # the preview turn this into a `menus` overlay against the menus in hand
+    # (locale_overlay.menu_overlay). Never pushed as is.
+    menu_label_translations: dict[str, dict[str, str]] = Field(default_factory=dict)
     # Compact design inputs retained for color-only AI calls. Never public copy.
     palette_brief: dict[str, Any] | None = None
     tagline: str | None = None

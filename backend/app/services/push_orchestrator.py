@@ -77,6 +77,7 @@ from app.services.generation_projects import (
     bind_project, get_project, mark_complete, mark_page_published,
     mark_preview_published, record_page,
 )
+from app.services import locale_overlay
 from app.services.image_urls import is_expired_url, signed_url_expiry
 from app.services.menu_builder import build_layout_payload
 from app.services.platform_routes import BLANK_TEMPLATE_BODY, TEMPLATE_PAGE_DEFAULTS
@@ -672,27 +673,6 @@ def _language_config(plan) -> dict[str, Any]:
     }
 
 
-def _menu_overlay(menus: list[dict[str, Any]], titles: dict[str, str]) -> dict[str, dict]:
-    """{menu id: {item id: {label}}} for every item linking a translated page.
-
-    `titles` is primary slug → that page's title in the language. A language
-    menu's own labels are already each language's name for itself."""
-    out: dict[str, dict] = {}
-
-    def visit(menu_id: str, items: list[dict[str, Any]]) -> None:
-        for item in items or []:
-            href = str(item.get("href") or "")
-            slug = href.split("#", 1)[0].strip("/") if href.startswith("/") else None
-            if slug is not None and slug in titles and item.get("id"):
-                out.setdefault(menu_id, {})[str(item["id"])] = {"label": titles[slug]}
-            visit(menu_id, item.get("children") or [])
-
-    for menu in menus:
-        if menu.get("purpose") != "language":
-            visit(str(menu.get("id")), menu.get("items") or [])
-    return out
-
-
 async def _save_translation(
     client: CmsClient, token: str, kind: str, target_id: str, locale: str,
     overlay: dict[str, Any], *, publish: bool,
@@ -758,7 +738,9 @@ async def _push_languages(
                 for page in req.site.pages
                 if page.locale == locale and page.translation_of is not None
             }
-            layout["menus"] = _menu_overlay(pushed_menus or [], titles)
+            layout["menus"] = locale_overlay.menu_overlay(
+                pushed_menus or [], titles, req.site.menu_label_translations.get(locale) or {}
+            )
             jobs.append(("layout", "website", locale, layout))
 
     sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
@@ -784,6 +766,17 @@ async def _push_languages(
                         "were kept as drafts.")
     if failed:
         warnings.append(f"{len(failed)} translation(s) could not be saved: {failed[0]}")
+    if languages.mode == "separate":
+        from app.services.locale import locale_label
+
+        # The public switcher lists a language only on pages published in it,
+        # so a language with no page translation has no switcher entry at all.
+        untranslated = [code for code in languages.secondary
+                        if not any(kind == "page" and locale == code for kind, _, locale, _ in jobs)]
+        if untranslated:
+            warnings.append(f"No pages were translated into {', '.join(map(locale_label, untranslated))}, "
+                            "so the site shows no language switch for it. Generate the site again with "
+                            "its pages ticked, or translate them in the builder's language switch.")
     report.record(PushStep(
         name="languages", ok=True, detail=detail, data=outcome,
         warning=" ".join(warnings) or None,

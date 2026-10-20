@@ -100,5 +100,69 @@ class GenerationAppliesItTest(unittest.TestCase):
         self.assertNotIn("contact", selected[0].sections)
 
 
+class SeparateLanguagesPageSetTest(unittest.TestCase):
+    """Separate pages per language, as generation settles the page set: a list
+    with no translation at all was read before the choice landed and is
+    completed; the two-page preview carries its pages' translations."""
+
+    def _settle(self, selected: list[PageScaffold], **request) -> GenerateWithPagesRequest:
+        from app.models.content_blocks import MultilingualChoice
+
+        payload = GenerateWithPagesRequest(
+            source=SourceContent(source_kind="url", source_ref="https://acme.my", raw_text="Acme kindergarten."),
+            selected_pages=selected,
+            multilingual=MultilingualChoice(mode="separate", locales=["zh-Hans"]),
+            **request,
+        )
+
+        class Stop(Exception):
+            pass
+
+        with patch("app.routers.generate.keep_photo_links_alive", new=AsyncMock(side_effect=Stop)):
+            with self.assertRaises(Stop):
+                asyncio.run(generate_with_pages(payload))
+        return payload
+
+    @staticmethod
+    def _zh(page: PageScaffold) -> PageScaffold:
+        slug = f"zh/{page.slug}".rstrip("/")
+        return page.model_copy(update={"slug": slug, "locale": "zh-Hans", "translation_of": page.slug})
+
+    def test_a_list_with_no_translation_gets_every_page_in_every_language(self):
+        payload = self._settle([_home(), _about()])
+        self.assertEqual(
+            {(s.slug, s.locale) for s in payload.selected_pages},
+            {("", None), ("about", None), ("zh", "zh-Hans"), ("zh/about", "zh-Hans")},
+        )
+
+    def test_a_translation_the_user_unticked_stays_unticked(self):
+        payload = self._settle([_home(), _about(), self._zh(_home())])
+        self.assertEqual([s.slug for s in payload.selected_pages if s.locale], ["zh"])
+
+    def test_the_two_page_preview_carries_its_pages_translations(self):
+        contact = _template_contact()
+        payload = self._settle(
+            [_home(), _about(), contact, self._zh(_home()), self._zh(_about()), self._zh(contact)],
+            generation_mode="two_page_preview", preview_second_slug="about",
+        )
+        self.assertEqual([s.slug for s in payload.selected_pages], ["", "about", "zh", "zh/about"])
+
+    def test_a_translation_is_never_the_previews_second_page(self):
+        from fastapi import HTTPException
+
+        from app.models.content_blocks import MultilingualChoice
+
+        payload = GenerateWithPagesRequest(
+            source=SourceContent(source_kind="url", source_ref="https://acme.my", raw_text="Acme kindergarten."),
+            selected_pages=[_home(), _about(), self._zh(_about())],
+            multilingual=MultilingualChoice(mode="separate", locales=["zh-Hans"]),
+            generation_mode="two_page_preview", preview_second_slug="zh/about",
+        )
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(generate_with_pages(payload))
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertIn("one other planned page", raised.exception.detail)
+
+
 if __name__ == "__main__":
     unittest.main()
