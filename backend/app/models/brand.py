@@ -297,6 +297,19 @@ class ThemeTokens(BaseModel):
     @classmethod
     def _always_v2(cls, value: object) -> int:
         return 2
+
+    @model_validator(mode="after")
+    def _upgrade_default_buttons(self) -> "ThemeTokens":
+        """A theme saved before the button pair existed reads with it, exactly
+        as every renderer paints it (color_system.upgrade_default_buttons)."""
+        from app.services.color_system import upgrade_default_buttons
+
+        background, text = upgrade_default_buttons(
+            self.palette.model_dump(), self.buttons.background, self.buttons.text
+        )
+        if (background, text) != (self.buttons.background, self.buttons.text):
+            self.buttons = self.buttons.model_copy(update={"background": background, "text": text})
+        return self
     buttons: Buttons
     page: PageTokens
 

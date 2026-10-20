@@ -849,3 +849,17 @@ def test_an_owner_label_on_a_default_button_is_kept_and_held_to_aa():
     assert buttons["background"] == derive(patch.theme.palette.model_dump())["primary-button"]
     assert contrast(buttons["text"], buttons["background"]) >= 4.5
     assert oklch(buttons["text"])[0] > .8  # still the owner's light label
+
+
+def test_a_theme_saved_on_the_old_automatic_button_pair_reads_with_the_new_one():
+    from app.models.brand import ThemeTokens
+    from app.services.color_system import upgrade_default_buttons
+    stored = theme({**_TEAL, "primary": "#e76f51"}).model_dump(mode="json")
+    d = derive(ThemeTokens.model_validate(stored).palette.model_dump())
+    stored["buttons"].update(background=d["primary"], text=d["on-primary"])
+    upgraded = ThemeTokens.model_validate(stored).buttons
+    assert (upgraded.background, upgraded.text) == (d["primary-button"], d["on-primary-button"])
+    # Someone's own pair, and a light brand whose old pair IS the new one, stay.
+    assert upgrade_default_buttons(d, "#774422", "#ffffff") == ("#774422", "#ffffff")
+    light = derive(creative_colors({**_TEAL, "primary": "#facc15"}))
+    assert upgrade_default_buttons(light, light["primary"], light["on-primary"]) == (light["primary"], light["on-primary"])

@@ -2130,8 +2130,14 @@ button pair moves: `primary` and `on-primary` (bands, chips) are unchanged.
 `apply_creative_palette` stores the pair; a recolour (`merge_palette_styles`,
 and the builder's `mergeBuilderStyles`) carries a button still on a palette
 default — raw primary or the pair — to the new pair, keeping an owner's fill
-and holding an owner's label to AA. Already-published sites keep their stored
-pair until regenerated or recoloured. Tests: `test_ai_palette.py`
+and holding an owner's label to AA. A site saved before the pair existed
+still renders it: a stored pair that is exactly the OLD automatic default (raw
+primary + its `on-primary`) is swapped for the button pair by every renderer
+(`upgradeDefaultButtons` in `semanticColorVars`), by the builder on load
+(`normalizeBuilderStyles`, so its panel agrees and the next save keeps it), and
+by `ThemeTokens` when the generator reads a stored theme
+(`color_system.upgrade_default_buttons`). Any other pair is someone's choice
+and is never touched. Tests: `test_ai_palette.py`
 (button-pair block); `builder/src/lib/builder-styles.test.ts`.
 
 

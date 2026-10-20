@@ -169,11 +169,25 @@ export function deriveThemeColors(input: ThemeColors): Readonly<Record<string,st
   cache.set(key,result)
   return result
 }
-export const semanticColorVars = (colors: ThemeColors, buttons?: { background: string; text: string }): Record<string,string> => {
+/** A stored button still wearing the colour system's OLD automatic pair —
+ * the raw primary with the label `on-primary` picked for it — takes the
+ * button pair (`primary-button` / `on-primary-button`), so a site saved before
+ * that rule renders it without being regenerated. Any other pair is someone's
+ * choice and is returned as stored. Python parity:
+ * color_system.upgrade_default_buttons. */
+export const upgradeDefaultButtons = <T extends { background: string; text: string }>(colors: ThemeColors, buttons: T): T => {
+  const derived = deriveThemeColors(colors)
+  const background = normalizeHex(buttons.background), text = normalizeHex(buttons.text)
+  if (!derived['primary-button'] || background !== derived.primary || text !== derived['on-primary']) return buttons
+  return { ...buttons, background: derived['primary-button'], text: derived['on-primary-button'] }
+}
+export const semanticColorVars = (colors: ThemeColors, stored?: { background: string; text: string }): Record<string,string> => {
   const vars = Object.fromEntries(Object.entries(deriveThemeColors(colors)).map(([k,v])=>['--builder-color-'+k,v]))
+  const buttons = stored && upgradeDefaultButtons(colors, stored)
   const background = normalizeHex(buttons?.background)
   if (background) {
     const states = deriveThemeColors({...colors,primary:background})
+    vars['--builder-button-background'] = background
     vars['--builder-button-text'] = ensureColorContrast(normalizeHex(buttons?.text) || states['on-primary'],background)
     for (const state of ['hover','active']) {
       vars['--builder-button-'+state] = states['primary-'+state]

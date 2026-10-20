@@ -147,6 +147,22 @@ def button_pair(color: str, dark: str, light: str) -> tuple[str, str]:
     return color, readable(color, dark, light)
 
 
+def upgrade_default_buttons(colors: dict[str, str], background: str, text: str) -> tuple[str, str]:
+    """A stored button still wearing the OLD automatic pair — the raw primary
+    with the label `on-primary` picked for it — takes the button pair, so a site
+    saved before `button_pair` renders it without being regenerated. Any other
+    pair is someone's choice and comes back as stored. Mirrors
+    `upgradeDefaultButtons` in colorSystem.ts, which every renderer runs."""
+    try:
+        derived = derive(colors)
+        stored = (normalize_hex(background), normalize_hex(text))
+    except (KeyError, ValueError):
+        return background, text
+    if stored != (derived["primary"], derived["on-primary"]):
+        return background, text
+    return derived["primary-button"], derived["on-primary-button"]
+
+
 def creative_colors(values: dict[str, str]) -> dict[str, str]:
     values = {key: normalize_hex(values[key]) for key in ("primary", "secondary", "accent", "surface")}
     # The four creative choices stay canonical, including a manually selected
