@@ -28,7 +28,7 @@ from app.services.inline_translation import SECOND_LANGUAGE_NAME, apply_inline_t
 from app.services.locale import url_prefix
 from app.services.multilingual_strategy import decide, with_plan
 from app.services.page_inference import scaffolds_for_languages
-from app.services.translations import TranslatedStrings, add_inline_translations, page_strings
+from app.services.translations import TranslatedStrings, add_inline_translations, page_strings, translate_strings
 
 
 def share(code: str, share_: float, *, substantial: bool = True, confidence: float = 0.95) -> LanguageShare:
@@ -484,9 +484,59 @@ class ReplyShapeTest(unittest.TestCase):
             ["a", "b"],
         )
 
-    def test_a_gap_in_the_numbers_cannot_pass_for_a_whole_reply(self):
+    def test_a_gap_in_the_numbers_is_a_gap_and_the_rest_still_counts(self):
         reply = TranslatedStrings.model_validate({"translations": {"1": "a", "3": "c"}})
-        self.assertNotEqual(len(reply.translations), 2)
+        self.assertEqual(reply.answers(3), {0: "a", 2: "c"})
+
+    def test_a_bare_numbered_object_is_the_same_answer(self):
+        self.assertEqual(TranslatedStrings.model_validate({"2": "b", "1": "a"}).answers(2), {0: "a", 1: "b"})
+
+    def test_a_reply_in_another_shape_fails_validation_so_the_repair_turn_runs(self):
+        from pydantic import ValidationError
+
+        for reply in ({}, {"result": {"1": "a"}}):
+            with self.assertRaises(ValidationError):
+                TranslatedStrings.model_validate(reply)
+
+    def test_only_a_complete_list_is_trusted(self):
+        self.assertEqual(TranslatedStrings(translations=["a", "b"]).answers(2), {0: "a", 1: "b"})
+        self.assertEqual(TranslatedStrings(translations=["a"]).answers(2), {})
+
+
+class PartialReplyTest(unittest.IsolatedAsyncioTestCase):
+    """One short reply used to drop the whole batch — the About page's six
+    strings came back as "0 strings for 6" and its translation stayed a draft."""
+
+    class _Llm:
+        def __init__(self, replies):
+            self.replies, self.prompts = list(replies), []
+
+        async def chat_json(self, *, system_prompt, user_prompt, schema, **kwargs):
+            self.prompts.append(json.loads(user_prompt)["strings"])
+            return schema.model_validate(self.replies.pop(0))
+
+        async def list_models(self):
+            return []
+
+    async def test_the_answered_strings_are_kept_and_only_the_gap_is_asked_again(self):
+        llm = self._Llm([{"translations": {"1": "关于", "3": "我们的故事"}}, {"translations": {"1": "服务"}}])
+        mapping = await translate_strings(["About", "Services", "Our story"], "zh-Hans", None, client=llm)
+
+        self.assertEqual(mapping, {"About": "关于", "Services": "服务", "Our story": "我们的故事"})
+        self.assertEqual(llm.prompts[1], {"1": "Services"})
+
+    async def test_an_empty_reply_is_asked_again(self):
+        llm = self._Llm([{"translations": {}}, {"translations": {"1": "关于"}}])
+        self.assertEqual(await translate_strings(["About"], "zh-Hans", None, client=llm), {"About": "关于"})
+
+    async def test_what_is_still_missing_stays_out_of_the_map(self):
+        llm = self._Llm([{"translations": {"1": "关于"}}, {"translations": {}}])
+        self.assertEqual(await translate_strings(["About", "Services"], "zh-Hans", None, client=llm),
+                         {"About": "关于"})
+
+    async def test_nothing_at_all_is_none(self):
+        llm = self._Llm([{"translations": {}}, {"translations": {}}])
+        self.assertIsNone(await translate_strings(["About"], "zh-Hans", None, client=llm))
 
 
 class FencedReplyTest(unittest.IsolatedAsyncioTestCase):

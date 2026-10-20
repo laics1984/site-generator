@@ -31,6 +31,30 @@ from app.models.builder_schema import BuilderElement, BuilderElementContent
 # Mirrors OverlayApplier::TEXT_FIELDS: the only fields an overlay may change.
 TEXT_FIELDS = ("innerText", "alt", "title", "ariaLabel", "caption")
 
+# Mirrors OverlayApplier::FILE_NAME_EXTENSIONS. A text that is only a file's
+# name (an image alt a site builder filled with "menu cover.jpg") is in no
+# language, so no language is missing it: never asked of a translator, never
+# blocking a publish.
+FILE_NAME_EXTENSIONS = ("jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "heic", "bmp",
+                        "tif", "tiff", "pdf", "doc", "docx", "mp4", "mov")
+
+
+def is_file_name(text: str) -> bool:
+    """`menu cover.jpg`, `kindies_edited.jpg` — a name with a file extension
+    and nothing else: no path, no line break, no second-language pair."""
+    value = text.strip()
+    stem, dot, extension = value.rpartition(".")
+    return bool(
+        dot and stem.strip() and len(value) <= 160
+        and extension.lower() in FILE_NAME_EXTENSIONS
+        and not any(char in value for char in "/\\|\n")
+    )
+
+
+def needs_translation(value: object) -> bool:
+    """A field value some other language must say in its own words."""
+    return isinstance(value, str) and bool(value.strip()) and not is_file_name(value)
+
 # Quotation marks a mapper wraps around a string (a testimonial's “…”): the
 # planner's string is inside them, and the translation wears the same marks.
 _QUOTES = "\"'“”‘’「」『』«»"
@@ -159,7 +183,10 @@ def missing(elements: list[BuilderElement], overlay: dict | None) -> list[Builde
         for element in items:
             if hidden(element):
                 continue
-            if source_hash(element) is not None:
+            content = element.content
+            if isinstance(content, BuilderElementContent) and any(
+                needs_translation(getattr(content, f, None)) for f in TEXT_FIELDS
+            ):
                 patch = patches.get(element.id) or {}
                 if not any(isinstance(patch.get(f), str) and patch[f].strip() for f in TEXT_FIELDS):
                     found.append(element)

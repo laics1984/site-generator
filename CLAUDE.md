@@ -3131,9 +3131,24 @@ sets `uncertain` and says so; it never silently changes the mode.
   field. Sending whole blocks let the model blank `visual_policy` on every
   block of uniquekindies, and one bad field failed validation for the whole
   page — the mirror path had the same weakness since it existed. The reply is
-  an object keyed by the input's numbers (`TranslatedStrings` also takes a
-  list), so each translation is pinned to its string; a reply of the wrong
-  length or with a gap keeps the primary language. Cached via
+  an object keyed by the input's numbers, so each translation is pinned to
+  its string and **a short reply keeps what it answered**: the gap is asked
+  again once, uncached, and what is still missing stays in the primary
+  language (a list is trusted only complete — it could slip by one).
+  `translations` is REQUIRED: with a default, a reply in any other shape
+  validated as "0 strings" — the repair turn never ran, the cache kept the
+  empty answer for 30 minutes, and uniquekindies' About shipped as a draft.
+  A string the model didn't answer is never written into an overlay in the
+  primary language (that would pass the CMS's completeness test for a page
+  showing English); `keep_unchanged` separates "answered: stays as is" from
+  "not answered". **A file's name is in no language** (`locale_overlay.is_file_name`,
+  mirrored by `OverlayApplier::isFileName` and the builder's
+  `locale-lens.ts`, extension list drift-tested): an alt like
+  "menu cover.jpg" is never missing and never asked for. A contact detail or
+  a number is recorded as covered without asking (`is_untranslatable`). On
+  separate pages an owner's pair ("Programmes | 课程") is split first
+  (`build_translated_pages(primary=)`): each page shows its side, the
+  translation is the owner's words. Cached via
   `chat_json_cached`. `llm._validated` strips a markdown fence for every
   client now — only the Claude client used to, and the local model's fenced
   reply failed validation twice for nothing but its wrapper.
@@ -3168,7 +3183,11 @@ sets `uncertain` and says so; it never silently changes the mode.
   mirror page at its URL is unclaimed, so the existing archive rule takes it
   off (the "adoption"). `_push_languages` (after the archive): `PUT languages`,
   then each page and layout overlay saved and, when publishing AND
-  `entitled`, published; otherwise drafts with a warning. Menu labels are
+  `entitled`, published; otherwise drafts with a warning. One the CMS finds
+  incomplete is published anyway (`allowIncomplete`, the owner's call
+  2026-10-21: live in its language with a few gaps beats not live in it) and
+  the step names each page and how many strings still show in the primary
+  language. Menu labels are
   translated at generation BY TEXT (`GeneratedSite.menu_label_translations`;
   language and social menus skipped) and keyed to item ids only against the
   menus in hand (`locale_overlay.menu_overlay`: a translated page's title

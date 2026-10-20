@@ -277,3 +277,24 @@ class CtaOnlyBlockTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(page.blocks[0].headline, "Sertai kami")
         self.assertEqual(page.blocks[0].cta_href, "/bm/about")
+
+
+class OwnerPairOnSeparatePagesTest(unittest.IsolatedAsyncioTestCase):
+    """A heading the owner wrote in both languages is their own translation:
+    the English page shows the English side, the 中文 page the Chinese side
+    word for word, and no model is asked for it."""
+
+    async def test_each_page_shows_its_side_of_the_owners_pair(self):
+        about = PagePlan(page_type="about", slug="about", title="About", blocks=[
+            HeroBlock(kind="hero", headline="Character & Behaviour Development | 品格与行为培养",
+                      subheadline="We teach character.", layout="background"),
+        ])
+        llm = _FakeLlm({"About": "关于我们", "We teach character.": "我们培养品格。"})
+        [zh] = await build_translated_pages(
+            [about], [_scaffold("zh/about", "zh-Hans", "about")], {}, primary="en", client=llm,
+        )
+
+        self.assertEqual(about.blocks[0].headline, "Character & Behaviour Development")
+        self.assertEqual(zh.blocks[0].headline, "品格与行为培养")
+        self.assertEqual(zh.blocks[0].subheadline, "我们培养品格。")
+        self.assertNotIn("Character & Behaviour Development", llm.last_strings)

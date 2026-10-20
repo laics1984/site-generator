@@ -454,11 +454,16 @@ class CmsClient:
         )
 
     async def publish_translation(
-        self, entity_token: str, kind: str, target_id: str, locale: str
+        self, entity_token: str, kind: str, target_id: str, locale: str, *, allow_incomplete: bool = False
     ) -> dict[str, Any]:
+        """Publish a translation's draft. The CMS refuses one with text still in
+        the primary language (409 TRANSLATION_INCOMPLETE) unless
+        `allow_incomplete`, which publishes it with those strings showing in
+        the primary language."""
         return await self._json_call(
             "publish_translation", "post",
-            f"/api/entities/{entity_token}/translations/{kind}/{target_id}/{locale}/publish", {},
+            f"/api/entities/{entity_token}/translations/{kind}/{target_id}/{locale}/publish",
+            {"allowIncomplete": True} if allow_incomplete else {},
             failure="Publishing a translation failed",
         )
 

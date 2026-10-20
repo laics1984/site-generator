@@ -676,24 +676,31 @@ def _language_config(plan) -> dict[str, Any]:
 async def _save_translation(
     client: CmsClient, token: str, kind: str, target_id: str, locale: str,
     overlay: dict[str, Any], *, publish: bool,
-) -> str:
+) -> tuple[str, int]:
     """Save one translation as a draft, then publish it when asked. Returns
-    "published", "draft", or "incomplete" (the CMS found text still in the
-    primary language and kept it a draft)."""
+    ("published" | "draft" | "partial", how many strings are still in the
+    primary language).
+
+    "partial": the CMS found text not yet translated, and it is published
+    anyway (`allowIncomplete`), each such string showing in the primary
+    language until someone translates it — a page live in its language with
+    a few gaps, rather than not live in it at all."""
     current = await client.get_translation(token, kind, target_id, locale)
     await client.save_translation(
         token, kind, target_id, locale,
         overlay=overlay, base_draft_version=current.get("draftVersion"),
     )
     if not publish:
-        return "draft"
+        return "draft", 0
     try:
         await client.publish_translation(token, kind, target_id, locale)
     except CmsApiError as exc:
-        if exc.code == "TRANSLATION_INCOMPLETE":
-            return "incomplete"
-        raise
-    return "published"
+        if exc.code != "TRANSLATION_INCOMPLETE":
+            raise
+        details = ((exc.response_body or {}).get("error") or {}).get("details") or {}
+        await client.publish_translation(token, kind, target_id, locale, allow_incomplete=True)
+        return "partial", len(details.get("missing") or [])
+    return "published", 0
 
 
 async def _push_languages(
@@ -725,8 +732,9 @@ async def _push_languages(
     publish = req.publish and entitled
 
     page_ids = {item.page.slug: item.page_id for item in landed}
-    jobs: list[tuple[str, str, str, dict[str, Any]]] = [
-        ("page", page_ids[page.translation_of], page.locale, page.overlay)
+    # (kind, CMS target, locale, overlay, what the report calls it)
+    jobs: list[tuple[str, str, str, dict[str, Any], str]] = [
+        ("page", page_ids[page.translation_of], page.locale, page.overlay, f"/{page.slug}")
         for page in req.site.pages
         if page.locale and page.overlay and page.translation_of in page_ids
     ]
@@ -741,29 +749,34 @@ async def _push_languages(
             layout["menus"] = locale_overlay.menu_overlay(
                 pushed_menus or [], titles, req.site.menu_label_translations.get(locale) or {}
             )
-            jobs.append(("layout", "website", locale, layout))
+            jobs.append(("layout", "website", locale, layout, "the header and footer"))
 
     sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
 
-    async def run(kind: str, target: str, locale: str, overlay: dict[str, Any]) -> str:
+    async def run(kind: str, target: str, locale: str, overlay: dict[str, Any], _name: str) -> tuple[str, int]:
         async with sem:
             return await _save_translation(client, token, kind, target, locale, overlay, publish=publish)
 
     with stage("push_translations"):
         results = await asyncio.gather(*(run(*job) for job in jobs), return_exceptions=True)
     failed = [r for r in results if isinstance(r, BaseException)]
-    outcome = {key: sum(1 for r in results if r == key) for key in ("published", "draft", "incomplete")}
+    states = [r[0] for r in results if not isinstance(r, BaseException)]
+    outcome = {key: states.count(key) for key in ("published", "partial", "draft")}
     detail = (
-        f"{len(languages.secondary)} language(s); {outcome['published']} translation(s) published, "
-        f"{outcome['draft'] + outcome['incomplete']} saved as draft(s)"
+        f"{len(languages.secondary)} language(s); {outcome['published'] + outcome['partial']} translation(s) "
+        f"published, {outcome['draft']} saved as draft(s)"
     )
     warnings = []
     if req.publish and not entitled:
         warnings.append("This site's plan doesn't include more than one language, so the translations "
                         "were saved as drafts. They publish once the plan does.")
-    if outcome["incomplete"]:
-        warnings.append(f"{outcome['incomplete']} translation(s) still have untranslated text and "
-                        "were kept as drafts.")
+    if gaps := [(job[4], r[1]) for job, r in zip(jobs, results)
+                if not isinstance(r, BaseException) and r[0] == "partial"]:
+        warnings.append(
+            "Published with some text still in the main language: "
+            + ", ".join(f"{name} ({count} item{'s' if count != 1 else ''})" for name, count in gaps)
+            + ". Open the page in the builder's language switch to translate what's left, then publish."
+        )
     if failed:
         warnings.append(f"{len(failed)} translation(s) could not be saved: {failed[0]}")
     if languages.mode == "separate":
@@ -772,7 +785,7 @@ async def _push_languages(
         # The public switcher lists a language only on pages published in it,
         # so a language with no page translation has no switcher entry at all.
         untranslated = [code for code in languages.secondary
-                        if not any(kind == "page" and locale == code for kind, _, locale, _ in jobs)]
+                        if not any(job[0] == "page" and job[2] == code for job in jobs)]
         if untranslated:
             warnings.append(f"No pages were translated into {', '.join(map(locale_label, untranslated))}, "
                             "so the site shows no language switch for it. Generate the site again with "

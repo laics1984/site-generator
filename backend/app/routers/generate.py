@@ -2009,6 +2009,7 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
                     plan.pages,
                     translation_scaffolds,
                     _sources_by_slug(payload.source),
+                    primary=languages.primary,
                 )
             )
     # Same-page bilingual: each page's strings in the second language, kept as

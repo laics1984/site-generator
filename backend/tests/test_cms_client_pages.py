@@ -181,3 +181,19 @@ class ListEntitiesTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishTranslationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_allowing_gaps_is_asked_for_on_the_wire_and_only_when_meant(self):
+        bodies: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            bodies.append(json.loads(request.content or b"{}"))
+            return httpx.Response(200, json={"data": {}})
+
+        client = _client(handler)
+        await client.publish_translation("tok", "page", "p1", "zh-Hans")
+        await client.publish_translation("tok", "page", "p1", "zh-Hans", allow_incomplete=True)
+        await client.aclose()
+
+        self.assertEqual(bodies, [{}, {"allowIncomplete": True}])

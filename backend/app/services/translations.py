@@ -38,9 +38,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from app.models.content_blocks import (
     InlineTranslation,
@@ -100,28 +102,42 @@ Reply ONLY with valid JSON matching the schema."""
 
 
 class TranslatedStrings(BaseModel):
-    """What the model returns: `strings`, translated, in order.
+    """What the model returns: `strings`, translated.
 
     Asked for as an object keyed by the same numbers as `strings` — the number
-    pins each translation to its string, where a bare list could slip by one.
-    A plain list in order is accepted too."""
+    pins each translation to its string, so a reply that skips some is still
+    right about the rest (`numbers` records which it answered). A bare
+    numbered object without the wrapper is the same answer. A plain list is
+    accepted too, but only a COMPLETE one can be trusted: a short list could
+    have slipped by one anywhere.
 
-    translations: list[str] = Field(default_factory=list)
+    `translations` is required: a reply in some other shape must fail
+    validation, so the LLM layer's repair turn runs, rather than pass as an
+    answer that translated nothing."""
 
-    @field_validator("translations", mode="before")
+    translations: list[str]
+    numbers: SkipJsonSchema[list[int] | None] = None
+
+    @model_validator(mode="before")
     @classmethod
-    def _numbered(cls, value: object) -> object:
-        if isinstance(value, dict):
+    def _numbered(cls, data: object) -> object:
+        if isinstance(data, dict) and "translations" not in data and data \
+                and all(str(key).strip().isdigit() for key in data):
+            data = {"translations": data}
+        if isinstance(data, dict) and isinstance(data.get("translations"), dict):
             try:
-                ordered = sorted(value.items(), key=lambda kv: int(kv[0]))
+                numbered = {int(key): str(value) for key, value in data["translations"].items()}
             except (TypeError, ValueError):
-                return value  # not numbered: let validation say so
-            # A gap in the numbering is a missing string; padding keeps the
-            # length honest so translate_strings rejects the reply.
-            if [int(k) for k, _ in ordered] != list(range(1, len(ordered) + 1)):
-                return [str(v) for _, v in ordered][:-1] if ordered else []
-            return [str(v) for _, v in ordered]
-        return value
+                return data  # not numbered: let validation say so
+            order = sorted(numbered)
+            return {**data, "translations": [numbered[n] for n in order], "numbers": order}
+        return data
+
+    def answers(self, count: int) -> dict[int, str]:
+        """Index → translation for each of `count` strings this reply answers."""
+        if self.numbers is not None:
+            return {n - 1: text for n, text in zip(self.numbers, self.translations) if 1 <= n <= count}
+        return dict(enumerate(self.translations)) if len(self.translations) == count else {}
 
 
 # --- strings in, strings out -----------------------------------------------------------
@@ -188,44 +204,79 @@ async def translate_strings(
     *,
     client: LlmClient,
     label: str = "",
+    keep_unchanged: bool = False,
 ) -> dict[str, str] | None:
-    """`strings` → their translations in `locale`, or None on any failure.
+    """`strings` → their translations in `locale`, as far as the model answered;
+    None when nothing came back at all. `keep_unchanged` keeps a string the
+    model answered with itself, for a caller that must tell "answered: stays
+    as is" from "not answered".
 
-    A string the model returned unchanged (a name, a brand) is left out of the
-    map: it is not a translation, and the page already shows it."""
+    Every numbered answer is kept. What a reply skipped is asked for again
+    once, on its own and past the response cache (which still holds the short
+    reply), and whatever is still missing stays in the primary language for
+    the caller to report. A string the model returned unchanged (a name, a
+    brand) is left out of the map: it is not a translation, and the page
+    already shows it."""
     if not strings:
         return {}
     excerpt = _source_excerpt(source)
     language = f"{locale_label(locale)} (code: {locale})"
-    user_prompt = json.dumps(
-        {
-            "target_language": language,
-            "strings": {str(i + 1): text for i, text in enumerate(strings)},
-            "source_text": excerpt or "(none — translate the strings)",
-        },
-        ensure_ascii=False,
-    )
+
+    def prompt(subset: list[str]) -> str:
+        return json.dumps(
+            {
+                "target_language": language,
+                "strings": {str(i + 1): text for i, text in enumerate(subset)},
+                "source_text": excerpt or "(none — translate the strings)",
+            },
+            ensure_ascii=False,
+        )
+
+    got: dict[int, str] = {}
     try:
         result = await chat_json_cached(
-            client,
-            system_prompt=TRANSLATION_PROMPT,
-            user_prompt=user_prompt,
+            client, system_prompt=TRANSLATION_PROMPT, user_prompt=prompt(strings),
             schema=TranslatedStrings,
         )
+        got = result.answers(len(strings))
     except (LlmError, asyncio.TimeoutError) as exc:
         logger.warning("Translation of %s into %s failed (%s)", label, locale, exc)
-        return None
-    if len(result.translations) != len(strings):
-        logger.warning(
-            "Translation of %s into %s returned %d strings for %d — keeping the "
-            "primary language", label, locale, len(result.translations), len(strings),
-        )
+    gaps = [i for i in range(len(strings)) if i not in got]
+    if gaps:
+        logger.warning("Translation of %s into %s answered %d of %d strings — asking again for the rest",
+                       label, locale, len(strings) - len(gaps), len(strings))
+        try:
+            again = await client.chat_json(
+                system_prompt=TRANSLATION_PROMPT, user_prompt=prompt([strings[i] for i in gaps]),
+                schema=TranslatedStrings,
+            )
+            got.update({gaps[j]: text for j, text in again.answers(len(gaps)).items()})
+        except (LlmError, asyncio.TimeoutError) as exc:
+            logger.warning("Translation of %s into %s failed again (%s)", label, locale, exc)
+        if left := len(strings) - len(got):
+            logger.warning("Translation of %s into %s left %d of %d strings in the primary language",
+                           label, locale, left, len(strings))
+    if not got:
         return None
     return {
-        old: new.strip()
-        for old, new in zip(strings, result.translations)
-        if new and new.strip() and new.strip() != old
+        strings[i]: new.strip()
+        for i, new in got.items()
+        if new and new.strip() and (keep_unchanged or new.strip() != strings[i])
     }
+
+
+def is_untranslatable(text: str) -> bool:
+    """A string that is only a URL, an email, a phone number or a number —
+    the prompt's "returned unchanged" list, decided without asking."""
+    from app.services.contact_text import EMAIL_RE, PHONE_RE
+
+    value = text.strip()
+    return bool(
+        re.fullmatch(r"(?:https?://|www\.)\S+", value)
+        or EMAIL_RE.fullmatch(value)
+        or PHONE_RE.fullmatch(value)
+        or re.fullmatch(r"[\d\s.,:%+\-/()]+", value)
+    )
 
 
 # --- separate language pages ------------------------------------------------------------
@@ -303,14 +354,21 @@ async def _translate_one(
     source: SourceContent | None,
     *,
     client: LlmClient,
+    owned: dict[str, str] | None = None,
 ) -> PagePlan:
-    """Fill one clone's prose. Returns it in the primary language on any failure."""
+    """Fill one clone's prose. Returns it in the primary language on any failure.
+
+    `owned` is the owner's own wording in this language (their bilingual
+    pairs): used as is, never sent to the model."""
     locale = clone.locale or ""
+    owned = owned or {}
     # Q3's badge: the owner's own page in this language, or ours translated.
     clone.translation_status = "source" if _source_excerpt(source) else "ai"
-    mapping = await translate_strings(
-        page_strings(canonical), locale, source, client=client, label=f"/{clone.slug}",
-    )
+    asked = [text for text in page_strings(canonical) if text not in owned]
+    mapping = {
+        **(await translate_strings(asked, locale, source, client=client, label=f"/{clone.slug}") or {}),
+        **owned,  # the owner's own words win
+    }
     if not mapping:
         return clone
     # Kept: plan_to_site builds the page from its counterpart's finished tree
@@ -334,6 +392,7 @@ async def build_translated_pages(
     scaffolds: list[PageScaffold],
     sources: dict[str, SourceContent],
     *,
+    primary: str | None = None,
     client: LlmClient | None = None,
 ) -> list[PagePlan]:
     """Clone each translation scaffold from the page it translates.
@@ -343,6 +402,11 @@ async def build_translated_pages(
     translated page's slug to its crawled SourceContent, supplying the owner's
     own wording.
 
+    A string the owner wrote in both languages ("Character & Behaviour
+    Development | 品格与行为培养") is split first, given the ``primary``
+    language: the primary page keeps its side, the translation takes the
+    other word for word, and no model is asked for what the owner wrote.
+
     Scaffolds whose counterpart wasn't generated are skipped — there is nothing
     to clone.
     """
@@ -351,6 +415,12 @@ async def build_translated_pages(
         return []
 
     by_slug = {p.slug: p for p in pages}
+    owned: dict[tuple[str, str], dict[str, str]] = {}
+    if primary:
+        for s in wanted:
+            if (canonical := by_slug.get(s.translation_of or "")) is not None:
+                split_owner_pairs(canonical.blocks, primary, s.locale or "",
+                                  owned.setdefault((s.locale or "", canonical.slug), {}))
     # Per language: a Chinese page links to a page's Chinese twin, never to a
     # Malay one that happens to exist.
     translated_slugs: dict[str, set[str]] = {}
@@ -376,7 +446,8 @@ async def build_translated_pages(
     llm = client or get_llm()
     results = await asyncio.gather(
         *(
-            _translate_one(clone, canonical, source, client=llm)
+            _translate_one(clone, canonical, source, client=llm,
+                           owned=owned.get((clone.locale or "", canonical.slug), {}))
             for clone, canonical, source in clones
         ),
         return_exceptions=True,
@@ -575,9 +646,10 @@ async def _complete_overlay(
 
     A string the model returns unchanged (a name, a brand, "UNIQUE KINDIES") IS
     its translation and is recorded as covered, so the CMS's completeness test
-    agrees the page is finished. A failed call leaves the gaps for the owner,
-    and the CMS keeps such a page out of publication. Returns whether anything
-    is still missing."""
+    agrees the page is finished; so is a string that is only a contact detail
+    or a number, without asking. A string the model did NOT answer stays a
+    gap, for the owner and the push's report. Returns whether anything is
+    still missing."""
     from app.services import locale_overlay
 
     gaps = locale_overlay.missing(elements, overlay)
@@ -587,17 +659,23 @@ async def _complete_overlay(
     for element in gaps:
         for field in locale_overlay.TEXT_FIELDS:
             value = getattr(element.content, field, None)
-            if isinstance(value, str) and value.strip():
+            if locale_overlay.needs_translation(value) and not is_untranslatable(value):
                 strings.setdefault(value.strip(), None)
-    mapping = await translate_strings(list(strings), locale, source, client=client, label=label)
-    if mapping is None:
-        return True
+    mapping = await translate_strings(
+        list(strings), locale, source, client=client, label=label, keep_unchanged=True,
+    ) or {}
     for element in gaps:
         patch: dict[str, str] = {}
         for field in locale_overlay.TEXT_FIELDS:
             value = getattr(element.content, field, None)
-            if isinstance(value, str) and value.strip():
-                patch[field] = mapping.get(value.strip(), value.strip())
+            if not locale_overlay.needs_translation(value):
+                continue  # a file's name is in no language
+            if is_untranslatable(value):
+                patch[field] = value.strip()
+            elif (translated := mapping.get(value.strip())) is not None:
+                patch[field] = translated
+        if not patch:
+            continue
         overlay.setdefault("elements", {})[element.id] = {**overlay.get("elements", {}).get(element.id, {}), **patch}
         if (digest := locale_overlay.source_hash(element)) is not None:
             overlay.setdefault("meta", {})[element.id] = {"origin": origin, "sourceHash": digest}

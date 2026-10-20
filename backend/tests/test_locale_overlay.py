@@ -58,6 +58,31 @@ class OverlayMirrorTest(unittest.TestCase):
         self.assertIsNotNone(declared)
         self.assertEqual(tuple(re.findall(r"'([^']+)'", declared.group(1))), locale_overlay.TEXT_FIELDS)
 
+    def test_a_file_name_is_exempt_in_all_three_mirrors(self):
+        """The CMS decides publishing, the builder shows "N to translate", the
+        generator fills the gaps: one list of extensions, or they disagree on
+        whether a page is finished. Same case table as their own tests."""
+        for path, pattern in (
+            (_REPOS / "webtree-cms-api" / "app" / "Services" / "Localization" / "OverlayApplier.php",
+             r"FILE_NAME_EXTENSIONS = \[([^\]]+)\]"),
+            (_REPOS / "builder" / "src" / "lib" / "locale-lens.ts", r"FILE_NAME_EXTENSIONS = \[([^\]]+)\]"),
+        ):
+            if not path.exists():
+                continue
+            declared = re.search(pattern, path.read_text())
+            self.assertIsNotNone(declared, path)
+            self.assertEqual(tuple(re.findall(r"'([^']+)'", declared.group(1))),
+                             locale_overlay.FILE_NAME_EXTENSIONS, path)
+        for name in ("menu cover.jpg", "Gardening 4.jpg", "kindies_edited.JPG", "brochure.PDF"):
+            self.assertTrue(locale_overlay.is_file_name(name), name)
+        for copy in ("Our story.", "Ages 4.5", ".jpg", "Visit us at kindies.com", "gallery/menu.jpg",
+                     "Menu | 菜单.pdf"):
+            self.assertFalse(locale_overlay.is_file_name(copy), copy)
+        tree = [section(BuilderElement(id="photo", name="Image", type="image",
+                                       content=BuilderElementContent(alt="menu cover.jpg")),
+                        text("real", "Our story"))]
+        self.assertEqual([el.id for el in locale_overlay.missing(tree, None)], ["real"])
+
     def test_the_builder_splits_the_same_text_fields(self):
         # The builder's language lens (P6) decides which fields an edit in
         # another language sends to the overlay; a field missing there would
@@ -205,6 +230,48 @@ class CompleteTranslationsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(layout["f"], {"innerText": "版权所有"})
 
 
+class CompletionGapsTest(unittest.IsolatedAsyncioTestCase):
+    """The About page that stayed a draft: its completion call came back
+    short, and what the model never answered must not pass for translated."""
+
+    def base(self):
+        return [section(text("eyebrow", "About"), text("label", "Services"),
+                        BuilderElement(id="photo", name="Image", type="image",
+                                       content=BuilderElementContent(alt="menu cover.jpg")),
+                        text("phone", "+60 16-279 1902"))]
+
+    async def test_contact_details_and_file_names_are_never_asked_and_never_missing(self):
+        llm = _FakeLlm({"About": "关于", "Services": "服务"})
+        from app.services.translations import _complete_overlay
+
+        overlay: dict = {}
+        incomplete = await _complete_overlay(self.base(), overlay, "zh-Hans", None, client=llm, label="/zh/about", origin="ai")
+
+        self.assertFalse(incomplete)
+        self.assertEqual(json.loads(llm.prompts[0])["strings"], {"1": "About", "2": "Services"})
+        self.assertEqual(overlay["elements"]["phone"], {"innerText": "+60 16-279 1902"})
+        self.assertNotIn("photo", overlay["elements"])
+
+    async def test_an_unanswered_string_stays_a_gap_and_is_not_written_in_english(self):
+        class Short(_FakeLlm):
+            async def chat_json(self, *, system_prompt, user_prompt, schema, **kwargs):
+                self.prompts.append(user_prompt)
+                strings = json.loads(user_prompt)["strings"]
+                # Answers only "About", however often it is asked.
+                return TranslatedStrings.model_validate(
+                    {"translations": {k: "关于" for k, v in strings.items() if v == "About"}})
+
+        from app.services.translations import _complete_overlay
+
+        overlay: dict = {}
+        incomplete = await _complete_overlay(self.base(), overlay, "zh-Hans", None, client=Short({}),
+                                             label="/zh/about", origin="ai")
+        self.assertTrue(incomplete)
+        self.assertEqual(overlay["elements"]["eyebrow"], {"innerText": "关于"})
+        self.assertNotIn("label", overlay["elements"])
+        self.assertEqual([el.id for el in locale_overlay.missing(self.base(), overlay)], ["label"])
+
+
 class TranslatedChromeTest(unittest.IsolatedAsyncioTestCase):
     """A translated page wears its language's header, CTA, footer and menus —
     in the preview exactly as the CMS will serve them (`localized_layout`)."""
@@ -322,12 +389,13 @@ class _Cms:
         self.calls.append(("save", kind, target, locale, overlay))
         return {}
 
-    async def publish_translation(self, token, kind, target, locale):
+    async def publish_translation(self, token, kind, target, locale, *, allow_incomplete=False):
         from app.services.cms_client import CmsApiError
 
-        if target in self.incomplete:
-            raise CmsApiError(409, "incomplete", response_body={"error": {"code": "TRANSLATION_INCOMPLETE"}})
-        self.calls.append(("publish", kind, target, locale))
+        if target in self.incomplete and not allow_incomplete:
+            raise CmsApiError(409, "incomplete", response_body={"error": {
+                "code": "TRANSLATION_INCOMPLETE", "details": {"missing": ["eyebrow", "label"]}}})
+        self.calls.append(("publish", kind, target, locale) + (("allowIncomplete",) if allow_incomplete else ()))
         return {}
 
 
@@ -403,9 +471,21 @@ class PushLanguagesTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("No pages were translated into", report.steps[-1].warning)
 
-    async def test_an_incomplete_translation_stays_a_draft(self):
+    async def test_an_incomplete_translation_is_published_with_its_gaps_named(self):
+        """A page live in its language with a few strings still in the main one,
+        rather than not live in it at all — and the report says where."""
         cms = _Cms(entitled=True, incomplete={"p-about"})
         report = await self._push(cms, self.req())
 
-        self.assertEqual(report.steps[-1].data["incomplete"], 1)
-        self.assertIn("untranslated text", report.steps[-1].warning)
+        self.assertIn(("publish", "page", "p-about", "ms", "allowIncomplete"), cms.calls)
+        step = report.steps[-1]
+        self.assertEqual((step.data["published"], step.data["partial"], step.data["draft"]), (1, 1, 0))
+        self.assertIn("/bm/about (2 items)", step.warning)
+        self.assertIn("2 translation(s) published", step.detail)
+
+    async def test_without_the_plan_an_incomplete_translation_is_still_only_a_draft(self):
+        cms = _Cms(entitled=False, incomplete={"p-about"})
+        report = await self._push(cms, self.req())
+
+        self.assertFalse([c for c in cms.calls if c[0] == "publish"])
+        self.assertEqual(report.steps[-1].data["draft"], 2)
