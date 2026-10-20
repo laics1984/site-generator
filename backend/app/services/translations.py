@@ -688,11 +688,10 @@ async def complete_translations(
     """Finish every translated page, and the header and footer per language.
 
     `plan_to_site` derives each translation from its page's string map, which
-    only knows the strings the PLANNER wrote; a template's default eyebrow
-    ("About"), a section label or a footer line is text the page shows that no
-    map covered. One call per page (and one per language for the layout)
-    translates exactly those, so a page is complete enough for the CMS to
-    publish it. Returns the slugs (and "layout:<locale>") still incomplete,
+    only knows the strings the PLANNER wrote; a section label or a footer line
+    is text the page shows that no map covered. One call per page (and one per
+    language for the layout) translates exactly those, so a page is complete
+    enough for the CMS to publish it. Returns the slugs (and "layout:<locale>") still incomplete,
     for the generation warnings.
     """
     from app.services import locale_overlay

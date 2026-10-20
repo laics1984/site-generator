@@ -3175,7 +3175,7 @@ sets `uncertain` and says so; it never silently changes the mode.
   copy, so the preview is exactly what the CMS will serve. A split headline's
   translation goes on the lead line and the accent is hidden.
   `translations.complete_translations` (after the build) translates what no map
-  covered — default eyebrows, header/footer copy (`GeneratedSite.layout_overlays`)
+  covered — section labels, header/footer copy (`GeneratedSite.layout_overlays`)
   — and records a string the model returns unchanged (a name) as covered, so
   the CMS's completeness check agrees.
 - **The push sends overlays, not pages.** `cms_sync.primary_pages` is the page

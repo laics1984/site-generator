@@ -106,6 +106,11 @@ def _featured_image(
 
 
 # --- content mappers (block -> {slot: value}) -----------------------------------
+#
+# An eyebrow is copy, so only a block that carries one (the hero's) fills the
+# slot. A mapper never labels a section with its own kind: "SERVICES" over
+# "Programme options overview" restates the heading in the generator's
+# vocabulary, not the business's, and stays English on a translated page.
 
 
 def _hero_content(b: HeroBlock) -> dict[str, Any]:
@@ -121,7 +126,6 @@ def _hero_content(b: HeroBlock) -> dict[str, Any]:
 
 def _about_content(b: AboutBlock) -> dict[str, Any]:
     return {
-        "eyebrow": "About",
         "heading": b.heading,
         "subheading": b.body or None,
         "image": _featured_image(b.image_query, b.image_url, b.image_alt or b.heading),
@@ -165,7 +169,6 @@ def _attach_icons(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _features_content(b: FeaturesBlock) -> dict[str, Any]:
     return {
-        "eyebrow": "Features",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": _attach_icons([
@@ -181,7 +184,6 @@ def _features_content(b: FeaturesBlock) -> dict[str, Any]:
 
 def _services_content(b: ServicesBlock) -> dict[str, Any]:
     return {
-        "eyebrow": "Services",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
@@ -208,7 +210,6 @@ def _testimonials_content(b: TestimonialsBlock) -> dict[str, Any]:
     ]
     first = items[0] if items else {}
     return {
-        "eyebrow": "Testimonials",
         "heading": b.heading,
         "subheading": None,
         "items": items,
@@ -221,7 +222,6 @@ def _testimonials_content(b: TestimonialsBlock) -> dict[str, Any]:
 
 def _cta_content(b: CtaBlock) -> dict[str, Any]:
     return {
-        "eyebrow": None,
         "heading": b.headline,
         "body": b.subheadline,
         "primary_cta": _link(b.cta_label, b.cta_href),
@@ -235,7 +235,6 @@ def _cta_content(b: CtaBlock) -> dict[str, Any]:
 
 def _faq_content(b: FaqBlock) -> dict[str, Any]:
     return {
-        "eyebrow": "FAQ",
         "heading": b.heading,
         "subheading": None,
         "items": [{"question": i.question, "answer": i.answer} for i in b.items],
@@ -248,7 +247,6 @@ def _contact_content(b: ContactBlock) -> dict[str, Any]:
         f"Phone: {b.phone}" if b.phone else None,
     ) if v]
     return {
-        "eyebrow": "Contact",
         "heading": b.heading,
         "subheading": b.subheading,
         "bullet1": bullets[0] if len(bullets) > 0 else None,
@@ -321,7 +319,6 @@ def _team_content(b: TeamBlock) -> dict[str, Any]:
         return {"monogram": member.name, "alt": member.name}
 
     return {
-        "eyebrow": "Founders" if _is_founders_band(b) else "Team",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
@@ -347,7 +344,6 @@ def _team_content(b: TeamBlock) -> dict[str, Any]:
 
 def _gallery_content(b: GalleryBlock) -> dict[str, Any]:
     return {
-        "eyebrow": "Gallery",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
@@ -376,7 +372,6 @@ def _video_content(b: VideoBlock) -> dict[str, Any]:
     does not exist (VideoItem.embed_url is required).
     """
     return {
-        "eyebrow": "Videos",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
@@ -398,7 +393,6 @@ def _map_content(b: MapBlock) -> dict[str, Any]:
     this use of it.
     """
     return {
-        "eyebrow": "Find us",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
@@ -423,7 +417,6 @@ def _qr_content(b: QrBlock) -> dict[str, Any]:
     """
     several = len(b.items) > 1
     return {
-        "eyebrow": "QR code",
         "heading": b.heading,
         "items": [
             {
@@ -455,7 +448,6 @@ def _poster_content(b: PosterBlock) -> dict[str, Any]:
 
 def _process_content(b: ProcessBlock) -> dict[str, Any]:
     return {
-        "eyebrow": "Process",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [
@@ -467,7 +459,6 @@ def _process_content(b: ProcessBlock) -> dict[str, Any]:
 
 def _menu_content(b: MenuBlock) -> dict[str, Any]:
     return {
-        "eyebrow": "Menu",
         "heading": b.heading,
         "subheading": b.subheading,
         "categories": [
@@ -553,7 +544,6 @@ def _locations_content(b: LocationsBlock) -> dict[str, Any]:
             }
         )
     return {
-        "eyebrow": "Locations",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": items,
@@ -562,7 +552,6 @@ def _locations_content(b: LocationsBlock) -> dict[str, Any]:
 
 def _pricing_content(b: PricingBlock) -> dict[str, Any]:
     return {
-        "eyebrow": "Pricing",
         "heading": b.heading,
         "subheading": b.subheading,
         "items": [

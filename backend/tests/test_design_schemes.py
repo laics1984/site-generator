@@ -87,7 +87,12 @@ def _plan(name: str, mood: str, industry: str) -> SitePlan:
                 seo_title=f"{name} — Home",
                 seo_description="A description that is long enough to pass the audit.",
                 blocks=[
-                    HeroBlock(headline="Build better", subheadline="We ship fast."),
+                    # The eyebrow is the one a scheme's eyebrow treatment
+                    # dresses: no other section writes one.
+                    HeroBlock(
+                        eyebrow="Since 2012", headline="Build better",
+                        subheadline="We ship fast.",
+                    ),
                     AboutBlock(heading="About us", body="A team of people who care."),
                     FeaturesBlock(
                         heading="What you get",
