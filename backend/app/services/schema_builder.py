@@ -5373,7 +5373,7 @@ async def plan_to_site(
                     "validated four-color art direction or complete concept fallback; "
                     "business identity and explicit design guidance lead; readable "
                     "variants are derived deterministically"
-                    if theme.color_system_version == 2 else
+                    if (getattr(theme, "palette_slug", None) or "").startswith("ai-") else
                     "the logo's own hue when it has one (theme.has_brand_hue); "
                     "otherwise a curated palette within the design scheme's "
                     "colour strategies, steered off recently-used palettes"
@@ -5886,10 +5886,9 @@ async def plan_to_site(
     # channel googleFonts/brandMood use, no migration). The builder's
     # normalizeBuilderStyles carries `designManifest` through edit/save
     # round-trips as an opaque record; both renderers ignore it.
-    if canonical_theme.color_system_version == 2:
-        for generated_page in [*pages, *outside_pages]:
-            bind_theme_styles(generated_page.body_schema.elements, canonical_theme, theme)
-        bind_theme_styles([c for c in (header, footer) if isinstance(c, BuilderElement)], canonical_theme, theme)
+    for generated_page in [*pages, *outside_pages]:
+        bind_theme_styles(generated_page.body_schema.elements, canonical_theme, theme)
+    bind_theme_styles([c for c in (header, footer) if isinstance(c, BuilderElement)], canonical_theme, theme)
     # Last body pass: every shaped edge restated from the section it reveals,
     # after the v2 rebind and every recolour, so a wedge always matches it.
     for generated_page in [*pages, *outside_pages]:
@@ -5941,11 +5940,10 @@ async def plan_to_site(
     # the fingerprint, which reads the distinctiveness it reports on. Advisory:
     # it never blocks a build.
     _evaluate_design_quality(site, manifest)
-    if theme.color_system_version == 2:
-        from app.services.palette_styles import site_surface_foregrounds
-        variables = site_surface_foregrounds(site, theme, bind=True)
-        if variables:
-            site.builder_styles["cssVars"] = {**site.builder_styles.get("cssVars", {}), **variables}
+    from app.services.palette_styles import site_surface_foregrounds
+    variables = site_surface_foregrounds(site, theme, bind=True)
+    if variables:
+        site.builder_styles["cssVars"] = {**site.builder_styles.get("cssVars", {}), **variables}
     return site
 
 

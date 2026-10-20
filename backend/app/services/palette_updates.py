@@ -32,10 +32,7 @@ class PalettePatch(BaseModel):
 
 
 def current_theme(site: GeneratedSite) -> ThemeTokens:
-    theme = ThemeTokens.model_validate(site.theme)
-    if theme.color_system_version != 2 or (site.builder_styles or {}).get("colorSystemVersion") != 2:
-        raise ValueError("AI recoloring supports sites made with the new color system. This older site's colors were kept.")
-    return theme
+    return ThemeTokens.model_validate(site.theme)
 
 
 def palette_patch(site: GeneratedSite, palette: CreativePalette) -> PalettePatch:

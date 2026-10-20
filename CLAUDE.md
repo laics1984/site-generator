@@ -2051,6 +2051,43 @@ next `webtree-public` deploy, with no regeneration or re-push.
 Tests: `test_self_ink.py` (drift over all three renderers, skipped when a sibling
 repo is absent — same idiom as the `RENDERER_PINNED_*` mirror).
 
+## One colour system
+
+There is one colour system, v2 (`ThemeTokens.color_system_version` is always 2,
+and a stored payload without the marker reads as 2). Six palette colours go in;
+`color_system.derive` (mirrored line for line by `colorSystem.ts` in
+webtree-public, the builder and the preview, pinned by
+`colorSystem.fixtures.json`) gives every role out: inks per surface, brand inks,
+tints, bands, heading, muted, photo scrim and wash, button pair and states. Every
+renderer spreads `semanticColorVars` unconditionally; no renderer computes a
+role by hand. The colour rules in `main.css` / `index.css` / `preview.css`
+are scoped to `.wt-site`, the root each renderer draws a site in (the builder
+canvas page carries it), not to a per-element opt-in class.
+
+Rules the v1 removal taught, each a defect production v2 sites already had:
+
+- **A token's fallback is what the token resolves to.** `bind_theme_styles`
+  writes `token(role)` with the canonical palette's value, never the
+  rendering projection's (`rendering_theme` swaps `secondary` for the photo
+  scrim, so every secondary-derived role differed); the audit and any
+  token-less renderer read the fallback.
+- **Read a colour through its tokens.** `design_fingerprint._css_colour`
+  unwraps nested `var(--a, var(--b, #hex))`; reading raw hex saw every bound band
+  as plain "light".
+- **Shadows are not palette roles** — the rebind leaves `boxShadow` /
+  `textShadow` alone, or the builder's header-divider preset (matched by
+  exact value) stops being selected.
+- **Copy is restated as the palette's ink**, a literal white included, and a
+  brand ink is lifted along its own OKLCH hue (`color_system.ensure_contrast`);
+  a lift that keeps under `_MIN_BRAND_INK_CHROMA` is a near-white nobody chose
+  and takes the palette's ink.
+
+Known gap: the band roles wash each palette colour 7.5% into the background, so
+`playroom`'s multi-tint rhythm gets one grey band (a neutral secondary) and one
+near-white (the surface) —
+`test_childcare_industry.test_playroom_paints_every_band_a_tint` is an expected
+failure until the band roles change in `derive` and its two mirrors.
+
 ### A brand-tinted chip paints an opaque tint
 
 The contact form's **Required** chip measured a median **1.95:1** (216 of 216
@@ -2061,12 +2098,11 @@ others, with the form's glow on top, so a see-through chip has no knowable
 surface and **no** ink could be right. Even `--builder-color-primary-ink` (AA on
 the bare background) drops to 4.1-4.4:1 on the tint.
 
-So the chip paints an **opaque** tint, `primary` washed into `background`
-(`PRIMARY_TINT_WEIGHT`), and wears the brand's small-text ink held to AA on that
-tint. That pair is `--builder-color-primary-tint` / `-tint-ink`. It is derived
-and never stored, the `--builder-color-heading` idiom, in `webtree-public`
-`lib/styles.ts` (`primaryTint`), its verbatim preview copy, and builder
-`builder-styles.ts`. The label's opacity moved onto the icon and the label text,
+So the chip paints an **opaque** tint, `primary` washed into `background`, and
+wears the brand's small-text ink held to AA on that tint. That pair is the
+colour system's `primary-tint` / `primary-tint-ink` roles
+(`--builder-color-primary-tint` / `-tint-ink`), derived and never stored, so a
+palette edit carries it (see "One colour system"). The label's opacity moved onto the icon and the label text,
 since an ancestor's opacity fades a chip's ink *and* fill back toward the band.
 Measured after: 4.56-12.61:1, all 216 pass, every other label byte-identical.
 The CMS card's category pill (`primary-ink` on an 8% translucent tint) is the
@@ -2245,10 +2281,9 @@ heroes for a few labels).
 **Copy is written as the palette's ink TOKEN** (`theme.ink_css`):
 `var(--builder-color-ink-light|dark, <hex>)` whenever `ink_on` picked one of the
 palette's inks un-nudged, the hex only when it had to nudge for this surface.
-Every renderer derives the two tokens from the live palette (`neutralInks` in
-webtree-public `lib/styles.ts` — vendored to the preview — and builder
-`builder-styles.ts`, mirrors of `theme._neutral_inks`), so generated copy
-follows a palette edit in the builder. The catalog's 31 hard-coded whites are
+Both tokens are the colour system's `ink-light` / `ink-dark` roles — the
+surface toned to near-white, the secondary toned down — and `theme._neutral_inks`
+returns exactly those, so generated copy follows a palette edit in the builder. The catalog's 31 hard-coded whites are
 those tokens now (`#ffffff` survives only as the var's fallback, for a renderer
 that predates the token); the step-number coin uses the button pair, the
 WhatsApp CTA the dark ink. **A translucent ink is kept only where it still
@@ -2287,13 +2322,12 @@ then re-inked on the new fill; a ghost button keeps no fill and its label
 follows the band. `design_quality` reports `button-blends-band`, and skips a
 button on an unmeasured photo (the painted surface is not serialized).
 
-**On an AI palette the last ink pass is `palette_styles.bind_theme_styles`**, which runs
-AFTER `enforce_text_contrast` and rebinds every colour to colour-system v2 roles. A parent
+**The last ink pass is `palette_styles.bind_theme_styles`**, which runs
+AFTER `enforce_text_contrast` and rebinds every colour to the colour system's roles. A parent
 with a raw-hex fill pins its children's `fixed_surface`; a child that paints its OWN fill
 must replace it, or a `cta-banner` panel (retokenised to the dark `surface-inverse`) inside a
-raw band tint inks its copy for the cream band — watr shipped 1.03:1. Offline builds never
-reach this pass (no LLM, no `apply_creative_palette`), so the every-scheme matrices above
-cannot see it. `scripts/audit_site_inks.py <site.json>` judges a downloaded site (preview
+raw band tint inks its copy for the cream band — watr shipped 1.03:1. Offline builds run
+this pass too (there is one colour system), so the every-scheme matrices above see it. `scripts/audit_site_inks.py <site.json>` judges a downloaded site (preview
 overflow menu → "Download site JSON") the way the renderer paints it — v2 tokens through
 `color_system.derive`, inherited `color` followed — and lists copy under AA, buttons under 3:1,
 and tokens the generator and the renderer resolve differently.
@@ -2648,13 +2682,9 @@ heading-only port in the preview. Three rules, each paid for on a real site:
   own gutter stays on the viewport, where every other section's is.
 - **Headings ink with `--builder-color-heading`, never raw `secondary`.** On a
   dark palette `secondary` is the darkest band colour — Feruni's card titles
-  measured **1.04:1**. The token is `secondary` where it reads (4.5:1) and
-  `text` where it doesn't, which is this repo's own `ink = text if dark else
-  secondary` (`style_tokens`) answered from the colours, because
-  `color_scheme` never reaches the wire. **Derived, never stored** — like
-  `primaryInk` in the builder, it follows a live palette edit — in
-  `webtree-public/lib/styles.ts` (vendored verbatim to the preview) and
-  `builder/src/lib/builder-styles.ts`. The same pass moved the category pill to
+  measured **1.04:1**. The token is the colour system's `heading` role (the
+  palette's text held to AA on the background). **Derived, never stored**, so
+  it follows a live palette edit in every renderer. The same pass moved the category pill to
   `--builder-color-primary-ink` (4.0 → 14.7:1 dark) and the current page number
   to the button pair, and `--wt-color-muted` — which no palette states, so it
   was always light-theme `#6b7280` (4.09:1 dark) under archive descriptions,

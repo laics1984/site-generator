@@ -39,11 +39,9 @@ _TOKEN_RE = re.compile(r"var\(--builder-color-([a-z0-9-]+)\s*,\s*(#[0-9a-fA-F]{6
 
 
 def _resolver(theme: ThemeTokens):
-    derived: dict[str, str] = {}
-    if theme.color_system_version == 2:
-        from app.services.color_system import derive
+    from app.services.color_system import derive
 
-        derived = derive(theme.palette.model_dump())
+    derived: dict[str, str] = derive(theme.palette.model_dump())
     mismatches: list[str] = []
 
     def resolve(value: object) -> object:

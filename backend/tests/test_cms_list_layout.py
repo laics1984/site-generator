@@ -139,16 +139,9 @@ class HeadingInkTest(unittest.TestCase):
                 self.assertIn("--builder-color-heading", source)
 
     def test_every_token_builder_derives_the_heading_ink(self):
-        public = _read(_PUBLIC_STYLES, self)
-        builder = _read(_BUILDER_STYLES, self)
+        from test_surface_ink_mirror import assert_one_derivation
 
-        self.assertIn(
-            "'--builder-color-heading': headingInk(secondaryColor, textColor, backgroundColor)",
-            public,
-        )
-        self.assertIn("['--builder-color-heading' as string]: headingInk(builderStyles.colors)", builder)
-        for source in (public, builder):
-            self.assertRegex(source, r"contrastRatio\(secondary, background\) < 4\.5")
+        assert_one_derivation(self, "heading")
 
     def test_the_preview_token_builder_is_vendored_verbatim(self):
         public = _read(_PUBLIC_STYLES, self)
@@ -160,8 +153,8 @@ class HeadingInkTest(unittest.TestCase):
         public = _read(_REPOS / "webtree-public" / "app" / "assets" / "css" / "main.css", self)
         preview = _read(_PREVIEW_CSS, self)
         builder = _read(_REPOS / "builder" / "src" / "index.css", self)
-        rules = re.findall(r"(\.wt-color-system-v2[^{}]+)\{([^{}]+)\}", public)
-        self.assertGreater(len(rules), 10, "the public renderer has lost its versioned color rules")
+        rules = re.findall(r"(\.wt-site [^{}]+)\{([^{}]+)\}", public)
+        self.assertGreater(len(rules), 10, "the public renderer has lost its colour-system rules")
         for selector, declarations in rules:
             rule = _squash(selector + "{" + declarations + "}")
             self.assertIn(rule, _squash(preview), selector)
@@ -194,9 +187,9 @@ class HeadingInkTest(unittest.TestCase):
         )
         targeted = {
             name
-            for selector, _ in re.findall(r"(\.wt-color-system-v2[^{}]+)\{([^{}]+)\}", public)
+            for selector, _ in re.findall(r"(\.wt-site [^{}]+)\{([^{}]+)\}", public)
             for name in re.findall(r"\.(wt-[a-z0-9_-]+)", selector)
-        } - {"wt-color-system-v2"}
+        } - {"wt-site"}
         self.assertTrue(targeted)
         for name in sorted(targeted - set(self._V2_CLASSES_WITHOUT_CANVAS_MARKUP)):
             found = re.search(rf"[\s\"'`]{re.escape(name)}[\s\"'`]", canvas)

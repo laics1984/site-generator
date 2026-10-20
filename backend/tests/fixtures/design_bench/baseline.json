@@ -24,18 +24,16 @@
         "dark",
         "dark",
         "light",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
-        "score": 88,
+        "score": 98,
         "subscores": {
-          "legibility": 80,
           "rhythm": 96
         },
         "corrections": 0,
         "findings": {
-          "color-contrast": 1,
           "rhythm-monotone": 1
         }
       },
@@ -67,8 +65,8 @@
         "dark",
         "dark",
         "light",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -108,8 +106,8 @@
         "dark",
         "dark",
         "light",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -149,8 +147,8 @@
         "dark",
         "dark",
         "light",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -362,8 +360,8 @@
         "dark",
         "light",
         "dark",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -403,8 +401,8 @@
         "dark",
         "light",
         "dark",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -444,8 +442,8 @@
         "dark",
         "light",
         "dark",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -485,18 +483,16 @@
         "dark",
         "light",
         "dark",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
-        "score": 88,
+        "score": 98,
         "subscores": {
-          "legibility": 80,
           "rhythm": 96
         },
         "corrections": 0,
         "findings": {
-          "color-contrast": 1,
           "rhythm-monotone": 1
         }
       },
@@ -526,7 +522,7 @@
       ],
       "bands": [
         "tint",
-        "tint",
+        "light",
         "tint",
         "tint",
         "tint"
@@ -570,7 +566,7 @@
       ],
       "bands": [
         "tint",
-        "tint",
+        "light",
         "tint",
         "tint",
         "tint"
@@ -614,10 +610,10 @@
       ],
       "bands": [
         "tint",
+        "light",
         "tint",
         "tint",
-        "tint",
-        "tint"
+        "dark"
       ],
       "quality": {
         "score": 86,
@@ -658,7 +654,7 @@
       ],
       "bands": [
         "tint",
-        "tint",
+        "light",
         "tint",
         "tint",
         "tint"
@@ -702,10 +698,10 @@
       ],
       "bands": [
         "tint",
+        "light",
         "tint",
         "tint",
-        "tint",
-        "tint"
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -743,7 +739,7 @@
       ],
       "bands": [
         "tint",
-        "tint",
+        "light",
         "tint",
         "tint",
         "tint"
@@ -784,10 +780,10 @@
       ],
       "bands": [
         "tint",
+        "light",
         "tint",
         "tint",
-        "tint",
-        "tint"
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -825,7 +821,7 @@
       ],
       "bands": [
         "tint",
-        "tint",
+        "light",
         "tint",
         "tint",
         "tint"
@@ -867,7 +863,7 @@
       "bands": [
         "dark",
         "light",
-        "light",
+        "tint",
         "light",
         "dark"
       ],
@@ -909,7 +905,7 @@
       "bands": [
         "dark",
         "light",
-        "light",
+        "tint",
         "light",
         "dark"
       ],
@@ -951,7 +947,7 @@
       "bands": [
         "dark",
         "light",
-        "light",
+        "tint",
         "light",
         "dark"
       ],
@@ -993,7 +989,7 @@
       "bands": [
         "dark",
         "light",
-        "light",
+        "tint",
         "light",
         "dark"
       ],
@@ -1019,7 +1015,7 @@
       "archetype": "it-services",
       "mood": "technical",
       "scheme": "calm-clinical",
-      "hero": "hero-modern-split",
+      "hero": "hero-background-bold",
       "header": "minimal-line",
       "footer": "minimal-centered",
       "canvas": "white",
@@ -1036,7 +1032,7 @@
         "dark",
         "light",
         "light",
-        "light",
+        "tint",
         "dark"
       ],
       "quality": {
@@ -1060,7 +1056,7 @@
       "archetype": "it-services",
       "mood": "technical",
       "scheme": "calm-clinical",
-      "hero": "hero-modern-split",
+      "hero": "hero-background-bold",
       "header": "minimal-line",
       "footer": "minimal-centered",
       "canvas": "white",
@@ -1077,7 +1073,7 @@
         "dark",
         "light",
         "light",
-        "light",
+        "tint",
         "dark"
       ],
       "quality": {
@@ -1101,7 +1097,7 @@
       "archetype": "it-services",
       "mood": "technical",
       "scheme": "calm-clinical",
-      "hero": "hero-modern-split",
+      "hero": "hero-background-bold",
       "header": "minimal-line",
       "footer": "minimal-centered",
       "canvas": "white",
@@ -1118,7 +1114,7 @@
         "dark",
         "light",
         "light",
-        "light",
+        "tint",
         "dark"
       ],
       "quality": {
@@ -1142,7 +1138,7 @@
       "archetype": "it-services",
       "mood": "technical",
       "scheme": "calm-clinical",
-      "hero": "hero-modern-split",
+      "hero": "hero-background-bold",
       "header": "minimal-line",
       "footer": "minimal-centered",
       "canvas": "white",
@@ -1159,7 +1155,7 @@
         "dark",
         "light",
         "light",
-        "light",
+        "tint",
         "dark"
       ],
       "quality": {
@@ -1355,7 +1351,7 @@
       "archetype": "tech-consultancy",
       "mood": "luxury",
       "scheme": "consult-formal",
-      "hero": "hero-modern-split",
+      "hero": "hero-background-bold",
       "header": "minimal-line",
       "footer": "minimal-centered",
       "canvas": "white",
@@ -1372,8 +1368,8 @@
         "dark",
         "dark",
         "light",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -1396,7 +1392,7 @@
       "archetype": "tech-consultancy",
       "mood": "luxury",
       "scheme": "consult-formal",
-      "hero": "hero-modern-split",
+      "hero": "hero-background-bold",
       "header": "minimal-line",
       "footer": "minimal-centered",
       "canvas": "white",
@@ -1413,8 +1409,8 @@
         "dark",
         "dark",
         "light",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -1437,7 +1433,7 @@
       "archetype": "tech-consultancy",
       "mood": "luxury",
       "scheme": "consult-formal",
-      "hero": "hero-modern-split",
+      "hero": "hero-background-bold",
       "header": "minimal-line",
       "footer": "minimal-centered",
       "canvas": "white",
@@ -1454,8 +1450,8 @@
         "dark",
         "dark",
         "light",
-        "light",
-        "light"
+        "tint",
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -1478,7 +1474,7 @@
       "archetype": "tech-consultancy",
       "mood": "luxury",
       "scheme": "consult-formal",
-      "hero": "hero-modern-split",
+      "hero": "hero-background-bold",
       "header": "minimal-line",
       "footer": "minimal-centered",
       "canvas": "white",
@@ -1496,7 +1492,7 @@
         "dark",
         "light",
         "light",
-        "light"
+        "dark"
       ],
       "quality": {
         "score": 98,
@@ -1515,13 +1511,13 @@
   ],
   "similarity_by_industry": {
     "childcare": {
-      "mean": 0.244,
-      "max": 0.36,
+      "mean": 0.259,
+      "max": 0.396,
       "sites": 5
     },
     "saas": {
-      "mean": 0.33,
-      "max": 0.33,
+      "mean": 0.294,
+      "max": 0.294,
       "sites": 2
     }
   },
@@ -1542,12 +1538,12 @@
       "sites": 4
     },
     "enrichment-centre": {
-      "mean": 0.892,
-      "max": 1.0,
+      "mean": 0.883,
+      "max": 0.982,
       "sites": 4
     },
     "nursery-gentle": {
-      "mean": 0.881,
+      "mean": 0.869,
       "max": 0.935,
       "sites": 4
     },
@@ -1567,7 +1563,7 @@
       "sites": 4
     },
     "tech-consultancy": {
-      "mean": 0.881,
+      "mean": 0.872,
       "max": 0.935,
       "sites": 4
     }

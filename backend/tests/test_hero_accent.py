@@ -182,7 +182,10 @@ class HeroAccentRenderTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(color, str)
             resolved[el.name] = _to_hex(_parse_color(color, theme)[0])
             self.assertGreaterEqual(_contrast(surface, resolved[el.name]), 4.5)
-        self.assertNotEqual(resolved[lead.name], "#ffffff")
+        # Bound to a palette role (photo-ink, re-measured through its contrast
+        # variable on a recolour), never a literal white.
+        self.assertTrue(lead.styles["color"].startswith("var("), lead.styles["color"])
+        self.assertIn("--builder-color-", lead.styles["color"])
         # Eyebrow carries the lifted accent, not a flat near-white.
         self.assertNotEqual(eyebrow.styles["color"], lead.styles["color"])
 

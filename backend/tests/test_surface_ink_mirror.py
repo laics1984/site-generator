@@ -1,11 +1,13 @@
 """The surface-ink rule is stated in three repos; this keeps them one rule.
 
-The generator (theme.ink_on / _neutral_inks, image_styling._COPY_MAX_COVER), the
-builder (src/lib/builder-styles.ts neutralInks, src/lib/surface-ink.ts) and the
-public renderer (webtree-public lib/styles.ts neutralInks) each derive the
-palette's copy inks and the photo sheet. A constant drifting in one of them
-would make the builder re-ink copy to a colour the generator never picks, or a
-renderer paint `--builder-color-ink-light` as something else. Skipped when a
+The copy inks are ONE derivation, the colour system's ink-light / ink-dark
+(app/services/color_system.py, mirrored by colorSystem.ts in webtree-public, the
+builder and the preview, pinned by shared fixtures): the generator writes them
+(theme._neutral_inks) and every renderer resolves the tokens from it. The photo
+sheet's cap (image_styling._COPY_MAX_COVER) is mirrored by the builder's
+surface-ink.ts. A drift would make the builder re-ink copy to a colour the
+generator never picks, or a renderer paint `--builder-color-ink-light` as
+something else. Skipped when a
 sibling repo is absent, the `test_self_ink.py` idiom.
 """
 
@@ -38,18 +40,35 @@ def _number(source: str, name: str) -> float:
     return float(match.group(1))
 
 
-class InkConstantsMirrorTest(unittest.TestCase):
-    def test_the_light_ink_spread_is_one_number_everywhere(self):
-        for path in (_BUILDER_STYLES, _PUBLIC_STYLES):
-            self.assertEqual(
-                _number(_read(path, self), "LIGHT_INK_SPREAD"), theme._LIGHT_INK_SPREAD, path.name
-            )
+_PUBLIC_COLOR_SYSTEM = _WEBTREE / "webtree-public" / "lib" / "colorSystem.ts"
 
+
+def assert_one_derivation(case: unittest.TestCase, *roles: str) -> None:
+    """Both token builders take every colour role from the colour system
+    (colorSystem.ts, byte-identical in the builder and the preview), always,
+    and set none of them by hand; and that derivation defines each role the
+    generator writes."""
+    for path in (_BUILDER_STYLES, _PUBLIC_STYLES):
+        source = _read(path, case)
+        case.assertIn("semanticColorVars(", source, path.name)
+        case.assertNotIn("colorSystemVersion === 2 ?", source, f"{path.name} still gates the colour system")
+        for role in roles:
+            case.assertNotRegex(source, rf"'--builder-color-{role}'[^\n]*?:", f"{path.name} sets {role} by hand")
+    # The TypeScript derivation is pinned to Python's by the shared numerical
+    # fixtures (colorSystem.fixtures.json), so its roles are derive()'s.
+    _read(_PUBLIC_COLOR_SYSTEM, case)
+    from app.services.color_system import derive
+    derived = derive(theme.build_theme("#0284c7").palette.model_dump())
+    for role in roles:
+        case.assertIn(role, derived, f"the colour system does not derive {role}")
+
+
+class InkConstantsMirrorTest(unittest.TestCase):
     def test_the_photo_sheet_is_the_generators_cap(self):
         source = _read(_BUILDER_SURFACE_INK, self)
         self.assertEqual(_number(source, "COPY_MAX_COVER"), image_styling._COPY_MAX_COVER)
 
-    def test_both_renderers_define_the_tokens_the_generator_writes(self):
+    def test_both_renderers_derive_the_tokens_the_generator_writes(self):
         palette = theme.build_theme("#0284c7").palette
         light, dark = theme._neutral_inks(palette)
         written = {
@@ -57,10 +76,7 @@ class InkConstantsMirrorTest(unittest.TestCase):
             theme.ink_css(palette, dark).split(",")[0].removeprefix("var("),
         }
         self.assertEqual(written, {"--builder-color-ink-light", "--builder-color-ink-dark"})
-        for path in (_BUILDER_STYLES, _PUBLIC_STYLES):
-            source = _read(path, self)
-            for token in written:
-                self.assertIn(f"'{token}'", source, f"{path.name} does not define {token}")
+        assert_one_derivation(self, "ink-light", "ink-dark")
 
 
 class CatalogCarriesNoHardCodedWhiteTest(unittest.TestCase):

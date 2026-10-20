@@ -16,12 +16,10 @@ class _PublicColors(HTMLParser):
     def __init__(self):
         super().__init__()
         self.colors: dict[str, str] = {}
-        self.versioned = False
 
     def handle_starttag(self, tag, attrs):
         attributes = dict(attrs)
         classes = (attributes.get("class") or "").split()
-        self.versioned = self.versioned or "wt-color-system-v2" in classes
         if "wt-site" not in classes:
             return
         for declaration in (attributes.get("style") or "").split(";"):
@@ -55,7 +53,7 @@ async def verify_public_palette(client, entity_token: str, expected: CreativePal
                         raise ValueError("Public response too large")
         observed = _PublicColors()
         observed.feed(body.decode("utf-8", errors="replace"))
-        matches = observed.versioned and observed.colors == expected.model_dump()
+        matches = observed.colors == expected.model_dump()
         return {"state": "verified" if matches else "pending", "public_url": url,
                 "message": ("The public page now shows the selected colors." if matches else
                             "The public page shows different colors. Refresh live colors to check for newer edits, or check again after its caches refresh.")}

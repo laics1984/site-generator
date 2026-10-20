@@ -209,8 +209,7 @@ export function PublishDrawer({ open, onClose, site, onPublished, paletteOnly = 
       setLivePalette(null); setPlanError(null); setPlanBusy(true)
       readLivePalette(login, siteToken, targetName ?? undefined).then(res => {
         if (!cancelled) {
-          if (res.builder_styles?.colorSystemVersion !== 2) setPlanError("This live site uses older colors. Its existing design will be kept.")
-          else setLivePalette(res)
+          setLivePalette(res)
         }
       }).catch(err => { if (!cancelled) setPlanError(String(err.message || err)) })
         .finally(() => { if (!cancelled) setPlanBusy(false) })

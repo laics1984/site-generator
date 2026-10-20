@@ -19,7 +19,6 @@ findings; it never mutates or blocks generation.
 from __future__ import annotations
 
 import re
-from types import SimpleNamespace
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -30,8 +29,8 @@ from app.models.builder_schema import (
     GeneratedSite,
 )
 from app.services.section_content import _has_opaque_gradient, _has_real_photo
-from app.services.style_tokens import heading_ink
-from app.services.theme import _contrast, _neutral_inks
+from app.services.color_system import FIELDS as _PALETTE_FIELDS, css_vars
+from app.services.theme import _contrast
 
 _HEX_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _VAR_RE = re.compile(r"var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)")
@@ -83,10 +82,11 @@ def _builder_vars(site: GeneratedSite) -> dict[str, str]:
         for k, v in colors.items():
             if isinstance(v, str):
                 out[f"--builder-color-{_kebab(k)}"] = v
-        # Derived from the palette by the renderers, never stored.
-        inks = [colors.get(k) for k in ("secondary", "text", "background")]
-        if all(isinstance(c, str) and _HEX_RE.match(c) for c in inks):
-            out["--builder-color-heading"] = heading_ink(*inks)
+        # Every role the renderers derive from the palette (color_system.css_vars,
+        # mirrored in each renderer), never stored.
+        palette = {k: colors.get(k) for k in _PALETTE_FIELDS}
+        if all(isinstance(c, str) and _HEX_RE.match(c) for c in palette.values()):
+            out.update(css_vars(palette))
         # The page canvas sections paint as `var(--builder-page-background, …)`.
         # Unmapped, every one resolved to its #ffffff fallback, and light copy on
         # a dark site's page band read as failing contrast on white.
@@ -94,11 +94,6 @@ def _builder_vars(site: GeneratedSite) -> dict[str, str]:
         page_bg = page.get("background") or colors.get("background")
         if isinstance(page_bg, str) and _HEX_RE.match(page_bg):
             out["--builder-page-background"] = page_bg
-        neutrals = {k: colors.get(k) for k in ("background", "surface", "text", "secondary")}
-        if all(isinstance(c, str) and _HEX_RE.match(c) for c in neutrals.values()):
-            light, dark = _neutral_inks(SimpleNamespace(**neutrals))
-            out["--builder-color-ink-light"] = light
-            out["--builder-color-ink-dark"] = dark
     return out
 
 

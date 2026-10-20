@@ -94,19 +94,11 @@ class RequiredChipInkTest(unittest.TestCase):
                 )
 
     def test_both_token_builders_derive_the_pair_alike(self):
-        # The published site and the builder canvas cannot import each other;
-        # the preview's copy is pinned verbatim by
-        # test_cms_list_layout.test_the_preview_token_builder_is_vendored_verbatim.
-        public = _read(_PUBLIC_STYLES, self)
-        builder = _read(_BUILDER_STYLES, self)
-        for source in (public, builder):
-            self.assertRegex(source, r"PRIMARY_TINT_WEIGHT = 0\.1\b")
-        self.assertIn("ensureContrast(primaryInk, tint, 4.5)", public)
-        self.assertIn("ensureContrast(primaryInk(colors), tint, 4.5)", builder)
-        self.assertIn("'--builder-color-primary-tint': primaryTintPair.tint", public)
-        self.assertIn("'--builder-color-primary-tint-ink': primaryTintPair.ink", public)
-        self.assertIn("['--builder-color-primary-tint' as string]: tint", builder)
-        self.assertIn("['--builder-color-primary-tint-ink' as string]: ink", builder)
+        # One derivation (the colour system's primary-tint pair), which the
+        # published site, the preview and the builder canvas all spread.
+        from test_surface_ink_mirror import assert_one_derivation
+
+        assert_one_derivation(self, "primary-tint", "primary-tint-ink")
 
 
 if __name__ == "__main__":

@@ -288,8 +288,15 @@ class ThemeTokens(BaseModel):
     """
 
     palette: ColorPalette
-    color_system_version: Literal[2] | None = None
+    # v2 is the only colour system; the field rides the wire for the builder
+    # and the CMS. A stored theme from before it existed reads as v2 too.
+    color_system_version: Literal[2] = 2
     typography: Typography
+
+    @field_validator("color_system_version", mode="before")
+    @classmethod
+    def _always_v2(cls, value: object) -> int:
+        return 2
     buttons: Buttons
     page: PageTokens
 
@@ -431,8 +438,7 @@ class ThemeTokens(BaseModel):
             # editing a law firm. Builder-only; the public renderer ignores it.
             "brandMood": self.mood,
         }
-        if self.color_system_version == 2:
-            styles["colorSystemVersion"] = 2
+        styles["colorSystemVersion"] = 2
         # Only emit the hero token when banded; absence → the template's
         # full-screen fallback, so "full" sites stay byte-identical.
         if self.hero_background_height == "banded":

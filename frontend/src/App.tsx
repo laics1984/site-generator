@@ -534,7 +534,7 @@ export default function App() {
       hero_height: heroHeight === 'auto' ? null : heroHeight,
       stock_images_only: stockImagesOnly,
       detected_brand: detectedBrand,
-      ...(site?.builder_styles?.colorSystemVersion === 2 ? { palette_override: { primary: site.builder_styles.colors.primary, secondary: site.builder_styles.colors.secondary, accent: site.builder_styles.colors.accent, surface: site.builder_styles.colors.surface } } : {}),
+      ...(site?.builder_styles?.colors ? { palette_override: { primary: site.builder_styles.colors.primary, secondary: site.builder_styles.colors.secondary, accent: site.builder_styles.colors.accent, surface: site.builder_styles.colors.surface } } : {}),
       // The Page stays the authority on its own contact details, hours,
       // reviews and counts — the backend rewrites those blocks from it after
       // the LLM has run. Riding on the payload means a regenerate keeps it too.
@@ -561,7 +561,7 @@ export default function App() {
     setBusy(true)
     setError(null)
     try {
-      const colors = site?.builder_styles?.colorSystemVersion === 2 ? site.builder_styles.colors : null
+      const colors = site?.builder_styles?.colors ?? null
       const payload = { ...lastGenerate.payload, ...(colors ? { palette_override: { primary: colors.primary, secondary: colors.secondary, accent: colors.accent, surface: colors.surface } } : {}) }
       const result = await generateWithPages(payload)
       // Keep the previous site on screen until the new one is in hand.
@@ -683,7 +683,7 @@ export default function App() {
             />
           </aside>
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden p-3 sm:p-4">
-            {site.builder_styles?.colorSystemVersion === 2 && <PalettePanel site={site} onChange={setSite} onPublish={() => { setPaletteOnly(true); setPublishOpen(true) }} />}
+            {site.builder_styles?.colors && <PalettePanel site={site} onChange={setSite} onPublish={() => { setPaletteOnly(true); setPublishOpen(true) }} />}
             <PagePreview
               page={selectedPage}
               site={site}

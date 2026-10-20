@@ -282,8 +282,10 @@ def _band(section: BuilderElement, theme_lights: set[str]) -> str:
     classes = section.classes or ""
     if "wt-band-dark" in classes:
         return "dark"
-    fill = styles.get("backgroundColor")
-    hls = _hls(fill) if isinstance(fill, str) else None
+    # A bound fill is `var(--builder-color-band-2, #hex)`: read the colour it
+    # paints, or every token-bound band would count as plain "light".
+    fill = _css_colour(styles.get("backgroundColor"))
+    hls = _hls(fill)
     if (
         hls is not None
         and hls[2] >= _MIN_TINT_SATURATION
@@ -294,12 +296,15 @@ def _band(section: BuilderElement, theme_lights: set[str]) -> str:
 
 
 def _css_colour(value: Any) -> str | None:
-    """A literal hex, or the fallback inside ``var(--token, #hex)``."""
+    """A literal hex, or the fallback inside ``var(--token, #hex)`` — nested
+    too, as the colour system writes a contrast variable around a role token:
+    ``var(--builder-contrast-…, var(--builder-color-photo-ink, #ffffff))``."""
     if not isinstance(value, str):
         return None
     text = value.strip()
-    if text.startswith("var(") and "," in text:
-        text = text.split(",", 1)[1].rstrip(") ").strip()
+    while text.startswith("var(") and "," in text:
+        text = text.split(",", 1)[1].strip()
+        text = text[:-1].strip() if text.endswith(")") else text
     return text if text.startswith("#") else None
 
 

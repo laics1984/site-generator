@@ -117,10 +117,6 @@ def _text_for_background(bg_hex: str) -> str:
     return "#ffffff" if _relative_luminance(bg_hex) < 0.5 else "#0f172a"
 
 
-# How close to the lightest neutral another may sit and still count as "the
-# light ink" — wide enough that a light build's surface tint (#f0f9ff against a
-# #ffffff page, 0.06 apart) qualifies, narrow enough that no mid-tone does.
-_LIGHT_INK_SPREAD = 0.1
 
 
 def _chroma(hex_color: str) -> int:
@@ -130,13 +126,13 @@ def _chroma(hex_color: str) -> int:
 
 def _neutral_inks(palette: ColorPalette) -> tuple[str, str]:
     """(light, dark) — the only two inks copy is ever given on a surface
-    (`ink_on`). The light one is the most brand-tinted of the palette's
-    near-lightest neutrals: copy on a dark band or a photo reads as THIS brand's
-    near-white (a light build's surface tint), never a stock #ffffff."""
-    neutrals = (palette.background, palette.surface, palette.text, palette.secondary)
-    lightest = max(_relative_luminance(n) for n in neutrals)
-    near_white = [n for n in neutrals if _relative_luminance(n) >= lightest - _LIGHT_INK_SPREAD]
-    return max(near_white, key=_chroma), min(neutrals, key=_relative_luminance)
+    (`ink_on`): the colour system's `ink-light` / `ink-dark` roles, which is
+    what `--builder-color-ink-light|dark` resolve to in every renderer. The
+    light one is THIS brand's near-white (the surface toned up), never a stock
+    #ffffff; the dark one is the secondary toned down."""
+    from app.services.color_system import derive
+    colors = derive(palette.model_dump())
+    return colors["ink-light"], colors["ink-dark"]
 
 
 def ink_css(palette: ColorPalette, ink_hex: str) -> str:
@@ -1865,11 +1861,11 @@ def build_theme(
     spec = MOOD_SPECS[mood]
     pairing = _pick_pairing(spec, font_seed, industry, scheme.type_directions)
 
-    # Button background needs ≥4.5:1 against white text.
-    button_bg = palette.primary
-    button_text = _text_for_background(button_bg)
-    if _contrast(button_bg, button_text) < 4.5:
-        button_bg = _ensure_contrast_against(button_text, button_bg, min_ratio=4.5)
+    # The brand button pair (color_system.button_pair): a light label on the
+    # brand, the fill deepened along its own hue only as far as AA needs.
+    from app.services.color_system import derive
+    derived = derive(palette.model_dump())
+    button_bg, button_text = derived["primary-button"], derived["on-primary-button"]
 
     typography = Typography.model_validate(
         {

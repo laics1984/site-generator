@@ -208,7 +208,9 @@ class TextContrastTest(unittest.TestCase):
         )
         tree, n = self._run(tree, theme)
         self.assertEqual(n, 1)
-        self.assertEqual(tree.content[0].styles["color"], "var(--builder-color-ink-dark, #0f172a)")
+        from app.services.theme import _neutral_inks
+        dark = _neutral_inks(theme.palette)[1]
+        self.assertEqual(tree.content[0].styles["color"], f"var(--builder-color-ink-dark, {dark})")
 
     def test_text_on_photo_untouched(self):
         theme = build_theme("#2563eb", color_scheme="dark")
@@ -546,7 +548,9 @@ class HeadingInkTokenTest(unittest.TestCase):
         self.assertEqual(heading.styles["color"], "var(--builder-color-heading, #0f172a)")
 
     def test_audit_resolves_the_derived_token_not_its_fallback(self):
-        colors = {"secondary": "#05080f", "text": "#e5e9ee", "background": "#090d16"}
+        # A complete palette: renderers derive their roles from all six colours.
+        colors = {"primary": "#2563eb", "accent": "#f59e0b", "surface": "#0f1729",
+                  "secondary": "#05080f", "text": "#e5e9ee", "background": "#090d16"}
         tree = [_container(
             "band",
             [_text("h", "Welcome", color="var(--builder-color-heading, #0f172a)")],

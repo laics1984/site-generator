@@ -120,7 +120,8 @@ class MenuInkHeroContrastTest(unittest.IsolatedAsyncioTestCase):
         for scheme in ("light", "dark"):
             site, site_theme = await self._site(scheme)
             menu = _find_menu(site.header_schema)
-            ink_lum = _relative_luminance(menu.styles["color"])
+            from app.services.section_content import _parse_color, _to_hex
+            ink_lum = _relative_luminance(_to_hex(_parse_color(menu.styles["color"], site_theme)[0]))
             home = next(p for p in site.pages if p.is_homepage)
             # What the hero visibly paints — a split hero's own gradient
             # shorthand, not the backgroundColor it resets.
@@ -243,10 +244,12 @@ def _cast_alpha(background_image_css: str) -> float:
     photo `url(...)` — from a composited `backgroundImage` CSS string."""
     from app.services.image_styling import _split_layers
 
-    cast_layer = _split_layers(background_image_css)[-2]
-    match = re.search(r"rgba\(\d+,\d+,\d+,([\d.]+)\)", cast_layer.replace(" ", ""))
+    cast_layer = _split_layers(background_image_css)[-2].replace(" ", "")
+    # The opening stop, written as rgba() or — once the colour system binds it
+    # to a role — as color-mix(in srgb, var(--role, #hex) N%, transparent).
+    match = re.search(r"rgba\(\d+,\d+,\d+,([\d.]+)\)|color-mix\(insrgb,var\([^)]*\)([\d.]+)%,transparent\)", cast_layer)
     assert match is not None, background_image_css
-    return float(match.group(1))
+    return float(match.group(1)) if match.group(1) else float(match.group(2)) / 100
 
 
 class HomepageHeroWashTest(unittest.IsolatedAsyncioTestCase):

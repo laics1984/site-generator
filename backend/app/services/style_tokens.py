@@ -305,7 +305,7 @@ def make_style_tokens(theme: ThemeTokens) -> StyleTokens:
     # every palette constructor WCAG-guards against `background` specifically
     # for this job (see ColorPalette docstring), so the dark scheme reads from
     # it instead.
-    ink = palette.text if theme.color_system_version == 2 or getattr(theme, "color_scheme", "light") == "dark" else palette.secondary
+    ink = palette.text
 
     # Fluid type: ceilings scale with the mood's type-scale ratio (1.25 = the
     # previous fixed look), and every tier is a clamp() so it breathes across
@@ -445,10 +445,8 @@ def emphasis_ink(theme: ThemeTokens, surface: str | None = None) -> str:
     accent, AA-corrected against `surface` (defaults to the page background).
     NOT for full section/card backgrounds — accent is banned there by
     SECTION_VISUAL_POLICY_SPEC §7; text/border/shadow-tint call sites only."""
-    if theme.color_system_version == 2:
-        from app.services.color_system import ensure_contrast
-        return ensure_contrast(theme.palette.accent, surface or theme.palette.background)
-    return _accent_ink_for(surface or theme.palette.background, theme.palette.accent)
+    from app.services.color_system import ensure_contrast
+    return ensure_contrast(theme.palette.accent, surface or theme.palette.background)
 
 
 def brand_ink(theme: ThemeTokens, surface: str | None = None) -> str:
@@ -464,15 +462,8 @@ def brand_ink(theme: ThemeTokens, surface: str | None = None) -> str:
     safety net deliberately leaves alone (brand colour is assumed intentional).
     Call sites that print `palette.primary` as a `color` must go through this
     instead, exactly as accent call sites go through `emphasis_ink`."""
-    if theme.color_system_version == 2:
-        from app.services.color_system import ensure_contrast
-        return ensure_contrast(theme.palette.primary, surface or theme.palette.background)
-    return _accent_ink_for(surface or theme.palette.background, theme.palette.primary)
-
-
-# Light enough that the theme's dark ink keeps a wide WCAG margin on every tint
-# (the old fixed pastel set was Tailwind 50/100-class, L ≈ 0.93–0.97).
-_BAND_TINT_LIGHTNESS = 0.94
+    from app.services.color_system import ensure_contrast
+    return ensure_contrast(theme.palette.primary, surface or theme.palette.background)
 
 
 # --- framed image shapes ------------------------------------------------------
@@ -499,48 +490,18 @@ IMAGE_SHAPES: dict[str, str | None] = {
 # test_image_shapes walks the catalog: a renamed node would otherwise silently
 # switch the shape off, the same vocabulary trap as the h1 pass's title names.
 SHAPED_IMAGE_NAMES: frozenset[str] = frozenset({"Hero Image", "Blob Photo", "About Image"})
-# Hues a tint set is built from, as rotations off the primary and the accent:
-# the brand's own two colours first, then their neighbours, so a green-and-amber
-# brand gets mint and peach bands and a navy-and-coral one gets sky and blush.
-_TINT_ROTATIONS: tuple[tuple[str, float], ...] = (
-    ("primary", 0.0),
-    ("accent", 0.0),
-    ("primary", 40.0),
-    ("accent", -40.0),
-)
-
-
-def _hue_of(hex_color: str) -> tuple[float, float]:
-    h, _l, s = _rgb_to_hls(*_hex_to_rgb(hex_color))
-    return h, s
 
 
 def band_tints(theme: ThemeTokens) -> tuple[str, ...]:
-    """Light band fills derived from THIS site's palette hues.
-
-    The multi-tint rhythm used to be a fixed cream/sky/mint/peach/lavender/butter
-    rotation, identical on every kindergarten whatever its brand. Deriving the
-    tints from the primary and accent (and their neighbours) keeps the cheerful
-    multi-colour voice while making it this brand's colours. Ordered so adjacent
-    bands differ in hue; near-duplicate hues collapse, so a monochrome brand
-    gets fewer, still-distinct tints rather than two of the same."""
-    palette = theme.palette
-    if theme.color_system_version == 2:
-        from app.services.color_system import derive
-        colors = derive(palette.model_dump())
-        return tuple(colors[f"band-{i}"] for i in range(1, 5))
-    tints: list[str] = []
-    seen_hues: list[float] = []
-    for token, rotation in _TINT_ROTATIONS:
-        hue, saturation = _hue_of(getattr(palette, token))
-        hue = (hue + rotation / 360.0) % 1.0
-        if any(min(abs(hue - h), 1 - abs(hue - h)) < 0.06 for h in seen_hues):
-            continue
-        seen_hues.append(hue)
-        tints.append(
-            _rgb_to_hex(*_hls_to_rgb(hue, _BAND_TINT_LIGHTNESS, min(0.85, max(0.55, saturation))))
-        )
-    return tuple(tints)
+    """Light band fills from THIS site's palette: the colour system's
+    ``band-1..4`` roles (primary, secondary, accent and surface washed into the
+    background), which is what every renderer paints for them —
+    ``bind_theme_styles`` binds these values to those tokens, so they must be
+    the same colours or the generator measures one band and the site shows
+    another."""
+    from app.services.color_system import derive
+    colors = derive(theme.palette.model_dump())
+    return tuple(colors[f"band-{i}"] for i in range(1, 5))
 
 
 def section_title_inks(theme: ThemeTokens) -> tuple[str, ...]:
@@ -548,20 +509,7 @@ def section_title_inks(theme: ThemeTokens) -> tuple[str, ...]:
     per-section-accent voice. Raw values: the caller holds each one to AA
     against the band it lands on (`apply_section_title_inks`), since a tint
     rotation can put any ink on any tint."""
-    palette = theme.palette
-    if theme.color_system_version == 2:
-        return (palette.primary, palette.accent)
-    return (
-        palette.primary,
-        palette.accent,
-        _rgb_to_hex(*_hls_to_rgb(*_rotated_hls(palette.primary, 40.0))),
-        _rgb_to_hex(*_hls_to_rgb(*_rotated_hls(palette.accent, -40.0))),
-    )
-
-
-def _rotated_hls(hex_color: str, degrees: float) -> tuple[float, float, float]:
-    h, l, s = _rgb_to_hls(*_hex_to_rgb(hex_color))
-    return (h + degrees / 360.0) % 1.0, min(l, 0.42), max(s, 0.55)
+    return (theme.palette.primary, theme.palette.accent)
 
 
 def heading_ink(secondary: str, text: str, background: str) -> str:
@@ -580,7 +528,7 @@ def meta_ink(theme: ThemeTokens) -> str:
     already used for body copy, so meta text reads calmly instead of as a
     miniature CTA."""
     palette = theme.palette
-    ink = palette.text if theme.color_system_version == 2 or getattr(theme, "color_scheme", "light") == "dark" else palette.secondary
+    ink = palette.text
     return _muted(ink)
 
 

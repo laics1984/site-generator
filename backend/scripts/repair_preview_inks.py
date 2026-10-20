@@ -22,8 +22,6 @@ from app.services.palette_styles import site_surface_foregrounds
 def repair(raw: dict) -> dict:
     site = GeneratedSite.model_validate(raw)
     theme = ThemeTokens.model_validate(site.theme)
-    if theme.color_system_version != 2:
-        raise ValueError("Only generated color-system-v2 previews can be repaired.")
     variables = site_surface_foregrounds(site, theme, bind=True)
     repaired_colors: dict[str, str] = {}
 

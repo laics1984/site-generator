@@ -53,15 +53,14 @@ from app.models.content_blocks import (
 from app.services.icons import icons_for_items
 from app.services.image_styling import _split_layers
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
-from app.services.style_tokens import _accent_ink_for, brand_ink, emphasis_ink, heading_ink
+from app.services.color_system import oklch
+from app.services.style_tokens import brand_ink, emphasis_ink
 from app.services.template_filler import get_template, templates_for_type
 from app.services.theme import (
     _adjust_lightness,
-    _chroma,
     _contrast,
     _ensure_contrast_against,
     _hex_to_rgb,
-    _neutral_inks,
     _relative_luminance,
     band_colors,
     ink_css,
@@ -1378,39 +1377,35 @@ _COLOR_MIX = _re.compile(
 )
 
 
+# A lifted brand ink still reads as the brand only while it keeps some colour
+# (OKLCH chroma). Measured: a page-tuned red holds 0.22, a pastel accent 0.09;
+# a lift pushed to the light/dark pivot ends at ~0.01 (#f3faff) — a near-white
+# nobody chose, which takes the palette's ink instead.
+_MIN_BRAND_INK_CHROMA = 0.04
+
+
+def _opacity_of(styles: dict) -> float:
+    """A node's own `opacity` as a 0-1 factor (number, "0.7" or "70%"); 1 when
+    absent or unreadable."""
+    value = styles.get("opacity", 1)
+    try:
+        text = str(value).strip()
+        factor = float(text.rstrip("%")) / (100 if text.endswith("%") else 1)
+    except ValueError:
+        return 1.0
+    return max(0.0, min(1.0, factor))
+
+
 def _token_hex(token: str, theme: ThemeTokens) -> str | None:
     """Resolve a `--builder-*` custom property to its concrete hex for the active
     scheme. Mirrors ThemeTokens.to_builder_styles(), so the contrast we compute
     here is exactly what the renderer paints."""
-    p = theme.palette
-    if theme.color_system_version == 2:
-        from app.services.color_system import css_vars
-        tokens = css_vars(p.model_dump())
-        tokens.update({"--builder-page-background": theme.page.background,
-                       "--builder-button-background": theme.buttons.background,
-                       "--builder-button-text": theme.buttons.text})
-        return tokens.get(token)
-    return {
-        "--builder-color-primary": p.primary,
-        "--builder-color-primary-ink": brand_ink(theme),
-        "--builder-color-secondary": p.secondary,
-        "--builder-color-accent": p.accent,
-        "--builder-color-text": p.text,
-        "--builder-color-background": p.background,
-        "--builder-color-surface": p.surface,
-        "--builder-color-heading": heading_ink(p.secondary, p.text, p.background),
-        # The palette's two copy inks, derived by every renderer from the live
-        # palette (`theme._neutral_inks`) — what the ink pass writes as copy.
-        "--builder-color-ink-light": _neutral_inks(p)[0],
-        "--builder-color-ink-dark": _neutral_inks(p)[1],
-        "--builder-page-background": theme.page.background,
-        # Buttons carry their own token pair, and it is contrast-guaranteed by
-        # construction (theme.build_theme lifts the fill until the label clears
-        # AA). Resolving it is what lets this pass read a LINK: a solid button
-        # measures its label against its own fill instead of the band's.
-        "--builder-button-background": theme.buttons.background,
-        "--builder-button-text": theme.buttons.text,
-    }.get(token)
+    from app.services.color_system import css_vars
+    tokens = css_vars(theme.palette.model_dump())
+    tokens.update({"--builder-page-background": theme.page.background,
+                   "--builder-button-background": theme.buttons.background,
+                   "--builder-button-text": theme.buttons.text})
+    return tokens.get(token)
 
 
 def _expand_hex(h: str) -> str:
@@ -2181,31 +2176,22 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
 
                     need = _COPY_MIN_LARGE if _is_large_text(styles) else _COPY_MIN
                     safe: str | None = None
-                    if theme.color_system_version == 2:
-                        from app.services.color_system import ensure_contrast
-                        alpha = fg[1]
-                        opacity = styles.get("opacity", 1)
-                        try:
-                            alpha *= float(str(opacity).rstrip("%")) / (100 if "%" in str(opacity) else 1)
-                        except ValueError:
-                            pass
-                        painted = _to_hex(_composite(fg[0], alpha, bg_rgb))
-                        if worst(painted) < need:
-                            safe = ensure_contrast(fg_hex, worst_stop(painted), need)
-                            if worst(safe) < need:
-                                safe = ink_for_ramp()
-                            if "opacity" in styles:
-                                styles = dict(styles)
-                                styles.pop("opacity", None)
-                                node.styles = styles
-                    elif fg[0] in brand_rgb:
+                    # The node's own opacity fades its ink exactly as an alpha
+                    # in the colour does, so both are one translucency here.
+                    opacity = _opacity_of(styles)
+                    if opacity < 1.0:
+                        fg = (fg[0], fg[1] * opacity)
+                    if fg[0] in brand_rgb:
                         if worst(fg_hex) < need:
-                            safe = _accent_ink_for(worst_stop(fg_hex), fg_hex)
+                            # Lifted along its own perceptual hue — the colour
+                            # system's lift, the one brand_ink/emphasis_ink use.
+                            from app.services.color_system import ensure_contrast
+                            safe = ensure_contrast(fg_hex, worst_stop(fg_hex), need)
                             # Near the light/dark pivot only a pure white or
                             # black reaches AA, so no shade of a hue can: the
                             # lift bleaches to a white nobody chose. Copy there
                             # wears the palette's ink, like any other copy.
-                            if not _chroma(safe) or worst(safe) < need:
+                            if oklch(safe)[1] < _MIN_BRAND_INK_CHROMA or worst(safe) < need:
                                 safe = ink_for_ramp()
                     else:
                         hard_coded = isinstance(raw, str) and bool(_LITERAL_WHITE.match(raw))
@@ -2227,6 +2213,10 @@ def enforce_text_contrast(elements: list[BuilderElement], theme: ThemeTokens) ->
                             safe = ink_for_ramp()
                     written = ink_css(theme.palette, safe) if safe is not None else None
                     if written is not None and written.lower() != str(raw).lower():
+                        # The translucency was folded into `fg` above; the
+                        # restated ink carries it as `opacity` only where it
+                        # still reads (keep_alpha), never twice.
+                        styles = {k: v for k, v in styles.items() if k != "opacity"}
                         # The author's translucency is a nicety, kept only where
                         # the ink still reads with it; legibility outranks it.
                         keep_alpha = fg[1] < 1.0 and _contrast(

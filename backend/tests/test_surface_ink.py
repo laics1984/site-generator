@@ -124,9 +124,13 @@ class InkOnTest(unittest.TestCase):
     def test_a_dark_surface_gets_the_palettes_brand_tinted_light_ink(self):
         """A light build's light ink is its surface tint (the old photo-hero
         intent: "brand-tinted near-white instead of hardcoded #ffffff")."""
+        from app.services.color_system import derive, oklch
         ink = ink_on(self.palette, "#0f172a")
         self.assertEqual(ink, light_ink(self.palette))
-        self.assertEqual(ink, self.palette.surface)
+        # The colour system's ink-light: the surface toned to near-white, keeping
+        # its hue — what --builder-color-ink-light resolves to in every renderer.
+        self.assertEqual(ink, derive(self.palette.model_dump())["ink-light"])
+        self.assertAlmostEqual(oklch(ink)[2], oklch(self.palette.surface)[2], delta=0.1)
         self.assertNotEqual(ink.lower(), "#ffffff")
 
     def test_a_mid_tone_surface_pushes_the_winning_ink_away_from_it(self):
@@ -139,9 +143,11 @@ class InkOnTest(unittest.TestCase):
         self.assertGreaterEqual(_contrast(ink, surface), _contrast(lightest, surface))
         self.assertLess(relative_luminance(ink), relative_luminance(surface))
 
-    def test_a_dark_palette_uses_its_own_text_as_light_ink(self):
+    def test_a_dark_palette_light_ink_is_its_surface_toned_up(self):
+        from app.services.color_system import contrast, derive
         palette = build_theme("#7c3aed", color_scheme="dark").palette
-        self.assertEqual(light_ink(palette), palette.text)
+        self.assertEqual(light_ink(palette), derive(palette.model_dump())["ink-light"])
+        self.assertGreaterEqual(contrast(light_ink(palette), palette.background), 7)
 
 
 class CopyScrimTest(unittest.TestCase):
@@ -423,7 +429,11 @@ class InkPassTest(unittest.TestCase):
 
 
 def _hue(hex_color):
-    return _rgb_to_hls(*_hex_to_rgb(hex_color))[0] * 360
+    """Perceptual hue in degrees (OKLCH), the space the colour system lifts an
+    ink along — an HLS hue drifts a few degrees on the same lift."""
+    import math
+    from app.services.color_system import oklch
+    return math.degrees(oklch(hex_color)[2]) % 360
 
 
 class BrandInkHeldToItsSurfaceTest(unittest.TestCase):

@@ -288,17 +288,23 @@ def test_manual_button_and_page_overrides_survive_palette_save():
     assert patch.builder_styles["page"] == original.builder_styles["page"]
 
 
-def test_legacy_output_cannot_be_recolored():
+def test_a_site_stored_without_a_version_recolours_as_v2():
+    # v2 is the only colour system: a stored payload missing the marker is
+    # read as v2 and recoloured like any other.
     original = site(); original.builder_styles.pop("colorSystemVersion")
-    with pytest.raises(ValueError, match="older"):
-        current_theme(original)
+    stored = original.theme.model_dump(); stored["color_system_version"] = None
+    original = original.model_copy(update={"theme": stored})
+    assert current_theme(original).color_system_version == 2
+    patch = palette_patch(original, CreativePalette(**PALETTES[1]))
+    assert patch.builder_styles["colorSystemVersion"] == 2
 
 
 def test_neutral_text_below_aa_and_own_opacity_are_repaired():
     t = theme()
     node = BuilderElement(id="copy", name="Body", type="text", styles={"color":"#888888","fontSize":"16px","opacity":.5}, content=BuilderElementContent(innerText="Read this"))
     assert enforce_text_contrast([node], t) == 1
-    assert contrast(node.styles["color"], t.page.background) >= 4.5
+    from app.services.section_content import _parse_color, _to_hex
+    assert contrast(_to_hex(_parse_color(node.styles["color"], t)[0]), t.page.background) >= 4.5
     assert "opacity" not in node.styles
 
 
@@ -419,7 +425,9 @@ async def test_generated_sections_are_bound_and_palette_changes_preserve_their_s
     updated = patched_site(generated, palette_patch(generated, CreativePalette(**PALETTES[1])))
     assert [p.model_dump() for p in updated.pages] == before
     assert "--builder-color-" in json.dumps(before)
-    assert all("wt-color-system-v2" in (node.classes or "") for node in generated.pages[0].body_schema.elements)
+    # The colour rules are scoped to the site root, so no element carries an
+    # opt-in marker any more.
+    assert not any("wt-color-system-v2" in (node.classes or "") for node in generated.pages[0].body_schema.elements)
     # Resolve the actual emitted variables with each edited palette, not only
     # the utility's nominal pairs. Flat surfaces are measurable without photos.
     def inspect(node, active_theme, below):
@@ -614,9 +622,9 @@ async def test_palette_http_endpoints_never_return_replacement_content(monkeypat
             assert set(response.json()) == {"theme","builder_styles","primary_color","secondary_color"}
         invalid = await client.post("/api/preview/palette",json={"site":original.model_dump(mode="json"),"palette":{"primary":"#abc"}})
         assert invalid.status_code == 422
-        legacy = original.model_dump(mode="json");legacy["builder_styles"].pop("colorSystemVersion")
-        response = await client.post("/api/preview/palette",json={"site":legacy,"palette":PALETTES[1]})
-        assert response.status_code == 409
+        unversioned = original.model_dump(mode="json");unversioned["builder_styles"].pop("colorSystemVersion")
+        response = await client.post("/api/preview/palette",json={"site":unversioned,"palette":PALETTES[1]})
+        assert response.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -631,7 +639,7 @@ async def test_public_verification_observes_cached_html_without_credentials_or_c
         assert "authorization" not in request.headers and "cookie" not in request.headers
         assert "cache-control" not in request.headers
         styles = ";".join(f"--builder-color-{key}:{value}" for key,value in public_colors.items())
-        return httpx.Response(200,text=f'<div class="wt-site" style="{styles}"><section class="wt-color-system-v2">Copy</section></div>')
+        return httpx.Response(200,text=f'<div class="wt-site" style="{styles}"><section>Copy</section></div>')
     result = await verify_public_palette(Cms(),"token",CreativePalette(**PALETTES[0]),transport=httpx.MockTransport(handler))
     assert result["state"] == state
 

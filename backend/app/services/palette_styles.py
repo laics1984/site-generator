@@ -19,8 +19,6 @@ def rendering_theme(theme: ThemeTokens) -> ThemeTokens:
     The canonical supporting color stays in theme.palette and builder_styles;
     templates see the derived neutral while their token bindings are assembled.
     """
-    if theme.color_system_version != 2:
-        return theme
     colors = derive(theme.palette.model_dump())
     return theme.model_copy(update={"palette": theme.palette.model_copy(update={
         # The existing photo solver measures this same stable neutral scrim.
@@ -31,8 +29,6 @@ def rendering_theme(theme: ThemeTokens) -> ThemeTokens:
 
 def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
                       rendered: ThemeTokens) -> None:
-    if canonical.color_system_version != 2:
-        return
     from app.services.style_tokens import band_tints, brand_ink, emphasis_ink, _muted
     colors = derive(canonical.palette.model_dump())
     palette = rendered.palette
@@ -51,7 +47,10 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
         return f"var(--builder-color-{name}, {fallback or colors.get(name, palette.text)})"
 
     def css(value: object, prop: str, photo: bool, surface: str | None = None) -> object:
-        if not isinstance(value, str):
+        # A shadow is a fixed neutral elevation, not a palette role, and the
+        # builder offers it as a preset matched by its exact value (the header
+        # divider's "Subtle") — a token there unselects the preset.
+        if not isinstance(value, str) or prop in ("boxShadow", "textShadow"):
             return value
         if "data:image" in value:
             from app.services.section_content import _split_layers
@@ -86,7 +85,11 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
         def hex_value(match: re.Match) -> str:
             raw = match.group(0).lower()
             name = role_for(raw)
-            return token(name, raw) if name else match.group(0)
+            # The fallback is what the token resolves to (the canonical
+            # palette's role), not the rendering projection's colour: they
+            # differ for every secondary-derived role, and the fallback is
+            # what the audit and any token-less renderer read.
+            return token(name) if name else match.group(0)
         value = re.sub(r"#[0-9a-fA-F]{6}\b", hex_value, value)
         def rgba_value(match: re.Match) -> str:
             raw = "#"+"".join(f"{int(match[i]):02x}" for i in (1,2,3))
@@ -237,7 +240,6 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
                 pass
         return has_copy
     for element in elements:
-        element.classes = ((element.classes or "") + " wt-color-system-v2").strip()
         walk(element)
     # Binding is the last generation colour pass. Validate its OUTPUT, not
     # the earlier authoring colours; binding can otherwise undo the AA pass.
@@ -258,8 +260,6 @@ def surface_foregrounds(elements: list[BuilderElement], theme: ThemeTokens, *,
         _composite, _hex_to_rgb, _parse_color, _to_hex, surface_samples,
     )
 
-    if theme.color_system_version != 2:
-        return {}
     colors = derive(theme.palette.model_dump())
     result: dict[str, str] = {}
     binding = re.compile(r"^var\((--builder-contrast-[\w-]+),\s*(.+)\)$")

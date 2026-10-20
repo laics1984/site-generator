@@ -10,8 +10,6 @@ async def publish_palette(client, *, site, expected_version: str, project_target
     data = (await client.get_builder_styles()).get("data") or {}
     existing = data.get("builder_styles") or {}
     layout = data.get("layout") or {}
-    if existing.get("colorSystemVersion") != 2:
-        raise CmsApiError(409, "This live site uses an older color system; its styles were kept.")
     if str(layout.get("versionId")) != expected_version:
         raise CmsApiError(409, "The live design changed. Refresh its colors and review your palette again.")
     candidate = current_theme(site)
