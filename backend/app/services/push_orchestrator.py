@@ -47,10 +47,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import unquote, urlparse
 
 import httpx
+
+if TYPE_CHECKING:
+    from PIL.Image import Image as PILImage
 
 from app.models.builder_schema import (
     BuilderElement,
@@ -1934,7 +1937,14 @@ def _native_cms_ext(content_type: str, filename: str) -> str | None:
     return None
 
 
+# What a published photo needs. The widest slot on a page is a full-bleed band
+# at 1440 CSS px, so 2500px still covers a 2x screen at most widths. A photo
+# re-encoded at that size and quality lands around 0.3-1 MB, so anything heavier
+# is weight every visitor downloads and the eye never sees. Source sites (Wix
+# above all) serve originals of 2-5 MB.
 _IMAGE_MAX_DIM = 2500
+_IMAGE_MAX_BYTES = 1_000_000
+_JPEG_QUALITY = 85
 
 
 def _coerce_to_cms_image(
@@ -1942,52 +1952,71 @@ def _coerce_to_cms_image(
 ) -> tuple[bytes, str, str] | None:
     """Return (bytes, mime, filename) the CMS will store. None ⇒ not a usable image.
 
-    - jpg/png/webp/avif/gif/svg pass through untouched (extension normalized).
-      Oversized raster images (any dimension > 2500px) are downscaled to JPEG
-      to keep upload times and CMS storage reasonable.
-    - anything else the CMS can't store (bmp/tiff/ico/…) is transcoded with PIL:
-      PNG when it carries transparency (logos/icons), else JPEG (photos).
+    - svg/gif and animated frames pass through untouched (vector / motion).
+    - jpg/png/webp/avif pass through untouched (extension normalized) while they
+      fit the photo budget (`_IMAGE_MAX_DIM`, `_IMAGE_MAX_BYTES`). Past it they
+      are re-encoded for the web, kept only when that is smaller — a source
+      that was already well compressed is never made heavier.
+    - anything else the CMS can't store (bmp/tiff/ico/…) is always re-encoded.
     """
     from io import BytesIO
 
     from PIL import Image
 
     base = (filename.rsplit(".", 1)[0] if "." in filename else filename) or "image"
-
     ext = _native_cms_ext(content_type, filename)
-    if ext is not None:
-        # SVG / GIF always pass through (vector / animated).
-        if ext in ("svg", "gif"):
-            return file_bytes, _CMS_NATIVE_EXT_TO_MIME[ext], f"{base}.{ext}"
-        # Raster native formats: downscale if oversized.
-        try:
-            with Image.open(BytesIO(file_bytes)) as img:
-                if max(img.size) > _IMAGE_MAX_DIM:
-                    converted = img.convert("RGB")
-                    converted.thumbnail((_IMAGE_MAX_DIM, _IMAGE_MAX_DIM))
-                    out = BytesIO()
-                    converted.save(out, format="JPEG", quality=85)
-                    return out.getvalue(), "image/jpeg", f"{base}.jpg"
-        except Exception:  # noqa: BLE001
-            pass
-        return file_bytes, _CMS_NATIVE_EXT_TO_MIME[ext], f"{base}.{ext}"
+    original = (
+        (file_bytes, _CMS_NATIVE_EXT_TO_MIME[ext], f"{base}.{ext}") if ext else None
+    )
+    if ext in ("svg", "gif"):
+        return original
 
     try:
+        # Image.open reads the header only; pixels are decoded on re-encode.
         with Image.open(BytesIO(file_bytes)) as img:
-            img.load()
-            has_alpha = img.mode in ("RGBA", "LA") or (
-                img.mode == "P" and "transparency" in img.info
+            within_budget = (
+                max(img.size) <= _IMAGE_MAX_DIM and len(file_bytes) <= _IMAGE_MAX_BYTES
             )
-            if max(img.size) > _IMAGE_MAX_DIM:
-                img.thumbnail((_IMAGE_MAX_DIM, _IMAGE_MAX_DIM))
-            out = BytesIO()
-            if has_alpha:
-                img.convert("RGBA").save(out, format="PNG")
-                return out.getvalue(), "image/png", f"{base}.png"
-            img.convert("RGB").save(out, format="JPEG", quality=85)
-            return out.getvalue(), "image/jpeg", f"{base}.jpg"
-    except Exception:  # noqa: BLE001 — unsupported/corrupt bytes ⇒ leave hotlinked
-        return None
+            if original and (within_budget or getattr(img, "is_animated", False)):
+                return original
+            encoded = _encode_web_image(img, base)
+    except Exception:  # noqa: BLE001 — undecodable: store as-is if native, else leave hotlinked
+        return original
+
+    if original and len(encoded[0]) >= len(file_bytes):
+        return original
+    return encoded
+
+
+def _encode_web_image(img: PILImage, base: str) -> tuple[bytes, str, str]:
+    """`img` upright, within `_IMAGE_MAX_DIM`, as (bytes, mime, filename): PNG
+    when it carries transparency (logos/icons), else a progressive JPEG.
+
+    The re-encode drops EXIF, so the camera's orientation is applied to the
+    pixels first or a phone photo lands sideways; the colour profile is kept so
+    a wide-gamut photo does not wash out.
+    """
+    from io import BytesIO
+
+    from PIL import ImageOps
+
+    icc_profile = img.info.get("icc_profile")
+    has_alpha = img.mode in ("RGBA", "LA") or (
+        img.mode == "P" and "transparency" in img.info
+    )
+    upright = ImageOps.exif_transpose(img)
+    upright.thumbnail((_IMAGE_MAX_DIM, _IMAGE_MAX_DIM))
+    out = BytesIO()
+    if has_alpha:
+        upright.convert("RGBA").save(
+            out, format="PNG", optimize=True, icc_profile=icc_profile
+        )
+        return out.getvalue(), "image/png", f"{base}.png"
+    upright.convert("RGB").save(
+        out, format="JPEG", quality=_JPEG_QUALITY, optimize=True, progressive=True,
+        icc_profile=icc_profile,
+    )
+    return out.getvalue(), "image/jpeg", f"{base}.jpg"
 
 
 # The CMS re-encodes a favicon to a 192px PNG, so anything larger is bytes we

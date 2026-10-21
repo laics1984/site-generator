@@ -374,6 +374,69 @@ def test_coerce_returns_none_for_non_image_bytes():
     assert _coerce_to_cms_image(b"not an image", "image/bmp", "broken.bmp") is None
 
 
+# --- photo budget: re-encode what the web never needs -------------------------
+
+import random  # noqa: E402
+
+import app.services.push_orchestrator as push_orchestrator  # noqa: E402
+
+
+def _noise_jpeg(size=(1400, 1400), *, quality=100, exif=None) -> bytes:
+    # Noise defeats compression, so a modest frame is a heavy file.
+    rng = random.Random(7)
+    img = Image.frombytes("RGB", size, rng.randbytes(size[0] * size[1] * 3))
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=quality, **({"exif": exif} if exif else {}))
+    return buf.getvalue()
+
+
+def test_coerce_reencodes_a_photo_heavier_than_the_budget():
+    heavy = _noise_jpeg()
+    assert len(heavy) > push_orchestrator._IMAGE_MAX_BYTES
+    body, mime, name = _coerce_to_cms_image(heavy, "image/jpeg", "d2df4f_526fb87~mv2.jpg")
+    assert (mime, name) == ("image/jpeg", "d2df4f_526fb87~mv2.jpg")
+    assert len(body) < len(heavy)
+    assert Image.open(BytesIO(body)).size == (1400, 1400)
+
+
+def test_coerce_keeps_the_source_when_reencoding_would_not_shrink_it(monkeypatch):
+    # Already compressed harder than _JPEG_QUALITY: a re-encode only adds bytes.
+    lean = _noise_jpeg((200, 200), quality=40)
+    monkeypatch.setattr(push_orchestrator, "_IMAGE_MAX_BYTES", 1)
+    assert _coerce_to_cms_image(lean, "image/jpeg", "photo.jpg") == (
+        lean, "image/jpeg", "photo.jpg",
+    )
+
+
+def test_coerce_keeps_transparency_when_downscaling_a_png():
+    png = _encode("RGBA", "PNG", size=(3000, 1000))
+    body, mime, name = _coerce_to_cms_image(png, "image/png", "logo.png")
+    assert (mime, name) == ("image/png", "logo.png")
+    img = Image.open(BytesIO(body))
+    assert img.size == (2500, 833)
+    assert img.mode == "RGBA"
+
+
+def test_coerce_applies_camera_orientation_before_dropping_exif(monkeypatch):
+    exif = Image.Exif()
+    exif[0x0112] = 6  # Orientation: rotate 90° clockwise to display
+    sideways = _noise_jpeg((300, 200), exif=exif.tobytes())
+    monkeypatch.setattr(push_orchestrator, "_IMAGE_MAX_BYTES", 1)
+    body, _, _ = _coerce_to_cms_image(sideways, "image/jpeg", "phone.jpg")
+    assert Image.open(BytesIO(body)).size == (200, 300)
+
+
+def test_coerce_passes_animated_frames_through_over_budget(monkeypatch):
+    frames = [Image.new("RGB", (16, 16), c) for c in ((255, 0, 0), (0, 0, 255))]
+    buf = BytesIO()
+    frames[0].save(buf, format="WEBP", save_all=True, append_images=frames[1:])
+    webp = buf.getvalue()
+    monkeypatch.setattr(push_orchestrator, "_IMAGE_MAX_BYTES", 1)
+    assert _coerce_to_cms_image(webp, "image/webp", "spinner.webp") == (
+        webp, "image/webp", "spinner.webp",
+    )
+
+
 # --- _strip_invalid_images: drop dead/404 image references ---------------------
 
 from app.services.push_orchestrator import _strip_invalid_images  # noqa: E402
