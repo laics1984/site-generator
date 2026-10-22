@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 from app.models.content_blocks import SourceContent
 from app.services.doc_structure import split_into_pages
 from app.services.paste_source import PASTE_LABEL, read_paste
-from app.services.paste_structure import StructuredPaste, structure_paste
+from app.services.paste_structure import StructuredDocument, structure_paste
 from app.services.source_merge import merge_sources
 from app.services.source_preview import candidates_from_source, source_preview_payload
 
@@ -113,7 +113,7 @@ def _build_preview(
     text: str,
     title: str | None,
     base: SourceContent | None,
-    structured: StructuredPaste | None = None,
+    structured: StructuredDocument | None = None,
 ) -> dict:
     parsed = read_paste(text, title=title)
     # The structured read replaces the outline, never the reader: images,

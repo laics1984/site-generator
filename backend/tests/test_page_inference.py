@@ -406,6 +406,45 @@ class PageInferenceTest(unittest.TestCase):
 
         self.assertIn("clients", home.sections)
 
+    def test_plans_stated_in_the_copy_get_a_pricing_section(self):
+        # Fowable's brief listed three plans with monthly prices and feature
+        # lists; pricing was reachable only from a /pricing URL, so a document
+        # was never asked for them and the site shipped without its prices.
+        source = SourceContent(
+            source_kind="pdf",
+            source_ref="brief.pdf",
+            raw_text=(
+                "Starter. RM 119 / month, billed annually. Growth. RM 249 / month, "
+                "billed annually. Business. RM 449 / month, or RM 469 / month if "
+                "you pay monthly."
+            ),
+        )
+
+        home = next(s for s in infer_page_scaffolds(source, industry="agency") if s.is_homepage)
+
+        self.assertIn("pricing", home.sections)
+        self.assertLess(home.sections.index("pricing"), home.sections.index("cta"))
+
+    def test_a_price_in_passing_is_not_a_price_list(self):
+        for text in (
+            "Lunch set RM 12.90, dinner from RM 25.",  # prices, but no billing period
+            "Plans from RM 119 a month, billed annually.",  # one amount
+            "Since 2010 we have served 300 families each month.",  # a number, no currency
+        ):
+            with self.subTest(text):
+                source = SourceContent(source_kind="url", source_ref="https://example.my", raw_text=text)
+                home = next(s for s in infer_page_scaffolds(source, industry="other") if s.is_homepage)
+                self.assertNotIn("pricing", home.sections)
+
+    def test_monthly_fee_tiers_count_as_a_price_list(self):
+        source = SourceContent(
+            source_kind="url",
+            source_ref="https://example.my",
+            raw_text="Fees: toddlers RM 450 per month; 4-6 years RM 520 per month. Pro plan $79/mo.",
+        )
+        home = next(s for s in infer_page_scaffolds(source, industry="other") if s.is_homepage)
+        self.assertIn("pricing", home.sections)
+
     def test_evidenced_extras_never_balloon_a_page_past_the_ceiling(self):
         # A signal-rich homepage on an already-long pattern (childcare) must not
         # grow into an over-large single-call page — evidenced extras are trimmed

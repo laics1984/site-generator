@@ -96,11 +96,15 @@ def split_into_pages(
     heading) they appear under, so the resolver can match them to the right slot.
 
     ``page_topics`` maps a heading's exact text to its page type when something
-    upstream already knows which headings name pages — today only the LLM paste
-    reader (``services/paste_structure.py``), which is asked precisely that.
-    Absent (every other caller: PDF, DOCX, a heuristically-read paste) the
-    behaviour is unchanged: ``classify_page_title`` decides, and a heading whose
-    words it doesn't recognise stays in-page content.
+    upstream already knows which headings name pages — the LLM structure read
+    (``services/paste_structure.py``) of a paste or a document, which is asked
+    precisely that.
+    Supplied, it is the whole answer: a heading it does not name stays in-page
+    content even when ``classify_page_title`` would open a page for it, and an
+    empty mapping means the document is one page. Absent (a PDF or DOCX read
+    by its headings, a heuristically-read paste) ``classify_page_title``
+    decides, and a heading whose words it doesn't recognise stays in-page
+    content.
 
     The dedupe rule follows the same split. Classified pages keep "one page per
     topic", which is what stops a document repeating the word "about" from
@@ -135,7 +139,12 @@ def split_into_pages(
 
         at_page_level = page_level is not None and block.level == page_level
         named = page_topics.get(text) if page_topics is not None else None
-        page_type = named or (classify_page_title(text) if at_page_level else None)
+        # A structured read names EVERY page; a heading it did not name is
+        # in-page content, whatever its words. "One page" is an answer too.
+        page_type = (
+            named if page_topics is not None
+            else classify_page_title(text) if at_page_level else None
+        )
         opens_page = (
             page_type is not None
             and (named is not None or at_page_level)
@@ -193,6 +202,7 @@ def split_into_pages(
         url_path=None,
         discovered_pages=[_page_source(parsed, b) for b in discovered],
         image_metadata=home_meta,
+        reference_colors=parsed.reference_colors[:8],
     )
     return primary
 

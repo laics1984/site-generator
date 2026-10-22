@@ -650,15 +650,19 @@ DETECT_BRAND_PROMPT = DETECT_BRAND_PROMPT.replace("__INDUSTRY_ENUM__", _INDUSTRY
 # the paste is. Same division of labour as the rest of the pipeline — the model
 # supplies small semantic judgements, deterministic code does the mapping.
 PASTE_STRUCTURE_PROMPT = """You are a web content editor planning a website from a document
-someone pasted in. It may be finished copy, or a working brief full of notes to
-a copywriter. Your job is to say WHICH PAGES the document describes and WHICH
-LINES belong to each — nothing else.
+someone pasted in or uploaded. It may be finished copy, or a working brief full
+of notes to a copywriter or designer. Your job is to say WHICH PAGES the
+document describes and WHICH LINES belong to each — nothing else.
 
-You will receive the document as numbered lines. Reply with ONE JSON object
-matching this schema — no markdown, no commentary:
+You will receive the document as numbered lines. A line that starts with "#"
+marks a heading the document set larger ("##" a smaller one) — evidence of how
+prominent it is, not of what it is for. Reply with ONE JSON object matching
+this schema — no markdown, no commentary:
 
 {
   "site_title": string|null,          // the business/site name if the document states one
+  "single_page": boolean,             // true: the document describes ONE web page
+                                      // (a landing page, a one-pager) laid out in sections
   "pages": [
     {
       "title": string,                // the page's name, as the document words it
@@ -670,7 +674,8 @@ matching this schema — no markdown, no commentary:
       "last_line": number             // last line of this page's content
     }
   ],
-  "skip_lines": [number]              // lines that are NOT website copy (see below)
+  "skip_lines": [number],             // lines that are NOT website copy (see below)
+  "skip_ranges": [[number, number]]   // runs of such lines: [first, last]
 }
 
 Rules:
@@ -680,20 +685,56 @@ Rules:
 - Page ranges must not overlap, and every range must be first_line <= last_line.
 - A document that describes one page gets one page. Do not invent pages it
   never mentions.
-- If the document numbers or lists its own sections ("1. HOME", "2. SERVICES"),
-  that IS the page list — use it, including for sections whose subject you would
+- If the document numbers or lists its own pages ("1. HOME", "2. SERVICES"),
+  that IS the page list — use it, including for pages whose subject you would
   not otherwise recognise as a standard page.
+- Numbered SECTIONS of one page are not pages. A brief for "the landing page"
+  laid out as "Section 01 / 14 — Hero", "Section 02 — Challenges" … describes
+  ONE page whose sections run in that order: answer single_page true. A
+  document printed with one section per sheet of paper still describes one
+  web page; "page" in a brief often means the paper.
 - Choose the closest page_type. Use "services" for a page about one thing the
   business offers when nothing fits better, and "landing" only for a sub-page.
 - skip_lines are the lines a visitor must never see: layout labels ("Hero",
   "Subhead", "Services grid (four cards)", "Card 1 —"), instructions to the
   writer ("Recommended: #1 for a technical buyer", "Positioning note:",
   "[Confirm this before publishing]"), and placeholder rows ("[CLIENT LOGO]
-  [CLIENT LOGO]"). Real marketing copy is never skipped, even when it sits
-  under such a label.
+  [CLIENT LOGO]"), and everything written for the team rather than the
+  visitor: purpose notes, design and layout directions, photo directions,
+  source references, editorial notes, verification logs, internal appendices.
+  A document that labels a part "internal" or "not for publication" has told
+  you. Use skip_ranges for a run of such lines. Real marketing copy is never
+  skipped, even when it sits under such a label.
 - When the document offers several alternatives for one line ("Headline
   options" followed by three headlines), keep them all — they are copy, and the
   writer downstream will choose.
+"""
+
+
+# Appended to PASTE_STRUCTURE_PROMPT when a document is too long for one call
+# (services/paste_structure._ask_mapped): first the map, then the windows.
+STRUCTURE_MAP_RULES = """
+This document is long, so you see its OUTLINE: its headings and short lines, at
+their real line numbers. The longer lines between them are body text and are
+not shown.
+- Decide the pages from the whole outline. For each page give the shown line
+  it begins on as title_line and first_line. A page runs until the next page
+  begins.
+- For the LAST page give last_line: the line where the document's website copy
+  ends. Whatever comes before the first page or after that line — an
+  introduction for the team, appendices, notes — is left out.
+- When the document is ONE web page in sections (single_page true), still list
+  its sections as pages in order; they are kept together as one page.
+- Leave skip_lines and skip_ranges empty: you cannot see the copy between the
+  lines shown, and the lines inside the pages that are not copy are marked in a
+  later pass.
+"""
+
+STRUCTURE_WINDOW_RULES = """
+This document is long, so you are reading ONE PART of its website copy. The
+pages are already decided (listed in the first line). Leave "pages" empty and
+answer only skip_lines and skip_ranges: the lines in this part that are not
+website copy. Line numbers are the document's own, as shown.
 """
 
 

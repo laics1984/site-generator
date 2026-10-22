@@ -10,6 +10,8 @@ from app.models.content_blocks import (
     GalleryItem,
     HeroBlock,
     PagePlan,
+    PricingBlock,
+    PricingTier,
     StatItem,
     StatsBlock,
     TeamBlock,
@@ -330,6 +332,52 @@ class ScaffoldEnforcementTest(unittest.TestCase):
         )
 
         self.assertNotIn("timeline", [block.kind for block in aligned.blocks])
+
+    def test_a_tier_priced_at_an_amount_the_source_never_states_is_dropped(self):
+        source_text = (
+            "Starter RM 119 / month, billed annually. Growth RM 249 / month. "
+            "Business RM 449 / month, or RM 469 / month paid monthly. RM 1,428 a year."
+        )
+        block = PricingBlock(tiers=[
+            # The source writes "RM 1,428"; the tier may drop the comma.
+            PricingTier(name="Starter", price="RM 119/mo (RM 1428 a year)", features=["Website"]),
+            PricingTier(name="Growth", price="RM 199/mo"),  # invented
+            PricingTier(name="Business", price="RM 449/mo (RM 469 monthly)"),
+            PricingTier(name="Enterprise", price="Custom"),  # no amount claimed
+        ])
+        page = PagePlan(
+            page_type="services", slug="plans", title="Plans", is_homepage=False,
+            blocks=[block], seo_title="Plans", seo_description="Plans.",
+        )
+        scaffold = PageScaffold(
+            page_type="services", slug="plans", title="Plans", is_homepage=False,
+            sections=["hero", "pricing", "cta"],
+        )
+
+        aligned = align_page_to_scaffold(page, scaffold, brand_name="Example", source_text=source_text)
+        pricing = next(b for b in aligned.blocks if b.kind == "pricing")
+
+        self.assertEqual(
+            [t.name for t in pricing.tiers], ["Starter", "Business", "Enterprise"]
+        )
+        # The free-form path asks the same table.
+        free = sanitize_blocks_against_source([block], source_text)
+        self.assertEqual(len(free[0].tiers), 3)
+
+    def test_a_pricing_block_with_no_backed_tier_is_omitted(self):
+        page = PagePlan(
+            page_type="home", slug="", title="Home", is_homepage=True,
+            blocks=[PricingBlock(tiers=[PricingTier(name="Pro", price="$29/mo")])],
+            seo_title="Home", seo_description="Welcome.",
+        )
+        scaffold = PageScaffold(
+            page_type="home", slug="", title="Home", is_homepage=True,
+            sections=["hero", "pricing", "cta"],
+        )
+        aligned = align_page_to_scaffold(
+            page, scaffold, brand_name="Example", source_text="We bake bread every morning."
+        )
+        self.assertNotIn("pricing", [b.kind for b in aligned.blocks])
 
     def test_award_with_no_match_in_source_is_dropped(self):
         page = PagePlan(

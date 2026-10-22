@@ -40,7 +40,7 @@ from app.services.locale import (
 from app.services.nav_extraction import find_repeated_cluster_keys
 from app.services.source_path import is_record_url, normalize_source_slug
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
-from app.services.menu_assets import read_menu_image, serves_menus
+from app.services.menu_assets import PRICE, read_menu_image, serves_menus
 from app.services.record_pages import mark_record_sets
 from app.services.source_router import gallery_photos
 
@@ -677,6 +677,29 @@ def _swap_unfillable_gallery_for_video(
 # section if it later finds the signal was a false positive (same fidelity
 # rule as testimonials/faq/pricing/etc in scaffold_enforcement.py).
 
+# A price list states several prices, each for a period: "RM 119 / month",
+# "RM 1,428 a year", "$29/mo". One price is a fee mentioned in passing; two
+# DIFFERENT recurring amounts are plans, packages or fee tiers. Without this,
+# pricing was reachable only from a /pricing URL, so a brief or a homepage
+# whose plans sat in its own copy was never asked for them (Fowable's three
+# plans, prices and feature lists were in the source and absent from the site).
+_PRICE_PERIOD = re.compile(
+    rf"(?P<price>{PRICE.pattern})\s*(?:/|per|an?|each|every)?\s*"
+    r"(?:month|mo|year|yr|annum|week|term|semester|session|class|lesson|hour|hr)s?\b"
+    r"|(?P<billed>" + PRICE.pattern + r")[^.\n]{0,20}\b(?:monthly|annually|yearly|weekly)\b",
+    re.IGNORECASE,
+)
+_PRICE_LIST_MIN = 2
+
+
+def _states_price_list(text: str) -> bool:
+    amounts = {
+        re.sub(r"\s+", "", (m.group("price") or m.group("billed")).lower())
+        for m in _PRICE_PERIOD.finditer(text)
+    }
+    return len(amounts) >= _PRICE_LIST_MIN
+
+
 _SIGNAL_PATTERNS: dict[SectionType, re.Pattern[str]] = {
     "timeline": re.compile(
         r"\b(our history|our journey|founded in|established in|since (19|20)\d{2}"
@@ -707,6 +730,7 @@ _SIGNAL_PATTERNS: dict[SectionType, re.Pattern[str]] = {
 # page_type → which signal kinds are even eligible there. Keeps the new
 # sections off pages where they'd be noise (contact, faq, menu, pricing...).
 _SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
+    "pricing": frozenset({"home", "services", "landing"}),
     "timeline": frozenset({"home", "about"}),
     "awards": frozenset({"home", "about", "services"}),
     "clients": frozenset({"home", "work"}),
@@ -747,13 +771,15 @@ def _detect_content_signals(page: SourceContent) -> list[SectionType]:
     """Detected kinds, in `_SIGNAL_PATTERNS` order — deterministic when the cap bites."""
     haystack = " ".join([page.raw_text or "", " ".join(page.headings or [])])
     # Structural, not lexical, so these lead: the _SIGNAL_PATTERNS below are
-    # regexes guessing at intent from prose, while these two are the page
-    # DEMONSTRABLY carrying a player or a pin. When _MAX_EXTRA_SECTIONS bites,
+    # regexes guessing at intent from prose, while these are the page
+    # DEMONSTRABLY carrying a player, a pin or stated prices. When _MAX_EXTRA_SECTIONS bites,
     # what the page actually contains should outrank what its wording hints at.
     # A regex could never find either anyway — an <iframe> contributes no text.
     detected: list[SectionType] = ["video"] if page.video_embeds else []
     if page.map_embeds:
         detected.append("map")
+    if _states_price_list(haystack):
+        detected.append("pricing")
     detected += [
         kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)
     ]

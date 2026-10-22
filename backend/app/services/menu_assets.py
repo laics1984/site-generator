@@ -19,7 +19,9 @@ from app.services.source_path import normalize_source_slug
 logger = logging.getLogger(__name__)
 
 _MENU = re.compile(r"\b(?:menus?|menu board|price list|senarai harga|餐单|菜单)\b", re.I)
-_PRICE = re.compile(r"(?:\b(?:RM|MYR|USD|SGD|IDR|THB|EUR|GBP)\s*\d+(?:[.,]\d+)?|[$€£]\s*\d+(?:[.,]\d+)?)", re.I)
+# A stated price: a currency code or symbol and an amount. Also how page
+# inference recognises a price list (page_inference._states_price_list).
+PRICE = re.compile(r"(?:\b(?:RM|MYR|USD|SGD|IDR|THB|EUR|GBP)\s*\d+(?:[.,]\d+)?|[$€£]\s*\d+(?:[.,]\d+)?)", re.I)
 _PROMOTION = re.compile(r"\b(?:promotion|promo|limited time|valid until|offer ends|expired|special offer|ticket|concert|event|voucher|coupon)\b", re.I)
 _VERSION = re.compile(r"\b(?:old menu|previous menu|updated menu|new menu|revised menu|version\s*\d+)\b", re.I)
 _NON_MENU = re.compile(r"\b(?:ticket|concert|invoice|receipt|subtotal|total|parking|admission)\b", re.I)
@@ -60,10 +62,10 @@ def read_menu_image(meta: ImageMetadata) -> MenuReading | None:
     pixels = meta.ocr_text[:2000]
     # A menu label is direct source evidence; a plain price isn't a menu.
     explicit = bool(_MENU.search(labels))
-    pixel_menu = bool(_MENU.search(pixels)) and bool(_PRICE.search(pixels))
+    pixel_menu = bool(_MENU.search(pixels)) and bool(PRICE.search(pixels))
     # A named dish/price row also supports a single priced food image. Exclude
     # event/offer language before accepting, and never export these OCR words.
-    priced_lines = sum(bool(_PRICE.search(line)) and bool(re.search(r"[A-Za-z\u3400-\u9fff]{3,}", _PRICE.sub("", line)))
+    priced_lines = sum(bool(PRICE.search(line)) and bool(re.search(r"[A-Za-z\u3400-\u9fff]{3,}", PRICE.sub("", line)))
                        for line in pixels.splitlines())
     if not explicit and not pixel_menu and (priced_lines < 1 or _NON_MENU.search(pixels)):
         return None

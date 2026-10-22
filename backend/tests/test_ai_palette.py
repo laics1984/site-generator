@@ -346,6 +346,19 @@ async def test_regeneration_keeps_typography_layout_and_hero():
 
 
 @pytest.mark.asyncio
+async def test_a_hueless_logo_never_pins_the_primary():
+    """A white or grey mark (Fowable's white wordmark read as greys) used to set
+    the primary to that grey, and the whole site went colourless. The model's
+    hue stands; a logo that HAS a hue still leads."""
+    original = theme()
+    for mark in (["#727877", "#9d9d9d"], ["#f2f2f2", "#ebebeb"]):
+        chosen = await regenerate_palette(original, {"brand_colors": mark}, llm=Model(PALETTES[1]))
+        assert chosen.palette.primary == PALETTES[1]["primary"]
+    led = await regenerate_palette(original, {"brand_colors": ["#c4775a"]}, llm=Model(PALETTES[1]))
+    assert led.palette.primary == "#c4775a"
+
+
+@pytest.mark.asyncio
 async def test_invalid_regeneration_keeps_original_palette():
     from app.services.llm import LlmError
     original = theme(); before = original.model_dump()

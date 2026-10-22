@@ -84,6 +84,9 @@ class ParsedDocument:
     headings: list[str] = field(default_factory=list)
     images: list[DocImage] = field(default_factory=list)  # in document order, w/ dims + anchor
     outline: list[OutlineBlock] = field(default_factory=list)  # ordered blocks w/ heading level
+    # The brand colours the document paints with (a PDF's chromatic fills, by
+    # area) — the document's twin of a crawl's observed chrome colours.
+    reference_colors: list[str] = field(default_factory=list)
 
 
 # --- HTML → outline -------------------------------------------------------------

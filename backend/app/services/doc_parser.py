@@ -27,6 +27,7 @@ import base64
 import hashlib
 import io
 import logging
+import re
 from collections import Counter
 
 import docx as python_docx  # python-docx
@@ -37,6 +38,7 @@ from app.config import settings
 
 # The parsed-source shape is shared with the paste reader — see source_outline.
 from app.services.source_outline import DocImage, OutlineBlock, ParsedDocument
+from app.services.theme import has_brand_hue
 
 logger = logging.getLogger(__name__)
 
@@ -141,25 +143,20 @@ def parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
     seen_image_hashes: set[bytes] = set()
     dict_flags = fitz.TEXTFLAGS_DICT | fitz.TEXT_PRESERVE_IMAGES
     for page in doc:
+        xrefs = _image_xrefs(page)
         for block in page.get_text("dict", flags=dict_flags)["blocks"]:
             btype = block.get("type")
             if btype == 1:  # image block
-                _collect_pdf_image(block, images, seen_image_hashes, anchor=len(outline))
+                _collect_pdf_image(
+                    _with_alpha(doc, block, xrefs.get(block.get("number"))),
+                    images,
+                    seen_image_hashes,
+                    anchor=len(outline),
+                )
                 continue
             if btype != 0:
                 continue
-            for line in block.get("lines", []):
-                line_text_parts: list[str] = []
-                line_max_size = 0.0
-                for span in line.get("spans", []):
-                    span_text = (span.get("text") or "").strip()
-                    if not span_text:
-                        continue
-                    line_text_parts.append(span_text)
-                    line_max_size = max(line_max_size, float(span.get("size") or 0))
-                if not line_text_parts:
-                    continue
-                line_text = " ".join(line_text_parts)
+            for line_text, line_max_size in _paragraphs(block):
                 text_chunks.append(line_text)
                 is_heading = (
                     line_max_size >= heading_threshold
@@ -181,6 +178,7 @@ def parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
     raw_text = "\n".join(text_chunks)
 
     title = _pdf_title(doc) or (headings[0] if headings else None)
+    reference_colors = _pdf_brand_colors(doc)
     doc.close()
 
     return ParsedDocument(
@@ -191,7 +189,137 @@ def parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
         headings=headings[:50],
         images=images,
         outline=outline,
+        reference_colors=reference_colors,
     )
+
+
+# A designed brief's brand lives in what it paints, not always in its logo: a
+# white wordmark on a green cover carries no hue of its own, so without this the
+# palette call heard "no colour" and the site came out in a curated neutral.
+_MAX_REFERENCE_COLORS = 8
+
+
+def _pdf_brand_colors(doc) -> list[str]:
+    """The document's chromatic opaque fills, largest painted area first.
+
+    Neutrals (page, cards, shadows, rules) say nothing about the brand and are
+    left out — `theme.has_brand_hue` is the one hue test. Any failure is no
+    evidence, never an error."""
+    area: Counter[str] = Counter()
+    try:
+        for page in doc:
+            for drawing in page.get_drawings():
+                fill, rect = drawing.get("fill"), drawing.get("rect")
+                if not fill or rect is None or (drawing.get("fill_opacity") or 1) < 1:
+                    continue
+                hex_color = "#%02x%02x%02x" % tuple(round(c * 255) for c in fill[:3])
+                if has_brand_hue(hex_color):
+                    area[hex_color] += abs(rect.width * rect.height)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("PDF colour read failed: %s", exc)
+        return []
+    return [color for color, _ in area.most_common(_MAX_REFERENCE_COLORS)]
+
+
+def _paragraphs(block: dict) -> list[tuple[str, float]]:
+    """A text block's paragraphs, each with its font size.
+
+    A PDF stores VISUAL lines: "Helping your kindergarten / grow, one parent
+    connection / at a time." is three lines, and read one by one it was three
+    H1s, while every wrapped sentence reached the planner in fragments. A run
+    of lines in one text block at one size is one paragraph; a size change
+    inside a block (an eyebrow over its headline, a label over its body) starts
+    the next."""
+    paragraphs: list[tuple[str, float]] = []
+    run: list[str] = []
+    run_size: float | None = None
+    for line in block.get("lines", []):
+        parts = [
+            (span.get("text") or "").strip()
+            for span in line.get("spans", [])
+            if (span.get("text") or "").strip()
+        ]
+        if not parts:
+            continue
+        size = max(
+            float(span.get("size") or 0)
+            for span in line.get("spans", [])
+            if (span.get("text") or "").strip()
+        )
+        text = _collapse_tracking(" ".join(parts))
+        if run and round(size, 1) != round(run_size or 0, 1):
+            paragraphs.append((_join_lines(run), run_size or 0.0))
+            run = []
+        run.append(text)
+        run_size = size
+    if run:
+        paragraphs.append((_join_lines(run), run_size or 0.0))
+    return paragraphs
+
+
+def _join_lines(lines: list[str]) -> str:
+    """Rejoin wrapped lines; a line broken after a hyphen keeps the hyphen and
+    no space ("mobile-" + "friendly" is "mobile-friendly")."""
+    text = lines[0]
+    for line in lines[1:]:
+        text += line if text.endswith("-") else " " + line
+    return text
+
+
+# CSS letter-spacing printed to PDF puts a space between every glyph and two
+# between words: "F O R  K I N D E R GA R T E N S , C H I L D". Kerned pairs
+# survive as two letters ("GA"), so a line is tracked when most of its pieces
+# are single glyphs — "A to Z  of it" has two in five and is left alone.
+_TRACKED_WORD_GAP = re.compile(r"\s{2,}")
+_TRACKED_MIN_GLYPH_SHARE = 0.6
+_PUNCTUATION_GAP = re.compile(r"([,;:])(?=\S)")
+
+
+def _collapse_tracking(text: str) -> str:
+    pieces = text.split()
+    if len(pieces) < 4 or "  " not in text:
+        return text
+    if sum(len(piece) == 1 for piece in pieces) / len(pieces) < _TRACKED_MIN_GLYPH_SHARE:
+        return text
+    words = (word.replace(" ", "") for word in _TRACKED_WORD_GAP.split(text.strip()))
+    return _PUNCTUATION_GAP.sub(r"\1 ", " ".join(words))
+
+
+def _image_xrefs(page) -> dict[int, int]:
+    """Image block number → its XObject xref (0/absent for inline images)."""
+    try:
+        return {
+            info["number"]: info["xref"]
+            for info in page.get_image_info(xrefs=True)
+            if info.get("xref")
+        }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _with_alpha(doc, block: dict, xref: int | None) -> dict:
+    """The block with its soft mask applied, so a transparent image stays one.
+
+    A dict image block carries the BASE image only. A logo drawn as white
+    letters through a soft mask then arrives as white letters on a black box:
+    the header shows the box, and the palette is read from black and white
+    (Fowable's cover mark came out as six greys). Any failure keeps the block."""
+    if not xref:
+        return block
+    try:
+        smask = doc.extract_image(xref).get("smask")
+        if not smask:
+            return block
+        base = fitz.Pixmap(doc, xref)
+        if base.alpha:
+            base = fitz.Pixmap(base, 0)
+        if base.colorspace and base.colorspace.n not in (1, 3):
+            base = fitz.Pixmap(fitz.csRGB, base)
+        masked = fitz.Pixmap(base, fitz.Pixmap(doc, smask))
+        return {**block, "image": masked.tobytes("png"), "ext": "png"}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Soft mask for image xref %s not applied: %s", xref, exc)
+        return block
 
 
 def _collect_pdf_image(

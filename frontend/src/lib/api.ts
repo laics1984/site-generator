@@ -332,6 +332,9 @@ export async function uploadDocumentPreview(file: File): Promise<ScrapePreview> 
   const response = await fetch('/api/document/preview', {
     method: 'POST',
     body: form,
+    // Multipart, so not through jsonRequest — but the preview reads the
+    // document's structure with the LLM, so it follows the model picker too.
+    headers: llmChoiceHeaders(),
   })
   if (!response.ok) {
     const text = await response.text().catch(() => '')

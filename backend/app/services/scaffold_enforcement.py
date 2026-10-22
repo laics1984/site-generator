@@ -19,6 +19,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+from collections.abc import Callable
 from typing import TypeVar
 
 from app.models.content_blocks import (
@@ -32,6 +33,7 @@ from app.models.content_blocks import (
     GalleryBlock,
     HeroBlock,
     PagePlan,
+    PricingBlock,
     StatsBlock,
     TeamBlock,
     TestimonialItem,
@@ -453,6 +455,28 @@ def _sanitize_stats_block(
     return block.model_copy(update={"items": items})
 
 
+_AMOUNT_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _amounts(text: str) -> set[str]:
+    return {m.group(0).replace(",", "") for m in _AMOUNT_RE.finditer(text)}
+
+
+def _sanitize_pricing_block(
+    block: PricingBlock, source_text: str | None
+) -> PricingBlock | None:
+    """A tier's price is the one claim a visitor acts on with money, so every
+    amount it states must be one the source states. A tier priced in words
+    ("Custom", "Ask us") states no amount and stays."""
+    if not source_text:
+        return block
+    stated = _amounts(source_text)
+    tiers = [tier for tier in block.tiers if _amounts(tier.price) <= stated]
+    if not tiers:
+        return None
+    return block.model_copy(update={"tiers": tiers})
+
+
 def _sanitize_gallery_block(block: GalleryBlock) -> GalleryBlock | None:
     """Keep only tiles the SOURCE supplied a photo for.
 
@@ -598,6 +622,30 @@ def _subject_item_queries(block: ContentBlock) -> ContentBlock:
     return block.model_copy(update={"items": fixed}) if changed else block
 
 
+# Fact-bearing kinds checked item by item against the page's own text. Gallery
+# is not here: its rule is structural and runs later (see align_page_to_scaffold).
+_FACT_SANITIZERS: dict[str, tuple[type, Callable]] = {
+    "team": (TeamBlock, _sanitize_team_block),
+    "testimonials": (TestimonialsBlock, _sanitize_testimonials_block),
+    "timeline": (TimelineBlock, _sanitize_timeline_block),
+    "awards": (AwardsBlock, _sanitize_awards_block),
+    "clients": (ClientsBlock, _sanitize_clients_block),
+    "stats": (StatsBlock, _sanitize_stats_block),
+    "pricing": (PricingBlock, _sanitize_pricing_block),
+}
+
+
+def _sanitize_facts(
+    kind: str, block: ContentBlock, source_text: str | None
+) -> ContentBlock | None:
+    """The block with unbacked items dropped, None when none survive; a kind
+    with no sanitizer comes back unchanged."""
+    model, sanitize = _FACT_SANITIZERS.get(kind, (None, None))
+    if model is None or not isinstance(block, model):
+        return block
+    return sanitize(block, source_text)
+
+
 def sanitize_blocks_against_source(
     blocks: list[ContentBlock],
     source_text: str | None,
@@ -623,20 +671,8 @@ def sanitize_blocks_against_source(
     sanitized: list[ContentBlock] = []
     for block in blocks:
         kind = _block_kind(block)
-        result: ContentBlock | None = block
-        if kind == "team" and isinstance(block, TeamBlock):
-            result = _sanitize_team_block(block, source_text)
-        elif kind == "testimonials" and isinstance(block, TestimonialsBlock):
-            result = _sanitize_testimonials_block(block, source_text)
-        elif kind == "timeline" and isinstance(block, TimelineBlock):
-            result = _sanitize_timeline_block(block, source_text)
-        elif kind == "awards" and isinstance(block, AwardsBlock):
-            result = _sanitize_awards_block(block, source_text)
-        elif kind == "clients" and isinstance(block, ClientsBlock):
-            result = _sanitize_clients_block(block, source_text)
-        elif kind == "stats" and isinstance(block, StatsBlock):
-            result = _sanitize_stats_block(block, source_text)
-        elif (
+        result = _sanitize_facts(kind, block, source_text)
+        if (
             kind == "gallery"
             and isinstance(block, GalleryBlock)
             and not allow_stock_gallery
@@ -696,43 +732,10 @@ def align_page_to_scaffold(
         occurrence[kind] = occurrence.get(kind, 0) + 1
         bucket = by_kind.get(kind, [])
         if bucket:
-            block = bucket.pop(0)
-            if kind == "team" and isinstance(block, TeamBlock):
-                sanitized = _sanitize_team_block(block, source_text)
-                if sanitized is None:
-                    omitted.append(kind)
-                    continue
-                block = sanitized
-            elif kind == "testimonials" and isinstance(block, TestimonialsBlock):
-                sanitized = _sanitize_testimonials_block(block, source_text)
-                if sanitized is None:
-                    omitted.append(kind)
-                    continue
-                block = sanitized
-            elif kind == "timeline" and isinstance(block, TimelineBlock):
-                sanitized = _sanitize_timeline_block(block, source_text)
-                if sanitized is None:
-                    omitted.append(kind)
-                    continue
-                block = sanitized
-            elif kind == "awards" and isinstance(block, AwardsBlock):
-                sanitized = _sanitize_awards_block(block, source_text)
-                if sanitized is None:
-                    omitted.append(kind)
-                    continue
-                block = sanitized
-            elif kind == "clients" and isinstance(block, ClientsBlock):
-                sanitized = _sanitize_clients_block(block, source_text)
-                if sanitized is None:
-                    omitted.append(kind)
-                    continue
-                block = sanitized
-            elif kind == "stats" and isinstance(block, StatsBlock):
-                sanitized = _sanitize_stats_block(block, source_text)
-                if sanitized is None:
-                    omitted.append(kind)
-                    continue
-                block = sanitized
+            block = _sanitize_facts(kind, bucket.pop(0), source_text)
+            if block is None:
+                omitted.append(kind)
+                continue
             # `gallery` is deliberately NOT sanitized here. Its grounding runs
             # after ``routers.generate._inject_image_walls`` has had its turn to
             # fill the slot from the source, and after image refs are bound —
@@ -742,7 +745,7 @@ def align_page_to_scaffold(
             # hero/gallery×3/about/gallery, and re-inserting the racks later
             # would stack all four above the narrative they follow in the
             # source. See routers.generate._drop_unbound_gallery_items.
-            elif kind == "hero" and isinstance(block, HeroBlock):
+            if kind == "hero" and isinstance(block, HeroBlock):
                 block = _backfill_image_query(
                     block, _default_hero_image_query(scaffold.page_type, brand_name)
                 )

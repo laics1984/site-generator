@@ -24,12 +24,15 @@ from app.services.doc_export import build_site_document
 from app.services.doc_parser import (
     DocImage,
     DocParseError,
+    ParsedDocument,
     image_to_data_url,
     parse_document,
 )
 from app.services.doc_structure import DocImageRef, split_into_pages
 from app.services.logo import extract_palette_from_image_bytes
 from app.services.page_inference import infer_page_scaffolds
+from app.services.paste_structure import StructuredDocument, structure_document
+from app.services.photo_quality import depicts_nothing
 from app.services.source_preview import candidates_from_source, source_preview_payload
 
 logger = logging.getLogger(__name__)
@@ -89,24 +92,35 @@ async def document_preview(file: UploadFile = File(...)) -> dict:
             detail=f"File too large ({len(contents) // 1024} KB). Max 20 MB.",
         )
 
-    # Every step below is blocking CPU — PyMuPDF/python-docx, a base64 pass over
-    # each image, a per-pixel palette walk, and a model_dump over the resulting
-    # base64. On the event loop a 20 MB PDF stalls every other request on this
-    # worker, /health included. Same move (and same reason) as the crawler's
+    # Parsing is blocking CPU — PyMuPDF/python-docx, a base64 pass over each
+    # image, a per-pixel palette walk — so it runs off the event loop; on it a
+    # 20 MB PDF stalls every other request on this worker, /health included.
+    # Same move (and same reason) as the crawler's
     # `asyncio.to_thread(_parse_rendered_html, ...)` in services/scraper.py.
     try:
-        return await asyncio.to_thread(_build_preview, contents, file.filename)
+        parsed = await asyncio.to_thread(parse_document, contents, file.filename)
     except DocParseError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
 
+    # Which parts are pages and which lines are copy is read by the LLM
+    # (services/paste_structure.py), in line numbers, never text. A designed
+    # brief's typography only says what is prominent. Unavailable, disabled or
+    # an answer that doesn't line up ⇒ `None`, and the headings split it.
+    structured = await structure_document(parsed)
+    return await asyncio.to_thread(_build_preview, parsed, structured)
 
-def _build_preview(contents: bytes, filename: str) -> dict:
-    """The synchronous parse → split → payload pipeline, run off the loop."""
-    parsed = parse_document(contents, filename)
+
+def _build_preview(parsed: ParsedDocument, structured: StructuredDocument | None) -> dict:
+    """The synchronous split → payload pipeline, run off the loop."""
+    document = structured.document if structured else parsed
 
     # Separate a logo seed from feature imagery: a small cover graphic becomes the
     # brand logo (and is kept out of the hero pool), while feature-sized images
-    # are filtered and handed to the splitter to place per page.
+    # are filtered and handed to the splitter to place per page. The logo is
+    # read from the document as printed — the cover is often a part the
+    # structure read leaves out. A browser-printed PDF carries its box-shadows
+    # and placeholder boxes as images; those show nothing and would become
+    # blank section photos (`depicts_nothing`).
     logo_image = _select_logo(parsed.images)
     feature_refs: list[DocImageRef] = [
         DocImageRef(
@@ -115,8 +129,10 @@ def _build_preview(contents: bytes, filename: str) -> dict:
             height=img.height,
             anchor=img.anchor,
         )
-        for img in parsed.images
-        if img is not logo_image and _is_feature_sized(img)
+        for img in document.images
+        if (logo_image is None or img.data != logo_image.data)
+        and _is_feature_sized(img)
+        and not depicts_nothing(img.data)
     ]
 
     # Brand candidate: only seed from a genuine logo-like image so a hero photo
@@ -126,7 +142,7 @@ def _build_preview(contents: bytes, filename: str) -> dict:
         try:
             extraction = extract_palette_from_image_bytes(logo_image.data)
             brand_candidate = BrandIdentity(
-                name=parsed.title or "Untitled",
+                name=document.title or "Untitled",
                 logo_data_url=extraction.logo_data_url,
                 extracted_palette=extraction.palette,
                 logo_is_light=extraction.logo_is_light,
@@ -135,19 +151,26 @@ def _build_preview(contents: bytes, filename: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Brand palette extraction failed: %s", exc)
 
-    # Examine the document's titles to split it into page-shaped content, placing
-    # each image on the page + heading it appears under. The planner (not this
-    # module) still owns section composition + distinctiveness.
-    source_content = split_into_pages(parsed, images=feature_refs)
+    # Split the document into page-shaped content, placing each image on the
+    # page + heading it appears under. The planner (not this module) still owns
+    # section composition + distinctiveness.
+    source_content = split_into_pages(
+        document,
+        images=feature_refs,
+        page_topics=structured.page_topics if structured else None,
+    )
     image_candidates = candidates_from_source(source_content)
 
     return source_preview_payload(
-        url=filename,
-        final_url=filename,
+        url=parsed.source_ref,
+        final_url=parsed.source_ref,
         source_content=source_content,
         brand_candidate=brand_candidate,
         image_candidates=image_candidates,
         fetched_at=0.0,
+        # Which reader worked out the pages, so a silent fallback (LLM down)
+        # is visible rather than a mysteriously flat site.
+        extra={"document": {"structured_by": "llm" if structured else "headings"}},
     )
 
 

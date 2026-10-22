@@ -166,3 +166,30 @@ class RepeatedSectionMergeTest(unittest.TestCase):
         )
         merged = _merge_page_plans([chunk, self._page([HeroBlock(headline="H")])], scaffold)
         self.assertEqual(len([b for b in merged.blocks if b.kind == "about"]), 2)
+
+
+class MergePricingBlocksTest(unittest.TestCase):
+    def test_the_chunk_that_saw_the_whole_table_wins(self):
+        # Fowable's plans straddled a chunk boundary: one chunk saw Starter's
+        # price and only Growth's name; the next saw all three plans. Stitching
+        # tiers first-copy-wins published Growth as "Not specified in source"
+        # and lost Business.
+        from app.models.content_blocks import PricingBlock, PricingTier
+
+        partial = PricingBlock(tiers=[
+            PricingTier(name="Starter", price="RM 119 / month", features=["Website"]),
+            PricingTier(name="Growth", price="Not specified in source", features=["Shared inbox"]),
+        ])
+        whole = PricingBlock(tiers=[
+            PricingTier(name="Starter", price="RM 119 / month", features=["Website", "Forms"]),
+            PricingTier(name="Growth", price="RM 249 / month", features=["Shared inbox"]),
+            PricingTier(name="Business", price="RM 449 / month", features=["Setup help"]),
+        ])
+        unrelated = PricingBlock(tiers=[PricingTier(name="Custom", price="Ask us")])
+
+        merged = _merge_blocks_of_kind([unrelated, partial, whole])
+
+        self.assertEqual(
+            [(t.name, t.price) for t in merged.tiers],
+            [("Starter", "RM 119 / month"), ("Growth", "RM 249 / month"), ("Business", "RM 449 / month")],
+        )

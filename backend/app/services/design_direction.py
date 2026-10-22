@@ -74,7 +74,12 @@ from app.services.diversity import recent_choices, recent_records, seeded_index
 from app.services.industry_personality import personality_for
 from app.services.llm import LlmClient, LlmError, get_reasoning_llm
 from app.services.source_router import is_content_photo
-from app.services.theme import apply_creative_palette, build_theme, resolve_color_scheme
+from app.services.theme import (
+    apply_creative_palette,
+    build_theme,
+    has_brand_hue,
+    resolve_color_scheme,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -797,7 +802,10 @@ def _creative_theme(theme: ThemeTokens, palette: CreativePalette | None,
     creative = palette or CreativePalette(**{
         key: getattr(theme.palette, key) for key in ("primary", "secondary", "accent", "surface")
     })
-    if brand_colors and not direction:
+    # The logo leads only when it has a hue — the rule build_theme applies to the
+    # same seed. A white or grey mark pinned the palette's primary to grey or
+    # near-white, and every button, link and band built on it went colourless.
+    if brand_colors and has_brand_hue(brand_colors[0]) and not direction:
         try:
             creative = creative.model_copy(update={"primary": normalize_hex(brand_colors[0])})
         except ValueError:

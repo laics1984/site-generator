@@ -799,7 +799,6 @@ _LIST_BLOCK_SPECS: dict[str, tuple[str, tuple[str, ...]]] = {
     "services": ("items", ("title",)),
     "testimonials": ("items", ("quote",)),
     "faq": ("items", ("question",)),
-    "pricing": ("tiers", ("name",)),
     "team": ("members", ("name",)),
     "gallery": ("items", ("title", "caption", "image_query")),
     "process": ("steps", ("title",)),
@@ -912,6 +911,16 @@ def _merge_menu_blocks(blocks: list[ContentBlock]) -> ContentBlock:
     return base
 
 
+def _pricing_completeness(block: ContentBlock) -> tuple[int, int, int]:
+    """Tiers that state an amount, then tiers, then feature lines."""
+    tiers = getattr(block, "tiers", None) or []
+    return (
+        sum(any(ch.isdigit() for ch in tier.price) for tier in tiers),
+        len(tiers),
+        sum(len(tier.features) for tier in tiers),
+    )
+
+
 def _merge_blocks_of_kind(blocks: list[ContentBlock]) -> ContentBlock:
     """Collapse all blocks of one kind (across chunks) into a single block."""
     base = blocks[0]
@@ -920,6 +929,12 @@ def _merge_blocks_of_kind(blocks: list[ContentBlock]) -> ContentBlock:
         return base
     if kind == "menu":
         return _merge_menu_blocks(blocks)
+    if kind == "pricing":
+        # A price table is ONE table: the chunk that saw all of it states it
+        # best. Stitching tiers across chunks kept whichever copy came first —
+        # Fowable's Growth tier from the chunk that saw its name but not its
+        # price ("Not specified in source") over the chunk that saw both.
+        return max(blocks, key=_pricing_completeness)
     spec = _LIST_BLOCK_SPECS.get(kind or "")
     if spec is None:
         # Singleton (hero/about/cta/contact) or unknown — first chunk wins.

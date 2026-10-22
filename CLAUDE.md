@@ -1208,6 +1208,115 @@ each whole), and `stock_images_only` strips a source's codes with its photos.
 Tests: `test_legible_images.py`, `test_qr_codes.py`,
 `test_text_detection.OnDemandVerificationTest`; builder `section-catalog.test.mjs`.
 
+## A printed PDF's artefacts are not pictures
+
+A designed brief is usually Chrome → PDF, and Skia writes every CSS
+`box-shadow` as a blurred grey mask image and every hatched "photo
+placeholder" as a pattern tile. Fowable's 29-page brief carried eight such
+images and no photograph; each became a section's photo, so page after page
+published a blank grey box. `photo_quality.depicts_nothing` is the one test
+(the document router asks it beside `_is_feature_sized`): a near-uniform frame
+(grey std < 6; hatch 3.3, nearest real scene 9.5), or no edges AND no colour
+variety (shadows: Laplacian 1-2.4, variety ≤ 0.05; the smoothest of 37 stock
+photos, a calm sea, Laplacian 5.4 but variety 0.54). It is the one place an
+image is rejected on pixels — `photo_quality` otherwise only ranks.
+
+Two more from the same brief:
+
+- **A dict image block is the BASE image only.** `doc_parser._with_alpha`
+  applies the XObject's soft mask, or a white wordmark arrives as white on a
+  black box (and its palette as six greys).
+- **The brand is what the document paints.** `_pdf_brand_colors` reads the
+  chromatic opaque fills by area (`has_brand_hue`, neutrals dropped) into
+  `SourceContent.reference_colors` — the twin of a crawl's observed chrome
+  colours. And `design_direction._creative_theme` pins the primary to the
+  logo only when `has_brand_hue` says it has one; it pinned a grey mark's grey
+  and the whole site went colourless.
+
+Tests: `test_document_artefacts.py`,
+`test_ai_palette.test_a_hueless_logo_never_pins_the_primary`.
+
+## A brief is read for what is copy, not only for what is large
+
+Fowable's PDF is ONE landing page in fourteen sections, each followed by
+internal notes ("Never publish"), then eleven pages of internal appendices.
+Read by font size, the cover headline was the only page title: the whole
+document — notes and verification log included — became one sub-page, and the
+homepage got the cover's 115 characters. Typography says what is prominent,
+not what is for the visitor; only meaning separates the two, which is the
+paste lesson, so a document now goes through the paste reader too.
+
+- **One reader** (`paste_structure`): `structure_paste` and
+  `structure_document` share `_structure`/`_assemble`. Blocks are numbered and
+  a document's heading levels shown as `#` marks (evidence, not the answer);
+  a paste's lines are level 0, so its prompt is byte-identical. The model
+  answers in numbers — pages, `skip_lines`, `skip_ranges` (an appendix is
+  hundreds of lines). The prompt says numbered SECTIONS of one page are not
+  pages, and that notes for the team (purpose, layout, sources, editorial,
+  appendices) are skipped.
+- **Map, then windows — never truncation.** Past `paste_structure_max_chars`
+  a MAP call sees an outline of the whole source (headings plus short lines at
+  their real numbers; `_map_rows` shortens the line limit 80→60→40→24→headings
+  until it fits) and says only where pages BEGIN and where the copy ENDS
+  (`STRUCTURE_MAP_RULES`, `_spans`: each page runs to the next start, so a
+  careless `last_line` can't drop copy; the last page ends where the model
+  says, which leaves a trailing appendix out). Its skip lines and ranges are
+  ignored — it cannot see the copy between the lines shown, and Fowable's map
+  marked 486 lines, then ~150 runs, taking sections' copy with them. Windows
+  over the pages' own lines then mark the note lines (`STRUCTURE_WINDOW_RULES`).
+  Pages decided part by part (tried first) came back as fourteen. Same answers,
+  same document as the one-call read. Headings alone too long ⇒ headings split.
+- **"One page" is asked outright** (`PasteOutline.single_page`), then enforced
+  (`_one_page_if_said` folds the listed sections into the first page). As a
+  rule buried in the prompt the model ignored it: "14 sections, one per page"
+  meant sheets of paper.
+- **A supplied `page_topics` is the whole answer** (`split_into_pages`): a
+  heading it does not name never opens a page, and an empty mapping is "one
+  page". In-page headings come back one level down, below the model's pages.
+- **The document keeps what was measured**: source, reference colours, and its
+  images re-anchored to the new outline (one in an excluded part goes with it).
+  The logo is still picked from the document as printed. The site's name is the
+  model's `site_title` before the PDF metadata title, which is the document's
+  ("… Website Content") and became the footer's brand.
+- **The PDF reader emits paragraphs** (`doc_parser._paragraphs`): a same-size
+  run of lines in one text block, rejoined (a line ending in "-" keeps it, no
+  space). It stored visual lines, so a three-line headline was three H1s.
+  CSS letter-spacing is collapsed (`_collapse_tracking`: most pieces single
+  glyphs, words split on double spaces).
+- `DOCUMENT_LLM_STRUCTURE_ENABLED` (default on); off, the headings split it.
+  `conftest._offline_paste_structure` pins both off. The upload sends the model
+  picker's headers (`uploadDocumentPreview`), multipart though it is.
+
+Tests: `test_document_structure.py`, `test_paste_structure.py`.
+
+## Stated prices earn a pricing section, and only stated prices survive
+
+A page is only ever planned with the sections its scaffold requests, and
+`pricing` was reachable from a `/pricing` URL alone — so a brief, a paste or a
+homepage whose plans sat in its own copy was never asked for them (Fowable's
+three plans, prices and feature lists were in the source and absent from the
+site). `page_inference._states_price_list` is structural evidence, beside
+video and map: two or more DIFFERENT amounts (`menu_assets.PRICE`, the one
+price pattern) each with a billing period ("RM 119 / month", "$29/mo",
+"billed annually"). One fee in passing, or a menu's one-off prices, is not a
+price list. Eligible on home, services and landing pages.
+
+`scaffold_enforcement._sanitize_pricing_block` keeps a tier only when every
+amount in its `price` is one the page's source states (commas ignored); a tier
+priced in words ("Custom") claims no amount and stays. The fact sanitizers are
+one table, `_FACT_SANITIZERS`, read by both the scaffolded and the free-form
+path — they used to be two hand-written `elif` chains.
+
+**A price table is one table.** A long page is planned in text chunks and list
+sections are unioned across them, first copy winning; for pricing that
+published Growth from the chunk that saw its name but not its price ("Not
+specified in source") and lost Business. `planner._merge_blocks_of_kind` takes
+the single most complete pricing block (tiers with an amount, then tiers, then
+features) instead of stitching rows.
+
+Tests: `test_page_inference` (pricing block),
+`test_scaffold_enforcement` (tier tests), `test_planner_merge.MergePricingBlocksTest`.
+
 ## Stock images only
 
 A request-scoped `stock_images_only` on both generate endpoints dresses the
@@ -1873,15 +1982,16 @@ fixes it; only meaning separates the two.
   also dedupe on **slug** instead of page type — several named pages
   legitimately share a type, and "one page per topic" would silently drop all
   but the first. Absent the parameter, every other caller is byte-identical.
-- **Every failure is a fallback, never an error**: flag off, paste past
-  `paste_structure_max_chars`, `LlmError`, any exception, or an outline whose
-  ranges don't line up with the text (overlapping or past the end — *discarded,
-  never patched*, since a wrong range moves someone's copy onto the wrong page
-  invisibly). The heuristic reader then runs, and the preview says
-  `structured_by: "heuristic"` so the degrade is visible.
+- **Every failure is a fallback, never an error**: flag off, `LlmError`, any
+  exception, or an outline whose ranges don't line up with the text
+  (overlapping or past the end — *discarded, never patched*, since a wrong
+  range moves someone's copy onto the wrong page invisibly). The heuristic
+  reader then runs, and the preview says `structured_by: "heuristic"` so the
+  degrade is visible. A paste past `paste_structure_max_chars` is read in
+  windows, never truncated (see "A brief is read for what is copy").
 
-This is the one preview that spends an LLM call. That is deliberate: for a
-paste, structuring *is* the read. It is cached (`chat_json_cached`), and the
+The paste and document previews spend an LLM call. That is deliberate: for a
+brief, structuring *is* the read. It is cached (`chat_json_cached`), and the
 expensive per-page generation still sits behind the picker. `conftest` pins
 `PASTE_LLM_STRUCTURE_ENABLED` **off** for the suite, so the paste tests keep
 asserting the deterministic reader; `test_paste_structure.py` turns it on and

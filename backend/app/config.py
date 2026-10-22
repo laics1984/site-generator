@@ -264,9 +264,14 @@ class Settings(BaseSettings):
     # that heuristic is the whole reader, which is also the fallback whenever the
     # LLM is unreachable or the paste is bigger than the cap below.
     paste_llm_structure_enabled: bool = True
-    # Char cap on the line-numbered paste sent to that call. Past it we fall back
-    # to the heuristic rather than truncating: half a structure is worse than a
-    # consistent one, because the dropped tail silently loses its pages.
+    # The same read for an uploaded PDF/DOCX (paste_structure.structure_document).
+    # A designed brief's typography says what is prominent, not what is for the
+    # visitor — Fowable's 14-section landing page plus internal notes became one
+    # page with the notes in it. Off ⇒ the document's headings alone split it.
+    document_llm_structure_enabled: bool = True
+    # Chars of line-numbered source sent in one structure call. A longer source
+    # is read in windows of this size, never truncated: a dropped tail silently
+    # loses its pages.
     paste_structure_max_chars: int = 24000
 
     # Latin-script languages `language_analysis` may answer with (py3langid is

@@ -115,16 +115,52 @@ class PromptTest(_StructureCase):
         self.assertTrue(prompt.startswith("1: 1. HOME"))
         self.assertIn("\n12: 2. AI AGENTS", prompt)
 
-    def test_oversized_paste_is_not_sent(self):
-        llm = _FakeLLM(_outline())
+    def test_a_long_paste_is_mapped_then_read_in_windows_not_truncated(self):
+        # Truncating would silently lose every page in the tail. A long source
+        # is MAPPED once — its pages decided from an outline of the whole —
+        # then its copy is read part by part for the lines that are not copy.
+        # The same answers give the same document as the one-call read.
+        whole = self.run_structure(_FakeLLM(_outline()))
+        llm = _WindowedFakeLLM(_outline())
         original = settings.paste_structure_max_chars
-        settings.paste_structure_max_chars = 50
+        settings.paste_structure_max_chars = 200
         try:
-            # Truncating would silently lose every page in the tail.
-            self.assertIsNone(self.run_structure(llm))
-            self.assertEqual(llm.prompts, [])
+            windowed = self.run_structure(llm)
         finally:
             settings.paste_structure_max_chars = original
+
+        self.assertEqual(windowed.document.outline, whole.document.outline)
+        self.assertEqual(windowed.page_topics, whole.page_topics)
+        outline_call, *parts = llm.prompts
+        # The map sees every page title and none of the long copy lines…
+        for title in ("1: 1. HOME", "12: 2. AI AGENTS", "21: 3. CONTACT"):
+            self.assertIn(title, outline_call)
+        self.assertNotIn("Software that survives", outline_call)
+        # …and every part is told the pages, decided once.
+        self.assertGreater(len(parts), 1)
+        for part in parts:
+            self.assertIn('"AI Agents" (services) from line 12', part)
+
+
+class _WindowedFakeLLM(_FakeLLM):
+    """Answers each part with what a good model sees in it: the pages that
+    begin there and the skipped lines it contains."""
+
+    async def chat_json(self, *, user_prompt, schema, **_):
+        self.prompts.append(user_prompt)
+        shown = {
+            int(row.split(":", 1)[0])
+            for row in user_prompt.splitlines()
+            if row.split(":", 1)[0].isdigit()
+        }
+        return PasteOutline(
+            site_title=self.outline.site_title,
+            pages=[
+                page for page in self.outline.pages
+                if (page.title_line or page.first_line) in shown
+            ],
+            skip_lines=[n for n in self.outline.skip_lines if n in shown],
+        )
 
 
 class AssemblyTest(_StructureCase):
