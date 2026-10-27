@@ -22,6 +22,7 @@ from app.models.brand import BrandIdentity, ThemeTokens
 from app.models.builder_schema import (
     BuilderElement,
     BuilderElementContent,
+    NavGroup,
     PageNode,
     ResponsiveStyles,
 )
@@ -548,12 +549,14 @@ def _header_tokens(
 
 
 def _laid_out_footer_archetype(
-    archetype: FooterArchetype, page_tree: list[PageNode] | None
+    archetype: FooterArchetype,
+    page_tree: list[PageNode] | None,
+    nav_groups: list[NavGroup] | None = None,
 ) -> FooterArchetype:
     """The archetype the footer is actually laid out as: `mega` and `cta-banner`
-    degrade to the centred stack on a site with no grouped page (see
-    build_footer)."""
-    if archetype in ("mega", "cta-banner") and not has_menu_groups(page_tree):
+    degrade to the centred stack on a site with no grouped page and no
+    navigation category (see build_footer)."""
+    if archetype in ("mega", "cta-banner") and not has_menu_groups(page_tree, nav_groups):
         return "minimal-centered"
     return archetype
 
@@ -563,6 +566,7 @@ def footer_band(
     theme: ThemeTokens,
     archetype: FooterArchetype,
     page_tree: list[PageNode] | None,
+    nav_groups: list[NavGroup] | None = None,
 ) -> str:
     """The colour the footer is painted — the one answer build_footer uses and
     the body asks before it is styled, so a closing CTA band can stand apart
@@ -574,7 +578,7 @@ def footer_band(
     itself dark, so the "light" archetypes stay coherent there. The logo leads:
     a mark that would vanish on this band moves the band to the opposite side
     rather than being dropped for the wordmark."""
-    archetype = _laid_out_footer_archetype(archetype, page_tree)
+    archetype = _laid_out_footer_archetype(archetype, page_tree, nav_groups)
     if archetype in ("minimal-centered", "editorial"):
         default = theme.palette.surface
     else:
@@ -594,9 +598,14 @@ def build_footer(
     archetype: FooterArchetype = "mega",
     primary_cta: tuple[str, str] | None = None,
     cta_headline: str | None = None,
+    nav_groups: list[NavGroup] | None = None,
 ) -> BuilderElement:
     """
     Themed footer with grouped sub-page navigation.
+
+    ``nav_groups`` are the site's navigation categories (menu_builder
+    .plan_nav_groups): each is a column of the footer menu, so a site whose
+    only grouping is a category still keeps the grid its columns need.
 
     ``archetype`` selects the layout philosophy (see models/design_manifest.py):
       * ``mega`` — dark brand column + grouped nav columns + legal bar (legacy;
@@ -629,8 +638,8 @@ def build_footer(
     # centered carries an optional, centred one), so a flat site keeps the
     # closing CTA the design brain chose for it.
     shows_cta = archetype == "cta-banner"
-    archetype = _laid_out_footer_archetype(archetype, page_tree)
-    footer_bg = footer_band(brand, theme, archetype, page_tree)
+    archetype = _laid_out_footer_archetype(archetype, page_tree, nav_groups)
+    footer_bg = footer_band(brand, theme, archetype, page_tree, nav_groups)
     ink = _text_for_background(footer_bg)
     footer_is_dark = ink == "#ffffff"
     # Exact legacy literals on dark so the default mega output stays

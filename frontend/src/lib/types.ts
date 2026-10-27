@@ -252,6 +252,15 @@ export interface PageNode {
   children: PageNode[]
 }
 
+/** A navigation category over top-level pages (backend `NavGroup`) — menus
+ * only: its members keep their slugs. `slug` is the page the heading opens, or
+ * null for a heading that is no page. */
+export interface NavGroup {
+  label: string
+  slug: string | null
+  members: string[]
+}
+
 export type BrandMood =
   | 'modern'
   | 'luxury'
@@ -363,6 +372,8 @@ export interface GeneratedSite {
   pages: GeneratedPage[]
   /** Tree of top-level pages with nested children; mirrors `pages`. */
   page_tree?: PageNode[]
+  /** The categories the header and footer menus fold top-level pages into. */
+  nav_groups?: NavGroup[]
   source_navigation?: SourceNavLink[] | null
   generation_project_id?: string | null
   generation_mode?: 'full' | 'two_page_preview' | 'remaining'

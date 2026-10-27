@@ -12,7 +12,7 @@
  *   - social          → brand glyphs instead of labels/URLs (preview-only)
  *   - everything else → plain inline nav
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { PublicBlockNode } from '../lib/public'
 import { getNodeClasses, getNodeStyles, getStringField } from '../lib/blockRuntime'
@@ -22,6 +22,7 @@ import {
   utilitySheetSections,
   type HeaderSheetAction,
 } from '../lib/headerSheet'
+import { flyoutShift, isMenuHeading } from '../lib/menuDisclosure'
 import { getNodeDomId } from '../lib/responsiveRuntime'
 import { resolveSocialGlyph, socialItemLabel } from '../lib/socialIcons'
 import { useRuntimeHeaderOverlay, useRuntimeHeaderSchema, useRuntimeMenus } from '../context'
@@ -131,7 +132,12 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
   const isSocialMenu = slot === 'social' || variant === 'social-inline'
 
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false)
+  // The Menu sheet's groups, by top-level index: all collapsed when it opens.
+  const [openMobileGroups, setOpenMobileGroups] = useState<number[]>([])
   const [openDropdownKey, setOpenDropdownKey] = useState<string | null>(null)
+  // The px the open flyout moves to stay inside the viewport (flyoutShift).
+  const [flyoutOffset, setFlyoutOffset] = useState(0)
+  const shellRef = useRef<HTMLDivElement | null>(null)
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -162,6 +168,31 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
     clearDropdownTimers()
     setOpenDropdownKey(null)
   }
+  const closeMobileMenu = () => {
+    setMobileMenuOpen(false)
+    setOpenMobileGroups([])
+  }
+  const toggleMobileGroup = (index: number) =>
+    setOpenMobileGroups((open) =>
+      open.includes(index) ? open.filter((entry) => entry !== index) : [...open, index],
+    )
+  const mobileGroupId = (index: number) => `wt-mobile-menu-group-${nodeDomId || 'menu'}-${index}`
+
+  // Upstream resets the shift and measures after the DOM updates; one layout
+  // effect does both here by reading the rect without the shift applied.
+  useLayoutEffect(() => {
+    if (!openDropdownKey) return
+    const flyout = shellRef.current?.querySelector<HTMLElement>('.wt-menu-item--open .wt-menu-flyout')
+    if (!flyout) return
+    const applied = Number.parseFloat(flyout.style.getPropertyValue('--wt-flyout-shift')) || 0
+    const rect = flyout.getBoundingClientRect()
+    setFlyoutOffset(
+      flyoutShift(
+        { left: rect.left - applied, right: rect.right - applied },
+        flyout.ownerDocument.defaultView?.innerWidth ?? rect.right,
+      ),
+    )
+  }, [openDropdownKey])
 
   const items = resolveMenuForNode(node, runtimeMenus).items as RuntimeMenuItem[]
   const visibleItems = items.filter((item) => item?.visible !== false)
@@ -196,6 +227,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
   if (isHeaderPrimaryMenu) {
     return (
       <div
+        ref={shellRef}
         className={['wt-menu-shell', 'wt-menu-shell--header-primary', nodeClasses]
           .filter(Boolean)
           .join(' ')}
@@ -224,6 +256,11 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
               )
             }
             const isOpen = openDropdownKey === key
+            const toggle = (event: { preventDefault: () => void }) => {
+              event.preventDefault()
+              clearDropdownTimers()
+              setOpenDropdownKey((current) => (current === key ? null : key))
+            }
             return (
               <div
                 key={key}
@@ -239,46 +276,67 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
                   closeDropdown()
                 }}
                 onKeyDown={(event) => {
+                  // Escape closes the flyout and hands focus back to what opened it.
                   if (event.key === 'Escape') {
                     event.stopPropagation()
                     closeDropdown()
+                    event.currentTarget.querySelector<HTMLElement>('[aria-expanded]')?.focus()
                   }
                 }}
               >
                 <span className="wt-menu-item__trigger">
-                  <a
-                    className="wt-menu-link wt-ui-link"
-                    href={item.href || '#'}
-                    hrefLang={item.hreflang || undefined}
-                    lang={item.lang || undefined}
-                    aria-current={item.current ? 'true' : undefined}
-                    target={item.target || undefined}
-                    rel={item.rel || undefined}
-                    onClick={inert}
-                  >
-                    {item.label}
-                  </a>
-                  <button
-                    type="button"
-                    className="wt-menu-caret"
-                    aria-expanded={isOpen}
-                    aria-controls={`wt-menu-flyout-${nodeDomId || 'menu'}-${index}`}
-                    aria-label={`${item.label} submenu`}
-                    onClick={(event) => {
-                      event.preventDefault()
-                      clearDropdownTimers()
-                      setOpenDropdownKey((current) => (current === key ? null : key))
-                    }}
-                  >
-                    <span className="wt-menu-caret__icon" aria-hidden="true" />
-                  </button>
+                  {isMenuHeading(item) ? (
+                    // A heading that is no page (lib/menuDisclosure): the label
+                    // itself opens the list.
+                    <button
+                      type="button"
+                      className="wt-menu-link wt-menu-item__heading"
+                      aria-expanded={isOpen}
+                      aria-controls={`wt-menu-flyout-${nodeDomId || 'menu'}-${index}`}
+                      onClick={toggle}
+                    >
+                      {item.label}
+                      <span className="wt-menu-caret__icon" aria-hidden="true" />
+                    </button>
+                  ) : (
+                    <>
+                      <a
+                        className="wt-menu-link wt-ui-link"
+                        href={item.href || '#'}
+                        hrefLang={item.hreflang || undefined}
+                        lang={item.lang || undefined}
+                        aria-current={item.current ? 'true' : undefined}
+                        target={item.target || undefined}
+                        rel={item.rel || undefined}
+                        onClick={inert}
+                      >
+                        {item.label}
+                      </a>
+                      <button
+                        type="button"
+                        className="wt-menu-caret"
+                        aria-expanded={isOpen}
+                        aria-controls={`wt-menu-flyout-${nodeDomId || 'menu'}-${index}`}
+                        aria-label={`${item.label} submenu`}
+                        onClick={toggle}
+                      >
+                        <span className="wt-menu-caret__icon" aria-hidden="true" />
+                      </button>
+                    </>
+                  )}
                 </span>
                 <div
                   id={`wt-menu-flyout-${nodeDomId || 'menu'}-${index}`}
                   className={['wt-menu-flyout', isOverlayHeader ? 'wt-menu-flyout--overlay' : '']
                     .filter(Boolean)
                     .join(' ')}
-                  style={isOpen ? undefined : { display: 'none' }}
+                  style={
+                    !isOpen
+                      ? { display: 'none' }
+                      : flyoutOffset
+                        ? ({ '--wt-flyout-shift': `${flyoutOffset}px` } as CSSProperties)
+                        : undefined
+                  }
                 >
                   {children.map((child) => (
                     <a
@@ -324,7 +382,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
               .filter(Boolean)
               .join(' ')}
             onClick={(event) => {
-              if (event.target === event.currentTarget) setMobileMenuOpen(false)
+              if (event.target === event.currentTarget) closeMobileMenu()
             }}
           >
             <div
@@ -337,7 +395,7 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
                   type="button"
                   className="wt-mobile-menu-sheet__close wt-ui-button wt-ui-menu-button"
                   aria-label="Close menu"
-                  onClick={() => setMobileMenuOpen(false)}
+                  onClick={closeMobileMenu}
                 >
                   <span className="wt-mobile-menu-sheet__close-mark" aria-hidden="true">
                     X
@@ -346,22 +404,94 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
               </div>
               <div className="wt-mobile-menu-sheet__body">
                 <nav className="wt-mobile-menu-list" aria-label={menuLabel}>
-                  {flattenMenuItems(visibleItems).map((item) => (
-                    <a
-                      key={item.id}
-                      className="wt-mobile-menu-link wt-ui-link wt-ui-divider-link"
-                      style={{ paddingLeft: `${12 + item.depth * 16}px` }}
-                      href={item.href}
-                      hrefLang={item.hreflang || undefined}
-                      lang={item.lang || undefined}
-                      aria-current={item.current ? 'true' : undefined}
-                      target={item.target || undefined}
-                      rel={item.rel || undefined}
-                      onClick={inert}
-                    >
-                      {item.label}
-                    </a>
-                  ))}
+                  {visibleItems.map((item, index) => {
+                    const children = visibleChildren(item)
+                    const key = item.id || item.href || item.label || index
+                    if (!children.length) {
+                      return (
+                        <a
+                          key={key}
+                          className="wt-mobile-menu-link wt-ui-link wt-ui-divider-link"
+                          style={{ paddingLeft: '12px' }}
+                          href={item.href || '#'}
+                          hrefLang={item.hreflang || undefined}
+                          lang={item.lang || undefined}
+                          aria-current={item.current ? 'true' : undefined}
+                          target={item.target || undefined}
+                          rel={item.rel || undefined}
+                          onClick={inert}
+                        >
+                          {item.label}
+                        </a>
+                      )
+                    }
+                    // A dropdown in the sheet is a disclosure, collapsed until
+                    // asked: a heading's whole row is the button; a page keeps
+                    // its link beside a toggle.
+                    const isOpen = openMobileGroups.includes(index)
+                    const heading = isMenuHeading(item)
+                    return (
+                      <div
+                        key={key}
+                        className={['wt-mobile-menu-group', isOpen ? 'wt-mobile-menu-group--open' : '']
+                          .filter(Boolean)
+                          .join(' ')}
+                      >
+                        <div className="wt-mobile-menu-group__row wt-ui-divider-link">
+                          {!heading && (
+                            <a
+                              className="wt-mobile-menu-link wt-ui-link"
+                              style={{ paddingLeft: '12px' }}
+                              href={item.href || '#'}
+                              hrefLang={item.hreflang || undefined}
+                              lang={item.lang || undefined}
+                              aria-current={item.current ? 'true' : undefined}
+                              target={item.target || undefined}
+                              rel={item.rel || undefined}
+                              onClick={inert}
+                            >
+                              {item.label}
+                            </a>
+                          )}
+                          <button
+                            type="button"
+                            className={[
+                              'wt-mobile-menu-group__toggle',
+                              heading ? 'wt-mobile-menu-group__toggle--heading' : '',
+                            ]
+                              .filter(Boolean)
+                              .join(' ')}
+                            aria-expanded={isOpen}
+                            aria-controls={mobileGroupId(index)}
+                            aria-label={heading ? undefined : `${item.label} submenu`}
+                            onClick={() => toggleMobileGroup(index)}
+                          >
+                            {heading && <span>{item.label}</span>}
+                            <span className="wt-menu-caret__icon" aria-hidden="true" />
+                          </button>
+                        </div>
+                        <div
+                          id={mobileGroupId(index)}
+                          className="wt-mobile-menu-group__list"
+                          style={isOpen ? undefined : { display: 'none' }}
+                        >
+                          {children.map((child) => (
+                            <a
+                              key={child.id || child.href || child.label}
+                              className="wt-mobile-menu-link wt-mobile-menu-link--child wt-ui-link wt-ui-divider-link"
+                              style={{ paddingLeft: '28px' }}
+                              href={child.href || '#'}
+                              target={child.target || undefined}
+                              rel={child.rel || undefined}
+                              onClick={inert}
+                            >
+                              {child.label}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
                 </nav>
                 {headerSupplemental.utilitySections.map((section) => (
                   <div key={`utility-section:${section.key}`} className="wt-mobile-menu-section">
@@ -434,10 +564,10 @@ export function MenuBlock({ node }: { node: PublicBlockNode }) {
                 .filter(Boolean)
                 .join(' ')}
             >
-              {group.href ? (
+              {!isMenuHeading(group) ? (
                 <a
                   className="wt-footer-columns__heading wt-ui-link"
-                  href={group.href}
+                  href={group.href || undefined}
                   target={group.target || undefined}
                   rel={group.rel || undefined}
                   onClick={inert}

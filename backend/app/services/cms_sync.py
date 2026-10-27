@@ -159,18 +159,21 @@ def normalize_site_slugs(
                 or None
             )
 
-    # page_tree mirrors `pages` — keep node slugs in lock-step.
+    # page_tree mirrors `pages` — keep node slugs in lock-step, and the
+    # navigation categories that name them with them.
+    def _renamed(slug: str) -> str:
+        return slug_map.get(slug) or slug_spelling(slug, existing_slugs)
+
     def _fix_node(node) -> None:
-        node.slug = (
-            ""
-            if node.is_homepage
-            else (slug_map.get(node.slug) or slug_spelling(node.slug, existing_slugs))
-        )
+        node.slug = "" if node.is_homepage else _renamed(node.slug)
         for child in node.children:
             _fix_node(child)
 
     for node in site.page_tree or []:
         _fix_node(node)
+    for group in site.nav_groups:
+        group.slug = _renamed(group.slug) if group.slug is not None else None
+        group.members = [_renamed(slug) for slug in group.members]
 
     # Rewrite baked anchor hrefs (header/footer/body) that target an old slug.
     href_map = {

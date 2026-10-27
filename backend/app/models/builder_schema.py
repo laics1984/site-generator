@@ -333,6 +333,24 @@ class PageNode(BaseModel):
 PageNode.model_rebuild()
 
 
+class NavGroup(BaseModel):
+    """A navigation category over top-level pages — a MENU decision only
+    (menu_builder.plan_nav_groups). Its members keep their slugs, their URLs
+    and their place in ``page_tree``; nothing here is a page.
+
+    ``slug`` is the page the heading opens ("About" heading About, Team,
+    Facilities), or None: a heading that is no page, which the renderers draw
+    as a button rather than a link to nowhere.
+    """
+
+    label: str
+    slug: str | None = None
+    members: list[str] = Field(default_factory=list)  # top-level slugs listed under it, in menu order
+    # The family it was formed from ("about", "offerings", "resources", …) —
+    # where a header nobody ranked places it (nav_groups.ranks_as).
+    kind: str | None = None
+
+
 class GeneratedSite(BaseModel):
     """A full site = a set of pages + global metadata + theme + header/footer."""
 
@@ -363,6 +381,11 @@ class GeneratedSite(BaseModel):
             "but preserves parent/child structure for the builder's navigation."
         ),
     )
+    # The categories the menus list top-level pages under, decided once at
+    # generation (menu_builder.plan_nav_groups) so the header, the footer, the
+    # preview and the push agree. Empty when the header holds every page as it
+    # is — and on every site generated before it existed.
+    nav_groups: list[NavGroup] = Field(default_factory=list)
     # The source site's navigation is independent of the pages generated so far.
     # A two-page preview can therefore retain links to the planned pages.
     source_navigation: list[NavLink] | None = None

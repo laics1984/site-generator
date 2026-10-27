@@ -18,6 +18,7 @@ from app.models.builder_schema import (
     BodySchema,
     GeneratedPage,
     GeneratedSite,
+    PageNode,
     PageSeo,
 )
 from app.models.design_manifest import FooterArchetype, HeaderArchetype
@@ -110,6 +111,7 @@ from app.services.menu_assets import (
     menu_review_warnings,
     serves_menus,
 )
+from app.services.menu_builder import route_navigation
 from app.services.photo_url_expiry import keep_photo_links_alive
 from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
@@ -1528,7 +1530,13 @@ def split_scaffolds(selected: list[PageScaffold]) -> ScaffoldSplit:
     return split
 
 
-def _navigation_for(source: SourceContent, planned: list[PageScaffold]) -> list[NavLink]:
+def _navigation_for(
+    source: SourceContent,
+    planned: list[PageScaffold],
+    *,
+    industry: IndustryCategoryLiteral,
+    language: str | None,
+) -> list[NavLink]:
     if source.nav_links:
         return source.nav_links
     # A document or source without readable navigation still needs a stable
@@ -1540,13 +1548,16 @@ def _navigation_for(source: SourceContent, planned: list[PageScaffold]) -> list[
         parent = scaffold.parent_slug if scaffold.parent_slug in slugs else None
         by_parent.setdefault(parent, []).append(scaffold)
 
-    def make(items: list[PageScaffold]) -> list[NavLink]:
+    def make(items: list[PageScaffold]) -> list[PageNode]:
         return [
-            NavLink(label=s.title, href="/" + s.slug if s.slug else "/", children=make(by_parent.get(s.slug, [])))
+            PageNode(
+                slug=s.slug, title=s.title, is_homepage=s.is_homepage, nav_rank=s.nav_rank,
+                children=make(by_parent.get(s.slug, [])),
+            )
             for s in sorted(items, key=lambda s: (s.nav_rank is None, s.nav_rank or 0, s.slug))
         ]
 
-    return make(by_parent.get(None, []))
+    return route_navigation(make(by_parent.get(None, [])), industry=industry, language=language)
 
 
 async def _ensure_source_pages(source: SourceContent, scaffolds: list[PageScaffold]) -> None:
@@ -1631,12 +1642,6 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # around and then stripped at push (services/photo_url_expiry.py).
     live = await keep_photo_links_alive(payload.source, payload.brand)
     payload.source, payload.brand = live.source, live.brand
-    if payload.frozen_site is not None:
-        source_navigation = payload.frozen_site.source_navigation
-    elif payload.generation_mode == "two_page_preview":
-        source_navigation = _navigation_for(payload.source, planned_scaffolds)
-    else:
-        source_navigation = None
     # Locale detection reads image URLs as domain evidence
     # (_market_cues_for → detect_market), and the cues it produces steer every
     # Pexels query toward the right market. Under stock_images_only those cues
@@ -1720,6 +1725,17 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # it is what the push hands the CMS (`entities.industry`), and a brand the
     # browser posted carries whatever it held before this resolution ran.
     brand = brand.model_copy(update={"industry": industry, "mood": brand.mood or mood})
+    # A two-page preview freezes the whole route plan, so its menus list the
+    # pages not built yet — grouped by the same categories a full build gets.
+    if payload.frozen_site is not None:
+        source_navigation = payload.frozen_site.source_navigation
+    elif payload.generation_mode == "two_page_preview":
+        source_navigation = _navigation_for(
+            payload.source, planned_scaffolds,
+            industry=industry, language=languages.primary,
+        )
+    else:
+        source_navigation = None
 
     seed_hex = (
         (brand.extracted_palette[0] if brand.extracted_palette else None)

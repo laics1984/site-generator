@@ -104,6 +104,7 @@ from app.services.hero_director import (
 )
 from app.services.design_fingerprint import template_id_of
 from app.services.header_footer import build_footer, build_header, footer_band
+from app.services.menu_builder import plan_nav_groups
 from app.services.legal_pages import drop_page_title
 from app.services.image_match import SlotUsage
 from app.services.media import (
@@ -5455,6 +5456,18 @@ async def plan_to_site(
         for _block in _page_plan.blocks:
             _resolve_block_cta_hrefs(_block, index=_base_href_index, contact_href=base_contact_href)
 
+    # The site's navigation categories, decided once from the planned page tree
+    # and stored on the site, so the header and footer menus, the footer's
+    # layout and the push all read one answer (menu_builder.plan_nav_groups).
+    # A frozen route plan already carries its own (routers/generate.py
+    # _navigation_for).
+    plan_tree = _build_page_tree(primary_plans)
+    nav_groups = [] if source_navigation else plan_nav_groups(
+        plan_tree,
+        industry=plan.industry_category,
+        language=languages.primary if languages else None,
+    )
+
     # The footer's colour, known before the body is styled, so a closing CTA
     # band can stand apart from it (contrast_cta_bands). Same inputs
     # build_footer reads below; the tree is drawn from the plans because the
@@ -5463,8 +5476,8 @@ async def plan_to_site(
         effective_brand,
         theme,
         manifest.footer_archetype,
-        _nav_tree_from_source(source_navigation) if source_navigation
-        else _build_page_tree(primary_plans),
+        _nav_tree_from_source(source_navigation) if source_navigation else plan_tree,
+        nav_groups,
     )
 
     # Build each page's body
@@ -5858,6 +5871,7 @@ async def plan_to_site(
             for block in reversed(page.blocks)
             if isinstance(block, CtaBlock) and block.cta_href == base_contact_href
         ), None),
+        nav_groups=nav_groups,
     )
 
     for page in [*pages, *outside_pages]:
@@ -5911,6 +5925,7 @@ async def plan_to_site(
         # reach the footer through `extra_footer_nav`, as they always have.
         pages=[*pages, *outside_pages],
         page_tree=page_tree,
+        nav_groups=nav_groups,
         source_navigation=source_navigation,
         media_credits=resolver.attributions,
         social_links=social_links or [],

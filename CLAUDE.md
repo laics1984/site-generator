@@ -1060,6 +1060,60 @@ gated on a `has_cta` flag (edited in the builder catalog, then synced), so the
 degrade costs the site nothing. Tests: `test_header_footer.FooterMarkTest` /
 `FlatSiteFooterTest` / `HeaderBackgroundContrastTest`, `test_mark_inks.py`.
 
+## A crowded header groups its pages — a menu decision, never a URL
+
+The header used to show every top-level page flat and cut at
+`MAX_PRIMARY_ITEMS` (7): page eight onward silently became footer-only, and the
+footer listed each loose page as its own bold column title. Only pages the URL
+or the source's own dropdowns already nested ever shared a heading.
+
+`menu_builder.plan_nav_groups` decides the categories **once**, in
+`plan_to_site`, from the planned page tree; they ride as
+`GeneratedSite.nav_groups` (`NavGroup`: `label`, `slug` of the page heading it
+or None, `members`, `kind`), so the header menu, the footer menu, the footer's
+mega-grid degrade (`has_menu_groups`), the preview and the push read one answer.
+`_folded_items` is the one fold both menus go through, so no page is listed
+under two headings.
+
+- **Count decides whether, relationships decide what.** Nothing groups until
+  the header's own candidates (`_header_pages`: the owner's ranked pages, else
+  all, minus Home/Contact/legal) exceed the cap — below it the menus are byte
+  identical, including an owner nav of seven. None of the four captured real
+  sites crosses it. Past it, `services/nav_groups.py` files pages by their slug
+  and title, whole-token, into families (About, SaaS Platform and Solutions,
+  offerings, childcare Admissions, Work, Resources). A page nothing claims stays
+  a link and the cap still applies to what is left.
+- **A heading that is a page is that page** (About heading Team, in the site's
+  own words). A heading no page names is written only in English
+  (`_writes_headings`, the plan's primary language) and only over two pages.
+- **The owner's structure wins**: a page with menu children is never filed
+  under another heading (it may head its own family, its children first); an
+  owner's order is kept; Contact, hidden and translated pages never join.
+- **One order**: where nobody ranked the nav, a category ranks as its kind
+  (`ranks_as`: Programmes with the services, Admissions where Pricing goes) in
+  the header *and* the footer.
+- **Never a page or a URL**: members keep their slugs, `parent_slug`,
+  breadcrumbs and sitemap. A heading with no page has `href: ""`; every
+  renderer's `isMenuHeading` (webtree-public `lib/menuDisclosure.ts`, vendored
+  by the preview, mirrored as builder `src/lib/menu-disclosure.ts`) draws it as
+  a button — desktop trigger, Menu-sheet row, footer column title. The sheet's
+  dropdowns are collapsed disclosures; Escape returns focus to the trigger;
+  `flyoutShift` keeps a flyout inside the viewport.
+- **It survives an update.** The published nav is not list markup, so a
+  re-crawl reads its links flat, in order, all ranked — and the deterministic
+  rule regroups them identically (`RoundTripTest`). Do not move the nav to
+  `<ul>` markup without changing page_inference's hub-page rule first: an
+  unlinked dropdown toggle there synthesizes a page, which would turn every
+  written heading into one.
+- `cms_sync.normalize_site_slugs` renames members with their pages; a
+  two-page preview's route plan (`routers/generate._navigation_for`, sources
+  with no readable nav) folds the same categories via `route_navigation`.
+  A site generated before this carries none and is unchanged.
+
+Tests: `test_nav_groups.py`, `test_menu_disclosure_mirror.py`;
+webtree-public `lib/menuDisclosure.test.ts`; builder
+`src/lib/menu-disclosure.test.mjs`.
+
 ## The brand mark is not content
 
 A site's own logo must never fill a photo slot. `image_evidence.classify_role`
