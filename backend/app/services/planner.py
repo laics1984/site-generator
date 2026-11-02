@@ -21,6 +21,7 @@ import logging
 import re
 import time
 from collections import Counter
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import replace
 from functools import lru_cache
 from typing import Literal
@@ -70,7 +71,9 @@ from app.services.llm import (
 )
 from app.services.polite import HostPoliteness
 from app.services.locale import locale_label
+from app.services.family_evidence import safety_facts
 from app.services.prompts import (
+    CHILDCARE_SAFETY_FACTS_USE,
     CHILDCARE_VISUAL_PROMPT,
     RESTAURANT_MENU_CONTENT_PROMPT,
     TECH_VISUAL_PROMPT,
@@ -79,6 +82,8 @@ from app.services.prompts import (
     _SCAFFOLD_BLOCK_SCHEMAS,
     _SCAFFOLD_PROMPT_HEAD,
 )
+from app.services.page_inference import follows_source_tree
+from app.services.price_lists import amounts
 from app.services.source_router import (
     excerpt_for_prompt,
     image_prompt_payload,
@@ -291,6 +296,11 @@ async def detect_brand(
 # re-hits the model.
 _DETECT_BRAND_CACHE: dict[str, tuple[float, DetectedBrand]] = {}
 _DETECT_BRAND_TTL = 300
+# Detections still running, by the same key. The picker's recipe request
+# arrives twice at once (React StrictMode mounts its effect twice in dev), and
+# the AI server has one slot, so without this the second request queued a
+# whole second detection (~2 min on a reasoning model) behind the first.
+_DETECT_BRAND_INFLIGHT: dict[str, asyncio.Task[DetectedBrand]] = {}
 
 
 def _source_fingerprint(source: SourceContent) -> str:
@@ -322,7 +332,15 @@ async def detect_brand_cached(
         logger.debug("detect_brand cache hit for fingerprint %s", key[:8])
         return cached[1]
 
-    result = await detect_brand(source, llm=llm)
+    task = _DETECT_BRAND_INFLIGHT.get(key)
+    if task is None:
+        task = asyncio.create_task(detect_brand(source, llm=llm))
+        _DETECT_BRAND_INFLIGHT[key] = task
+        task.add_done_callback(lambda _: _DETECT_BRAND_INFLIGHT.pop(key, None))
+    # Shielded: one caller giving up (a cancelled request) must not cancel the
+    # detection another caller is waiting on. A failure reaches every waiter
+    # and is never cached.
+    result = await asyncio.shield(task)
     _DETECT_BRAND_CACHE[key] = (now, result)
     # Light GC so the dict doesn't grow unbounded across long sessions.
     if len(_DETECT_BRAND_CACHE) > 64:
@@ -757,12 +775,28 @@ def _build_scaffolded_user_prompt(
                 {"industry_menu_direction": RESTAURANT_MENU_CONTENT_PROMPT}
                 if brand and brand.industry_category == "restaurant" else {}
             ),
+            **_stated_safety_facts(source, brand, scaffolds),
             "pages_requested": _scaffolds_to_prompt_payload(
                 scaffolds, parent_context, source_map, text_overrides
             ),
         },
         ensure_ascii=False,
     )
+
+
+def _stated_safety_facts(
+    source: SourceContent, brand: DetectedBrand | None, scaffolds: list[PageScaffold]
+) -> dict:
+    """The childcare family's safety and licensing facts, verbatim, for the
+    batches that write the pages a parent checks them on (home, about). Absent
+    for every other industry, every other batch, and a source that states none
+    — so those prompts are exactly what they were."""
+    if not any(s.is_homepage or s.page_type == "about" for s in scaffolds):
+        return {}
+    facts = safety_facts(source, brand.industry_category if brand else None)
+    if not facts:
+        return {}
+    return {"stated_safety_facts": {"use": CHILDCARE_SAFETY_FACTS_USE, "facts": facts}}
 
 
 def _scaffold_depth(s: PageScaffold) -> int:
@@ -911,11 +945,19 @@ def _merge_menu_blocks(blocks: list[ContentBlock]) -> ContentBlock:
     return base
 
 
-def _pricing_completeness(block: ContentBlock) -> tuple[int, int, int]:
-    """Tiers that state an amount, then tiers, then feature lines."""
+def _pricing_completeness(block: ContentBlock) -> tuple[int, int, int, int]:
+    """Different prices, then tiers that state an amount, then tiers, then
+    feature lines.
+
+    Different prices lead because a chunk that saw only a price list's intro
+    writes every tier at the one price it saw: Fowable's "From RM 119 a month"
+    three times tied the real table on tiers-with-an-amount and lost only by a
+    feature line."""
     tiers = getattr(block, "tiers", None) or []
+    priced = [frozenset(amounts(tier.price)) for tier in tiers]
     return (
-        sum(any(ch.isdigit() for ch in tier.price) for tier in tiers),
+        len({prices for prices in priced if prices}),
+        sum(bool(prices) for prices in priced),
         len(tiers),
         sum(len(tier.features) for tier in tiers),
     )
@@ -1073,6 +1115,39 @@ def _split_page_sections(sections: list[str], max_per_call: int) -> list[list[st
     return [[anchor, *body[i:i + room]] for i in range(0, len(body), room)]
 
 
+# One content call: the prompts in, the validated plan out. The scheduler in
+# plan_site_with_scaffolds supplies it, so each call — not each work item —
+# holds a concurrency slot.
+_ScaffoldCall = Callable[..., Awaitable["ScaffoldedSitePlan"]]
+
+
+def _direct_call(client: LlmClient) -> _ScaffoldCall:
+    async def call(*, system_prompt: str, user_prompt: str) -> ScaffoldedSitePlan:
+        return await chat_json_cached(
+            client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=ScaffoldedSitePlan,
+            temperature=settings.scaffold_temperature,
+        )
+
+    return call
+
+
+async def _gather_calls(calls: Iterable[Awaitable[ScaffoldedSitePlan]]) -> list[ScaffoldedSitePlan]:
+    """Await every call, in order; then raise the first failure, if any.
+
+    Waiting for all of them before raising matters for the retry: a call that
+    succeeded is in the response cache, so the item's next attempt pays only
+    for the call that failed.
+    """
+    outcomes = await asyncio.gather(*calls, return_exceptions=True)
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
+    return list(outcomes)  # type: ignore[arg-type]
+
+
 async def _generate_page_section_chunks(
     source: SourceContent,
     brand: "DetectedBrand | None",
@@ -1082,9 +1157,11 @@ async def _generate_page_section_chunks(
     client: LlmClient,
     *,
     include_entry_text: bool = True,
+    call: "_ScaffoldCall | None" = None,
 ) -> tuple[PagePlan | None, "ScaffoldedSitePlan | None"]:
     """Generate a many-section page across several LIGHT calls — one per section
-    group — then merge into a single page.
+    group — then merge into a single page. `call` is the scheduler's (one slot
+    per call); without one each call goes straight to `client`.
 
     Each group is a hero-anchored sub-scaffold generated against the SAME page
     source and the SAME parent_context, so:
@@ -1096,16 +1173,16 @@ async def _generate_page_section_chunks(
         echo).
     Merge order + de-duplication (one hero, one cta, list items unioned) is
     handled by _merge_page_plans against the full scaffold."""
+    call = call or _direct_call(client)
     groups = _split_page_sections(scaffold.sections, settings.max_sections_per_batch)
     logger.info(
         "section-multipass page '%s': %d sections → %d groups %s",
         scaffold.slug, len(scaffold.sections), len(groups), [len(g) for g in groups],
     )
 
-    chunk_plans: list[PagePlan] = []
-    first_result: ScaffoldedSitePlan | None = None
+    subs: list[PageScaffold] = []
     section_offset = 0
-    for idx, group in enumerate(groups):
+    for group in groups:
         sub = scaffold.model_copy(update={"sections": group})
         if scaffold._conversion_journey:
             # Groups share a hero and partition the body in order. Rebase only
@@ -1118,16 +1195,24 @@ async def _generate_page_section_chunks(
                 if section_offset < binding.index <= end
             )
             section_offset = end
-        result = await chat_json_cached(
-            client,
+        subs.append(sub)
+    # The groups share one frozen parent_context and are merged afterwards, so
+    # no call reads another's answer: they go out together, each waiting for
+    # its own slot (`call`), and come back in group order.
+    results = await _gather_calls(
+        call(
             system_prompt=_scaffold_system_prompt(_batch_kinds([sub])),
             user_prompt=_build_scaffolded_user_prompt(
                 source, brand, [sub], parent_context, source_map,
                 include_entry_text=include_entry_text,
             ),
-            schema=ScaffoldedSitePlan,
-            temperature=settings.scaffold_temperature,
         )
+        for sub in subs
+    )
+
+    chunk_plans: list[PagePlan] = []
+    first_result: ScaffoldedSitePlan | None = None
+    for idx, result in enumerate(results):
         if first_result is None:
             first_result = result
         page = next(
@@ -1147,6 +1232,123 @@ async def _generate_page_section_chunks(
     return _merge_page_plans(chunk_plans, scaffold), first_result
 
 
+def _tree_groups(
+    scaffold: PageScaffold, page_source: SourceContent
+) -> list[tuple[PageScaffold, SourceContent]] | None:
+    """A tree-shaped page cut into calls by its OWN sections, or None.
+
+    A page whose scaffold follows its source's section tree knows which text
+    belongs to which block. Cutting it into text chunks threw that away: every
+    chunk was asked for every section, wrote each from whatever slice it held,
+    and the merge kept the first chunk's — so a brief's later sections lost to
+    paraphrases of its opening ones. Here each call writes a run of consecutive
+    sections from exactly their own lines, within the per-call text budget and
+    section cap. The first group carries the text above the first section
+    (the hero's); the last carries anything after the last one the scaffold
+    names (a closing ask the CTA presents) and the scaffold's own tail.
+
+    None when the scaffold doesn't follow the tree, or a section's heading
+    can't be found as a whole line of the text, in order.
+    """
+    body = follows_source_tree(scaffold, page_source)
+    if not body:
+        return None
+    tree = page_source.section_candidates
+    lines = (page_source.raw_text or "").split("\n")
+    starts: list[int] = []
+    at = 0
+    for section in tree:
+        heading = " ".join(section.heading.split())
+        while at < len(lines) and " ".join(lines[at].split()) != heading:
+            at += 1
+        if at == len(lines):
+            return None
+        starts.append(at)
+        at += 1
+    ends = [*starts[1:], len(lines)]
+    texts = ["\n".join(lines[start:end]) for start, end in zip(starts, ends)]
+    lead = "\n".join(lines[: starts[0]])
+    trail = "\n".join(texts[len(body):])
+    tail = scaffold.sections[1 + len(body):]
+
+    budget = settings.multipass_max_chars_per_call
+    room = max(1, settings.max_sections_per_batch - 2)  # the hero anchor, the tail
+    groups: list[list[int]] = [[]]
+    size = len(lead)
+    for index in range(len(body)):
+        cost = len(texts[index]) + 1
+        if groups[-1] and (len(groups[-1]) >= room or size + cost > budget):
+            groups.append([])
+            size = 0
+        groups[-1].append(index)
+        size += cost
+    out: list[tuple[PageScaffold, SourceContent]] = []
+    for position, group in enumerate(groups):
+        last = position == len(groups) - 1
+        text = "\n".join(
+            part for part in (
+                lead if position == 0 else "",
+                *(texts[i] for i in group),
+                trail if last else "",
+            ) if part
+        )
+        sub = scaffold.model_copy(update={
+            "sections": ["hero", *(body[i][0] for i in group), *(tail if last else [])],
+        })
+        out.append((sub, page_source.model_copy(update={
+            "raw_text": text,
+            "headings": [tree[i].heading for i in group],
+            "section_candidates": [tree[i] for i in group],
+        })))
+    return out
+
+
+async def _generate_page_tree_groups(
+    source: SourceContent,
+    brand: "DetectedBrand | None",
+    scaffold: PageScaffold,
+    groups: list[tuple[PageScaffold, SourceContent]],
+    parent_context: dict[str, dict],
+    source_map: dict[str, SourceContent],
+    *,
+    include_entry_text: bool = True,
+    call: _ScaffoldCall,
+) -> tuple[PagePlan | None, "ScaffoldedSitePlan | None"]:
+    """Generate a page group by group (see `_tree_groups`), then merge. Only the
+    first group carries the entry text: its result supplies the site fields."""
+    logger.info(
+        "tree-multipass page '%s': %d sections → %d groups %s",
+        scaffold.slug, len(scaffold.sections), len(groups), [len(sub.sections) for sub, _ in groups],
+    )
+    results = await _gather_calls(
+        call(
+            system_prompt=_scaffold_system_prompt(_batch_kinds([sub])),
+            user_prompt=_build_scaffolded_user_prompt(
+                source, brand, [sub], parent_context, {**source_map, scaffold.slug: group_source},
+                include_entry_text=include_entry_text and index == 0,
+            ),
+        )
+        for index, (sub, group_source) in enumerate(groups)
+    )
+    chunk_plans: list[PagePlan] = []
+    for index, result in enumerate(results):
+        page = next(
+            (p for p in result.pages if p.slug == scaffold.slug),
+            result.pages[0] if result.pages else None,
+        )
+        if page is not None:
+            chunk_plans.append(page)
+        else:
+            logger.warning(
+                "tree-multipass group %d/%d for '%s' returned no page",
+                index + 1, len(groups), scaffold.slug,
+            )
+    first_result = results[0] if results else None
+    if not chunk_plans:
+        return None, first_result
+    return _merge_page_plans(chunk_plans, scaffold), first_result
+
+
 async def _generate_page_multipass(
     source: SourceContent,
     brand: "DetectedBrand | None",
@@ -1156,8 +1358,10 @@ async def _generate_page_multipass(
     client: LlmClient,
     *,
     include_entry_text: bool = True,
+    call: "_ScaffoldCall | None" = None,
 ) -> tuple[PagePlan | None, "ScaffoldedSitePlan | None"]:
     """Generate one oversized page across several chunked calls, then merge.
+    `call` as in `_generate_page_section_chunks`.
 
     Every call gets the SAME single-page scaffold (so it emits the same required
     sections) but a different slice of the page's text via ``text_override``. The
@@ -1166,6 +1370,7 @@ async def _generate_page_multipass(
     first chunk's full result (carrying site-level fields, used only if this is
     the first work item overall).
     """
+    call = call or _direct_call(client)
     page_source = source_map[scaffold.slug]
     chunks = split_raw_text(
         page_source.raw_text or "",
@@ -1177,20 +1382,23 @@ async def _generate_page_multipass(
         scaffold.slug, len(page_source.raw_text or ""), len(chunks),
     )
 
-    chunk_plans: list[PagePlan] = []
-    first_result: ScaffoldedSitePlan | None = None
-    for idx, chunk in enumerate(chunks):
-        result = await chat_json_cached(
-            client,
+    # Same as the section groups: every chunk reads the same parent_context and
+    # the merge happens after, so the calls go out together, in chunk order.
+    results = await _gather_calls(
+        call(
             system_prompt=_scaffold_system_prompt(_batch_kinds([scaffold])),
             user_prompt=_build_scaffolded_user_prompt(
                 source, brand, [scaffold], parent_context, source_map,
                 {scaffold.slug: chunk},
                 include_entry_text=include_entry_text,
             ),
-            schema=ScaffoldedSitePlan,
-            temperature=settings.scaffold_temperature,
         )
+        for chunk in chunks
+    )
+
+    chunk_plans: list[PagePlan] = []
+    first_result: ScaffoldedSitePlan | None = None
+    for idx, result in enumerate(results):
         if first_result is None:
             first_result = result
         page = next(
@@ -1318,7 +1526,15 @@ async def plan_site_with_scaffolds(
             # keeps the old packing — no extra batch, identical call count.
             _flush_small_run()
         last_depth = depth
-        if _needs_chunking(s, source_map):
+        groups = (
+            _tree_groups(s, source_map[s.slug])
+            if s.slug in source_map and (_needs_chunking(s, source_map) or _needs_section_chunking(s))
+            else None
+        )
+        if groups is not None and len(groups) > 1:
+            _flush_small_run()
+            worklist.append(("tree_groups", (s, groups), depth))
+        elif _needs_chunking(s, source_map):
             _flush_small_run()
             worklist.append(("multipass", s, depth))
         elif _needs_section_chunking(s):
@@ -1335,8 +1551,17 @@ async def plan_site_with_scaffolds(
     first: ScaffoldedSitePlan | None = None
     degraded_slugs: list[str] = []
 
+    direct = _direct_call(client)
+
+    async def _call(*, system_prompt: str, user_prompt: str) -> ScaffoldedSitePlan:
+        """One content call. The slot is held per CALL, not per work item, so a
+        page split into chunks sends them side by side instead of queueing them
+        behind one slot while the other sits idle."""
+        async with politeness.slot():
+            return await direct(system_prompt=system_prompt, user_prompt=user_prompt)
+
     async def _run_item(
-        item_index: int, item_kind: str, payload: object
+        item_index: int, item_kind: str, payload: object, context: dict[str, dict]
     ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
         """Execute one work item → (produced pages, site-level result if any).
 
@@ -1345,41 +1570,51 @@ async def plan_site_with_scaffolds(
         own page_source, so the entry text there was pure duplication.
         """
         include_entry = item_index == 0
+        if item_kind == "tree_groups":
+            scaffold, groups = payload  # type: ignore[misc]
+            page, result = await _generate_page_tree_groups(
+                source, brand, scaffold, groups, context, source_map,
+                include_entry_text=include_entry, call=_call,
+            )
+            return ([page] if page is not None else []), result
         if item_kind == "multipass":
             scaffold = payload  # type: ignore[assignment]
             page, result = await _generate_page_multipass(
-                source, brand, scaffold, parent_context, source_map, client,
-                include_entry_text=include_entry,
+                source, brand, scaffold, context, source_map, client,
+                include_entry_text=include_entry, call=_call,
             )
             return ([page] if page is not None else []), result
         if item_kind == "section_multipass":
             scaffold = payload  # type: ignore[assignment]
             page, result = await _generate_page_section_chunks(
-                source, brand, scaffold, parent_context, source_map, client,
-                include_entry_text=include_entry,
+                source, brand, scaffold, context, source_map, client,
+                include_entry_text=include_entry, call=_call,
             )
             return ([page] if page is not None else []), result
         batch = payload  # type: ignore[assignment]
-        result = await chat_json_cached(
-            client,
+        result = await _call(
             system_prompt=_scaffold_system_prompt(_batch_kinds(batch)),
             user_prompt=_build_scaffolded_user_prompt(
-                source, brand, batch, parent_context, source_map,
+                source, brand, batch, context, source_map,
                 include_entry_text=include_entry,
             ),
-            schema=ScaffoldedSitePlan,
-            temperature=settings.scaffold_temperature,
         )
         return list(result.pages), result
 
+    def _item_scaffolds(item_kind: str, payload: object) -> list[PageScaffold]:
+        """The scaffolds one work item is responsible for."""
+        if item_kind == "batch":
+            return list(payload)  # type: ignore[call-overload]
+        if item_kind == "tree_groups":
+            return [payload[0]]  # type: ignore[index]
+        return [payload]  # type: ignore[list-item]
+
     def _item_slugs(item_kind: str, payload: object) -> list[str]:
         """The scaffold slugs one work item is responsible for."""
-        if item_kind == "batch":
-            return [s.slug for s in payload]  # type: ignore[union-attr]
-        return [payload.slug]  # type: ignore[union-attr]
+        return [s.slug for s in _item_scaffolds(item_kind, payload)]
 
     async def _run_item_safe(
-        item_index: int, item_kind: str, payload: object
+        item_index: int, item_kind: str, payload: object, context: dict[str, dict]
     ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
         """`_run_item`, but a failed LLM call costs only ITS OWN pages.
 
@@ -1400,8 +1635,8 @@ async def plan_site_with_scaffolds(
         waiting out its own timeout — the same shape the crawler uses via
         `_should_stop` (services/scraper.py).
 
-        `politeness.slot()` also *is* the concurrency cap, so serial and
-        concurrent runs share one code path.
+        `politeness.slot()` also *is* the concurrency cap (taken per call, in
+        `_call`), so serial and concurrent runs share one code path.
         """
         slugs = _item_slugs(item_kind, payload)
 
@@ -1423,8 +1658,7 @@ async def plan_site_with_scaffolds(
                     "AI server circuit open after repeated failures — not retried"
                 )
             try:
-                async with politeness.slot():
-                    produced = await _run_item(item_index, item_kind, payload)
+                produced = await _run_item(item_index, item_kind, payload, context)
             except LlmError as exc:
                 politeness.record_failure()
                 if attempt >= _LLM_ITEM_ATTEMPTS or politeness.circuit_open:
@@ -1440,48 +1674,93 @@ async def plan_site_with_scaffolds(
             return produced
         return _degrade("exhausted attempts")
 
-    def _absorb(produced: list[PagePlan], result: "ScaffoldedSitePlan | None") -> None:
-        # Harvest parent hero context for children that come in later work items.
+    def _harvest(produced: list[PagePlan]) -> None:
+        # Parent hero context for children that come in later work items.
         # Children are guaranteed later because of the depth sort.
-        nonlocal first
-        if first is None and result is not None:
-            first = result
-        all_pages.extend(produced)
         for page in produced:
             summary = _hero_summary(page)
             if summary is not None:
                 parent_context[page.slug] = summary
 
+    def _absorb(produced: list[PagePlan], result: "ScaffoldedSitePlan | None") -> None:
+        nonlocal first
+        if first is None and result is not None:
+            first = result
+        all_pages.extend(produced)
+
     if concurrency == 1:
         # Strictly serial — the right shape for a single local GPU model, and
         # every item sees the freshest parent_context (same as always).
         for item_index, (item_kind, payload, _depth) in enumerate(worklist):
-            _absorb(*await _run_item_safe(item_index, item_kind, payload))
-    else:
-        # Same-depth items are mutually independent (a page never parents a
-        # sibling), so run each contiguous depth group together and harvest
-        # parent_context only after the whole group completes — the next
-        # (deeper) group then sees every parent hero. gather preserves
-        # submission order, keeping page order and `first` deterministic.
-        #
-        # Within a group this is already a sliding window, not lockstep: every
-        # item is submitted at once and `politeness.slot()` admits them
-        # `concurrency` at a time, so a freed slot picks up the next item
-        # immediately. Only the depth BOUNDARY is a barrier, and that barrier is
-        # load-bearing — crossing it early would generate a child page before
-        # its parent's hero exists to ground it.
-        pos = 0
-        while pos < len(worklist):
-            group_depth = worklist[pos][2]
-            group: list[tuple[int, str, object]] = []
-            while pos < len(worklist) and worklist[pos][2] == group_depth:
-                group.append((pos, worklist[pos][0], worklist[pos][1]))
-                pos += 1
-            outcomes = await asyncio.gather(
-                *(_run_item_safe(i, kind, payload) for i, kind, payload in group)
+            produced, result = await _run_item_safe(
+                item_index, item_kind, payload, parent_context
             )
-            for produced, result in outcomes:
-                _absorb(produced, result)
+            _harvest(produced)
+            _absorb(produced, result)
+    else:
+        # Each item starts as soon as the items owning its PARENTS have
+        # finished — not when every page one level up has. A child's prompt
+        # reads one entry of parent_context, its own parent's
+        # (`_build_scaffolded_user_prompt`), so waiting for that item is all
+        # the old depth barrier ever bought it; a slow sibling of the parent no
+        # longer holds every child back.
+        #
+        # Every prompt is the one the barrier sent. Under it, an item at depth
+        # d saw what items at depths < d had harvested, and nothing from its
+        # own group (the harvest ran after the whole group). So each item reads
+        # a VIEW taken when it starts, of the entries written by shallower
+        # items only — the latest such write per slug, in the barrier's absorb
+        # order — and waits only for the parents at a shallower depth. A parent
+        # at the same depth was generated alongside its child, so the child
+        # never saw its hero then and does not now. Batches never span a depth
+        # (see the flush above), so no item waits on itself.
+        #
+        # `politeness.slot()` (in `_call`) still admits `concurrency` calls at a
+        # time. Outcomes are absorbed in submission order, so page order and
+        # `first` stay deterministic.
+        owner: dict[str, int] = {}
+        for index, (kind, payload, _depth) in enumerate(worklist):
+            for slug in _item_slugs(kind, payload):
+                owner.setdefault(slug, index)
+        finished = [asyncio.Event() for _ in worklist]
+        # slug → (writer depth, writer index, summary) for every harvested page.
+        written: dict[str, list[tuple[int, int, dict]]] = {}
+
+        def _view(depth: int) -> dict[str, dict]:
+            view: dict[str, dict] = {}
+            for slug, writes in written.items():
+                earlier = [w for w in writes if w[0] < depth]
+                if earlier:
+                    view[slug] = max(earlier, key=lambda w: (w[0], w[1]))[2]
+            return view
+
+        async def _scheduled(
+            index: int, kind: str, payload: object, depth: int
+        ) -> tuple[list[PagePlan], "ScaffoldedSitePlan | None"]:
+            parents = sorted({
+                owner[s.parent_slug]
+                for s in _item_scaffolds(kind, payload)
+                if s.parent_slug in owner
+                and worklist[owner[s.parent_slug]][2] < depth
+            })
+            try:
+                for parent in parents:
+                    await finished[parent].wait()
+                produced, result = await _run_item_safe(index, kind, payload, _view(depth))
+                for page in produced:
+                    summary = _hero_summary(page)
+                    if summary is not None:
+                        written.setdefault(page.slug, []).append((depth, index, summary))
+                return produced, result
+            finally:
+                finished[index].set()
+
+        outcomes = await asyncio.gather(
+            *(_scheduled(i, kind, payload, depth) for i, (kind, payload, depth) in enumerate(worklist))
+        )
+        for produced, result in outcomes:
+            _harvest(produced)
+            _absorb(produced, result)
 
     # Stitch parent_slug back onto every PagePlan from its source scaffold.
     by_slug = {s.slug: s for s in scaffolds}

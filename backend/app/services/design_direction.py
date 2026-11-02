@@ -59,7 +59,7 @@ from app.models.brand import (
     default_hero_height,
 )
 from app.models.content_blocks import ImageMetadata, SourceContent
-from app.services import creative_directions, design_schemes
+from app.services import creative_directions, design_schemes, friendly_envelope
 from app.services.business_archetype import spec_for as archetype_spec
 from app.services.creative_directions import CreativeDirection
 from app.services.design_schemes import DesignScheme
@@ -778,10 +778,17 @@ async def resolve_direction(
             f"{chosen.direction.label}: {chosen.direction.palette_voice}"
         )
     if palette_enabled:
+        concept_theme = theme
         if shared:
             theme = _creative_theme(theme, choice.palette if choice else None, brand_colors, design_direction)
         else:
             theme = await separate_palette(theme)
+        if not friendly_envelope.keeps(theme, concept_theme):
+            # A dark or hueless proposal for a children's site (the model's, or
+            # a black logo leading it): discarded whole, the concept's own
+            # palette stands — the same rule regenerate_palette enforces.
+            logger.info("Palette for %s refused by the friendly envelope: %s", seed, theme.palette)
+            theme = concept_theme
     theme.design_rationale = _rationale(concepts, chosen, picked_by)
     logger.info(
         "Design direction for %s: %s (%s) of %s",
@@ -830,4 +837,6 @@ async def regenerate_palette(theme: ThemeTokens, brief: dict, direction: str | N
     result = _creative_theme(theme, choice.palette, brief.get("brand_colors"), direction)
     if result.color_scheme != theme.color_scheme:
         raise LlmError("The proposed surface changed the selected light/dark design. Current colors were kept.")
+    if not friendly_envelope.keeps(result, theme):
+        raise LlmError("The proposed colors are too dark or colorless for a children's site. Current colors were kept.")
     return result

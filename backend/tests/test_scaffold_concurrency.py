@@ -1,9 +1,9 @@
 """Scaffold-batch concurrency (settings.scaffold_batch_concurrency).
 
-Default 1 must stay strictly serial (the single-GPU shape). >1 runs same-depth
-work items in parallel under a semaphore, keeps batches depth-pure, and still
-hands every child page its parent's hero context — no depth-1 call may start
-before every depth-0 call finished.
+Default 1 must stay strictly serial (the single-GPU shape). >1 runs work items
+in parallel under a semaphore, keeps batches depth-pure, and still hands every
+child page its parent's hero context — a child's call never starts before its
+OWN parent's call finished, and never waits for anything else.
 
 Also pins the entry-text trim: only the FIRST work item's user prompt carries
 the entry page's raw_text; later items ground pages in their own page_source.
@@ -25,7 +25,8 @@ class _RecordingClient:
     """Fake LLM that fabricates a page per requested slug while recording
     payloads, start/end event order, and in-flight concurrency."""
 
-    def __init__(self, delay: float = 0.01):
+    def __init__(self, delay: float = 0.01, delays: dict[str, float] | None = None):
+        self._delays = delays or {}
         self.payloads: list[dict] = []
         self.events: list[tuple[str, tuple[str, ...]]] = []
         self.in_flight = 0
@@ -39,7 +40,7 @@ class _RecordingClient:
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         self.events.append(("start", slugs))
         try:
-            await asyncio.sleep(self._delay)
+            await asyncio.sleep(max(self._delays.get(slug, self._delay) for slug in slugs))
             self.payloads.append(payload)
             pages = [
                 PagePlan(
@@ -152,31 +153,58 @@ class ConcurrentDepthGroupsTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         settings.scaffold_batch_concurrency = self._orig
 
-    async def test_same_depth_runs_parallel_but_depths_stay_ordered(self):
+    async def test_same_depth_runs_parallel_and_children_follow_their_parent(self):
         client = _RecordingClient()
         plan, _ = await plan_site_with_scaffolds(_source(), None, _scaffolds(), client)
 
-        # Real parallelism within a depth group, bounded by the setting.
+        # Real parallelism, bounded by the setting.
         self.assertGreater(client.max_in_flight, 1)
         self.assertLessEqual(client.max_in_flight, 3)
 
-        # Every depth-0 call must END before any depth-1 call STARTS.
-        def depth_of(slugs: tuple[str, ...]) -> int:
-            return slugs[0].count("/")
-
-        last_d0_end = max(
-            i for i, (kind, slugs) in enumerate(client.events)
-            if kind == "end" and depth_of(slugs) == 0
-        )
-        first_d1_start = min(
-            i for i, (kind, slugs) in enumerate(client.events)
-            if kind == "start" and depth_of(slugs) == 1
-        )
-        self.assertLess(last_d0_end, first_d1_start)
+        # The parent's call ENDS before either child's call STARTS.
+        parent_end = client.events.index(("end", ("services",)))
+        for child in ("services/web", "services/seo"):
+            self.assertLess(parent_end, client.events.index(("start", (child,))))
 
         # Output order stays deterministic regardless of completion order.
         self.assertEqual(
             [p.slug for p in plan.pages], ["", "services", "services/web", "services/seo"]
+        )
+
+    async def test_a_slow_page_does_not_hold_back_children_of_another(self):
+        """The old depth barrier made every child wait for the slowest page one
+        level up; a child needs only its own parent's hero."""
+        client = _RecordingClient(delays={"": 0.3})
+        plan, _ = await plan_site_with_scaffolds(_source(), None, _scaffolds(), client)
+
+        home_end = client.events.index(("end", ("",)))
+        for child in ("services/web", "services/seo"):
+            self.assertLess(client.events.index(("start", (child,))), home_end)
+        self.assertEqual(
+            [p.slug for p in plan.pages], ["", "services", "services/web", "services/seo"]
+        )
+
+    async def test_a_parent_at_the_same_depth_is_never_awaited_or_shown(self):
+        """A parent one slug-level DOWN the same depth (a roster's profile page)
+        was generated beside its child under the depth barrier, so the child's
+        prompt never carried its hero. It still doesn't — the prompt is the one
+        the barrier sent."""
+        scaffolds = [
+            _scaffold(""),
+            _scaffold("team"),
+            _scaffold("team-ashley", parent="team"),
+        ]
+        client = _RecordingClient(delays={"team": 0.2})
+        await plan_site_with_scaffolds(_source(), None, scaffolds, client)
+
+        ashley = next(
+            page for payload in client.payloads
+            for page in payload["pages_requested"] if page["slug"] == "team-ashley"
+        )
+        self.assertNotIn("parent_context", ashley)
+        self.assertLess(
+            client.events.index(("start", ("team-ashley",))),
+            client.events.index(("end", ("team",))),
         )
 
     async def test_children_receive_parent_hero_context(self):

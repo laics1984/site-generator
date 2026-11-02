@@ -146,6 +146,8 @@ class ZigzagIsASchemesChoiceTest(unittest.TestCase):
             design_schemes.select_scheme = original
         rows = []
         for section in site.pages[0].body_schema.elements:
+            if not (section.name or "").startswith("About"):
+                continue  # the zigzag is the about splits'; a split hero has its own columns
             for child in section.content if isinstance(section.content, list) else []:
                 if child.type == "2Col":
                     rows.append([c.name for c in child.content])

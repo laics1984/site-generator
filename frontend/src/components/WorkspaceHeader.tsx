@@ -17,7 +17,7 @@ export function WorkspaceHeader({ actions }: { actions?: ReactNode }) {
           </span>
           <span className="min-w-0">
             <span className="block truncate text-sm font-semibold text-ink">
-              Webtree Site Generator
+              WT Gen
             </span>
             <span className="block truncate text-[11px] text-ink-faint">
               {onClaude ? 'Claude API' : 'Local'} · AI-powered · Builder-compatible

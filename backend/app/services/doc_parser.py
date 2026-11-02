@@ -352,19 +352,27 @@ def _collect_pdf_image(
     )
 
 
-def _pdf_size_to_level(size: float, heading_sizes: list[int]) -> int:
-    """Map a heading's font size to a 1-3 level using the document's size tiers.
+# Heading levels a PDF's sizes are ranked into: markdown's six. Sizes past the
+# sixth tier share it.
+_PDF_HEADING_TIERS = 6
 
-    ``heading_sizes`` is sorted largest-first. The largest distinct size is H1,
-    the next is H2, everything smaller collapses to H3 so deeply varied PDFs
-    don't explode into many levels. Falls back to level 1 if the size isn't a
-    known tier (shouldn't happen, but keeps a heading from becoming body).
+
+def _pdf_size_to_level(size: float, heading_sizes: list[int]) -> int:
+    """Map a heading's font size to a 1-6 level using the document's size tiers.
+
+    ``heading_sizes`` is sorted largest-first: the largest distinct size is H1,
+    the next H2, and so on to H6, which every smaller size shares. It used to
+    stop at H3, and a designed brief spends three tiers on its cover alone —
+    Fowable's 20pt section headlines and 9pt card titles both became H3, so no
+    reader could tell a section from a card inside it. Falls back to level 1
+    if the size isn't a known tier (shouldn't happen, but keeps a heading from
+    becoming body).
     """
     rounded = round(size)
-    for idx, tier in enumerate(heading_sizes[:3]):
+    for idx, tier in enumerate(heading_sizes[:_PDF_HEADING_TIERS]):
         if rounded >= tier:
             return idx + 1
-    return min(len(heading_sizes), 3) or 1
+    return min(len(heading_sizes), _PDF_HEADING_TIERS) or 1
 
 
 def _pdf_title(doc) -> str | None:

@@ -342,6 +342,10 @@ class ThemeTokens(BaseModel):
     # of BuilderStyles.
     creative_direction: str | None = None
     business_archetype: str | None = None
+    # The industry the theme was built for. Internal, like `design_scheme`:
+    # what services/friendly_envelope.py asks of a theme a pass already holds;
+    # NOT part of BuilderStyles.
+    industry: str | None = None
     # The ui-ux-pro-max style this mood embodies (design lineage / debug metadata).
     style: str = ""
     # Section background rotation drives visual rhythm (avoid wall-of-white).

@@ -17,7 +17,6 @@ here. Priority per page:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -33,9 +32,15 @@ from app.models.content_blocks import (
     SourceContent,
 )
 from app.services.browser import render_url
+from app.services.entry_markup import (
+    ARTICLE_LD_TYPES,
+    EVENT_LD_TYPES,
+    iter_ld_nodes,
+    ld_types,
+)
 from app.services.fast_fetch import FastFetchResult, try_fast_fetch
 from app.services.image_urls import resolved_image_url
-from app.services.page_inference import _infer_page_type
+from app.services.page_inference import ENTRY_COLLECTION, _infer_page_type, collection_entries
 from app.services.site_url import crawl_key, is_same_site
 
 logger = logging.getLogger(__name__)
@@ -134,14 +139,21 @@ def _candidate_urls(
     return ordered
 
 
+def _declared_entry_urls(source: SourceContent) -> dict[PageType, list[str]]:
+    """Crawled pages that declared themselves a post or event, by collection.
+
+    Wherever their permalinks put them: a WordPress site serves its posts at
+    the root (/kindergarten-selangor/), which no listing path or URL date can
+    find. ``collection_entries`` is the answer page inference routes away from
+    the page set too, so every page it drops is a candidate here.
+    """
+    out: dict[PageType, list[str]] = {"blog": [], "events": []}
+    for page in collection_entries(source).values():
+        out[ENTRY_COLLECTION[page.declared_entry]].append(page.source_ref)
+    return out
+
+
 # --- per-page extraction -------------------------------------------------------------
-
-
-_ARTICLE_LD_TYPES = {"article", "blogposting", "newsarticle"}
-_EVENT_LD_TYPES = {
-    "event", "socialevent", "businessevent", "educationevent", "festival",
-    "exhibitionevent", "musicevent", "sportsevent", "theaterevent",
-}
 
 
 def _parse_dt(value: object) -> datetime | None:
@@ -180,32 +192,6 @@ def _date_from_url(url: str) -> datetime | None:
         return datetime(year, month, min(day, 28) if day > 28 else day, tzinfo=timezone.utc)
     except ValueError:
         return None
-
-
-def _iter_ld_nodes(soup: BeautifulSoup):
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        try:
-            data = json.loads(script.string or script.get_text() or "")
-        except (json.JSONDecodeError, TypeError):
-            continue
-        stack = [data]
-        while stack:
-            node = stack.pop()
-            if isinstance(node, list):
-                stack.extend(node)
-            elif isinstance(node, dict):
-                if "@graph" in node and isinstance(node["@graph"], list):
-                    stack.extend(node["@graph"])
-                yield node
-
-
-def _ld_types(node: dict) -> set[str]:
-    raw = node.get("@type")
-    if isinstance(raw, str):
-        return {raw.lower()}
-    if isinstance(raw, list):
-        return {t.lower() for t in raw if isinstance(t, str)}
-    return set()
 
 
 def _ld_image(node: dict) -> str | None:
@@ -313,18 +299,71 @@ def _slug_from_url(url: str) -> str:
     return _slugify(tail) if tail else "entry"
 
 
-def _clean_title(soup: BeautifulSoup) -> str | None:
+# What a title template puts between a page's title and the site's name:
+# Yoast's "%%title%% %%sep%% %%sitename%%" and its peers.
+_TITLE_SEPARATOR = r"\s+[-–—|·•:~*«»/]+\s+"
+
+
+def _without_site_name(title: str, site_name: str | None) -> str:
+    """``title`` with the site's own name taken off either end.
+
+    The name is the one the page declares (og:site_name), so a separator inside
+    the title itself is never cut: "Kindergarten Selangor - What Are The
+    Advantages Of Going There? - MyKiddyLand" keeps its first half.
+    """
+    if not site_name or not site_name.strip():
+        return title
+    name = re.escape(site_name.strip())
+    bare = re.sub(rf"{_TITLE_SEPARATOR}{name}$", "", title.strip(), flags=re.IGNORECASE)
+    bare = re.sub(rf"^{name}{_TITLE_SEPARATOR}", "", bare, flags=re.IGNORECASE)
+    return bare.strip() or title
+
+
+def _page_title(soup: BeautifulSoup) -> str | None:
+    site_name = _meta(soup, "og:site_name")
+    og_title = _meta(soup, "og:title")
+    if og_title:
+        return _without_site_name(og_title, site_name)
     h1 = soup.find("h1")
     if h1 and h1.get_text(strip=True):
         return h1.get_text(" ", strip=True)
     title = soup.find("title")
     if title and title.get_text(strip=True):
         raw = title.get_text(strip=True)
+        if site_name:
+            return _without_site_name(raw, site_name)
         for sep in (" | ", " — ", " – ", " - "):
             if sep in raw:
                 raw = raw.split(sep, 1)[0].strip()
                 break
         return raw or None
+    return None
+
+
+def _in_discussion(tag: Tag) -> bool:
+    """Inside a reader's comment or a sidebar — dates there are not the page's."""
+    for parent in tag.parents:
+        if parent.name == "aside":
+            return True
+        names = [*(parent.get("class") or []), parent.get("id") or ""]
+        if any(isinstance(n, str) and n.startswith("comment") for n in names):
+            return True
+    return False
+
+
+def _page_time(soup: BeautifulSoup) -> datetime | None:
+    """The page's own first ``<time>``: its datetime, else the date it shows.
+
+    WordPress stamps every reader comment with a ``<time datetime>``, and a
+    theme may print the post's own date as plain text in one — so the first
+    timestamp on a post is often a comment's, months after it was published.
+    """
+    for tag in soup.find_all("time"):
+        if _in_discussion(tag):
+            continue
+        when = _parse_dt(tag.get("datetime") or tag.get_text(" ", strip=True))
+        if when is not None:
+            return when
     return None
 
 
@@ -353,11 +392,11 @@ def _extract_entry(
 
     ld_article: dict | None = None
     ld_event: dict | None = None
-    for node in _iter_ld_nodes(soup):
-        types = _ld_types(node)
-        if ld_event is None and types & _EVENT_LD_TYPES:
+    for node in iter_ld_nodes(soup):
+        types = ld_types(node)
+        if ld_event is None and types & EVENT_LD_TYPES:
             ld_event = node
-        elif ld_article is None and types & _ARTICLE_LD_TYPES:
+        elif ld_article is None and types & ARTICLE_LD_TYPES:
             ld_article = node
 
     # JSON-LD type beats the listing's classification — a "news" page can list
@@ -375,7 +414,7 @@ def _extract_entry(
             if isinstance(ld.get(key), str) and ld[key].strip():
                 title = ld[key].strip()
                 break
-    title = title or _meta(soup, "og:title") or _clean_title(soup)
+    title = title or _page_title(soup)
     if not title:
         return None
 
@@ -402,8 +441,7 @@ def _extract_entry(
         start = _parse_dt(ld.get("startDate")) if ld else None
         end = _parse_dt(ld.get("endDate")) if ld else None
         if start is None:
-            time_tag = soup.find("time", attrs={"datetime": True})
-            start = _parse_dt(time_tag["datetime"]) if time_tag else None
+            start = _page_time(soup)
         return EventEntry(
             title=title,
             slug=slug,
@@ -420,8 +458,7 @@ def _extract_entry(
     if published is None:
         published = _parse_dt(_meta(soup, "article:published_time", "date"))
     if published is None:
-        time_tag = soup.find("time", attrs={"datetime": True})
-        published = _parse_dt(time_tag["datetime"]) if time_tag else None
+        published = _page_time(soup)
     if published is None:
         published = _date_from_url(url)
     return ArticleEntry(
@@ -473,8 +510,9 @@ async def extract_collections(
     posts only reachable from e.g. a sitemap.
     """
     listings = _listing_pages(source)
+    declared = _declared_entry_urls(source)
     collections = ContentCollections()
-    if not listings["blog"] and not listings["events"]:
+    if not any((*listings.values(), *declared.values())):
         return collections
 
     sem = asyncio.Semaphore(_FETCH_CONCURRENCY)
@@ -494,19 +532,23 @@ async def extract_collections(
             return None
 
     tasks: list[tuple[PageType, asyncio.Task]] = []
-    seen_urls: set[str] = set()
+    seen_keys: set[str] = set()
     # Over-fetch a little so entries rejected as stubs don't shrink the final
     # set below the cap.
     fetch_cap = max_entries + max(4, max_entries // 2)
     for kind in ("blog", "events"):
         budget = fetch_cap
-        for listing in listings[kind]:
-            for url in _candidate_urls(listing, source, list(extra_urls or [])):
-                if url in seen_urls or budget <= 0:
-                    continue
-                seen_urls.add(url)
-                budget -= 1
-                tasks.append((kind, asyncio.ensure_future(process(url, kind))))
+        candidates = [
+            url
+            for listing in listings[kind]
+            for url in _candidate_urls(listing, source, list(extra_urls or []))
+        ]
+        for url in [*candidates, *declared[kind]]:
+            if crawl_key(url) in seen_keys or budget <= 0:
+                continue
+            seen_keys.add(crawl_key(url))
+            budget -= 1
+            tasks.append((kind, asyncio.ensure_future(process(url, kind))))
 
     for kind, task in tasks:
         entry = await task

@@ -51,6 +51,8 @@ from app.models.content_blocks import (
 )
 from app.services.brand_candidate import build_brand_candidate
 from app.services.browser import RenderError, lazy_browser_context, rendered_page
+from app.services.disclosures import from_footer as disclosures_from_footer
+from app.services.entry_markup import declared_entry
 from app.services.site_url import crawl_key, is_same_site, rebase_to_origin
 from app.services.source_outline import text_blocks
 from app.services.source_preview import ImageCandidate
@@ -91,6 +93,7 @@ from app.services.profile_text import (
 )
 from app.services.nav_extraction import (
     DOCUMENT_EXTENSIONS,
+    extract_app_links,
     extract_body_link_clusters,
     extract_nav_links,
     extract_social_links,
@@ -126,7 +129,13 @@ logger = logging.getLogger(__name__)
 # for `language_analysis`.
 # 6: a translated mirror's root (/bm, /zh) is fetched before the page cap can
 # starve it — a cached crawl of a mirrored site may hold no mirror at all.
-EXTRACTION_VERSION = 6
+# 7: each page records the regulatory disclosure its footer states
+# (`disclosures`, services/disclosures.py) — read before chrome is stripped —
+# and the app-store listings it links (`app_links`).
+# 8: each page records the post or event its markup declares itself
+# (`declared_entry`, services/entry_markup.py), so a WordPress post at the
+# site root is migrated as an article instead of scaffolded as a page.
+EXTRACTION_VERSION = 8
 
 
 # --- public types ---------------------------------------------------------------
@@ -2348,6 +2357,9 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         soup, "og:description", "twitter:description", "description"
     )
     site_name = _extract_meta_string(soup, "og:site_name") or title
+    # Before the body-text pass, whose last resort strips <script> from this
+    # soup — the JSON-LD is in one.
+    entry = declared_entry(soup)
 
     extracted_text = _extract_body_text(html, soup)
 
@@ -2439,6 +2451,9 @@ def _parse_rendered_html(html: str, final_url: str, *, require_text: bool = True
         url_path=urlparse(final_url).path or "/",
         subject_name=_leading_person_name(soup),
         declared_lang=_declared_lang(soup),
+        declared_entry=entry,
+        disclosures=disclosures_from_footer(soup),
+        app_links=extract_app_links(soup, final_url),
         image_metadata=[
             ImageMetadata(
                 url=c.url,

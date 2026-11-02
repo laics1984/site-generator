@@ -123,8 +123,9 @@ class ChildcareMoodTest(unittest.TestCase):
 
 
 class ChildcareColorSchemeTest(unittest.TestCase):
-    """Light by default is legibility for a parent audience, not a look — it
-    stays an industry lean (decision recorded in the plan's Phase 1)."""
+    """Light is legibility for a parent audience, not a look — a rule of the
+    friendly envelope (services/friendly_envelope.py), not a lean a creative
+    direction or a stored preference can outvote."""
 
     def test_light_logo_never_defaults_childcare_to_dark(self):
         # The Glorykids failure: a bright logo read as "light" flipped the
@@ -133,12 +134,12 @@ class ChildcareColorSchemeTest(unittest.TestCase):
             resolve_color_scheme(None, None, True, industry="childcare"), "light"
         )
 
-    def test_explicit_dark_choice_still_wins(self):
+    def test_only_the_operators_explicit_dark_choice_wins(self):
         self.assertEqual(
             resolve_color_scheme("dark", None, True, industry="childcare"), "dark"
         )
         self.assertEqual(
-            resolve_color_scheme(None, "dark", True, industry="childcare"), "dark"
+            resolve_color_scheme(None, "dark", True, industry="childcare"), "light"
         )
 
     def test_other_industries_keep_the_logo_smart_default(self):
@@ -613,10 +614,14 @@ class ChildcareLogoTest(unittest.TestCase):
         header = build_header(self._brand(), theme, nav_items=[])
         self.assertIsNone(_find_by_name(header, "Logo lockup"))
 
-    def test_light_logo_switches_header_to_secondary_not_slate(self):
+    def test_an_orange_logo_keeps_a_light_header_and_its_mark(self):
+        # It used to move the bar to the dark `secondary` — the navy header
+        # orange-logo kindergartens shipped. The friendly envelope keeps the
+        # bar light (the lightest surface the mark reads on) and the mark.
         theme = build_theme("#F97316", industry="childcare")
         header = build_header(self._brand(), theme, nav_items=[])
-        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.secondary)
+        self.assertEqual(header.styles.get("backgroundColor"), theme.palette.background)
+        self.assertIsNotNone(_find_by_name(header, "Brand Logo"))
 
     def test_logo_size_is_the_schemes_not_the_industrys(self):
         default = _find_by_name(
@@ -685,8 +690,17 @@ class PlayroomIsAChoiceNotADefaultTest(unittest.TestCase):
         """The band roles are pastels of the brand's own hues
         (color_system.band_fills): a neutral secondary or surface is never a
         source, so no band is grey or near-white."""
-        fp = self._build("playroom")
+        fp = self._build("playroom", industry="nonprofit")
         self.assertTrue(all(b in ("tint", "photo") for b in fp.bands), fp.bands)
+
+    def test_on_a_childcare_site_playroom_puts_white_between_its_colours(self):
+        """The friendly envelope's two-hue order (friendly_envelope.band_sequence):
+        a tint on every other band, never two side by side. The closing CTA is
+        left out: its deep pastel stands 1.27:1 off a tint by design."""
+        fp = self._build("playroom")
+        flat = [b for b in fp.bands[:-1] if b != "photo"]
+        self.assertIn("light", flat)
+        self.assertFalse(any(a == b == "tint" for a, b in zip(flat, flat[1:])), fp.bands)
 
     def test_another_childcare_scheme_does_not(self):
         fp = self._build("civic-trust")

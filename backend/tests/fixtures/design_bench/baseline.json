@@ -21,11 +21,11 @@
         "cta-banner"
       ],
       "bands": [
-        "dark",
-        "dark",
         "light",
         "tint",
-        "dark"
+        "light",
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -62,11 +62,11 @@
         "cta-banner"
       ],
       "bands": [
-        "dark",
-        "dark",
         "light",
         "tint",
-        "dark"
+        "light",
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -103,11 +103,11 @@
         "cta-banner"
       ],
       "bands": [
-        "dark",
-        "dark",
         "light",
         "tint",
-        "dark"
+        "light",
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -133,7 +133,7 @@
       "hero": "hero-editorial@arch",
       "header": "classic",
       "footer": "cta-banner",
-      "canvas": "tinted",
+      "canvas": "white",
       "heading_font": "Manrope",
       "radius": "round",
       "sections": [
@@ -144,11 +144,11 @@
         "cta-banner"
       ],
       "bands": [
-        "dark",
-        "dark",
         "light",
         "tint",
-        "dark"
+        "light",
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -185,11 +185,11 @@
         "cta-minimal"
       ],
       "bands": [
+        "light",
         "tint",
-        "dark",
         "light",
-        "light",
-        "dark"
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 88,
@@ -228,11 +228,11 @@
         "cta-minimal"
       ],
       "bands": [
+        "light",
         "tint",
-        "dark",
         "light",
-        "light",
-        "dark"
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 88,
@@ -271,11 +271,11 @@
         "cta-minimal"
       ],
       "bands": [
+        "light",
         "tint",
-        "dark",
         "light",
-        "light",
-        "dark"
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 88,
@@ -314,11 +314,11 @@
         "cta-minimal"
       ],
       "bands": [
+        "light",
         "tint",
-        "dark",
         "light",
-        "light",
-        "dark"
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 88,
@@ -354,14 +354,14 @@
         "about-image-split",
         "services-offer-grid",
         "testimonials-spotlight",
-        "cta-gradient"
+        "cta-banner"
       ],
       "bands": [
-        "dark",
         "light",
-        "dark",
         "tint",
-        "dark"
+        "light",
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -395,14 +395,14 @@
         "about-image-split",
         "services-offer-grid",
         "testimonials-spotlight",
-        "cta-gradient"
+        "cta-banner"
       ],
       "bands": [
-        "dark",
         "light",
-        "dark",
         "tint",
-        "dark"
+        "light",
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -436,14 +436,14 @@
         "about-image-split",
         "services-offer-grid",
         "testimonials-spotlight",
-        "cta-gradient"
+        "cta-banner"
       ],
       "bands": [
-        "dark",
         "light",
-        "dark",
         "tint",
-        "dark"
+        "light",
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -477,14 +477,14 @@
         "about-image-split",
         "services-offer-grid",
         "testimonials-spotlight",
-        "cta-gradient"
+        "cta-banner"
       ],
       "bands": [
-        "dark",
         "light",
-        "dark",
         "tint",
-        "dark"
+        "light",
+        "tint",
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -521,9 +521,9 @@
         "cta-banner"
       ],
       "bands": [
+        "light",
         "tint",
-        "tint",
-        "tint",
+        "light",
         "tint",
         "tint"
       ],
@@ -565,9 +565,9 @@
         "cta-banner"
       ],
       "bands": [
+        "light",
         "tint",
-        "tint",
-        "tint",
+        "light",
         "tint",
         "tint"
       ],
@@ -609,11 +609,11 @@
         "cta-banner"
       ],
       "bands": [
+        "light",
         "tint",
+        "light",
         "tint",
-        "tint",
-        "tint",
-        "dark"
+        "tint"
       ],
       "quality": {
         "score": 86,
@@ -653,9 +653,9 @@
         "cta-banner"
       ],
       "bands": [
+        "light",
         "tint",
-        "tint",
-        "tint",
+        "light",
         "tint",
         "tint"
       ],
@@ -697,11 +697,11 @@
         "cta-banner"
       ],
       "bands": [
+        "light",
         "tint",
+        "light",
         "tint",
-        "tint",
-        "tint",
-        "dark"
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -738,9 +738,9 @@
         "cta-banner"
       ],
       "bands": [
+        "light",
         "tint",
-        "tint",
-        "tint",
+        "light",
         "tint",
         "tint"
       ],
@@ -779,11 +779,11 @@
         "cta-banner"
       ],
       "bands": [
+        "light",
         "tint",
+        "light",
         "tint",
-        "tint",
-        "tint",
-        "dark"
+        "tint"
       ],
       "quality": {
         "score": 98,
@@ -820,9 +820,9 @@
         "cta-banner"
       ],
       "bands": [
+        "light",
         "tint",
-        "tint",
-        "tint",
+        "light",
         "tint",
         "tint"
       ],
@@ -1511,8 +1511,8 @@
   ],
   "similarity_by_industry": {
     "childcare": {
-      "mean": 0.255,
-      "max": 0.378,
+      "mean": 0.317,
+      "max": 0.48,
       "sites": 5
     },
     "saas": {
@@ -1523,8 +1523,8 @@
   },
   "similarity_by_business": {
     "traditional-kindergarten": {
-      "mean": 0.867,
-      "max": 0.95,
+      "mean": 0.892,
+      "max": 1.0,
       "sites": 4
     },
     "premium-montessori": {
@@ -1538,12 +1538,12 @@
       "sites": 4
     },
     "enrichment-centre": {
-      "mean": 0.883,
-      "max": 0.982,
+      "mean": 0.892,
+      "max": 1.0,
       "sites": 4
     },
     "nursery-gentle": {
-      "mean": 0.869,
+      "mean": 0.881,
       "max": 0.935,
       "sites": 4
     },

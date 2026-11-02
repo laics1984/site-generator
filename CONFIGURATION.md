@@ -139,6 +139,8 @@ is the cost record.
 | `VISION_MAX_IMAGES` | `12` | Annotation cap per generation. |
 | `VISION_IMAGE_MAX_BYTES` | `4000000` | Skip larger downloads. |
 | `VISION_FETCH_TIMEOUT_SECONDS` | `8.0` | Image fetch timeout. |
+| `IMAGE_BYTES_CACHE_MB` | `96` | Raw image bytes shared by every pixel pass, so each photo is downloaded once per generation. `0` keeps no copies (a download in progress is still shared). |
+| `IMAGE_BYTES_CACHE_TTL_SECONDS` | `1800` | How long a downloaded image is kept. |
 | `PEXELS_API_KEY` | `None` | **Secret.** Free key for topical stock photos. |
 | `PEXELS_BASE_URL` | `https://api.pexels.com/v1` | Pexels API base. |
 | `PEXELS_TIMEOUT_SECONDS` | `10.0` | Pexels request timeout. |

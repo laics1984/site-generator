@@ -780,6 +780,63 @@ class ImageResolver:
                 *(_warm(q, orientation, client) for (q, orientation) in wanted)
             )
 
+    async def prewarm_background_bytes(
+        self,
+        slots: list[tuple[str | None, ImageIntent]],
+        *,
+        concurrency: int = 6,
+    ) -> None:
+        """Download, side by side, the stock photo each likely full-bleed slot
+        will screen and sample first, so the serial render reads its bytes from
+        `image_vision`'s cache instead of waiting on one download per hero.
+
+        Output-identical: the render still ranks, screens and samples exactly as
+        before — only the bytes are already here. Narrow on purpose:
+        - stock CDN only, from Pexels results ALREADY cached by `prewarm_stock`
+          (`cached_results` never calls the API, so no quota is spent);
+        - never the source's own photos, which are fetched on demand from the
+          business's server, never speculatively;
+        - the top-ranked fresh photo of each hero/CTA-band query's first chain
+          query — what `_search_pexels` screens first when nothing on the site
+          has used it yet. A wrong guess costs one CDN download.
+        No-op when nothing would read the bytes (OCR and sampling both off).
+        """
+        from app.services.image_vision import _fetch_image_bytes
+        from app.services.text_detection import ocr_enabled
+
+        if not self._pexels.configured or not (
+            ocr_enabled() or settings.photo_sampling_enabled
+        ):
+            return
+        urls: dict[str, None] = {}
+        for query, intent in slots:
+            if not query or intent not in ("hero", "cta_bg"):
+                continue
+            orientation = _INTENT_TO_ORIENTATION[intent]
+            chain = _stock_query_chain(
+                query, intent, self._market_cue, self._industry_category,
+                self._place_cue, tone=self._photo_tone,
+            )
+            if not chain:
+                continue
+            photos = [
+                p for p in self._pexels.cached_results(chain[0], orientation=orientation)
+                if p.url not in self._seen_pexels_urls
+            ]
+            pool = [p for p in photos if not _has_negative_vibe(p.alt)] or photos
+            if pool:
+                best = max(pool, key=lambda p: _stock_relevance(p, query, self._market_cue))
+                urls[best.url] = None
+        if not urls:
+            return
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _warm(url: str) -> None:
+            async with sem:
+                await _fetch_image_bytes(url)
+
+        await asyncio.gather(*(_warm(url) for url in urls), return_exceptions=True)
+
     async def _first_text_free(
         self, ranked: list[PhotoResult], budget: int
     ) -> tuple[PhotoResult | None, int]:

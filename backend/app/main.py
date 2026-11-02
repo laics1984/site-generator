@@ -70,13 +70,15 @@ async def lifespan(app: FastAPI):
     # --- shutdown ---
     # The LLM layer shares one keep-alive httpx client across calls; close it
     # so uvicorn reloads don't leak sockets.
+    from app.services.asset_fetch import aclose_asset_client
     from app.services.llm import aclose_shared_client
 
     await aclose_shared_client()
+    await aclose_asset_client()
 
 
 app = FastAPI(
-    title="Webtree Site Generator",
+    title="WT Gen",
     description="AI-powered website generator producing BuilderElement schemas compatible with the webtree builder.",
     version="0.1.0",
     lifespan=lifespan,

@@ -112,6 +112,8 @@ from app.services.menu_assets import (
     serves_menus,
 )
 from app.services.menu_builder import route_navigation
+from app.services.asset_fetch import gate_source_hosts
+from app.services.family_evidence import footer_facts
 from app.services.photo_url_expiry import keep_photo_links_alive
 from app.services.source_images import without_source_imagery
 from app.services.scaffold_enforcement import (
@@ -852,6 +854,7 @@ async def _condense_team_card_bios(
     if not settings.team_bio_condense_enabled:
         return
     target = settings.team_bio_card_max_chars
+    work: list[tuple[str, list[tuple[int, TeamMember]]]] = []
     for page in plan.pages:
         for block in page.blocks:
             if getattr(block, "kind", None) != "team":
@@ -863,25 +866,31 @@ async def _condense_team_card_bios(
                 for index, member in enumerate(block.members)
                 if member.bio and len(member.bio) > target
             ]
-            if not oversized:
-                continue
-            condensed = await condense_bios(
-                [(member.name, member.bio or "") for _index, member in oversized],
-                target_chars=target,
-                client=llm,
+            if oversized:
+                work.append((page.slug, oversized))
+    # One call per block, each reading and writing only its own members, so
+    # they go out together rather than one after another.
+    results = await asyncio.gather(*(
+        condense_bios(
+            [(member.name, member.bio or "") for _index, member in oversized],
+            target_chars=target,
+            client=llm,
+        )
+        for _slug, oversized in work
+    ))
+    for (slug, oversized), condensed in zip(work, results):
+        for entry, bio in condensed.items():
+            member = oversized[entry][1]
+            member.bio = bio
+            # The deprecated alias is read by _team_content as
+            # `bio or description`; leaving it behind would resurrect the
+            # full text. Same trap _sanitize_team_block documents.
+            member.description = bio
+        if condensed:
+            logger.info(
+                "Bio condense: shortened %d of %d card bios on /%s",
+                len(condensed), len(oversized), slug,
             )
-            for entry, bio in condensed.items():
-                member = oversized[entry][1]
-                member.bio = bio
-                # The deprecated alias is read by _team_content as
-                # `bio or description`; leaving it behind would resurrect the
-                # full text. Same trap _sanitize_team_block documents.
-                member.description = bio
-            if condensed:
-                logger.info(
-                    "Bio condense: shortened %d of %d card bios on /%s",
-                    len(condensed), len(oversized), page.slug,
-                )
 
 
 def _ensure_scraped_team_blocks(
@@ -1318,12 +1327,27 @@ async def _safe_extract_collections(source: SourceContent):
         return None
 
 
+def _gate_source_hosts(source: SourceContent) -> None:
+    """Cap this generation's file downloads from the business's own server.
+
+    Every pixel pass reads the source's photos from it, and a generation that
+    follows no crawl in this process (a cached scrape, a restart, a paste or a
+    Page that links the site) had no per-host cap at all — see
+    asset_fetch.gate_source_hosts.
+    """
+    gate_source_hosts([
+        source.source_ref,
+        *(page.source_ref for page in source.discovered_pages or []),
+    ])
+
+
 @router.post("/from-source", response_model=GeneratedSite)
 async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
     """
     LLM picks pages and sections freely. Kept for backward compatibility;
     new flows should use /with-pages for deterministic output.
     """
+    _gate_source_hosts(payload.source)
     live = await keep_photo_links_alive(payload.source, payload.brand)
     payload.source, payload.brand = live.source, live.brand
     # The language plan, decided once; the planner writes in its primary.
@@ -1440,6 +1464,7 @@ async def generate_from_source(payload: GenerateRequest) -> GeneratedSite:
         footer_override=payload.footer_archetype,
         stock_only=payload.stock_images_only,
         languages=languages,
+        footer_facts=footer_facts(payload.source, plan.industry_category),
     )
     site.collections = await collections_task
     site.palette_brief = {"business": site.site_name, "industry": plan.industry_category, **design_inputs(payload.source, brand)}
@@ -1591,6 +1616,7 @@ async def generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSit
 
 
 async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSite:
+    _gate_source_hosts(payload.source)
     # The language plan, decided once, before anything reads the page set: a
     # translation of a language the plan doesn't publish is not built.
     payload.source = with_plan(payload.source, payload.multilingual)
@@ -1932,11 +1958,13 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # Should already be done — it started with the prefetch and the content LLM
     # ran meanwhile. Awaited here only so a slow scrape can't leave the flags
     # half-written while sections resolve their backgrounds.
-    await ocr_task
-    await graphics_task
-    annotations = await _annotate_source_images(
-        payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
-    )
+    with stage("image_screens_wait"):
+        await ocr_task
+        await graphics_task
+    with stage("vision_annotation"):
+        annotations = await _annotate_source_images(
+            payload.source, scraped_metadata, prefetched=prefetched, profiles=profiles
+        )
     # Every pixel reading is in now. An image carrying words or a code can fill
     # no slot that crops or overprints it, so it is placed whole instead.
     menu_assets = []
@@ -1964,7 +1992,8 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         directory_slugs=directory_slugs,
     )
     _drop_hollow_team_pages(plan)
-    await _condense_team_card_bios(plan)
+    with stage("bio_condense"):
+        await _condense_team_card_bios(plan)
     # After the last pass that can remove a page, so a member's link is checked
     # against the pages the site actually ships.
     _prune_dead_profile_links(plan)
@@ -1992,7 +2021,8 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # A card naming an offering or a facility shows its own post's photo,
     # ahead of the model's pick.
     pin_knowledge_photos(plan.pages, source_map)
-    await verify_many(referenced_images(plan.pages, source_map))
+    with stage("verify_bound_images"):
+        await verify_many(referenced_images(plan.pages, source_map))
     if serves_menus(industry):
         menu_assets = assess_menu_assets(payload.source, scraped_metadata)
         inject_menu_assets(
@@ -2061,33 +2091,35 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
         asyncio.create_task(_safe_extract_collections(payload.source))
         if payload.generation_mode == "full" else None
     )
-    site = await plan_to_site(
-        plan,
-        brand=brand,
-        theme=theme,
-        scraped_images=scraped_images,
-        scraped_metadata=scraped_metadata,
-        page_images=page_images,
-        contact=contact,
-        extra_footer_nav=extra_footer_nav,
-        extra_pages=legal_page_list,
-        market_cue=market_cue,
-        place_cue=place_cue,
-        social_links=_social_links_for(payload.source),
-        whatsapp_widget=_whatsapp_widget_for(payload.source, plan.site_name),
-        reserved_image_urls=bound_image_urls,
-        header_override=payload.header_archetype,
-        footer_override=payload.footer_archetype,
-        stock_only=payload.stock_images_only,
-        source_navigation=source_navigation,
-        available_pages=(
-            payload.available_scaffolds
-            if payload.available_scaffolds is not None
-            else planned_scaffolds if payload.generation_mode == "two_page_preview"
-            else None
-        ),
-        languages=languages,
-    )
+    with stage("plan_to_site"):
+        site = await plan_to_site(
+            plan,
+            brand=brand,
+            theme=theme,
+            scraped_images=scraped_images,
+            scraped_metadata=scraped_metadata,
+            page_images=page_images,
+            contact=contact,
+            extra_footer_nav=extra_footer_nav,
+            extra_pages=legal_page_list,
+            market_cue=market_cue,
+            place_cue=place_cue,
+            social_links=_social_links_for(payload.source),
+            whatsapp_widget=_whatsapp_widget_for(payload.source, plan.site_name),
+            reserved_image_urls=bound_image_urls,
+            header_override=payload.header_archetype,
+            footer_override=payload.footer_archetype,
+            stock_only=payload.stock_images_only,
+            source_navigation=source_navigation,
+            available_pages=(
+                payload.available_scaffolds
+                if payload.available_scaffolds is not None
+                else planned_scaffolds if payload.generation_mode == "two_page_preview"
+                else None
+            ),
+            languages=languages,
+            footer_facts=footer_facts(payload.source, industry),
+        )
     site.collections = await collections_task if collections_task else None
     site.generation_warnings = [*language_warnings, *live.warnings, *menu_review_warnings(menu_assets)]
     # Each translated page was derived from its page's string map; finish what

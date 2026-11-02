@@ -148,39 +148,13 @@ def card_surface(
             "padding": padding,
             "borderRadius": radius,
             "backgroundColor": palette.background,
-            "border": f"1px solid {_hairline(palette.secondary)}",
+            "border": f"1px solid {card_rule(palette)}",
             "gap": gap,
             "boxShadow": shadow(getattr(theme, "shadow_scale", "soft")),
         }
     base: dict[str, Any] = {"padding": padding, "borderRadius": radius, "gap": gap}
-    if treatment == "bordered":
-        return {
-            **base,
-            "backgroundColor": palette.background,
-            "border": f"1px solid {_hairline(palette.secondary, alpha=0.14)}",
-            "boxShadow": "none",
-        }
-    if treatment == "elevated":
-        return {
-            **base,
-            "backgroundColor": palette.background,
-            "border": "none",
-            "boxShadow": shadow(getattr(theme, "shadow_scale", "elevated")),
-        }
-    if treatment == "flat":
-        return {
-            **base,
-            "backgroundColor": "transparent",
-            "border": "none",
-            "boxShadow": "none",
-        }
-    if treatment == "outline":
-        return {
-            **base,
-            "backgroundColor": "transparent",
-            "border": f"2px solid {_hairline(palette.secondary, alpha=0.22)}",
-            "boxShadow": "none",
-        }
+    if treatment != "glass":
+        return {**base, **card_frame(theme, treatment, getattr(theme, "shadow_scale", "elevated"))}
     # "glass" — the frosted pane owns its own fill/border/shadow.
     return {**base, **glass_card_styles(theme)}
 
@@ -538,6 +512,54 @@ def _hairline(hex_color: str, alpha: float = 0.10) -> str:
     g = int(hex_color[3:5], 16)
     b = int(hex_color[5:7], 16)
     return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def _dark_page(palette: Any) -> bool:
+    from app.services.color_system import luminance
+
+    return luminance(palette.background) < .2
+
+
+def card_rule(palette: Any, alpha: float = 0.10) -> str:
+    """The hairline a card treatment frames a card with: the palette's dark
+    neutral at a low alpha on a light page, the colour system's `border` role
+    on a dark one. `secondary` is the DARKEST band colour of a dark palette, so
+    a rule drawn from it there is black on black — the bordered and outline
+    treatments were frameless on every dark site (services/card_frames.py)."""
+    if _dark_page(palette):
+        from app.services.color_system import derive
+
+        return f"var(--builder-color-border, {derive(palette.model_dump())['border']})"
+    return _hairline(palette.secondary, alpha)
+
+
+def card_fill(palette: Any) -> str:
+    """The fill a filled card treatment paints: the page colour on a light
+    page, where its hairline or shadow lifts it; `surface-elevated` on a dark
+    one, where a shadow is invisible and a card is lifted by being lighter."""
+    if _dark_page(palette):
+        from app.services.color_system import derive
+
+        return f"var(--builder-color-surface-elevated, {derive(palette.model_dump())['surface-elevated']})"
+    return palette.background
+
+
+def card_frame(theme: ThemeTokens, treatment: str, shadow_scale: str) -> dict[str, Any]:
+    """Fill, frame and lift for a non-glass card treatment, stated together —
+    the one table both card paths (`card_styles`, the catalogue's
+    `schema_builder._modernize_card`) read."""
+    palette = theme.palette
+    if treatment == "bordered":
+        return {"backgroundColor": card_fill(palette),
+                "border": f"1px solid {card_rule(palette, alpha=0.14)}", "boxShadow": "none"}
+    if treatment == "elevated":
+        return {"backgroundColor": card_fill(palette), "border": "none",
+                "boxShadow": shadow(shadow_scale)}
+    if treatment == "outline":
+        return {"backgroundColor": "transparent",
+                "border": f"2px solid {card_rule(palette, alpha=0.22)}", "boxShadow": "none"}
+    # "flat" — no surface at all; the grid gap does the separating.
+    return {"backgroundColor": "transparent", "border": "none", "boxShadow": "none"}
 
 
 def _fluid(min_px: float, max_px: float) -> str:

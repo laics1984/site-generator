@@ -193,3 +193,22 @@ class MergePricingBlocksTest(unittest.TestCase):
             [(t.name, t.price) for t in merged.tiers],
             [("Starter", "RM 119 / month"), ("Growth", "RM 249 / month"), ("Business", "RM 449 / month")],
         )
+
+    def test_one_price_restated_on_every_tier_loses_to_the_real_table(self):
+        # A chunk that saw only the plans' intro wrote every plan "From RM 119".
+        # It tied the real table on priced tiers and had more feature lines.
+        from app.models.content_blocks import PricingBlock, PricingTier
+
+        restated = PricingBlock(tiers=[
+            PricingTier(name=name, price="From RM 119 a month", features=["a", "b", "c", "d"])
+            for name in ("Starter", "Growth", "Business")
+        ])
+        table = PricingBlock(tiers=[
+            PricingTier(name="Starter", price="RM 119 / month", features=["Website"]),
+            PricingTier(name="Growth", price="RM 249 / month", features=["Shared inbox"]),
+            PricingTier(name="Business", price="RM 449 / month", features=["Setup help"]),
+        ])
+
+        merged = _merge_blocks_of_kind([restated, table])
+
+        self.assertEqual([t.price for t in merged.tiers], ["RM 119 / month", "RM 249 / month", "RM 449 / month"])

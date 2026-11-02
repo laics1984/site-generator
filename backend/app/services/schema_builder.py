@@ -84,6 +84,7 @@ from app.models.design_manifest import (
     HeaderArchetype,
 )
 from app.models.industry import PageScaffold
+from app.services.family_evidence import FooterFacts
 from app.services.inline_translation import apply_inline_translation
 from app.services import locale_overlay
 from app.services.translations import localized_body
@@ -177,7 +178,8 @@ from app.services.design_schemes import (
 )
 # Pure style/CSS helpers live in a sibling module; re-imported here so the public
 # path app.services.schema_builder.<name> is unchanged for callers and tests.
-from app.services import creative_directions
+from app.services import contact_intents, creative_directions, friendly_envelope
+from app.services.card_frames import card_children, is_named_card, separate_cards
 from app.services.style_tokens import (
     IMAGE_SHAPES,
     SHAPED_IMAGE_NAMES,
@@ -190,6 +192,7 @@ from app.services.style_tokens import (
     apply_section_decoration,
     band_tints,
     brand_ink,
+    card_frame,
     emphasis_ink,
     eyebrow_styles,
     glass_card_styles,
@@ -358,23 +361,7 @@ def _modernize_card(styles: dict[str, Any], plan: _ModernizePlan) -> None:
     # hybrid of two vocabularies.
     styles.pop("backdropFilter", None)
     styles.pop("WebkitBackdropFilter", None)
-    palette = plan.theme.palette
-    if treatment == "bordered":
-        styles["backgroundColor"] = palette.background
-        styles["border"] = f"1px solid {_hairline(palette.secondary, alpha=0.14)}"
-        styles["boxShadow"] = "none"
-    elif treatment == "elevated":
-        styles["backgroundColor"] = palette.background
-        styles["border"] = "none"
-        styles["boxShadow"] = shadow(plan.shadow_scale)
-    elif treatment == "outline":
-        styles["backgroundColor"] = "transparent"
-        styles["border"] = f"2px solid {_hairline(palette.secondary, alpha=0.22)}"
-        styles["boxShadow"] = "none"
-    else:  # "flat" — no surface at all; the grid gap does the separating
-        styles["backgroundColor"] = "transparent"
-        styles["border"] = "none"
-        styles["boxShadow"] = "none"
+    styles.update(card_frame(plan.theme, treatment, plan.shadow_scale))
 
 
 def _walk_modernize(
@@ -383,9 +370,12 @@ def _walk_modernize(
     plan: _ModernizePlan,
     headings: list[tuple[BuilderElement, float]],
     painted: bool = False,
+    card: bool | None = None,
 ) -> None:
     styles = node.styles
     name = (node.name or "").strip()
+    if card is None:  # a section root: only its name can say it is a card
+        card = is_named_card(node)
 
     if node.type == "text":
         fs = styles.get("fontSize")
@@ -424,16 +414,12 @@ def _walk_modernize(
             if painted:
                 styles["color"] = emphasis_ink(plan.theme)
 
-    elif (
-        node.type in ("container", "2Col", "3Col")
-        and name.lower().endswith("card")
-        # Only enhance a container that is ALREADY a styled card. Catalogue cards
-        # nest a bare wrapper "*Card" around the real styled "*Card" (and the
-        # contact form's "*Card" wraps a self-styled form), so framing a bare
-        # wrapper would draw a second border around the real card. Requiring
-        # existing card styling targets the real card and skips wrappers.
-        and any(k in styles for k in ("borderRadius", "border", "backgroundColor"))
-    ):
+    elif card:
+        # Which nodes are cards is `card_frames.card_children`'s answer, by
+        # structure: a named card, or a framed container that repeats. The
+        # name alone ("*Card") missed every catalogue cell — Step, Member,
+        # Tier, Stat, FAQ — so they kept their light-page styling on every
+        # palette and never took the scheme's treatment.
         _modernize_card(styles, plan)
         # A surfaceless card (the flat and outline treatments) states that it
         # carries no texture either. Every renderer resolves an unparseable fill
@@ -446,8 +432,14 @@ def _walk_modernize(
 
     content = node.content
     if isinstance(content, list):
+        # A bento tile's fill is its composition's (an inverted lead tile, the
+        # grid's own rhythm), so a placed tile is judged by the floor pass but
+        # never re-dressed by a treatment.
+        cards = {id(c) for c in card_children(node)
+                 if is_named_card(c) or "gridColumn" not in (c.styles or {})}
         for child in content:
-            _walk_modernize(child, plan=plan, headings=headings, painted=painted)
+            _walk_modernize(child, plan=plan, headings=headings, painted=painted,
+                            card=id(child) in cards)
 
 
 def modernize_sections(sections: list[BuilderElement], theme: ThemeTokens) -> None:
@@ -887,23 +879,19 @@ _DIVIDER_SHAPE_BY_MOOD: dict[str, str | None] = {
 
 _DEFAULT_DIVIDER_COLOR = "var(--builder-page-background, #ffffff)"
 
-# The header's (and footer cta-banner's) primary CTA label, by industry —
-# an action verb relevant to how that industry actually converts, instead of
-# the generic "Get in touch" for every site. Falls back to "Get in touch" for
-# "other" and any industry without a sharper fit.
-_CTA_LABEL_BY_INDUSTRY: dict[str, str] = {
-    "restaurant": "Request a Table",
-    "agency": "Start a Project",
-    "saas": "Get Started",
-    "professional-services": "Request a Consultation",
-    "ecommerce": "Enquire About Products",
-    "consultancy": "Request a Consultation",
-    "nonprofit": "Get Involved",
-    "childcare": "Request a Tour",
-    "home-services": "Get a Free Quote",
-    "health-wellness": "Book an Appointment",
-    "real-estate": "Book a Viewing",
-}
+def _contact_intent(theme: ThemeTokens, industry: str | None) -> str:
+    """The site's contact intent: what its header button says and what its
+    enquiry form is written for — one answer for both."""
+    direction = creative_directions.for_theme(theme)
+    return contact_intents.intent_for(
+        direction.cta_strategy if direction is not None else None, industry
+    )
+
+
+def _contact_form_content(ctx: RenderContext) -> dict:
+    return contact_intents.form_content(
+        _contact_intent(ctx.theme, ctx.industry), ctx.industry
+    )
 
 
 def _divider_shape(
@@ -1183,10 +1171,20 @@ def contrast_cta_bands(
     # light or dark band stands apart (a dark footer under a dark section).
     # A multi-tint scheme (playroom) speaks in colour, so there the brand hues
     # come before the dark neutral: its ask stays in its own voice.
+    #
+    # A friendly site's ask (services/friendly_envelope.py) is always the deep
+    # pastel of the brand hue — the one pastel reliably 1.25:1 off the others —
+    # and only ever falls back to another pastel; it never keeps a band it
+    # happened to land on.
+    friendly = friendly_envelope.holds(theme)
     hues = [palette.primary, palette.accent]
-    pool = [palette.surface, palette.background, *band_tints(theme),
-            *((hues + [palette.secondary]) if for_theme(theme).band_tint == "multi-tint"
-              else ([palette.secondary] + hues))]
+    pool = (
+        [friendly_envelope.deep_pastel(theme), palette.surface, palette.background, *band_tints(theme)]
+        if friendly
+        else [palette.surface, palette.background, *band_tints(theme),
+              *((hues + [palette.secondary]) if for_theme(theme).band_tint == "multi-tint"
+                else ([palette.secondary] + hues))]
+    )
     for index, section in enumerate(sections):
         if not template_id_of(section).startswith("cta"):
             continue
@@ -1219,7 +1217,7 @@ def contrast_cta_bands(
         def fits(band: str) -> bool:
             return legible(band) and closest(band) >= _BAND_DISTINCT_CONTRAST
 
-        if fits(current):
+        if fits(current) and not friendly:
             continue
         candidates = list(dict.fromkeys(c.lower() for c in pool if _opaque_hex(c, theme)))
         chosen = next((c for c in candidates if fits(c)), None)
@@ -1233,6 +1231,41 @@ def contrast_cta_bands(
         new_styles.pop("borderTop", None)
         section.styles = new_styles
         _reink_for_band(section, chosen, theme)
+
+
+def apply_friendly_bands(sections: list[BuilderElement], theme: ThemeTokens) -> None:
+    """A friendly site's bands (services/friendly_envelope.py): every flat
+    section takes its place in `band_sequence` — the opening on the brand
+    tint, then the page colour and the tint in turn (a multi-tint scheme's
+    colour bands alternating the tint and one companion). Whatever the rhythm,
+    the legacy rotation or a scheme painted there — a dark band, a vivid
+    `primary` band, `surface` 1.05:1 off the tint — is overwritten, so a pass
+    added later cannot bring a dark band back, and copy is re-inked for the
+    new band. On a friendly site this replaces the multi-tint pass.
+
+    The opening's own light gradient (the playful split's 8% brand wash reads
+    as white) gives way to the tint too; a section that paints a picture keeps
+    it and still takes its place in the order, and pictures and dark gradients
+    elsewhere are the envelope's composition half to refuse. The CTA's deep
+    pastel is `contrast_cta_bands`'. Run after the band passes and before the
+    title-ink and CTA passes, so both see the final bands. In place."""
+    if not friendly_envelope.holds(theme):
+        return
+    sequence = friendly_envelope.band_sequence(
+        theme, len(sections), two_hue=for_theme(theme).band_tint == "multi-tint"
+    )
+    for index, (section, band) in enumerate(zip(sections, sequence)):
+        if index == 0 and _section_surface(section) == "gradient" and not section.painted_surface:
+            section.styles = {
+                key: value for key, value in (section.styles or {}).items()
+                if key not in ("background", "backgroundImage")
+            }
+        if _section_surface(section) != "flat" or section.painted_surface:
+            continue
+        styles = {**(section.styles or {}), "backgroundColor": band}
+        styles.pop("borderTop", None)  # the rhythm's collision seam; bands no longer collide
+        section.styles = styles
+        _reink_for_band(section, band, theme)
 
 
 def _reink_for_band(section: BuilderElement, band: str, theme: ThemeTokens) -> None:
@@ -3022,7 +3055,7 @@ async def _build_contact(
         name="Contact Form",
         type="contactForm",
         styles={**s.cards, "padding": "32px", "width": "100%"},
-        content=BuilderElementContent(),
+        content=BuilderElementContent(**_contact_form_content(ctx)),
     )
 
     return _section(
@@ -4264,9 +4297,12 @@ def _abstract_theme_query(ctx: RenderContext) -> str:
     gradient mesh texture") for a hero's atmospheric background. The colour word
     is the brand primary's nearest Tailwind family, so the background reads
     on-theme; "gradient mesh" steers Pexels toward soft aurora/mesh abstracts
-    rather than busy photographic textures."""
+    rather than busy photographic textures. A friendly industry's backdrop is
+    about children even when it is abstract (services/friendly_envelope.py)."""
     family = color_family_name(ctx.theme.palette.primary)
-    return f"abstract {family} gradient mesh texture"
+    return friendly_envelope.backdrop_query(ctx.industry, family) or (
+        f"abstract {family} gradient mesh texture"
+    )
 
 
 # Moods whose audience (SaaS / fintech / tech for `modern`; engineering / B2B /
@@ -4298,6 +4334,8 @@ async def _apply_hero_directive(
     abstract_query = _abstract_theme_query(ctx)
     primary_hex = ctx.theme.palette.primary
     block.layout = directive.layout
+    # A friendly site's hero shows children, on every page.
+    block.image_query = friendly_envelope.hero_query(ctx.industry, block.image_query)
 
     if directive.template_id in IMAGELESS_HERO_IDS:
         block.image_query = None
@@ -4636,9 +4674,10 @@ async def block_to_element(
             template,
             content,
             resolve_image=resolve_image,
-            # Empty content: the builder's contact-form renderer applies its own
-            # field defaults, so the generator need not embed them.
-            content_factories={"contactFormDefault": lambda: {}},
+            # The form the header's button promises (services/contact_intents):
+            # written for the childcare and SaaS families, empty — the
+            # renderer's own defaults — everywhere else.
+            content_factories={"contactFormDefault": lambda: _contact_form_content(ctx)},
             # Brand-tinted overlay for photo backgrounds, its copy scrim solved
             # for the photo as measured and the light ink the copy will wear.
             theme={
@@ -5120,6 +5159,7 @@ async def plan_to_site(
     footer_override: FooterArchetype | None = None,
     stock_only: bool = False,
     languages: MultilingualPlan | None = None,
+    footer_facts: FooterFacts | None = None,
 ) -> GeneratedSite:
     """
     Build a complete, themed site from a SitePlan.
@@ -5282,8 +5322,11 @@ async def plan_to_site(
     #   recipe, so every per-page lookup below yields None and selection falls
     #   back to the deterministic mood-ordered choice.
     async def _prewarm() -> None:
+        slots = _harvest_image_slots(plan)
         with stage("stock_prewarm"):
-            await resolver.prewarm_stock(_harvest_image_slots(plan))
+            await resolver.prewarm_stock(slots)
+        with stage("background_bytes_prewarm"):
+            await resolver.prewarm_background_bytes(slots)
 
     async def _design_recipe():
         with stage("design_recipe"):
@@ -5349,6 +5392,9 @@ async def plan_to_site(
             if (site_direction := creative_directions.for_theme(theme))
             else ()
         ),
+        # A friendly industry refuses the dark-backdrop heroes on every page
+        # (services/friendly_envelope.py), the pill's request included.
+        industry=plan.industry_category,
     )
     # With every page on the same full-bleed template, how each hero is COMPOSED
     # is the only axis of variety left — planned site-wide so consecutive pages
@@ -5637,10 +5683,14 @@ async def plan_to_site(
         # plus a dark band — a scheme's voice, never an industry's. Runs after
         # the rhythm/modernize passes (overrides their flat colours) and before
         # dividers (so seam fills read the final tints). Photo/gradient
-        # sections are untouched; a dark build has no light tints to give.
+        # sections are untouched; a dark build has no light tints to give. A
+        # friendly site's bands are the envelope's order instead, the
+        # multi-tint voice included (two hues, not four).
         page_scheme = for_theme(theme)
         page_direction = creative_directions.for_theme(theme)
-        if (
+        if friendly_envelope.holds(theme):
+            apply_friendly_bands(elements, theme)
+        elif (
             page_scheme.band_tint == "multi-tint"
             and getattr(theme, "color_scheme", "light") != "dark"
         ):
@@ -5795,8 +5845,8 @@ async def plan_to_site(
     footer_nav = list(nav_items)
     if extra_footer_nav:
         footer_nav.extend(extra_footer_nav)
-    # The header's primary CTA (label varies by industry, see
-    # _CTA_LABEL_BY_INDUSTRY) routes to the contact destination resolved above
+    # The header's primary CTA (its words are the site's contact intent, see
+    # services/contact_intents.py) routes to the contact destination resolved above
     # — the site's Contact page, preferring one that carries a form. It is the
     # header's only route there: menu_builder leaves Contact out of the primary
     # nav (see its policy note) because this CTA covers that action. It is
@@ -5807,13 +5857,8 @@ async def plan_to_site(
         (
             # The direction's conversion intent when the site has one (a
             # Montessori casa asks for a tour, an IT firm for an assessment);
-            # the industry's wording otherwise.
-            (
-                creative_directions.contact_cta_label(site_dir)
-                if (site_dir := creative_directions.for_theme(theme)) is not None
-                else None
-            )
-            or _CTA_LABEL_BY_INDUSTRY.get(plan.industry_category, "Get in touch"),
+            # the industry's otherwise — the same intent its form is written for.
+            contact_intents.label_for(_contact_intent(theme, plan.industry_category)),
             base_contact_href,
         )
         if base_contact_href
@@ -5871,6 +5916,7 @@ async def plan_to_site(
             for block in reversed(page.blocks)
             if isinstance(block, CtaBlock) and block.cta_href == base_contact_href
         ), None),
+        facts=footer_facts,
         nav_groups=nav_groups,
     )
 
@@ -5902,6 +5948,10 @@ async def plan_to_site(
     # round-trips as an opaque record; both renderers ignore it.
     for generated_page in [*pages, *outside_pages]:
         bind_theme_styles(generated_page.body_schema.elements, canonical_theme, theme)
+        # Every card stands off the band it sits on, judged on the colours the
+        # renderer paints — after the rebind, which moves secondary-derived
+        # bands (services/card_frames.py).
+        separate_cards(generated_page.body_schema.elements, canonical_theme)
     bind_theme_styles([c for c in (header, footer) if isinstance(c, BuilderElement)], canonical_theme, theme)
     # Last body pass: every shaped edge restated from the section it reveals,
     # after the v2 rebind and every recolour, so a wedge always matches it.

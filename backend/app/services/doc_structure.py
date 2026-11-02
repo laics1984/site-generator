@@ -11,7 +11,9 @@ whichever bucket is open. The leading bucket becomes the primary page
 Crucially, section composition and visual distinctiveness are **not** derived
 here — ``infer_page_scaffolds`` + the section catalog own that, identically to
 the scrape path. This module only decides *which pages exist* and *which content
-belongs to each*.
+belongs to each*, and hands each page its section tree
+(``outline_sections``) — the document's own structure, the way the crawler
+hands a page the tree its markup declares.
 """
 
 from __future__ import annotations
@@ -21,7 +23,8 @@ from typing import Mapping
 
 from app.models.content_blocks import ImageMetadata, SourceContent
 from app.services.doc_contract import classify_page_title, is_home_title, slug_for_title
-from app.services.source_outline import ParsedDocument
+from app.services.outline_sections import outline_sections
+from app.services.source_outline import OutlineBlock, ParsedDocument
 
 # A page-topic heading must be reasonably prominent. Examining only H1/H2 keeps a
 # deep "Heading 3" detail inside a section from fracturing the page into many.
@@ -62,7 +65,7 @@ class _PlacedImage:
 class _Bucket:
     """Accumulates one page's title + headings + body lines in reading order."""
 
-    __slots__ = ("title", "slug", "page_type", "headings", "lines", "images")
+    __slots__ = ("title", "slug", "page_type", "headings", "lines", "blocks", "images")
 
     def __init__(self, title: str, slug: str, page_type: str) -> None:
         self.title = title
@@ -70,6 +73,7 @@ class _Bucket:
         self.page_type = page_type
         self.headings: list[str] = []
         self.lines: list[str] = []
+        self.blocks: list[OutlineBlock] = []  # the lines, with their heading levels
         self.images: list[_PlacedImage] = []
 
     @property
@@ -178,6 +182,7 @@ def split_into_pages(
                 current.headings.append(text)
                 last_heading = text
             current.lines.append(text)
+            current.blocks.append(block)
 
         bucket_at.append(current)
         heading_at.append(last_heading)
@@ -202,6 +207,7 @@ def split_into_pages(
         url_path=None,
         discovered_pages=[_page_source(parsed, b) for b in discovered],
         image_metadata=home_meta,
+        section_candidates=outline_sections(home.blocks),
         reference_colors=parsed.reference_colors[:8],
     )
     return primary
@@ -218,6 +224,7 @@ def _page_source(parsed: ParsedDocument, bucket: _Bucket) -> SourceContent:
         url_path=f"/{bucket.slug}",
         images=urls,
         image_metadata=meta,
+        section_candidates=outline_sections(bucket.blocks),
     )
 
 

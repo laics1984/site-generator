@@ -154,6 +154,69 @@ class ExtractEntryTest(unittest.TestCase):
         self.assertIn('src="https://acme.my/img/pic.jpg"', entry.body_html)
 
 
+def _wordpress_post_html(*, og_title: str, site_name: str | None = "MyKiddyLand") -> str:
+    """The shape of a mykiddyland.com post: no JSON-LD, no published_time, the
+    post's date shown as text in a bare <time>, and reader comments below the
+    article each carrying a machine-readable timestamp."""
+    site = f'<meta property="og:site_name" content="{site_name}">' if site_name else ""
+    return f"""
+    <html><head>
+      {site}<meta property="og:title" content="{og_title}">
+    </head><body class="single single-post postid-744">
+      <section><h1>Post</h1><time class="ct-text-block"><span>July 27, 2022</span></time></section>
+      <article id="main-article-content">
+        <p>MyKiddyLand is one of the most popular kindergartens in Malaysia today,
+        and parents choose it for its programmes and its teachers.</p>
+      </article>
+      <aside><time datetime="2024-01-01T00:00:00+08:00">Recent post</time></aside>
+      <div id="comments" class="comments-area"><ol class="comment-list">
+        <li class="comment"><article class="comment-body"><footer class="comment-meta">
+          <div class="comment-metadata"><a href="#c1">
+            <time datetime="2023-06-29T07:47:57+08:00">June 29, 2023 at 7:47 AM</time>
+          </a></div>
+        </footer><p>Great article, thank you for sharing.</p></article></li>
+      </ol></div>
+    </body></html>
+    """
+
+
+class WordPressPostTest(unittest.TestCase):
+    """Measured on mykiddyland's 11 posts: every title carried " - MyKiddyLand",
+    8 dates were a reader's comment and 3 were missing."""
+
+    URL = "https://mykiddyland.com/advantages-of-going-kindergarten/"
+
+    def test_the_site_name_comes_off_the_title_and_its_own_separator_stays(self):
+        html = _wordpress_post_html(
+            og_title="Kindergarten Selangor - What Are The Advantages Of Going There? - MyKiddyLand"
+        )
+        entry = _extract_entry(html, self.URL, "blog")
+        self.assertEqual(entry.title, "Kindergarten Selangor - What Are The Advantages Of Going There?")
+
+    def test_a_site_name_in_front_comes_off_too(self):
+        html = _wordpress_post_html(og_title="MyKiddyLand | Kindergarten In Kuala Lumpur : 3 Benefits")
+        entry = _extract_entry(html, self.URL, "blog")
+        self.assertEqual(entry.title, "Kindergarten In Kuala Lumpur : 3 Benefits")
+
+    def test_with_no_site_name_declared_the_title_is_kept_whole(self):
+        html = _wordpress_post_html(og_title="Winter Tips - Acme Co", site_name=None)
+        entry = _extract_entry(html, self.URL, "blog")
+        self.assertEqual(entry.title, "Winter Tips - Acme Co")
+
+    def test_the_date_is_the_posts_own_not_a_comments(self):
+        entry = _extract_entry(
+            _wordpress_post_html(og_title="Advantages - MyKiddyLand"), self.URL, "blog"
+        )
+        self.assertEqual(entry.published_at, datetime(2022, 7, 27, tzinfo=timezone.utc))
+
+    def test_comments_and_sidebars_never_date_a_post(self):
+        html = _wordpress_post_html(og_title="Advantages - MyKiddyLand").replace(
+            '<time class="ct-text-block"><span>July 27, 2022</span></time>', ""
+        )
+        entry = _extract_entry(html, self.URL, "blog")
+        self.assertIsNone(entry.published_at)
+
+
 class CandidateUrlTest(unittest.TestCase):
     def test_detail_paths_under_listing(self):
         self.assertTrue(_is_detail_path("/blog/my-post", "/blog"))

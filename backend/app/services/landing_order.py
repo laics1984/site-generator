@@ -19,7 +19,7 @@ from app.services.landing_source import (
     CONVERSION_SOURCE_KINDS, JOURNEY_ROLES, homepage_source, journey_sections,
     section_role, text_action_links,
 )
-from app.services.page_inference import source_section_kinds
+from app.services.page_inference import follows_source_tree, source_section_kinds
 
 
 def _has_action(scaffolds: list[PageScaffold], source: SourceContent) -> bool:
@@ -52,6 +52,9 @@ def _prepare_source_journey(
     if source.source_kind not in CONVERSION_SOURCE_KINDS or scaffold.page_type not in {"home", "landing"}:
         return None
     if scaffold.page_type == "home" and not scaffold.is_homepage:
+        return None
+    if follows_source_tree(scaffold, source):
+        # The author already ordered these sections; a journey would re-sort them.
         return None
     if scaffold.is_homepage:
         source = homepage_source(source)

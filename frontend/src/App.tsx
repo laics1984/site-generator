@@ -80,7 +80,7 @@ export default function App() {
   // 'auto' → send null so the backend decides from the logo (light logo ⇒ dark).
   const [colorScheme, setColorScheme] = useState<ColorSchemeChoice>('auto')
   // Hero photo-background height, site-wide. 'full' = full-screen hero (default).
-  const [paletteDesignMode, setPaletteDesignMode] = useState<'shared' | 'separate'>('separate')
+  const [paletteDesignMode, setPaletteDesignMode] = useState<'shared' | 'separate'>('shared')
   const [heroHeight, setHeroHeight] = useState<HeroHeightChoice>('auto')
   // Dress the whole site in Pexels stock and ignore the source's own photos.
   const [stockImagesOnly, setStockImagesOnly] = useState(false)
@@ -766,7 +766,7 @@ export default function App() {
         )}
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-ink">
-            {site ? 'Adjust and regenerate' : 'Generate a website'}
+            {site ? 'Adjust and regenerate' : 'Gen'}
           </h1>
           <p className="mt-1 text-sm text-ink-muted">
             Point us at a site, a document, your own text — any combination. We extract the

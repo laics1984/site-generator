@@ -39,6 +39,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from app.services import contact_intents
 from app.config import settings
 from app.services.design_schemes import HeroLead
 
@@ -104,6 +105,11 @@ class CreativeDirection:
     # A direction carried by its photographs needs some: below this many
     # content photos it is held back (never promoted for having them).
     min_photos: int = 0
+    # Written for ONE kind of business inside a family: offered only when the
+    # site is that archetype. A fintech direction must not compete on every
+    # SaaS site — the family's own directions are still all offered to the
+    # fintech site, so it inherits the family and adds its own.
+    requires_archetype: bool = False
 
 
 _CHILDCARE = frozenset({"childcare"})
@@ -330,6 +336,62 @@ DIRECTIONS: tuple[CreativeDirection, ...] = (
         cta_strategy=("demo", "trial", "enquire"),
         anti_patterns=("purple-blue-gradient", "gradient-heavy", "repeated-card-grids"),
     ),
+    # Fintech: money is a trust decision before it is a product decision. Both
+    # are offered to fintech sites only (requires_archetype), on top of every
+    # SaaS direction the family already has.
+    CreativeDirection(
+        slug="trusted-fintech",
+        label="Trusted fintech",
+        industries=frozenset({"saas"}),
+        archetypes=frozenset({"fintech"}),
+        requires_archetype=True,
+        schemes=("consult-formal", "calm-clinical", "swiss-quiet"),
+        brief=(
+            "calm, highly legible financial clarity: what the customer can do with "
+            "their money, fees stated plainly, how it works step by step, and the "
+            "security and licensing the source states"
+        ),
+        imagery=(
+            "the product's own app or dashboard views when supplied; real people "
+            "using it; never piles of coins, gold bars, glowing cards or an "
+            "invented interface"
+        ),
+        palette_voice="a quiet, trustworthy light system with the brand colour reserved for actions",
+        personality={"organic_structured": 2, "calm_energetic": -2, "premium_accessible": 1, "traditional_contemporary": 1, "minimal_expressive": -1},
+        cues=("secure", "security", "licensed", "regulated", "compliance", "trusted", "merchants", "businesses", "enterprise"),
+        color_scheme_lean="light",
+        image_shape="soft-rect",
+        hero_leads=("split-plain", "minimal"),
+        section_emphasis=("product-tour", "pricing-led"),
+        cta_strategy=("demo", "enquire"),
+        anti_patterns=("purple-blue-gradient", "glass-cards", "gradient-heavy", "ambient-motion", "rainbow-titles"),
+    ),
+    CreativeDirection(
+        slug="consumer-fintech",
+        label="Consumer fintech",
+        industries=frozenset({"saas"}),
+        archetypes=frozenset({"fintech"}),
+        requires_archetype=True,
+        schemes=("bento-modular", "calm-clinical", "bold-block"),
+        brief=(
+            "bright, app-led everyday money: the few things a person can do in the "
+            "app, how quickly, what it costs as stated, and how their money is kept "
+            "safe — friendly, never flashy"
+        ),
+        imagery=(
+            "the app's own screens when supplied; everyday people paying, sending or "
+            "saving; never stock cash, coins or an invented phone screen"
+        ),
+        palette_voice="a confident light system: the brand colour on actions, one friendly accent for key numbers",
+        personality={"calm_energetic": 1, "premium_accessible": -2, "traditional_contemporary": 2, "playful_sophisticated": -1, "minimal_expressive": 1},
+        cues=("app", "everyday", "instantly", "send money", "e-wallet", "ewallet", "cashback", "rewards", "spend", "save"),
+        color_scheme_lean="light",
+        image_shape="soft-rect",
+        hero_leads=("bento", "split-plain"),
+        section_emphasis=("product-tour", "features-led"),
+        cta_strategy=("call", "enquire"),
+        anti_patterns=("purple-blue-gradient", "glass-cards", "gradient-heavy", "ambient-motion"),
+    ),
     CreativeDirection(
         slug="editorial-tech",
         label="Editorial technology",
@@ -473,7 +535,8 @@ def directions_for(industry: str | None, archetype: str | None) -> list[Creative
     norm = (industry or "").strip().lower()
     return [
         d for d in DIRECTIONS
-        if norm in d.industries or (archetype is not None and archetype in d.archetypes and _crosses(archetype))
+        if (norm in d.industries or (archetype is not None and archetype in d.archetypes and _crosses(archetype)))
+        and (not d.requires_archetype or archetype in d.archetypes)
     ]
 
 
@@ -568,27 +631,9 @@ def archetype_for_source(detected: str | None, source: object, industry: str | N
     return resolve_archetype(detected, evidence=evidence, industry=industry)
 
 
-# The intents a site's CONTACT PAGE fulfils, with the header button's words.
-# The header CTA always routes to the contact destination, so an intent that
-# needs a destination of its own (a WhatsApp chat, a self-serve trial signup)
-# is skipped rather than promised: a label must match where it goes.
-_CONTACT_CTA_LABELS: dict[str, str] = {
-    "visit": "Arrange a Visit",
-    "tour": "Request a Tour",
-    "trial-class": "Request a Trial Class",
-    "demo": "Request a Demo",
-    "consult": "Request a Consultation",
-    "project": "Start a Project",
-    "assessment": "Request an Assessment",
-    "call": "Talk to Us",
-    "enquire": "Enquire Now",
-}
-
-
 def contact_cta_label(direction: CreativeDirection) -> str | None:
     """The header button's words for a direction: its first CTA intent the
-    contact page can actually fulfil."""
-    return next(
-        (_CONTACT_CTA_LABELS[i] for i in direction.cta_strategy if i in _CONTACT_CTA_LABELS),
-        None,
-    )
+    contact page can actually fulfil (services/contact_intents.py, the one
+    table the button and the form it lands on share)."""
+    intent = contact_intents.direction_intent(direction.cta_strategy)
+    return contact_intents.label_for(intent) if intent else None

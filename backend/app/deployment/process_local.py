@@ -72,6 +72,13 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
     ),
     ProcessLocal(
         module="app.services.llm",
+        attribute="_RESPONSE_IN_FLIGHT",
+        holds="cache key → the identical LLM call in progress",
+        at_scale="Two workers may send the same call at once — one extra generation.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
+        module="app.services.llm",
         attribute="_MODEL_CACHE",
         holds="discovered model id per endpoint (60s TTL)",
         at_scale="Each worker re-probes /v1/models once a minute.",
@@ -89,6 +96,13 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
         attribute="_DETECT_BRAND_CACHE",
         holds="brand detection results (TTL)",
         at_scale="Cache miss on another worker — one extra LLM call.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
+        module="app.services.planner",
+        attribute="_DETECT_BRAND_INFLIGHT",
+        holds="brand detections still running, shared by concurrent callers",
+        at_scale="A concurrent caller on another worker runs its own detection — one extra LLM call.",
         severity=EFFICIENCY,
     ),
     ProcessLocal(
@@ -120,6 +134,37 @@ PROCESS_LOCAL: tuple[ProcessLocal, ...] = (
         attribute="_ANNOTATION_CACHE",
         holds="vision annotations by image URL (bounded FIFO)",
         at_scale="Cache miss on another worker — the image is re-annotated.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
+        module="app.services.url_guard",
+        attribute="_VERDICTS",
+        holds="host:port → the SSRF guard's DNS verdict (60s TTL)",
+        at_scale="Each worker resolves the host again. One DNS lookup per host per minute.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
+        module="app.services.image_vision",
+        attribute="_BYTES_CACHE",
+        holds="url → raw image bytes every pixel pass shares (TTL, bounded by total size)",
+        at_scale="Cache miss on another worker — the image is downloaded once more.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
+        module="app.services.image_vision",
+        attribute="_BYTES_IN_FLIGHT",
+        holds="url → the download in progress, shared by passes running side by side",
+        at_scale="Two workers may download the same image at the same moment.",
+        severity=EFFICIENCY,
+    ),
+    ProcessLocal(
+        module="app.services.asset_fetch",
+        attribute="_SOURCE_GATES",
+        holds="source host → concurrency cap on its file downloads",
+        at_scale=(
+            "Each worker caps its own downloads, so N workers generating from one "
+            "site ask it N× as often — the polite._registry problem, for files."
+        ),
         severity=EFFICIENCY,
     ),
     ProcessLocal(

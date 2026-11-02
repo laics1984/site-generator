@@ -50,6 +50,7 @@ from app.models.content_blocks import (
     VideoBlock,
     VisualPolicy,
 )
+from app.services import friendly_envelope
 from app.services.icons import icons_for_items
 from app.services.image_styling import _split_layers
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
@@ -550,6 +551,60 @@ def _locations_content(b: LocationsBlock) -> dict[str, Any]:
     }
 
 
+# A blank table cell: non-empty to the filler (an empty slot is dropped, and
+# its emptied cell with it, which would shift every later column), blank to the
+# reader, and skipped by translation overlays as whitespace.
+_BLANK_CELL = " "
+# A feature list written as a delta on the plan below it ("Everything in
+# Starter, plus…") lists only what it ADDS: a table built from it would mark the
+# bigger plan as lacking what the smaller one lists.
+_INCREMENTAL_FEATURE = re.compile(
+    r"^(everything|all( features)?) (in|of|from)\b|\bplus:?$|^\+", re.IGNORECASE
+)
+_MIN_COMPARE_ROWS = 3
+_MAX_COMPARE_ROWS = 12
+
+
+def _feature_key(feature: str) -> str:
+    return re.sub(r"[^\w%$€£]+", " ", feature.casefold()).strip()
+
+
+def comparison_rows(tiers: list[Any]) -> list[dict[str, Any]]:
+    """A feature x plan table for these tiers, or [] when they cannot honestly
+    be compared — which makes `pricing-compare` infeasible (its `rows` slot is
+    required), so the tier cards serve instead.
+
+    Comparable means every plan lists its features in full and the lists
+    overlap: at least half the features appear on two or more plans. A mark is
+    shown only where the plan itself lists the feature; elsewhere the cell is
+    blank, never a cross — absence is not something a source stated.
+    """
+    if len(tiers) < 2 or any(len(t.features) < 2 for t in tiers):
+        return []
+    if any(_INCREMENTAL_FEATURE.search(f.strip()) for t in tiers for f in t.features):
+        return []
+    order: dict[str, str] = {}
+    held: list[set[str]] = []
+    for tier in tiers:
+        keys = set()
+        for feature in tier.features:
+            key = _feature_key(feature)
+            if key:
+                order.setdefault(key, feature.strip())
+                keys.add(key)
+        held.append(keys)
+    shared = [key for key in order if sum(key in keys for keys in held) >= 2]
+    if len(order) < _MIN_COMPARE_ROWS or len(shared) * 2 < len(order):
+        return []
+    return [
+        {
+            "feature": text,
+            "cells": [{"mark": "✓" if key in keys else _BLANK_CELL} for keys in held],
+        }
+        for key, text in list(order.items())[:_MAX_COMPARE_ROWS]
+    ]
+
+
 def _pricing_content(b: PricingBlock) -> dict[str, Any]:
     return {
         "heading": b.heading,
@@ -565,6 +620,18 @@ def _pricing_content(b: PricingBlock) -> dict[str, Any]:
             }
             for t in b.tiers
         ],
+        # pricing-compare: the same plans across the top, a row per feature.
+        "corner": _BLANK_CELL,
+        "columns": [
+            {
+                "badge": "Most popular" if t.highlighted else None,
+                "name": t.name,
+                "price": t.price,
+                "cta": _link(t.cta_label, t.cta_href),
+            }
+            for t in b.tiers
+        ],
+        "rows": comparison_rows(b.tiers),
     }
 
 
@@ -722,8 +789,18 @@ def _locations_preference(content: dict[str, Any], b: LocationsBlock) -> list[st
     return ["locations-map-split", "locations-map-cards"]
 
 
+def _pricing_preference(content: dict[str, Any], b: PricingBlock) -> list[str]:
+    """The comparison table when the plans can be compared, the tier cards
+    otherwise. The table is the SaaS family's (its catalog gate), so for every
+    other industry it is not a candidate and the cards stand as they always did;
+    when the plans cannot be compared, `rows` is empty and the table is
+    infeasible (`comparison_rows`)."""
+    return ["pricing-compare", "pricing-tiers"] if content.get("rows") else ["pricing-tiers"]
+
+
 _PREFERENCE: dict[str, Callable[[dict[str, Any], Any], list[str]]] = {
     "hero": _hero_preference,
+    "pricing": _pricing_preference,
     "about": _about_preference,
     "cta": _cta_preference,
     "features": _features_preference,
@@ -984,7 +1061,12 @@ def industry_allows(template: dict[str, Any], industry: str | None) -> bool:
     Free-text industries are matched case-insensitively against the controlled
     IndustryCategory values a catalog entry declares; an unknown industry simply
     matches nothing gated, which is the safe direction.
+
+    An industry can also refuse a template: a friendly one never takes a layout
+    built to carry copy on a dark backdrop (services/friendly_envelope.py).
     """
+    if friendly_envelope.refuses_template(industry, template):
+        return False
     allowed = template.get("industries")
     if not allowed:
         return True
@@ -2688,7 +2770,11 @@ def block_to_section(
     # mood-gated) variants; one brand stays idempotent, and every direct call
     # without a seed keeps the legacy order.
     has_image_signal = bool(content.get("image")) or _items_have_real_images(block)
-    if variety_seed and not has_image_signal:
+    # The content's SHAPE is a hard signal too: plans that list the same
+    # features are a comparison table (comparison_rows), as photographs are
+    # shown — a brand seed must not rotate them back into tier cards.
+    has_shape_signal = kind == "pricing" and bool(content.get("rows"))
+    if variety_seed and not (has_image_signal or has_shape_signal):
         deduped: list[str] = []
         for pid in preferred:
             if pid not in deduped:

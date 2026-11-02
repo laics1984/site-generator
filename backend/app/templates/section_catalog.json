@@ -8615,6 +8615,768 @@
       }
     },
     {
+      "id": "pricing-compare",
+      "sectionType": "pricing",
+      "layoutVariant": "table",
+      "styleVariant": "compare",
+      "label": "Pricing Comparison",
+      "description": "Plans side by side as a feature table: each plan's name, price and action across the top, and a row per feature it includes. Chosen only when the plans list the same features, so a mark is never a claim the source did not make.",
+      "tags": [
+        "Pricing",
+        "Plans",
+        "Comparison"
+      ],
+      "thumbnail": "pricing-compare",
+      "industries": [
+        "saas"
+      ],
+      "slots": [
+        {
+          "id": "eyebrow",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "heading",
+          "kind": "text"
+        },
+        {
+          "id": "subheading",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "corner",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "columns",
+          "kind": "list",
+          "item": [
+            {
+              "id": "badge",
+              "kind": "text",
+              "optional": true
+            },
+            {
+              "id": "name",
+              "kind": "text"
+            },
+            {
+              "id": "price",
+              "kind": "text"
+            },
+            {
+              "id": "cta",
+              "kind": "link"
+            }
+          ]
+        },
+        {
+          "id": "rows",
+          "kind": "list",
+          "minItems": 3,
+          "item": [
+            {
+              "id": "feature",
+              "kind": "text"
+            },
+            {
+              "id": "cells",
+              "kind": "list",
+              "item": [
+                {
+                  "id": "mark",
+                  "kind": "text"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "sampleContent": {
+        "eyebrow": "Pricing",
+        "heading": "Compare plans",
+        "subheading": "Every plan, side by side.",
+        "corner": " ",
+        "columns": [
+          {
+            "badge": null,
+            "name": "Starter",
+            "price": "$19/mo",
+            "cta": {
+              "innerText": "Get started",
+              "href": "#contact"
+            }
+          },
+          {
+            "badge": "Most popular",
+            "name": "Team",
+            "price": "$49/mo",
+            "cta": {
+              "innerText": "Get started",
+              "href": "#contact"
+            }
+          },
+          {
+            "badge": null,
+            "name": "Business",
+            "price": "$99/mo",
+            "cta": {
+              "innerText": "Talk to us",
+              "href": "#contact"
+            }
+          }
+        ],
+        "rows": [
+          {
+            "feature": "Unlimited projects",
+            "cells": [
+              {
+                "mark": "✓"
+              },
+              {
+                "mark": "✓"
+              },
+              {
+                "mark": "✓"
+              }
+            ]
+          },
+          {
+            "feature": "Team workspaces",
+            "cells": [
+              {
+                "mark": " "
+              },
+              {
+                "mark": "✓"
+              },
+              {
+                "mark": "✓"
+              }
+            ]
+          },
+          {
+            "feature": "Single sign-on",
+            "cells": [
+              {
+                "mark": " "
+              },
+              {
+                "mark": " "
+              },
+              {
+                "mark": "✓"
+              }
+            ]
+          }
+        ]
+      },
+      "tree": {
+        "name": "Pricing - Compare",
+        "type": "container",
+        "styles": {
+          "backgroundPosition": "center",
+          "objectFit": "cover",
+          "backgroundRepeat": "no-repeat",
+          "opacity": "100%",
+          "color": "var(--builder-color-text, #111827)",
+          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+          "textAlign": "left",
+          "width": "100%",
+          "paddingTop": "72px",
+          "paddingBottom": "72px",
+          "paddingLeft": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "paddingRight": "max(80px, calc((100% - var(--builder-page-max-width, 1280px)) / 2))",
+          "display": "flex",
+          "flexDirection": "column",
+          "gap": "48px",
+          "alignItems": "center",
+          "backgroundColor": "var(--builder-page-background, #ffffff)"
+        },
+        "content": [
+          {
+            "name": "Section Header",
+            "motion": {
+              "preset": "rise"
+            },
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "textAlign": "center",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "display": "flex",
+              "flexDirection": "column",
+              "alignItems": "center",
+              "gap": "12px",
+              "maxWidth": "720px"
+            },
+            "responsiveStyles": {
+              "mobile": {
+                "gap": "8px"
+              },
+              "tablet": {}
+            },
+            "content": [
+              {
+                "name": "Eyebrow",
+                "type": "text",
+                "$slot": "eyebrow",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "13px",
+                  "letterSpacing": "0.12em",
+                  "textTransform": "uppercase",
+                  "fontWeight": 700
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "12px"
+                  },
+                  "tablet": {}
+                }
+              },
+              {
+                "name": "Heading",
+                "type": "text",
+                "$slot": "heading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-heading, #0f172a)",
+                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "36px",
+                  "lineHeight": "1.12",
+                  "letterSpacing": "-0.03em",
+                  "fontWeight": 800
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "26px"
+                  },
+                  "tablet": {
+                    "fontSize": "30px"
+                  }
+                }
+              },
+              {
+                "name": "Body",
+                "type": "text",
+                "$slot": "subheading",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "textAlign": "center",
+                  "opacity": "100%",
+                  "color": "color-mix(in srgb, var(--builder-color-text, #111827) 68%, transparent)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "width": "100%",
+                  "fontSize": "17px",
+                  "lineHeight": "1.7",
+                  "maxWidth": "600px",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "responsiveStyles": {
+                  "mobile": {
+                    "fontSize": "14px"
+                  },
+                  "tablet": {
+                    "fontSize": "15px"
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "name": "Comparison Frame",
+            "type": "container",
+            "styles": {
+              "backgroundPosition": "center",
+              "objectFit": "cover",
+              "backgroundRepeat": "no-repeat",
+              "opacity": "100%",
+              "color": "var(--builder-color-text, #111827)",
+              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+              "width": "100%",
+              "maxWidth": "1080px",
+              "overflowX": "auto",
+              "borderRadius": "20px",
+              "border": "1px solid color-mix(in srgb, var(--builder-color-text, #111827) 10%, transparent)",
+              "backgroundColor": "color-mix(in srgb, var(--builder-color-surface, #f8fafc) 96%, transparent)"
+            },
+            "content": [
+              {
+                "name": "Comparison Table",
+                "type": "container",
+                "styles": {
+                  "backgroundPosition": "center",
+                  "objectFit": "cover",
+                  "backgroundRepeat": "no-repeat",
+                  "opacity": "100%",
+                  "color": "var(--builder-color-text, #111827)",
+                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                  "display": "flex",
+                  "flexDirection": "column",
+                  "width": "100%",
+                  "minWidth": "560px"
+                },
+                "content": [
+                  {
+                    "name": "Plan Row",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "display": "flex",
+                      "flexDirection": "row",
+                      "alignItems": "flex-end",
+                      "padding": "24px 24px 20px"
+                    },
+                    "content": [
+                      {
+                        "name": "Plan Row Label",
+                        "type": "text",
+                        "$slot": "corner",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "textAlign": "left",
+                          "width": "100%",
+                          "flex": "0 0 40%",
+                          "minWidth": "0"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "flex": "0 0 128px",
+                            "position": "sticky",
+                            "left": "0",
+                            "zIndex": "1",
+                            "backgroundColor": "var(--builder-color-surface, #f8fafc)",
+                            "paddingRight": "12px"
+                          }
+                        }
+                      },
+                      {
+                        "name": "Plan Columns",
+                        "type": "container",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "display": "flex",
+                          "flex": "1 1 60%",
+                          "minWidth": "0"
+                        },
+                        "$repeat": "columns",
+                        "content": [
+                          {
+                            "name": "Plan Column",
+                            "type": "container",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-text, #111827)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "flex": "1 1 0",
+                              "minWidth": "0",
+                              "textAlign": "center",
+                              "display": "flex",
+                              "flexDirection": "column",
+                              "alignItems": "center",
+                              "gap": "4px"
+                            },
+                            "content": [
+                              {
+                                "name": "Plan Badge",
+                                "type": "text",
+                                "$slot": "badge",
+                                "styles": {
+                                  "backgroundPosition": "center",
+                                  "objectFit": "cover",
+                                  "backgroundRepeat": "no-repeat",
+                                  "opacity": "100%",
+                                  "color": "var(--builder-color-primary-ink, #2563eb)",
+                                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                                  "textAlign": "center",
+                                  "width": "100%",
+                                  "fontSize": "11px",
+                                  "fontWeight": 700,
+                                  "letterSpacing": "0.08em",
+                                  "textTransform": "uppercase"
+                                }
+                              },
+                              {
+                                "name": "Plan Name",
+                                "type": "text",
+                                "$slot": "name",
+                                "styles": {
+                                  "backgroundPosition": "center",
+                                  "objectFit": "cover",
+                                  "backgroundRepeat": "no-repeat",
+                                  "opacity": "100%",
+                                  "color": "var(--builder-color-heading, #0f172a)",
+                                  "fontFamily": "var(--builder-font-heading, system-ui, sans-serif)",
+                                  "textAlign": "center",
+                                  "width": "100%",
+                                  "fontSize": "18px",
+                                  "fontWeight": 700
+                                }
+                              },
+                              {
+                                "name": "Plan Price",
+                                "type": "text",
+                                "$slot": "price",
+                                "styles": {
+                                  "backgroundPosition": "center",
+                                  "objectFit": "cover",
+                                  "backgroundRepeat": "no-repeat",
+                                  "opacity": "100%",
+                                  "color": "var(--builder-color-heading, #0f172a)",
+                                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                                  "textAlign": "center",
+                                  "width": "100%",
+                                  "fontSize": "22px",
+                                  "fontWeight": 800
+                                }
+                              }
+                            ],
+                            "responsiveStyles": {
+                              "mobile": {
+                                "flex": "1 0 112px"
+                              }
+                            }
+                          }
+                        ],
+                        "responsiveStyles": {
+                          "mobile": {
+                            "flex": "1 0 auto"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Feature Rows",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "display": "flex",
+                      "flexDirection": "column",
+                      "width": "100%"
+                    },
+                    "$repeat": "rows",
+                    "content": [
+                      {
+                        "name": "Feature Row",
+                        "type": "container",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "display": "flex",
+                          "flexDirection": "row",
+                          "alignItems": "center",
+                          "padding": "14px 24px",
+                          "borderTop": "1px solid color-mix(in srgb, var(--builder-color-text, #111827) 10%, transparent)"
+                        },
+                        "content": [
+                          {
+                            "name": "Feature Label",
+                            "type": "text",
+                            "$slot": "feature",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-text, #111827)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "textAlign": "left",
+                              "width": "100%",
+                              "fontSize": "15px",
+                              "lineHeight": "1.5",
+                              "flex": "0 0 40%",
+                              "minWidth": "0"
+                            },
+                            "responsiveStyles": {
+                              "mobile": {
+                                "flex": "0 0 128px",
+                                "position": "sticky",
+                                "left": "0",
+                                "zIndex": "1",
+                                "backgroundColor": "var(--builder-color-surface, #f8fafc)",
+                                "paddingRight": "12px",
+                                "fontSize": "14px"
+                              }
+                            }
+                          },
+                          {
+                            "name": "Feature Cells",
+                            "type": "container",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-text, #111827)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "display": "flex",
+                              "flex": "1 1 60%",
+                              "minWidth": "0"
+                            },
+                            "$repeat": "cells",
+                            "content": [
+                              {
+                                "name": "Feature Cell",
+                                "type": "container",
+                                "styles": {
+                                  "backgroundPosition": "center",
+                                  "objectFit": "cover",
+                                  "backgroundRepeat": "no-repeat",
+                                  "opacity": "100%",
+                                  "color": "var(--builder-color-text, #111827)",
+                                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                                  "flex": "1 1 0",
+                                  "minWidth": "0",
+                                  "textAlign": "center"
+                                },
+                                "content": [
+                                  {
+                                    "name": "Feature Mark",
+                                    "type": "text",
+                                    "$slot": "mark",
+                                    "styles": {
+                                      "backgroundPosition": "center",
+                                      "objectFit": "cover",
+                                      "backgroundRepeat": "no-repeat",
+                                      "opacity": "100%",
+                                      "color": "var(--builder-color-primary-ink, #2563eb)",
+                                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                                      "textAlign": "center",
+                                      "width": "100%",
+                                      "fontSize": "16px",
+                                      "fontWeight": 700
+                                    }
+                                  }
+                                ],
+                                "responsiveStyles": {
+                                  "mobile": {
+                                    "flex": "1 0 112px"
+                                  }
+                                }
+                              }
+                            ],
+                            "responsiveStyles": {
+                              "mobile": {
+                                "flex": "1 0 auto"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Plan CTA Row",
+                    "type": "container",
+                    "styles": {
+                      "backgroundPosition": "center",
+                      "objectFit": "cover",
+                      "backgroundRepeat": "no-repeat",
+                      "opacity": "100%",
+                      "color": "var(--builder-color-text, #111827)",
+                      "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                      "display": "flex",
+                      "flexDirection": "row",
+                      "alignItems": "center",
+                      "padding": "20px 24px 24px",
+                      "borderTop": "1px solid color-mix(in srgb, var(--builder-color-text, #111827) 10%, transparent)"
+                    },
+                    "content": [
+                      {
+                        "name": "Plan CTA Row Label",
+                        "type": "text",
+                        "$slot": "corner",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "textAlign": "left",
+                          "width": "100%",
+                          "flex": "0 0 40%",
+                          "minWidth": "0"
+                        },
+                        "responsiveStyles": {
+                          "mobile": {
+                            "flex": "0 0 128px",
+                            "position": "sticky",
+                            "left": "0",
+                            "zIndex": "1",
+                            "backgroundColor": "var(--builder-color-surface, #f8fafc)",
+                            "paddingRight": "12px"
+                          }
+                        }
+                      },
+                      {
+                        "name": "Plan CTAs",
+                        "type": "container",
+                        "styles": {
+                          "backgroundPosition": "center",
+                          "objectFit": "cover",
+                          "backgroundRepeat": "no-repeat",
+                          "opacity": "100%",
+                          "color": "var(--builder-color-text, #111827)",
+                          "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                          "display": "flex",
+                          "flex": "1 1 60%",
+                          "minWidth": "0"
+                        },
+                        "$repeat": "columns",
+                        "content": [
+                          {
+                            "name": "Plan CTA Cell",
+                            "type": "container",
+                            "styles": {
+                              "backgroundPosition": "center",
+                              "objectFit": "cover",
+                              "backgroundRepeat": "no-repeat",
+                              "opacity": "100%",
+                              "color": "var(--builder-color-text, #111827)",
+                              "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                              "flex": "1 1 0",
+                              "minWidth": "0",
+                              "textAlign": "center",
+                              "display": "flex",
+                              "justifyContent": "center"
+                            },
+                            "content": [
+                              {
+                                "name": "Plan CTA",
+                                "type": "link",
+                                "$slot": "cta",
+                                "styles": {
+                                  "backgroundPosition": "center",
+                                  "objectFit": "cover",
+                                  "backgroundRepeat": "no-repeat",
+                                  "textAlign": "center",
+                                  "opacity": "100%",
+                                  "color": "var(--builder-button-text, #ffffff)",
+                                  "fontFamily": "var(--builder-font-body, system-ui, sans-serif)",
+                                  "backgroundColor": "var(--builder-button-background, #2563eb)",
+                                  "paddingTop": "12px",
+                                  "paddingRight": "20px",
+                                  "paddingBottom": "12px",
+                                  "paddingLeft": "20px",
+                                  "borderRadius": "var(--builder-button-radius, 14px)",
+                                  "textDecoration": "none",
+                                  "display": "inline-flex",
+                                  "alignItems": "center",
+                                  "justifyContent": "center",
+                                  "fontWeight": 600,
+                                  "marginTop": "20px",
+                                  "alignSelf": "stretch",
+                                  "width": "auto"
+                                },
+                                "responsiveStyles": {
+                                  "mobile": {
+                                    "width": "100%",
+                                    "padding": "10px 8px",
+                                    "fontSize": "13px",
+                                    "lineHeight": "1.3"
+                                  }
+                                }
+                              }
+                            ],
+                            "responsiveStyles": {
+                              "mobile": {
+                                "flex": "1 0 112px",
+                                "paddingLeft": "6px",
+                                "paddingRight": "6px"
+                              }
+                            }
+                          }
+                        ],
+                        "responsiveStyles": {
+                          "mobile": {
+                            "flex": "1 0 auto"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "responsiveStyles": {
+                  "mobile": {
+                    "minWidth": "max-content"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "responsiveStyles": {
+          "mobile": {
+            "paddingTop": "52px",
+            "paddingRight": "20px",
+            "paddingBottom": "60px",
+            "paddingLeft": "20px",
+            "gap": "36px"
+          },
+          "tablet": {
+            "paddingTop": "72px",
+            "paddingRight": "32px",
+            "paddingBottom": "72px",
+            "paddingLeft": "32px",
+            "gap": "28px"
+          }
+        }
+      }
+    },
+    {
       "id": "header-standard",
       "sectionType": "header",
       "layoutVariant": "inline",
@@ -18209,6 +18971,27 @@
           "id": "has_social",
           "kind": "flag",
           "optional": true
+        },
+        {
+          "id": "disclosure",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "has_app_links",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "app_links",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "link",
+              "kind": "link"
+            }
+          ]
         }
       ],
       "sampleContent": {
@@ -18348,6 +19131,48 @@
                 ]
               },
               {
+                "name": "App links",
+                "type": "container",
+                "$if": "has_app_links",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "gap": "12px",
+                  "width": "100%",
+                  "marginTop": "32px",
+                  "justifyContent": "flex-start"
+                },
+                "content": [
+                  {
+                    "name": "App link list",
+                    "type": "container",
+                    "$repeat": "app_links",
+                    "$splice": true,
+                    "styles": {},
+                    "content": [
+                      {
+                        "name": "App link",
+                        "type": "link",
+                        "$slot": "link",
+                        "styles": {
+                          "display": "inline-flex",
+                          "alignItems": "center",
+                          "padding": "10px 18px",
+                          "borderRadius": "999px",
+                          "border": "{{footer.hairline}}",
+                          "color": "{{footer.ink}}",
+                          "fontSize": "14px",
+                          "fontWeight": 600,
+                          "textDecoration": "none",
+                          "width": "auto"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
                 "name": "Legal bar",
                 "type": "container",
                 "styles": {
@@ -18414,6 +19239,20 @@
                     "$slot": "credits"
                   }
                 ]
+              },
+              {
+                "name": "Regulatory disclosure",
+                "type": "text",
+                "styles": {
+                  "width": "100%",
+                  "maxWidth": "880px",
+                  "color": "{{footer.muted}}",
+                  "fontSize": "12px",
+                  "lineHeight": "1.6",
+                  "marginTop": "16px",
+                  "textAlign": "left"
+                },
+                "$slot": "disclosure"
               }
             ]
           }
@@ -18485,6 +19324,27 @@
         {
           "id": "cta",
           "kind": "link"
+        },
+        {
+          "id": "disclosure",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "has_app_links",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "app_links",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "link",
+              "kind": "link"
+            }
+          ]
         }
       ],
       "sampleContent": {
@@ -18682,6 +19542,48 @@
                 ]
               },
               {
+                "name": "App links",
+                "type": "container",
+                "$if": "has_app_links",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "gap": "12px",
+                  "width": "100%",
+                  "marginTop": "32px",
+                  "justifyContent": "flex-start"
+                },
+                "content": [
+                  {
+                    "name": "App link list",
+                    "type": "container",
+                    "$repeat": "app_links",
+                    "$splice": true,
+                    "styles": {},
+                    "content": [
+                      {
+                        "name": "App link",
+                        "type": "link",
+                        "$slot": "link",
+                        "styles": {
+                          "display": "inline-flex",
+                          "alignItems": "center",
+                          "padding": "10px 18px",
+                          "borderRadius": "999px",
+                          "border": "{{footer.hairline}}",
+                          "color": "{{footer.ink}}",
+                          "fontSize": "14px",
+                          "fontWeight": 600,
+                          "textDecoration": "none",
+                          "width": "auto"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
                 "name": "Legal bar",
                 "type": "container",
                 "styles": {
@@ -18748,6 +19650,20 @@
                     "$slot": "credits"
                   }
                 ]
+              },
+              {
+                "name": "Regulatory disclosure",
+                "type": "text",
+                "styles": {
+                  "width": "100%",
+                  "maxWidth": "880px",
+                  "color": "{{footer.muted}}",
+                  "fontSize": "12px",
+                  "lineHeight": "1.6",
+                  "marginTop": "16px",
+                  "textAlign": "left"
+                },
+                "$slot": "disclosure"
               }
             ]
           }
@@ -18826,6 +19742,27 @@
           "id": "has_cta",
           "kind": "flag",
           "optional": true
+        },
+        {
+          "id": "disclosure",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "has_app_links",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "app_links",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "link",
+              "kind": "link"
+            }
+          ]
         }
       ],
       "sampleContent": {
@@ -19015,6 +19952,48 @@
                 ]
               },
               {
+                "name": "App links",
+                "type": "container",
+                "$if": "has_app_links",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "gap": "12px",
+                  "width": "100%",
+                  "marginTop": "32px",
+                  "justifyContent": "center"
+                },
+                "content": [
+                  {
+                    "name": "App link list",
+                    "type": "container",
+                    "$repeat": "app_links",
+                    "$splice": true,
+                    "styles": {},
+                    "content": [
+                      {
+                        "name": "App link",
+                        "type": "link",
+                        "$slot": "link",
+                        "styles": {
+                          "display": "inline-flex",
+                          "alignItems": "center",
+                          "padding": "10px 18px",
+                          "borderRadius": "999px",
+                          "border": "{{footer.hairline}}",
+                          "color": "{{footer.ink}}",
+                          "fontSize": "14px",
+                          "fontWeight": 600,
+                          "textDecoration": "none",
+                          "width": "auto"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
                 "name": "Legal bar",
                 "type": "container",
                 "styles": {
@@ -19081,6 +20060,22 @@
                     "$slot": "credits"
                   }
                 ]
+              },
+              {
+                "name": "Regulatory disclosure",
+                "type": "text",
+                "styles": {
+                  "width": "100%",
+                  "maxWidth": "880px",
+                  "color": "{{footer.muted}}",
+                  "fontSize": "12px",
+                  "lineHeight": "1.6",
+                  "marginTop": "16px",
+                  "textAlign": "center",
+                  "marginLeft": "auto",
+                  "marginRight": "auto"
+                },
+                "$slot": "disclosure"
               }
             ]
           }
@@ -19149,6 +20144,27 @@
           "id": "has_social",
           "kind": "flag",
           "optional": true
+        },
+        {
+          "id": "disclosure",
+          "kind": "text",
+          "optional": true
+        },
+        {
+          "id": "has_app_links",
+          "kind": "flag",
+          "optional": true
+        },
+        {
+          "id": "app_links",
+          "kind": "list",
+          "optional": true,
+          "item": [
+            {
+              "id": "link",
+              "kind": "link"
+            }
+          ]
         }
       ],
       "sampleContent": {
@@ -19307,6 +20323,48 @@
                 ]
               },
               {
+                "name": "App links",
+                "type": "container",
+                "$if": "has_app_links",
+                "styles": {
+                  "display": "flex",
+                  "flexDirection": "row",
+                  "flexWrap": "wrap",
+                  "gap": "12px",
+                  "width": "100%",
+                  "marginTop": "32px",
+                  "justifyContent": "flex-start"
+                },
+                "content": [
+                  {
+                    "name": "App link list",
+                    "type": "container",
+                    "$repeat": "app_links",
+                    "$splice": true,
+                    "styles": {},
+                    "content": [
+                      {
+                        "name": "App link",
+                        "type": "link",
+                        "$slot": "link",
+                        "styles": {
+                          "display": "inline-flex",
+                          "alignItems": "center",
+                          "padding": "10px 18px",
+                          "borderRadius": "999px",
+                          "border": "{{footer.hairline}}",
+                          "color": "{{footer.ink}}",
+                          "fontSize": "14px",
+                          "fontWeight": 600,
+                          "textDecoration": "none",
+                          "width": "auto"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
                 "name": "Legal bar",
                 "type": "container",
                 "styles": {
@@ -19373,6 +20431,20 @@
                     "$slot": "credits"
                   }
                 ]
+              },
+              {
+                "name": "Regulatory disclosure",
+                "type": "text",
+                "styles": {
+                  "width": "100%",
+                  "maxWidth": "880px",
+                  "color": "{{footer.muted}}",
+                  "fontSize": "12px",
+                  "lineHeight": "1.6",
+                  "marginTop": "16px",
+                  "textAlign": "left"
+                },
+                "$slot": "disclosure"
               }
             ]
           }

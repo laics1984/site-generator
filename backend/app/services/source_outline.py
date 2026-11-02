@@ -47,13 +47,13 @@ ParsedSourceKind = Literal["pdf", "docx", "paste"]
 class OutlineBlock:
     """One block of the source in reading order.
 
-    ``level`` is the heading level: ``1``/``2``/``3`` for headings (1 = most
+    ``level`` is the heading level: ``1``-``6`` for headings (1 = most
     prominent), ``0`` for body text. Preserving order + level is what lets
     ``doc_structure`` group body copy under the right title — the flat
     ``raw_text``/``headings`` fields lose that association.
     """
 
-    level: int  # 0 = body, 1/2/3 = heading levels
+    level: int  # 0 = body, 1-6 = heading levels
     text: str
 
 

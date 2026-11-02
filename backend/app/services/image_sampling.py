@@ -91,28 +91,24 @@ async def sample_photo(
     """Download and measure one photo. None on any failure — never raises.
 
     Reuses `image_vision`'s fetcher, which already handles `data:` URLs, the
-    SSRF guard for private hosts, and the byte-size cap. Bounded by
+    SSRF guard for private hosts, the byte-size cap, and the bytes another pass
+    already downloaded. The download is bounded by
     `settings.photo_sample_timeout_seconds`: an unreachable host must cost a
-    generation seconds, not the fetcher's full timeout.
+    generation seconds, not the fetcher's full timeout. The bound covers the
+    transfer only, never the wait for the host's slot — a photo assumed
+    unreadable because a queue was long would be a scrim nobody measured.
     """
     if not settings.photo_sampling_enabled:
         return None
-    try:
-        return await asyncio.wait_for(
-            _sample(url, client), timeout=settings.photo_sample_timeout_seconds
-        )
-    except (TimeoutError, asyncio.CancelledError):
-        logger.debug("Photo sampling timed out for %s", url[:120])
-        return None
-
-
-async def _sample(url: str, client: httpx.AsyncClient | None) -> PhotoSample | None:
     # Imported here (not at module top) to keep this module free of the vision
     # pass's import chain — callers may have vision disabled entirely.
     from app.services.image_vision import _fetch_image_bytes
 
-    raw = await _fetch_image_bytes(url, client=client)
+    raw = await _fetch_image_bytes(
+        url, client=client, budget=settings.photo_sample_timeout_seconds
+    )
     if raw is None:
+        logger.debug("Photo sampling could not read %s", url[:120])
         return None
     # PIL decode is CPU-bound; thread it off so concurrent downloads keep flowing.
     return await asyncio.to_thread(_measure, raw, url)

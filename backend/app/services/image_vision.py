@@ -24,6 +24,7 @@ import asyncio
 import base64
 import binascii
 import logging
+import time
 from io import BytesIO
 from typing import TYPE_CHECKING, Literal
 
@@ -34,7 +35,7 @@ from pydantic.json_schema import SkipJsonSchema
 from app.config import settings
 from app.models.content_blocks import ImageMetadata
 from app.models.facebook_photos import FacebookPhotoReview
-from app.services.asset_fetch import get_asset
+from app.services.asset_fetch import asset_client, get_asset
 from app.services.url_guard import is_public_url
 
 if TYPE_CHECKING:
@@ -360,9 +361,77 @@ def _downscale_to_b64(raw: bytes, url: str = "") -> str | None:
     return base64.b64encode(out.getvalue()).decode("ascii")
 
 
-async def _fetch_image_bytes(
-    url: str, client: httpx.AsyncClient | None = None
+# Every pixel pass downloads through `_fetch_image_bytes` — the vision prefetch,
+# OCR, the graphic screen, photo sampling, the Facebook pixel pass — and each
+# used to download for itself, so one photo was asked of the business's server
+# up to five times per generation. These hold one copy: finished downloads by
+# URL (TTL, bounded by total size, LRU by dict order), and the download in
+# progress, so passes running side by side share it rather than racing it.
+# Only a body that fetched is kept; a failure is never remembered, so a later
+# pass may still try, exactly as before.
+_BYTES_CACHE: dict[str, tuple[float, bytes]] = {}
+_BYTES_IN_FLIGHT: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task[bytes | None]]] = {}
+_bytes_cached_total = 0
+
+
+def clear_image_bytes_cache() -> None:
+    """Forget every cached download (tests / ops)."""
+    global _bytes_cached_total
+    _BYTES_CACHE.clear()
+    _BYTES_IN_FLIGHT.clear()
+    _bytes_cached_total = 0
+
+
+def _cached_bytes(url: str) -> bytes | None:
+    global _bytes_cached_total
+    entry = _BYTES_CACHE.pop(url, None)
+    if entry is None:
+        return None
+    stored_at, body = entry
+    if time.monotonic() - stored_at >= settings.image_bytes_cache_ttl_seconds:
+        _bytes_cached_total -= len(body)
+        return None
+    _BYTES_CACHE[url] = entry  # re-insert: dict order is recency
+    return body
+
+
+def _cache_bytes(url: str, body: bytes) -> None:
+    global _bytes_cached_total
+    budget = settings.image_bytes_cache_mb * 1_000_000
+    if len(body) > budget:
+        return
+    previous = _BYTES_CACHE.pop(url, None)
+    if previous is not None:
+        _bytes_cached_total -= len(previous[1])
+    _BYTES_CACHE[url] = (time.monotonic(), body)
+    _bytes_cached_total += len(body)
+    while _bytes_cached_total > budget and _BYTES_CACHE:
+        _bytes_cached_total -= len(_BYTES_CACHE.pop(next(iter(_BYTES_CACHE)))[1])
+
+
+async def _download(
+    url: str, client: httpx.AsyncClient | None, budget: float | None
 ) -> bytes | None:
+    try:
+        response = await get_asset(client or asset_client(), url, budget=budget)
+        response.raise_for_status()
+    except (httpx.HTTPError, TimeoutError):
+        logger.debug("Vision image fetch failed: %s", url[:120])
+        return None
+    body = response.content
+    if not body or len(body) > settings.vision_image_max_bytes:
+        return None
+    _cache_bytes(url, body)
+    return body
+
+
+async def _fetch_image_bytes(
+    url: str, client: httpx.AsyncClient | None = None, *, budget: float | None = None
+) -> bytes | None:
+    """An image's bytes, or None. Downloaded at most once at a time per URL and
+    kept (`_BYTES_CACHE`). `budget` bounds the transfer, not the wait for a
+    host's slot (asset_fetch.get_asset); a caller joining a download already
+    under way waits for that one."""
     if url.startswith("data:"):
         try:
             _, _, payload = url.partition(",")
@@ -371,23 +440,23 @@ async def _fetch_image_bytes(
             return None
     if not url.startswith(("http://", "https://")):
         return None
+    cached = _cached_bytes(url)
+    if cached is not None:
+        return cached
     if not await is_public_url(url):
         logger.debug("Vision image fetch refused non-public URL: %s", url[:120])
         return None
-    try:
-        if client is not None:
-            response = await get_asset(client, url)
-            response.raise_for_status()
-        else:
-            async with httpx.AsyncClient(
-                timeout=settings.vision_fetch_timeout_seconds, follow_redirects=True
-            ) as owned:
-                response = await get_asset(owned, url)
-                response.raise_for_status()
-    except httpx.HTTPError:
-        logger.debug("Vision image fetch failed: %s", url[:120])
-        return None
-    body = response.content
-    if not body or len(body) > settings.vision_image_max_bytes:
-        return None
-    return body
+    loop = asyncio.get_running_loop()
+    pending = _BYTES_IN_FLIGHT.get(url)
+    if pending is None or pending[0] is not loop:
+        task = loop.create_task(_download(url, client, budget))
+        _BYTES_IN_FLIGHT[url] = (loop, task)
+        task.add_done_callback(
+            lambda done, url=url: _BYTES_IN_FLIGHT.pop(url, None)
+            if _BYTES_IN_FLIGHT.get(url, (None, None))[1] is done
+            else None
+        )
+        pending = (loop, task)
+    # Shielded: a caller under a deadline (photo sampling) that gives up must
+    # not cancel the download every other pass is waiting on.
+    return await asyncio.shield(pending[1])

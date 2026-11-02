@@ -13,6 +13,7 @@ from app.config import settings
 from app.models.brand import BrandIdentity
 from app.models.design_manifest import (
     OVERLAY_CAPABLE_HEADERS,
+    SELF_CHROME_HEADERS,
     DesignManifest,
 )
 from app.services.design_director import compose_design_manifest
@@ -99,10 +100,11 @@ class ComposeManifestTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_industry_pins_the_chrome(self):
         """Childcare and nonprofit used to pin their chrome vocabulary (two
-        headers, two footers each), so every school shared it. The industry no
-        longer narrows anything: a childcare site draws from its MOOD's fit list
-        exactly as any other industry in that mood does
-        (docs/design-identity-plan.md, Phase 1)."""
+        headers, two footers each), so every school shared it. A childcare site
+        draws from its MOOD's fit list exactly as any other industry in that
+        mood does (docs/design-identity-plan.md, Phase 1) — less only the
+        self-chrome header the friendly envelope refuses, which needs a photo
+        hero a children's site never opens on (services/friendly_envelope.py)."""
         names = ("Little Sprouts", "Tadika Murni", "Glory Fields", "Pelangi", "Acorn House")
         for name in names:
             childcare = await compose_design_manifest(
@@ -111,7 +113,8 @@ class ComposeManifestTest(unittest.IsolatedAsyncioTestCase):
             neutral = await compose_design_manifest(
                 brand_name=name, mood="playful", industry=None
             )
-            self.assertEqual(childcare.header_archetype, neutral.header_archetype)
+            # The seeded pick runs over a shorter list, so only membership holds.
+            self.assertIn(childcare.header_archetype, {"classic", "glass-blur"})
             self.assertEqual(childcare.footer_archetype, neutral.footer_archetype)
             self.assertNotIn("industry", childcare.decision_for("header").rationale)
 

@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
-from app.models.content_blocks import ImageMetadata, SectionCandidate, SourceContent
+from app.models.content_blocks import CARD_ITEMS_MAX, ImageMetadata, SectionCandidate, SourceContent
 from app.models.industry import PageScaffold
+from app.services.price_lists import price_list_spans
 from app.services.source_path import is_record_url, normalize_source_slug
 
 logger = logging.getLogger(__name__)
@@ -337,17 +338,29 @@ def split_raw_text(
     section (heading + its paragraphs + its photo context) stays whole inside
     one chunk instead of being cut mid-section. Greedy packing is the fallback
     for pages without headings.
+
+    A price list that fits one chunk is never cut (``price_lists.price_list_spans``):
+    every chunk writes its own pricing block and only one is kept, so a table
+    split between two chunks reaches the site from neither whole.
     """
     text = raw_text or ""
     if len(text) <= max_chars:
         return [text]
 
     heading_set = {h.strip().lower() for h in (headings or []) if h.strip()}
+    blocks = text.split("\n")
+    whole: dict[int, int] = {}  # first line of an unbroken span → its length
+    inside: set[int] = set()  # lines a chunk must not be sealed before
+    for first, last in price_list_spans(blocks, heading_set):
+        length = sum(len(block) + 1 for block in blocks[first : last + 1]) - 1
+        if length <= max_chars:
+            whole[first] = length
+            inside.update(range(first + 1, last + 1))
 
     chunks: list[str] = []
     current: list[str] = []
     current_len = 0
-    for block in text.split("\n"):
+    for index, block in enumerate(blocks):
         # Hard-wrap a single block that can't fit in one chunk on its own.
         if len(block) > max_chars:
             if current:
@@ -362,9 +375,10 @@ def split_raw_text(
         is_heading = block.strip().lower() in heading_set
         # +1 for the newline that will rejoin this block to the previous one.
         added = len(block) + (1 if current else 0)
-        if current and (
+        if current and index not in inside and (
             current_len + added > max_chars
             or (is_heading and current_len >= max_chars // 2)
+            or (index in whole and current_len + 1 + whole[index] > max_chars)
         ):
             chunks.append("\n".join(current))
             current, current_len = [block], len(block)
@@ -482,7 +496,7 @@ def image_prompt_payload(source: SourceContent) -> list[dict[str, object]]:
 # Per-section caps for the prompt tree. A section is a summary of the source's
 # shape, not a transcript — the full text is still in raw_text underneath.
 _PROMPT_MAX_SECTIONS = 12
-_PROMPT_MAX_CARDS = 12
+_PROMPT_MAX_CARDS = CARD_ITEMS_MAX  # a grid shown whole can be written whole
 _PROMPT_CARD_BODY_CHARS = 200
 _PROMPT_SECTION_PROSE_CHARS = 400
 

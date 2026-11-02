@@ -289,12 +289,9 @@ _SOCIAL_DOMAINS: list[tuple[str, str]] = [
 _SOCIAL_SHARE_HINTS = ("/sharer", "/share", "/intent", "/plugins/", "shareArticle")
 
 
-def social_link_for_href(href: str, base_url: str) -> NavLink | None:
-    """The social profile an anchor's href points at, if any.
-
-    Shared by the page-wide and card-scoped extractors below so the platform
-    list and share-link exclusions live in one place.
-    """
+def _web_href(href: str, base_url: str) -> tuple[str, str, str] | None:
+    """(absolute URL, host without www., path) for a web link, else None — the
+    one parse every platform classifier below shares."""
     raw = href.strip()
     if not raw or raw.lower().startswith(_SKIP_HREF_PREFIXES):
         return None
@@ -305,8 +302,19 @@ def social_link_for_href(href: str, base_url: str) -> NavLink | None:
         return None
     if parsed.scheme not in ("http", "https"):
         return None
-    host = parsed.netloc.lower().removeprefix("www.")
-    path = parsed.path or "/"
+    return absolute, parsed.netloc.lower().removeprefix("www."), parsed.path or "/"
+
+
+def social_link_for_href(href: str, base_url: str) -> NavLink | None:
+    """The social profile an anchor's href points at, if any.
+
+    Shared by the page-wide and card-scoped extractors below so the platform
+    list and share-link exclusions live in one place.
+    """
+    parsed = _web_href(href, base_url)
+    if parsed is None:
+        return None
+    absolute, host, path = parsed
     if any(hint in absolute for hint in _SOCIAL_SHARE_HINTS):
         return None
     for domain, label in _SOCIAL_DOMAINS:
@@ -333,6 +341,41 @@ def extract_social_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
             found[link.label] = link
         if len(found) >= 6:
             break
+    return list(found.values())
+
+
+# An app's own store listing: (host, path fragment a listing carries, label).
+# A store's home page or a developer page is not an app.
+_APP_STORE_LISTINGS: tuple[tuple[str, str, str], ...] = (
+    ("apps.apple.com", "/app/", "App Store"),
+    ("itunes.apple.com", "/app/", "App Store"),
+    ("play.google.com", "/store/apps/details", "Google Play"),
+)
+
+
+def app_store_link_for_href(href: str, base_url: str) -> NavLink | None:
+    """The app-store listing an anchor points at, if any — never a profile,
+    so never social-menu material (the renderers draw an unknown platform's
+    icon as X's)."""
+    parsed = _web_href(href, base_url)
+    if parsed is None:
+        return None
+    absolute, host, path = parsed
+    for store_host, fragment, label in _APP_STORE_LISTINGS:
+        if host == store_host and fragment in path:
+            return NavLink(label=label, href=absolute)
+    return None
+
+
+def extract_app_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
+    """The business's own app listings on the page — one per store."""
+    found: dict[str, NavLink] = {}
+    for a in soup.find_all("a", href=True):
+        if not isinstance(a, Tag):
+            continue
+        link = app_store_link_for_href(str(a.get("href") or ""), base_url)
+        if link is not None and link.label not in found:
+            found[link.label] = link
     return list(found.values())
 
 

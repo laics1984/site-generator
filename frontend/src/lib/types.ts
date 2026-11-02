@@ -132,7 +132,12 @@ export interface SourceContent {
    * resolved; the site uses `kept`. Mirrors `SourceContent.source_conflicts`. */
   source_conflicts?: SourceConflict[]
   /** `<html lang>` as the page declared it — a claim, not evidence. */
+  app_links?: SourceNavLink[]
+  disclosures?: string[]
   declared_lang?: string | null
+  /** The post or event the page's markup declares itself; null for a page.
+   * Mirrors `SourceContent.declared_entry`. */
+  declared_entry?: 'article' | 'event' | null
   /** Set on the top-level source by every reader's preview. */
   language_profile?: LanguageProfile | null
   /** What a Facebook Page offers, from its own words. Mirrors

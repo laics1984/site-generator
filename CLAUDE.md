@@ -187,7 +187,8 @@ WAS the design. Now:
   seven a school can land on. Tints and inks derive from THIS site's palette
   (`style_tokens.band_tints` / `section_title_inks`), each title held to AA on
   its own band. An industry still owns content shape (pages, landing journey,
-  CTA wording, imagery honesty) and legibility (childcare's light lean).
+  CTA wording, imagery honesty) and legibility (childcare's friendly envelope,
+  below).
 - **The logo leads the palette** on a light build, every industry. "Has a hue" is `theme.has_brand_hue` —
   **chroma**, not HLS saturation, which calls the near-black `#111827` 39%
   saturated and used to turn a black wordmark into a navy site. Curated palettes
@@ -207,6 +208,73 @@ underline) must be `width: fit-content` with no forced `alignSelf`, or it
 stretches across the column / sits left of a centred heading; and a surfaceless
 card must declare `backgroundTexture: "flat"`, because every renderer resolves
 `transparent` to white and paints the theme grain on it.
+
+### A children's site is never dark — the friendly envelope
+
+`services/friendly_envelope.py` is the one statement of what a childcare site
+(`FRIENDLY_INDUSTRIES`) never looks like: a black footer, a photo under a
+near-black scrim, a charcoal palette. Seven independent paths reached one —
+the logo's light/dark vote (six of seven childcare directions state no lean,
+and a direction's lean REPLACES the industry's), the AI palette, the
+`mega`/`cta-banner` footers on `secondary`, the header's logo band, full-bleed
+photo heroes, the rhythm's dark band and the CTA pool. Measured: 28 of 28
+stress builds over the childcare schemes shipped a dark surface; 0 after. It
+says what a friendly site never is, never which look it is — every value
+derives from THIS palette, so schools still differ.
+
+- **Composition — the industry's, whatever the colours.** `refuses_template`
+  reads the catalog's own structure: a root that takes a photo (`$styleSlot` →
+  `backgroundImage`) or a gradient through the dark neutral
+  (`var(--builder-color-secondary)` as a bare stop) — today
+  `hero-background-bold`, `hero-gradient`, `about-background`,
+  `cta-background`, `cta-gradient`, pinned by test. `industry_allows` asks it,
+  so selection, the design-brain menu and the layout swap all inherit it.
+  `plan_site_heroes(industry=)` narrows its whole vocabulary first (`_within`),
+  so the pill, a source background, "banded" and "hero-led" cannot ask for a
+  photo opening. `refused_headers` drops the self-chrome pill (it needs that
+  photo hero). Hero stock queries name children (`hero_query`); the abstract
+  backdrop is `"{family} pastel wooden toys flat lay"` (`backdrop_query`,
+  measured on Pexels — "kids toys pattern" returned toy guns).
+- **Colour — the industry on a LIGHT build (`holds`).** `resolve_color_scheme`
+  returns light below the explicit override: a stored preference, the logo and
+  a direction never make a children's site dark; **the operator's explicit Dark
+  choice does, and turns this half off.** An AI palette that is dark or hueless
+  is discarded whole (`keeps`, in `resolve_direction` and `regenerate_palette`);
+  the hueless "Charcoal Marigold" is gone. Chrome sits on the brand's pastel
+  (`chrome_band` = the colour system's `band-1` role). A surface is friendly
+  when it `is_pastel` — OKLCH L ≥ 0.85 and C ≤ 0.09 — so a vivid band fails
+  too: a `#db2777` CTA carries dark ink and is still a loud slab, a yellow
+  fails on chroma. **The band order is the envelope's** (`band_sequence`,
+  painted by `apply_friendly_bands`, which replaces the multi-tint pass on a
+  friendly site): the opening on the tint, then page and tint in turn — one
+  hue in three steps with the CTA's deep pastel — and a multi-tint scheme
+  (playroom, soft-nursery) alternates its colour bands between the tint and
+  ONE companion, `band-2` (the accent's pastel), white always between. It
+  replaced a cycle through all four band roles (pink, mint, peach, lime in
+  section order) and a mix of tints the rhythm, the legacy rotation and the
+  floor each picked — `band-1` against `surface` is 1.05:1, so it read as
+  noise, not rhythm. Every flat section takes its place whatever was painted
+  there; the opening's own light gradient gives way too (the playful split's
+  8% wash read as white); a picture keeps its surface and its place. Design
+  record: the "Childcare Band Colours" canvas. **Every CTA is the `deep_pastel`** (the primary's hue at L 0.87,
+  C ≤ 0.08): measured over eleven hues it is ≥ 1.27:1 off band-1, the page and
+  the surface (the CTA floor is 1.25), carries the dark ink at 12:1+ and keeps
+  the brand button ≥ 3.1:1 — at 0.86 the button fell to 3.0 and the ink pass
+  repainted it near-black. Without it, `contrast_cta_bands` found no pastel
+  1.25:1 apart and reached for a mid-tone brand hue: a green slab with a black
+  button, a blue one with a muddy dark headline.
+- **A logo on a bar that cannot move dark** (`header_footer._mark_vanishes_on`):
+  the bar takes the lightest surface the mark reads best on, and only a mark
+  LIGHTER than it gives way to the wordmark. An orange mark at 2.8:1 on white
+  stays — moving the bar for it is how orange-logo kindergartens got navy
+  headers. Elsewhere the footer's 3:1 rule is unchanged and the header is never
+  gated (its bar was moved for the mark).
+- `ThemeTokens.industry` (internal, set by `build_theme`, absent from
+  BuilderStyles) is what lets every pass ask `holds(theme)`. A theme stored
+  before it existed reads as no industry, so the envelope is off for it.
+
+Tests: `test_friendly_envelope.py` (including an every-scheme end-to-end with a
+white logo, a grouped tree and photo heroes), `test_childcare_industry.py`.
 
 ### The direction is chosen among scored concepts
 
@@ -1340,8 +1408,52 @@ paste lesson, so a document now goes through the paste reader too.
 - `DOCUMENT_LLM_STRUCTURE_ENABLED` (default on); off, the headings split it.
   `conftest._offline_paste_structure` pins both off. The upload sends the model
   picker's headers (`uploadDocumentPreview`), multipart though it is.
+- **A heading over kept copy is kept** (`paste_structure._titles_of_kept_copy`).
+  Which lines are notes is the model's call; a card title whose own body it
+  kept is not. Fowable's reads dropped 25 card titles with the "ALL PLANS" tag
+  under each, and every card reached the site untitled. A blanket "never skip a
+  price line" was measured and rejected: an editorial note quotes the prices.
 
-Tests: `test_document_structure.py`, `test_paste_structure.py`.
+Tests: `test_document_structure.py`, `test_paste_structure.py`,
+`test_brief_sections.SkippedTitleTest`.
+
+## A brief's homepage is its own sections
+
+A brief is the plan of its page. Fowable's lays out fourteen sections; it got
+the SaaS landing pattern (hero, features, process, pricing, FAQ), and its 54
+titled cards competed for one six-card features block filled first-come from
+whichever text chunk came first. Three pieces, each one home:
+
+- **The outline is a section tree** (`services/outline_sections.py`, the
+  document twin of `section_extraction`), attached per page by
+  `doc_structure.split_into_pages`. The section rank is the shallowest heading
+  rank that recurs (a cover sets a headline or two larger); deeper headings are
+  card titles, or the section's subheading when they read as a paragraph. Kinds
+  come from what the cards state: a price line (`price_lists.PRICE`) is a
+  card's `meta`, a group mostly priced is `plans` → `pricing`, mostly questions
+  is `questions` → `faq`, a repeated title continues its card, bare titles
+  among bodied cards are a list in the prose. The crawl never emits either kind.
+  It needs PDF heading sizes ranked into six levels (`_PDF_HEADING_TIERS`): at
+  three, a 20pt section headline and a 9pt card title were both H3.
+- **The homepage follows it** (`page_inference._authored_homepage`) for
+  `AUTHORED_SOURCE_KINDS` (pdf, docx, paste) — no landing pattern, no woven
+  photo splits, no wording signals (a "0" became a stats band), up to
+  `_MAX_AUTHORED_SECTIONS`. A short card-less last section is the closing ask,
+  which the CTA presents. A crawled homepage keeps its pattern. `tree_body` is
+  the one answer for every tree-shaped recipe; `follows_source_tree` tells the
+  planner and `landing_order` (which must not re-sort it) that a scaffold is one.
+- **It is written a few sections per call** (`planner._tree_groups`): runs of
+  consecutive sections within `MULTIPASS_MAX_CHARS_PER_CALL` and
+  `MAX_SECTIONS_PER_BATCH`, each call given only its own sections' lines (the
+  first also the hero's, the last the closing ask). Text chunking asked every
+  chunk for every section and kept the first copy of each. Any page whose
+  scaffold follows its tree takes this path when it needs splitting at all.
+
+Features and services take up to `CARD_ITEMS_MAX` (12) items, the cards a
+prompt section shows; past it a list keeps its first items rather than failing
+validation, which dropped the whole block.
+
+Tests: `test_brief_sections.py`.
 
 ## Stated prices earn a pricing section, and only stated prices survive
 
@@ -1349,11 +1461,12 @@ A page is only ever planned with the sections its scaffold requests, and
 `pricing` was reachable from a `/pricing` URL alone — so a brief, a paste or a
 homepage whose plans sat in its own copy was never asked for them (Fowable's
 three plans, prices and feature lists were in the source and absent from the
-site). `page_inference._states_price_list` is structural evidence, beside
-video and map: two or more DIFFERENT amounts (`menu_assets.PRICE`, the one
+site). `price_lists.states_price_list` is structural evidence, beside
+video and map: two or more DIFFERENT amounts (`price_lists.PRICE`, the one
 price pattern) each with a billing period ("RM 119 / month", "$29/mo",
 "billed annually"). One fee in passing, or a menu's one-off prices, is not a
-price list. Eligible on home, services and landing pages.
+price list. Eligible on home, services and landing pages. `services/price_lists.py`
+is the one home for every price question below.
 
 `scaffold_enforcement._sanitize_pricing_block` keeps a tier only when every
 amount in its `price` is one the page's source states (commas ignored); a tier
@@ -1365,11 +1478,96 @@ path — they used to be two hand-written `elif` chains.
 sections are unioned across them, first copy winning; for pricing that
 published Growth from the chunk that saw its name but not its price ("Not
 specified in source") and lost Business. `planner._merge_blocks_of_kind` takes
-the single most complete pricing block (tiers with an amount, then tiers, then
-features) instead of stitching rows.
+the single most complete pricing block — DIFFERENT prices first, then tiers
+with an amount, tiers, features — instead of stitching rows. Different prices
+lead because a chunk that saw only the intro writes every plan "From RM 119".
+And the table is never cut: `source_router.split_raw_text` keeps each
+`price_list_spans` span (its headings, the plans, up to the next heading) in
+one chunk when it fits one.
 
 Tests: `test_page_inference` (pricing block),
-`test_scaffold_enforcement` (tier tests), `test_planner_merge.MergePricingBlocksTest`.
+`test_scaffold_enforcement` (tier tests), `test_planner_merge.MergePricingBlocksTest`,
+`test_brief_sections.PriceListChunkTest`.
+
+## Industry families: what a parent or a buyer is asked, and shown
+
+Conversion and trust UX for two FAMILIES, each gated on the resolved
+INDUSTRY so every archetype inside inherits it and every other industry is
+byte-identical: `childcare` (kindergarten, Montessori, nursery, enrichment) and
+`saas` (product, developer platform, **fintech**, and it-services/consultancy
+when they resolve to saas). An archetype only refines wording or a direction
+inside its family; it never decides whether the family gets something.
+
+- **The form says what the button asks** (`services/contact_intents.py`).
+  The header label and the enquiry form come from ONE intent:
+  `intent_for(direction.cta_strategy, industry)`. That table replaced both
+  `creative_directions._CONTACT_CTA_LABELS` and
+  `schema_builder._CTA_LABEL_BY_INDUSTRY`, so every label is unchanged (pinned
+  by test). The generator used to emit `contactFormDefault = {}`, so every
+  site showed the renderer's agency defaults ("Project brief", "Tell us what
+  you need help building"): a kindergarten's Request a Tour landed on a
+  project brief. `form_content` writes per-field `label`/`placeholder`/`mode`,
+  `submitLabel`, and `successHeading`/`successBody` (the published site's
+  keys; the builder keeps `fields`/`submitLabel`) for `FORM_FAMILIES` only.
+  The copy asks and never states, so there is nothing to ground.
+  **Industry intents are named outside the directions' vocabulary**
+  (`get-started`, `table`, …), so adding one can never change a direction's
+  pick. Form labels are not in `locale_overlay.TEXT_FIELDS`: translating them
+  needs the CMS overlay applier extended.
+- **Fintech is a SaaS archetype** (`business_archetype`, valid in `saas`
+  only, tried before developer-platform on ties). Its cues are finance-only
+  ("payments" alone weighs 1, so an invoicing SaaS stays a SaaS product). Its
+  two directions (`trusted-fintech`, `consumer-fintech`) set
+  `requires_archetype=True`: offered to fintech alone, on top of every SaaS
+  direction, so no existing SaaS site gains a candidate. It walks
+  `product-tour`. Security and licence proof join only on evidence (the
+  awards/stats signals), never as a requested band a model would have to fill.
+- **Footer facts, SaaS family** (`family_evidence.footer_facts`, the one gate →
+  `FooterFacts` → `build_footer(facts=)`). The regulatory line is taken from
+  the page's `<footer>` before chrome is stripped, verbatim
+  (`disclosures.from_footer`: a regulatory verb AND a named authority in one
+  sentence). App-store listings get their own classifier
+  (`nav_extraction.app_store_link_for_href`), never the social table, because
+  the renderers draw an unknown platform's icon as X's. Both come from markup
+  the crawl already fetched; `EXTRACTION_VERSION` 7. Catalog: an optional
+  `disclosure` slot under every chrome footer's legal bar, and a
+  `has_app_links` row above it.
+- **Earned sections** (`family_evidence.family_signals`, read by
+  `page_inference._detect_content_signals`, with `industry` threaded through
+  `_sections_for`/`_augment_sections`):
+  - **childcare:** `process` only for a source section headed as enrolment
+    AND classified `card_kind="steps"`. Steps have no fact sanitizer, so
+    "Enrol now" earns nothing.
+  - **saas:** `testimonials` on the source's framing of quotes (the sanitizer
+    keeps only stated quotes). It lands before `pricing`
+    (`_SIGNAL_LANDS_BEFORE`).
+- **Childcare safety facts** (`family_evidence.safety_facts`): registration,
+  first aid, ratios, CCTV and secure pick-up sentences, verbatim, handed to
+  the planner as `stated_safety_facts` (with `CHILDCARE_SAFETY_FACTS_USE`)
+  only in batches holding home or about. `stated_sentences` is the one "show
+  it as stated" reader; it reuses `profile_text.split_bio_segments`.
+- **Pricing comparison** (`pricing-compare`, catalog-gated
+  `"industries": ["saas"]`). `section_content.comparison_rows` is the whole
+  rule: plans whose feature lists overlap (≥ half shared, ≥3 features) and
+  none written as a delta ("Everything in Starter, plus"). An absent feature
+  is a blank cell (` `: non-empty to the filler, so columns stay
+  aligned), never a cross, because absence is not something a source stated.
+  Comparable plans are a hard SHAPE signal, so the brand seed's variety
+  rotation leaves the table leading. `corner` is optional because
+  `is_feasible` strips text, and an nbsp strips to empty. On phones the
+  feature column is sticky and opaque while the plans scroll inside the frame.
+  The catalog entry is generated by a script; edit the builder copy, then sync.
+- **Checks** (`design_quality._check_family_journey`, advisory):
+  `form-intent-mismatch` recomputes the build's intent, so a generated site
+  always passes and an edited one is caught. `childcare-no-visit-path` fires
+  when a site has no form and no visit/tour/enrol action on its homepage.
+
+Deliberately not changed: `process-enrollment-steps` stays mood-gated
+(friendly/playful), because widening it to the industry would change other
+industries' process layouts.
+
+Tests: `test_industry_families.py`; `test_scaffold_concurrency.py` (family
+signals ride the planner unchanged).
 
 ## Stock images only
 
@@ -2310,6 +2508,87 @@ Tests: `test_floating_pill_heroes.BandMarkerTest`/`BandClassificationTest`,
 `webtree-public/lib/adaptiveInk.test.ts` (vitest);
 `builder/src/lib/adaptive-ink.test.mjs` + `section-catalog.test.mjs`
 (`npm test`).
+
+## A card stands off its band
+
+A dark site's "How we work" grid shipped its step cards at **1.07:1** against
+the section (`#121711` on `#0c0e0b`): a fill that is neither the band's own
+colour nor a step off it, which reads as "the card is the section". Three
+causes, all silent:
+
+- **Cards were found by name.** `_walk_modernize` restyled a container whose
+  name ends in "card", and the catalogue names its cells "Step Cell",
+  "Member Cell", "Tier Cell", "Stat Cell", "FAQ Item" — so the scheme's
+  treatment never reached them and they kept the catalogue's light-page styling
+  (`surface` at 96%, a slate `rgba(148,163,184,0.14)` hairline) on every
+  palette. The vocabulary trap again. `services/card_frames.card_children` is
+  the one answer now, by **structure**: a named card, or a framed container
+  (a radius plus a fill or a border, no photograph) that repeats — two or more
+  siblings of one name, which is what a `$repeat` leaves. A bento tile
+  (`gridColumn`) is judged but never re-dressed: its fill is its composition's.
+- **The treatments assumed a light page.** `bordered`/`outline` drew their
+  hairline from `secondary`, the darkest colour of a dark palette (black on
+  black), and `bordered`/`elevated` filled with the page colour, which on a
+  dark page only a shadow could lift — and a shadow is invisible there. One
+  table now, `style_tokens.card_frame` (read by `card_styles` and
+  `_modernize_card`, which used to spell it twice): on a dark page the fill is
+  `surface-elevated` and the rule is the colour system's `border` role, both
+  as tokens; on a light page the table's values are unchanged (the cells
+  that now take a treatment are what changes there).
+- **Nothing judged a card against its band.** A dark `creative_colors` canvas
+  sits one OKLCH step (0.055) under its `surface`, so "surface on background"
+  is a tint, not a contrast — and no floor existed (CTA bands had one).
+
+**Separation is OKLab ΔE, not a contrast ratio** (`card_frames.delta_e`). The
+ratio is for text; for two large surfaces it rejects Tailwind's standard light
+card (white on gray-50, 1.04:1, with a 1.18:1 rule) while the reported dark
+card scores about the same. In ΔE that light card is 0.015 with a 0.057 rule,
+Tailwind's dark card is 0.068, and the report was 0.038. `CardFrame.separates`:
+
+- **Light band:** fill ≥ `LIGHT_FILL_MIN` (0.03), **or** a rule ≥ `RULE_MIN`
+  (0.04), **or** a shadow. A hairline or a lift does the work.
+- **Dark band:** fill ≥ `DARK_FILL_MIN` (0.06), **or** the band's own colour
+  (< `SAME_FILL`) with a rule that reads — a deliberate outline card. A
+  near-miss fill is the defect even with a visible border (the report's
+  border was 0.114): on a dark page a card is lifted by its fill.
+- A card with no fill (`flat`, `outline`) is not judged — dissolving is what it
+  asked for — and neither is one over a photo nobody measured.
+
+`card_frames.separate_cards` is the floor, run per page **after
+`bind_theme_styles`**: the rebind moves secondary-derived bands, so judging any
+earlier measures a colour the renderer never paints. A dark card's fill moves
+off its band — a palette role when one lands within 1-2× the floor (so it
+follows a palette edit), else its own colour along its hue — and **never
+crosses into the light half**, so the copy `enforce_text_contrast` already
+inked stays right, and re-holds the card's copy to AA on the new fill
+(`surface_foregrounds([card], bind=True)`). A light card's rule is restated
+(`border` role, else the band mixed toward its ink) keeping the author's width
+and style. A gradient card is left alone. `design_quality` reports
+`card-blends-band` (legibility, once per section) as the regression net for
+trees that skipped the pass.
+
+Lifting cards exposed two places where brand copy lost its hue, both in
+`palette_styles`. Each fell to the neutral ink on a surface it had no answer
+for. The step numbers went from green to white:
+
+- **The rebind derives brand-ink pairs for some surfaces only**
+  (`primary-ink-on-background|surface|surface-inverse|…`), not for
+  `surface-elevated`/`-muted`/`-alternate`. On those surfaces brand copy is now
+  lifted along its hue on the role's colour (`fixed_ink`), instead of taking
+  `on-<surface>`.
+- **`surface_foregrounds` tried brand roles, then neutrals**, and recognised
+  brand only as the exact primary. Now a failing brand ink is lifted along its
+  own hue before any neutral (unless the lift bleaches it), and an
+  already-lifted brand hex counts as brand. `brand_hue_of` is the one hue test,
+  shared with the rebind walk.
+
+Measured with every scheme × a light palette, a curated dark one, two seeds
+and the reported creative dark canvas (1,360 cards): **164 blended before, 0
+after**. Fewer cards are judged after (944), because `flat`/`outline` schemes
+now dissolve the catalogue cells the way they already dissolved `*Card`s.
+
+Tests: `test_card_frames.py` (including a catalogue walk failing on any framed
+`$repeat` item `card_children` misses, and an every-scheme matrix).
 
 ## A pass that repaints a section states its ink too
 
@@ -3466,6 +3745,51 @@ titles): a footer widget repeats both; a catalogue label repeats only the first.
 Test: `test_image_walls.ChromeSectionsTest`.
 
 Tests: `test_record_pages.py`; `conftest._offline_record_template` pins the call off.
+
+## A post is a post wherever its permalink puts it
+
+Only posts nested under a blog/events listing used to be migrated as CMS
+articles. WordPress serves posts at the site root just as readily
+(`/kindergarten-selangor/`), so mykiddyland's eleven posts were scaffolded as
+top-level `services` pages (one a `team` directory, which also pulled the roster
+off About), and none was migrated: `_candidate_urls` accepts only nested or
+dated paths. The URL cannot tell a post from a page. The markup can.
+
+- **The page's own declaration** (`services/entry_markup.declared_entry`,
+  recorded per page as `SourceContent.declared_entry`, `EXTRACTION_VERSION` 8)
+  is read in order of authority. First comes WordPress core's body class:
+  `page-id-N` is a page and `single-post` a post, whatever an SEO plugin claims.
+  Yoast and Rank Math write `og:type=article` (Rank Math also an `Article`
+  schema) on every page, so `og:type` alone counts for nothing. Next is JSON-LD
+  naming ONE Event or Article/BlogPosting/NewsArticle; several different entries
+  make a listing. Last is `article:published_time`. `content_collections` reads
+  the same JSON-LD vocabulary from the same module. It is read before
+  `_extract_body_text`, whose last resort strips `<script>` from the shared soup.
+- **One answer for both sides**: `page_inference.collection_entries`. The walk
+  skips those slugs (and pages filed under them, such as WordPress attachment
+  pages), and `extract_collections` fetches them with no listing needed. A page
+  dropped from the page set is therefore always one the migration fetches. The
+  owner's header nav outranks the markup, and a translated mirror stays with its
+  counterpart.
+- Entries with no listing crawled get one (`blog` / `events`), the way a
+  nested post's listing is inferred from its URL.
+- **A migrated entry is titled and dated by the page, not its chrome.**
+  `og:title` carries the SEO plugin's site suffix ("… - MyKiddyLand"), and
+  `_without_site_name` removes exactly the name `og:site_name` declares, so a
+  separator inside the title stays. Splitting at the first " - " instead cut
+  "Kindergarten Selangor - What Are The Advantages…" in half. The date is the
+  page's own first `<time>` (`_page_time`: its `datetime`, else the date it
+  shows), never one inside a comment or an `<aside>`. WordPress stamps every
+  reader comment with a `<time datetime>`, and the old "first `<time
+  datetime>`" read gave 8 of mykiddyland's 11 posts a comment's date and the
+  other 3 none. All 11 now match the dates the `/blog/` listing shows.
+
+Measured on the four `.language-captures` (live markup): on mykiddyland, the 11
+posts leave the page set and all 11 migrate. mmta, uniquekindies and watr give
+byte-identical scaffolds. mmta's `/post/*` is a hand-built site that declares
+nothing, so its posts are still pages under a synthesized "Post" parent.
+
+Tests: `test_entry_markup.py`, `test_declared_entries.py`.
 
 ## The Claude API provider
 

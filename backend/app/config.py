@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # AI creates four palette colors, jointly with design or in a separate call.
     ai_palette_enabled: bool = True
-    ai_palette_call_mode: Literal["shared", "separate"] = "separate"
+    ai_palette_call_mode: Literal["shared", "separate"] = "shared"  # separate = one more reasoning call
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     # --- LLM connection ------------------------------------------------------
@@ -245,9 +245,10 @@ class Settings(BaseSettings):
     # CPU evicts more weights and runs SLOWER. Lower OLLAMA_CONTEXT_LENGTH (and
     # llm_context_tokens with it) to keep the product flat.
     #
-    # Work items are pulled by a sliding-window worker pool, not lockstep depth
-    # groups (see planner._run_worklist), so one slow page no longer idles the
-    # other slots.
+    # Slots are held per CALL, so a page split into chunks sends them side by
+    # side, and a child page waits only for its own parent's call — not for
+    # every page one level up (planner.plan_site_with_scaffolds). The prompts
+    # are the ones the old depth barrier sent (tests/test_scaffold_concurrency).
     scaffold_batch_concurrency: int = 2
 
     # Char cap on the raw source text sent to the LEGACY free-form planner
@@ -440,6 +441,13 @@ class Settings(BaseSettings):
     vision_max_images: int = 12  # annotation cap per generation
     vision_image_max_bytes: int = 4_000_000  # skip downloads larger than this
     vision_fetch_timeout_seconds: float = 8.0
+    # Raw bytes of the images a generation downloads, shared by every pixel pass
+    # (vision prefetch, OCR, graphic screen, photo sampling, the Facebook pixel
+    # pass) — image_vision._fetch_image_bytes. Each image used to be downloaded
+    # once PER PASS, up to five times from the business's own server. Bounded by
+    # total size; 0 turns the cache off (in-flight sharing stays).
+    image_bytes_cache_mb: int = 96
+    image_bytes_cache_ttl_seconds: int = 1800
 
     # Pixel sampling for full-bleed photo slots (services/image_sampling.py):
     # reads a scraped photo's dominant colour and focal point so the hero scrim

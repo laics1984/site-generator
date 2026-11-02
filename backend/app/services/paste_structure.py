@@ -363,7 +363,7 @@ def _assemble(
     if not pages:
         return None
 
-    skip = _skipped(outline, len(blocks))
+    skip = _titles_of_kept_copy(blocks, _skipped(outline, len(blocks)))
     assembled: list[OutlineBlock] = []
     page_topics: dict[str, PageType] = {}
     headings: list[str] = []
@@ -432,6 +432,31 @@ def _skipped(outline: PasteOutline, line_count: int) -> set[int]:
         if len(pair) == 2 and 1 <= pair[0] <= pair[1] <= line_count:
             skip.update(range(pair[0], pair[1] + 1))
     return skip
+
+
+def _titles_of_kept_copy(blocks: list[OutlineBlock], skip: set[int]) -> set[int]:
+    """``skip`` without the headings whose own copy was kept.
+
+    A heading owns the body lines directly under it. When the model keeps that
+    body and skips the heading, it has kept a card and thrown away what the card
+    is about: Fowable's reads dropped 25 card titles ("One list of interested
+    families", "An AI agent you control") together with the "ALL PLANS" tag
+    under each, and every card reached the site as an untitled sentence. Which
+    lines are notes is the model's judgement; that a kept paragraph's own
+    heading is copy too is not a judgement at all. A paste's lines are level 0,
+    so this never touches one.
+    """
+    restored: set[int] = set()
+    for number in sorted(skip):
+        if blocks[number - 1].level == 0:
+            continue
+        below = number + 1
+        while below <= len(blocks) and blocks[below - 1].level == 0:
+            if below not in skip and blocks[below - 1].text.strip():
+                restored.add(number)
+                break
+            below += 1
+    return skip - restored
 
 
 def _reanchored(images, after: dict[int, int | None]):

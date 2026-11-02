@@ -155,8 +155,8 @@ export function BrandPanel({
         <span className="font-medium text-slate-700">Design and palette AI calls</span>
         <select className="w-full rounded-lg border border-slate-200 bg-white p-2"
           value={paletteDesignMode} onChange={event => setPaletteDesignMode(event.target.value as 'shared' | 'separate')}>
-          <option value="separate">Separate — earlier design selection, then palette</option>
           <option value="shared">Shared — design and palette together</option>
+          <option value="separate">Separate — earlier design selection, then palette</option>
         </select>
         <p className="text-xs text-slate-500">Separate uses an additional palette call and keeps the earlier design-selection prompt. Fresh AI results can still vary.</p>
       </label>

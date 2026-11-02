@@ -619,5 +619,76 @@ class BrandCacheKeyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, ["local", "claude-fable-5-1"])
 
 
+class BrandDetectionInflightTest(unittest.IsolatedAsyncioTestCase):
+    """The picker's recipe request arrives twice at once (StrictMode); the
+    second must wait on the first detection, not queue a second one."""
+
+    def setUp(self):
+        from app.models.content_blocks import SourceContent
+        from app.services import planner
+
+        self.planner = planner
+        self.source = SourceContent(source_kind="url", source_ref="https://inflight.example", raw_text="x")
+        planner._DETECT_BRAND_CACHE.clear()
+        self.addCleanup(planner._DETECT_BRAND_CACHE.clear)
+
+    async def test_concurrent_callers_share_one_detection(self):
+        calls = 0
+        release = asyncio.Event()
+
+        async def fake_detect(source, llm=None):
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return mock.sentinel.brand
+
+        with mock.patch.object(self.planner, "detect_brand", fake_detect):
+            first = asyncio.create_task(self.planner.detect_brand_cached(self.source))
+            second = asyncio.create_task(self.planner.detect_brand_cached(self.source))
+            await asyncio.sleep(0)
+            release.set()
+            results = await asyncio.gather(first, second)
+        self.assertEqual(calls, 1)
+        self.assertEqual(results, [mock.sentinel.brand, mock.sentinel.brand])
+        self.assertEqual(self.planner._DETECT_BRAND_INFLIGHT, {})
+
+    async def test_a_cancelled_caller_does_not_cancel_the_other(self):
+        release = asyncio.Event()
+
+        async def fake_detect(source, llm=None):
+            await release.wait()
+            return mock.sentinel.brand
+
+        with mock.patch.object(self.planner, "detect_brand", fake_detect):
+            first = asyncio.create_task(self.planner.detect_brand_cached(self.source))
+            second = asyncio.create_task(self.planner.detect_brand_cached(self.source))
+            await asyncio.sleep(0)
+            first.cancel()
+            release.set()
+            self.assertIs(await second, mock.sentinel.brand)
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+
+    async def test_a_failure_reaches_every_waiter_and_is_not_cached(self):
+        calls = 0
+
+        async def failing(source, llm=None):
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            raise LlmError("down")
+
+        with mock.patch.object(self.planner, "detect_brand", failing):
+            results = await asyncio.gather(
+                self.planner.detect_brand_cached(self.source),
+                self.planner.detect_brand_cached(self.source),
+                return_exceptions=True,
+            )
+            self.assertTrue(all(isinstance(r, LlmError) for r in results))
+            with self.assertRaises(LlmError):
+                await self.planner.detect_brand_cached(self.source)
+        self.assertEqual(calls, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

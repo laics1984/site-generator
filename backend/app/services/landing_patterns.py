@@ -97,9 +97,13 @@ _LANDING_PATTERNS: tuple[LandingPattern, ...] = (
                    ("hero", "features", "cta")),
     # --- archetype journeys: what THIS kind of business's visitor asks first ---
     # A product: what it does → how it works → what it costs → objections.
+    # Fintech walks the same tour (what you can do with your money → how it
+    # works → fees → questions); its security and licensing join on evidence
+    # (page_inference's awards/stats signals), never as a requested band the
+    # model would have to fill.
     LandingPattern("product-tour", (),
                    ("hero", "features", "process", "pricing", "faq", "cta"),
-                   archetypes=("saas-product", "developer-platform")),
+                   archetypes=("saas-product", "developer-platform", "fintech")),
     # IT services / technology firms: what we handle → who we are → how an
     # engagement runs → questions. Not a product's pricing grid.
     LandingPattern("solutions-led", (),

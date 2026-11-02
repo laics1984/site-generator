@@ -24,6 +24,7 @@ model from `chat_json`, and both go through the same validate-or-repair retry
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -403,6 +404,8 @@ async def _validated(
 # out fresh deep copies, because callers mutate results in place (alignment,
 # photo enrichment, parent_slug stitching).
 _RESPONSE_CACHE: dict[str, tuple[float, BaseModel]] = {}
+# key → the identical call in progress, joined by any caller asking meanwhile.
+_RESPONSE_IN_FLIGHT: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Task]] = {}
 
 
 def _response_cache_key(
@@ -459,6 +462,7 @@ def _response_cache_put(key: str, result: BaseModel) -> None:
 def clear_response_cache() -> None:
     """Drop every cached LLM response (tests / ops)."""
     _RESPONSE_CACHE.clear()
+    _RESPONSE_IN_FLIGHT.clear()
 
 
 async def chat_json_cached(
@@ -508,10 +512,30 @@ async def chat_json_cached(
         call_kwargs["temperature"] = temperature
     if think is not None:
         call_kwargs["think"] = think
-    result = await client.chat_json(**call_kwargs)
-    if key is not None:
-        _response_cache_put(key, result)
-    return result
+    if key is None:
+        return await client.chat_json(**call_kwargs)
+
+    # The same call already on its way (a double-click, the recipe and the
+    # generation asking at once) is joined rather than sent twice: one answer,
+    # handed out as copies, exactly what a cache hit a moment later would give.
+    loop = asyncio.get_running_loop()
+    pending = _RESPONSE_IN_FLIGHT.get(key)
+    if pending is None or pending[0] is not loop:
+        task = loop.create_task(client.chat_json(**call_kwargs))
+        _RESPONSE_IN_FLIGHT[key] = (loop, task)
+
+        def _settled(done: asyncio.Task, key: str = key) -> None:
+            if _RESPONSE_IN_FLIGHT.get(key, (None, None))[1] is done:
+                _RESPONSE_IN_FLIGHT.pop(key, None)
+            if not done.cancelled() and done.exception() is None:
+                _response_cache_put(key, done.result())
+
+        task.add_done_callback(_settled)
+        pending = (loop, task)
+    else:
+        logger.info("LLM call already in flight for %s — joining it", schema.__name__)
+    result = await asyncio.shield(pending[1])
+    return result.model_copy(deep=True)  # type: ignore[return-value]
 
 
 def _strip_think(text: str) -> str:

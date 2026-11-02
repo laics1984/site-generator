@@ -13,15 +13,13 @@ from typing import Literal
 from app.models.content_blocks import ImageMetadata, PagePlan, PosterBlock, SourceContent
 from app.models.industry import PageScaffold
 from app.services.image_urls import image_identity
+from app.services.price_lists import PRICE
 from app.services.source_injection import companion_insert_index, hero_insert_index, max_items, source_pages
 from app.services.source_path import normalize_source_slug
 
 logger = logging.getLogger(__name__)
 
 _MENU = re.compile(r"\b(?:menus?|menu board|price list|senarai harga|餐单|菜单)\b", re.I)
-# A stated price: a currency code or symbol and an amount. Also how page
-# inference recognises a price list (page_inference._states_price_list).
-PRICE = re.compile(r"(?:\b(?:RM|MYR|USD|SGD|IDR|THB|EUR|GBP)\s*\d+(?:[.,]\d+)?|[$€£]\s*\d+(?:[.,]\d+)?)", re.I)
 _PROMOTION = re.compile(r"\b(?:promotion|promo|limited time|valid until|offer ends|expired|special offer|ticket|concert|event|voucher|coupon)\b", re.I)
 _VERSION = re.compile(r"\b(?:old menu|previous menu|updated menu|new menu|revised menu|version\s*\d+)\b", re.I)
 _NON_MENU = re.compile(r"\b(?:ticket|concert|invoice|receipt|subtotal|total|parking|admission)\b", re.I)

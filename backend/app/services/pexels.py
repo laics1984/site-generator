@@ -103,6 +103,17 @@ class PexelsClient:
         )
         return results[0] if results else None
 
+    def cached_results(
+        self,
+        query: str,
+        *,
+        orientation: PhotoOrientation = "landscape",
+        size: PhotoSize = "large",
+    ) -> list[PhotoResult]:
+        """What `search_many` would return from cache — never an API call. For
+        warm-ups that must not spend the quota (media.prewarm_background_bytes)."""
+        return list(_cache_get(_cache_key(query, orientation, size)) or [])
+
     async def search_many(
         self,
         query: str,

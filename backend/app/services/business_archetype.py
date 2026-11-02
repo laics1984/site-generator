@@ -33,6 +33,7 @@ BusinessArchetype = Literal[
     "enrichment-centre",
     "saas-product",
     "developer-platform",
+    "fintech",
     "it-services",
     "digital-agency",
     "marketing-agency",
@@ -106,6 +107,20 @@ _SPECS: tuple[ArchetypeSpec, ...] = (
         "lead with what a child learns and how the day runs — programmes by age, "
         "languages, teachers, the learning approach — then fees/visit/enrolment as "
         "the source states them",
+    ),
+    ArchetypeSpec(
+        "fintech", "Fintech", frozenset({"saas"}),
+        (
+            (r"fintech", 3), (r"e-?wallets?", 3), (r"remittances?", 3),
+            (r"payment gateways?", 3), (r"bnpl", 3), (r"buy now,? pay later", 3),
+            (r"digital bank(ing)?", 3), (r"payments?", 1), (r"lending", 2),
+            (r"loans?", 1), (r"bank negara", 2), (r"monetary authority", 2),
+            (r"pci[- ]dss", 2), (r"kyc", 2),
+        ),
+        "lead with what the customer can do with their money and how simply, then "
+        "fees and rates exactly as the source states them, then how it works and how "
+        "it is secured and licensed as stated; never invent a licence, rate, fee, "
+        "security certification or figure",
     ),
     ArchetypeSpec(
         "developer-platform", "Developer platform", frozenset({"saas"}),

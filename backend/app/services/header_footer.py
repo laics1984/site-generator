@@ -31,6 +31,9 @@ from app.models.design_manifest import (
     FooterArchetype,
     HeaderArchetype,
 )
+from app.services import friendly_envelope
+from app.services.family_evidence import FooterFacts
+from app.services.color_system import luminance
 from app.services.design_schemes import for_theme
 from app.services.logo import MarkReading, read_mark
 from app.services.menu_builder import has_menu_groups
@@ -268,6 +271,7 @@ def _logo_mark(
     ink: str | None = None,
     logo_height: str = "52px",
     adaptive_ink: bool = False,
+    wordmark: bool = False,
 ) -> BuilderElement:
     """
     Returns a logo BuilderElement — either the uploaded image or a typographic
@@ -282,11 +286,18 @@ def _logo_mark(
     as the page scrolls — the built value stays the fallback, so nothing changes
     where no renderer sets the var. Only the wordmark: a bitmap logo cannot be
     recoloured, and the monogram circle is its own painted surface.
+
+    `wordmark` shows the typographic mark even when a logo renders: the bar
+    could not be moved for it (`_mark_vanishes_on`).
     """
     # `logo_render_ok`, not the URL: the scraper keeps an og:image or an
     # undersized favicon as a palette source, and either one rendered at 52px is
     # worse than the typographic mark below. See services/logo_extraction.py.
-    if brand.logo_render_ok and (brand.logo_url or brand.logo_data_url):
+    if (
+        brand.logo_render_ok
+        and (brand.logo_url or brand.logo_data_url)
+        and not wordmark
+    ):
         # The logo IS the home link — standard convention, and it lets the
         # primary menu drop the redundant "Home" item entirely.
         return _image(
@@ -382,8 +393,14 @@ def _header_chrome(
     a dark logo — rather than decorating the logo. Still an on-brand colour
     from the same six-token palette every other surface draws from, never an
     arbitrary shade, and it fixes the whole bar instead of patching the mark.
+
+    A friendly site (services/friendly_envelope.py) starts from the brand's
+    pastel instead, and never moves to a dark band: a mark that reads on no
+    light one gives way to the wordmark (`_logo_mark`).
     """
-    background = logo_band(brand, theme, theme.palette.background)
+    background = logo_band(
+        brand, theme, friendly_envelope.chrome_band(theme) or theme.palette.background
+    )
     foreground = _text_for_background(background)
     if _contrast(background, foreground) < 4.5:
         foreground = _ensure_contrast_against(background, foreground, min_ratio=4.5)
@@ -411,9 +428,16 @@ def logo_band(brand: BrandIdentity, theme: ThemeTokens, default_bg: str) -> str:
         return default_bg
     default_dark = _text_for_background(default_bg) == "#ffffff"
     p = theme.palette
+    friendly = friendly_envelope.holds(theme)
+    # A friendly site's bar never moves dark: its alternatives are the other
+    # light surfaces, and a mark none of them shows gives way (_mark_vanishes_on).
     opposite = [
         c for c in dict.fromkeys((p.secondary, p.text, p.background, p.surface))
-        if _is_hex_colour(c) and (_text_for_background(c) == "#ffffff") is not default_dark
+        if _is_hex_colour(c)
+        and (
+            friendly_envelope.is_pastel(c) if friendly
+            else (_text_for_background(c) == "#ffffff") is not default_dark
+        )
     ]
     if not _mark_colours(brand):
         # Nothing to measure: the light/dark reading picks the side.
@@ -484,6 +508,9 @@ def build_header(
             else for_theme(theme).logo_height or _DEFAULT_LOGO_HEIGHT
         ),
         adaptive_ink=archetype in SELF_CHROME_HEADERS,
+        # Elsewhere the bar was moved FOR the mark (logo_band); a friendly
+        # site's never moves dark, so only there can the mark still vanish.
+        wordmark=friendly_envelope.holds(theme) and _mark_vanishes_on(brand, theme, header_bg),
     )
     if archetype not in SELF_CHROME_HEADERS:
         logo.classes = "wt-header-ink"
@@ -577,12 +604,15 @@ def footer_band(
     with the band's contrast-correct ink. On a dark color scheme `surface` is
     itself dark, so the "light" archetypes stay coherent there. The logo leads:
     a mark that would vanish on this band moves the band to the opposite side
-    rather than being dropped for the wordmark."""
+    rather than being dropped for the wordmark — on a friendly site
+    (services/friendly_envelope.py) the band is the brand's pastel whatever
+    the archetype, and only ever moves to another light one."""
     archetype = _laid_out_footer_archetype(archetype, page_tree, nav_groups)
-    if archetype in ("minimal-centered", "editorial"):
-        default = theme.palette.surface
-    else:
-        default = theme.palette.secondary
+    if (default := friendly_envelope.chrome_band(theme)) is None:
+        if archetype in ("minimal-centered", "editorial"):
+            default = theme.palette.surface
+        else:
+            default = theme.palette.secondary
     return logo_band(brand, theme, default)
 
 
@@ -598,6 +628,7 @@ def build_footer(
     archetype: FooterArchetype = "mega",
     primary_cta: tuple[str, str] | None = None,
     cta_headline: str | None = None,
+    facts: FooterFacts | None = None,
     nav_groups: list[NavGroup] | None = None,
 ) -> BuilderElement:
     """
@@ -606,6 +637,11 @@ def build_footer(
     ``nav_groups`` are the site's navigation categories (menu_builder
     .plan_nav_groups): each is a column of the footer menu, so a site whose
     only grouping is a category still keeps the grid its columns need.
+
+    ``facts`` (services/family_evidence.footer_facts) is what the source states
+    for its footer: the regulatory line, verbatim, under the legal bar, and its
+    app-store listings as a row of links above it. Each node is dropped when
+    the source states none.
 
     ``archetype`` selects the layout philosophy (see models/design_manifest.py):
       * ``mega`` — dark brand column + grouped nav columns + legal bar (legacy;
@@ -656,7 +692,7 @@ def build_footer(
     # light). Same gate as the header (_logo_mark): a mark the header declined
     # is not good enough for the footer either.
     logo_src = (brand.logo_url or brand.logo_data_url) if brand.logo_render_ok else None
-    if logo_src and not _mark_dominant_reads_on(brand, footer_bg):
+    if logo_src and _mark_vanishes_on(brand, theme, footer_bg):
         logo_src = None
     show_wordmark = not logo_src
     logo_el: BuilderElement | None = None
@@ -709,6 +745,12 @@ def build_footer(
         "credits": " · ".join(media_credits) if media_credits else None,
         "has_legal": has_legal,
         "has_social": bool(social_links),
+        "disclosure": facts.disclosure if facts else None,
+        "has_app_links": bool(facts and facts.app_links),
+        "app_links": [
+            {"link": {"innerText": label, "href": href}}
+            for label, href in (facts.app_links if facts else ())
+        ],
     }
     if shows_cta:
         # Headline prefers the brand's own tagline; the button is the same
@@ -829,6 +871,25 @@ def _mark_dominant_reads_on(brand: BrandIdentity, band_hex: str) -> bool:
     if inks:
         return _contrast(inks[0][0], band_hex) >= _MARK_MIN_CONTRAST
     return _mark_reads_on(brand, band_hex)
+
+
+def _mark_vanishes_on(brand: BrandIdentity, theme: ThemeTokens, band_hex: str) -> bool:
+    """Whether a chrome bar shows the wordmark instead of the image mark.
+
+    A bar that moved for the mark (logo_band) still drops one whose main ink
+    falls under the graphics floor there. A friendly site's bar never moves
+    dark (services/friendly_envelope.py), so there only a mark LIGHTER than
+    its bar gives way — no light bar can show it — while an orange mark at
+    2.8:1 on white stays: it is the brand, and moving the bar for it is how
+    kindergartens with orange logos got navy headers."""
+    if not friendly_envelope.holds(theme):
+        return not _mark_dominant_reads_on(brand, band_hex)
+    if _mark_is_plated(brand):
+        return False
+    colours = _mark_colours(brand)
+    if colours:
+        return luminance(colours[0]) >= luminance(band_hex)
+    return brand.logo_is_light is True
 
 
 def _is_hex_colour(value: object) -> bool:

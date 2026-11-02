@@ -80,7 +80,7 @@ class FakeResolver:
 def _ctx(featured, abstract, *, mood="modern", scheme="light"):
     theme = build_theme("#2563eb", mood, color_scheme=scheme)
     return SimpleNamespace(
-        theme=theme, resolver=FakeResolver(featured, abstract), page_images=[]
+        theme=theme, resolver=FakeResolver(featured, abstract), page_images=[], industry=None
     )
 
 
@@ -221,7 +221,7 @@ class HeroPhotoPolicyTest(unittest.IsolatedAsyncioTestCase):
         )
         resolver = ImageResolver(scraped_metadata=[text_bearing], pexels=FakePexels())
         theme = build_theme("#2563eb", "friendly")  # not split-inclined
-        ctx = SimpleNamespace(theme=theme, resolver=resolver, page_images=[])
+        ctx = SimpleNamespace(theme=theme, resolver=resolver, page_images=[], industry=None)
         block = HeroBlock(
             headline="Make a Difference in the Field",
             image_query="community activities newsletter",

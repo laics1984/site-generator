@@ -43,6 +43,7 @@ from app.models.design_manifest import (
     FooterArchetype,
     HeaderArchetype,
 )
+from app.services import friendly_envelope
 from app.services.creative_directions import CreativeDirection
 from app.services.design_schemes import NEUTRAL_SCHEME, DesignScheme
 from app.services.diversity import pick_diverse, recent_choices, seeded_index
@@ -115,10 +116,16 @@ def _fit_candidates(
     mood: BrandMood | None,
     mood_table: dict[BrandMood, list],
     affinity: tuple = (),
+    refused: frozenset[str] = frozenset(),
 ) -> list:
-    """Ordered candidates for one chrome area: the mood's fit list, narrowed by
-    the scheme's affinity."""
-    base = list(mood_table.get(mood or _DEFAULT_MOOD, mood_table[_DEFAULT_MOOD]))
+    """Ordered candidates for one chrome area: the mood's fit list less what
+    the industry refuses (services/friendly_envelope.py), narrowed by the
+    scheme's affinity — refused first, so the affinity's two-candidate floor
+    still holds."""
+    base = [
+        c for c in mood_table.get(mood or _DEFAULT_MOOD, mood_table[_DEFAULT_MOOD])
+        if c not in refused
+    ]
     return _apply_affinity(base, affinity)
 
 
@@ -150,7 +157,9 @@ async def compose_design_manifest(
     decisions: list[DesignDecision] = []
 
     scheme = scheme or NEUTRAL_SCHEME
-    header_candidates = _fit_candidates(mood, _HEADER_FIT, scheme.header_affinity)
+    header_candidates = _fit_candidates(
+        mood, _HEADER_FIT, scheme.header_affinity, friendly_envelope.refused_headers(industry)
+    )
     footer_candidates = _fit_candidates(mood, _FOOTER_FIT, scheme.footer_affinity)
 
     header_avoid = await recent_choices("header", site_key=seed)

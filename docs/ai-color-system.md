@@ -185,10 +185,11 @@ The builder tests are src/lib/builder-styles.test.ts, color-utils.test.ts, surfa
 
 ### Design/palette call modes
 
-The generator's Brand step exposes **Separate** (default) and **Shared** calls.
+The generator's Brand step exposes **Shared** (default) and **Separate** calls.
 `palette_design_mode` is an optional `shared | separate` request field on both
 source-generation endpoints, persisted with staged generation requests. The
-server default is `AI_PALETTE_CALL_MODE=separate`.
+server default is `AI_PALETTE_CALL_MODE=shared`: Separate costs a second
+reasoning call, ~2 min each on a local thinking model (measured 2026-10-20).
 
 Separate retains the pre-palette design-selection system prompt and business
 inputs. It selects the concept and hero height before a palette-only request;

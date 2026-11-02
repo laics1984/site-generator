@@ -40,6 +40,7 @@ from app.models.brand import (
     TypeDirection,
     Typography,
 )
+from app.services import friendly_envelope
 
 
 # --- colour math ----------------------------------------------------------------
@@ -1115,8 +1116,10 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
     # Childcare had three palettes, all pastel, and ignored the logo: ten
     # kindergartens shipped in three colourways. The logo now leads (build_theme),
     # and these give a school with no usable logo colour an honest choice of
-    # voice — earthy, academic, bold, warm-neutral, natural, monochrome — chosen
-    # by the design scheme's palette strategy rather than by the industry.
+    # voice — earthy, academic, bold, warm-neutral, natural — chosen by the
+    # design scheme's palette strategy rather than by the industry. Never a
+    # hueless one: a charcoal-led school is the dull voice the friendly
+    # envelope refuses (services/friendly_envelope.py).
     # Childcare-only for now: tagging them into other industries would re-roll
     # those industries' seeded picks with no evidence it helps them.
     # Primaries are AA-safe against white as authored (5.5:1 or better).
@@ -1152,12 +1155,6 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
         moods=("friendly", "modern"),
         strategies=("soft-natural", "muted"),
     ),
-    CuratedPalette(
-        "Charcoal Marigold", ("childcare",),
-        "#27272A", "#D97706", "#18181B", "#F4F4F5",
-        moods=("modern", "editorial", "friendly"),
-        strategies=("mono", "high-contrast"),
-    ),
 )
 
 
@@ -1171,9 +1168,9 @@ _CURATED_PALETTES: tuple[CuratedPalette, ...] = (
 # `surface` sits far under the 0.1833 relative-luminance ceiling that white body
 # text at AA imposes.
 #
-# No childcare entries by design: that brief bans dark outright (see
-# _INDUSTRY_SCHEME_LEAN), so childcare reaches this table only via an explicit
-# override, where the whole-set fallback is the right answer.
+# No childcare entries by design: the friendly envelope keeps a children's
+# site light (services/friendly_envelope.py), so childcare reaches this table
+# only via an explicit override, where the whole-set fallback is the right answer.
 _CURATED_DARK_PALETTES: tuple[CuratedDarkPalette, ...] = (
     CuratedDarkPalette(
         # The reference "Dark Mode Tech" brief. Its #8B5CF6 violet is 4.23:1 on
@@ -1594,17 +1591,15 @@ def _seeded_index(font_seed: str | None, n: int) -> int:
 # Per-industry light/dark lean, the strongest smart-default signal (see
 # resolve_color_scheme). Each entry is the scheme an industry's design brief
 # gravitates toward when nobody chose explicitly:
-#   light — trust/warmth/approachability briefs (kids, causes, corporate-clean).
-#           Childcare stays light (parents are the audience); the weight below
-#           keeps it light even against a light logo.
+#   light — trust/warmth/approachability briefs (causes, corporate-clean).
 #   dark  — bold/premium/immersive briefs where dark canvases read as on-trend
 #           (modern tech marketing, creative agencies).
 # A site with a creative direction (services/creative_directions.py) takes the
 # DIRECTION's lean instead — this table made every SaaS and agency site dark.
 # Industries left out (restaurant, ecommerce, consultancy, personal, …) have no
-# strong lean and defer to the logo. Keys are IndustryCategory values.
+# strong lean and defer to the logo. Childcare is not a lean but a rule (the
+# friendly envelope), so it is not here. Keys are IndustryCategory values.
 _INDUSTRY_SCHEME_LEAN: dict[str, str] = {
-    "childcare": "light",
     "nonprofit": "light",
     "professional-services": "light",
     "health-wellness": "light",
@@ -1631,6 +1626,9 @@ def resolve_color_scheme(
     """Resolve light vs dark with SOP precedence (most explicit wins):
 
       1. `override` — an explicit per-generation choice (UI toggle / payload).
+         A friendly industry (services/friendly_envelope.py) is light below
+         this line: a stored preference, the logo or a direction never make a
+         children's site dark — only an operator's explicit choice does.
       2. `brand_color_scheme` — a stored brand preference.
       3. smart default — a weighted vote between two signals, each pulling toward
          dark (+) or light (-):
@@ -1640,7 +1638,7 @@ def resolve_color_scheme(
            - the logo: a predominantly *light* logo is usually drawn for a dark
              canvas (pulls dark); a *dark* logo for a light one (pulls light).
          Because industry outweighs the logo 2:1, a defined lean wins outright
-         when the two disagree (e.g. a light logo can't flip childcare dark),
+         when the two disagree (e.g. a light logo can't flip a nonprofit dark),
          while a neutral industry leaves the call to the logo. Neither silently
          overrides an explicit choice above.
       4. light — when nothing leans either way.
@@ -1651,9 +1649,12 @@ def resolve_color_scheme(
     agency site dark; a developer platform and a premium enterprise firm are
     both "saas" and want opposite canvases.
     """
-    for choice in (override, brand_color_scheme):
-        if choice in ("light", "dark"):
-            return choice  # type: ignore[return-value]
+    if override in ("light", "dark"):
+        return override  # type: ignore[return-value]
+    if friendly_envelope.is_friendly(industry):
+        return "light"
+    if brand_color_scheme in ("light", "dark"):
+        return brand_color_scheme  # type: ignore[return-value]
 
     if direction is not None:
         industry_lean = getattr(direction, "color_scheme_lean", None)
@@ -1925,6 +1926,7 @@ def build_theme(
         color_scheme=color_scheme,  # type: ignore[arg-type]
         palette_slug=palette_slug,
         design_scheme=None if scheme.is_neutral else scheme.slug,
+        industry=industry,
         motion_intensity=scheme.motion_intensity,
         style=spec.style,
     )

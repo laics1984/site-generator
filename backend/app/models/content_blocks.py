@@ -127,6 +127,20 @@ def _default_if_blank(value: object, default: str) -> object:
     return value
 
 
+# One item per source card, at most this many: a card grid the planner is shown
+# whole (source_router._PROMPT_MAX_CARDS) can be written whole.
+CARD_ITEMS_MAX = 12
+
+
+def _first_items(value: object, limit: int) -> object:
+    """A list past its cap keeps its first ``limit`` items.
+
+    Over the cap is a technicality, not a broken block: validation failing on
+    it dropped the WHOLE block (`salvage_page_content`), so a source section
+    with one card too many lost every card."""
+    return value[:limit] if isinstance(value, list) else value
+
+
 # A button is a promise of one action, so its label is a verb phrase, not a
 # sentence. Long labels are almost always a source NAV link that leaked into the
 # slot ("Learn More About Our Committee Members" under a "Join Our Effort"
@@ -386,13 +400,20 @@ class FeaturesBlock(BaseModel):
     kind: Literal["features"] = "features"
     heading: str = "Why choose us"
     subheading: str | None = None
-    items: list[FeatureItem] = Field(min_length=1, max_length=6)
+    # Was 6: a brief's eleven-card section failed validation and lost the
+    # whole block.
+    items: list[FeatureItem] = Field(min_length=1, max_length=CARD_ITEMS_MAX)
     visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("heading", mode="before")
     @classmethod
     def heal_heading(cls, v: object) -> object:
         return _default_if_blank(v, "Why choose us")
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def heal_items(cls, v: object) -> object:
+        return _first_items(v, CARD_ITEMS_MAX)
 
 
 class ServiceItem(BaseModel):
@@ -439,13 +460,18 @@ class ServicesBlock(BaseModel):
     subheading: str | None = None
     # min_length=1 (not 2): a business with a single real service should keep it
     # rather than be forced to invent a second one to satisfy the schema.
-    items: list[ServiceItem] = Field(min_length=1, max_length=8)
+    items: list[ServiceItem] = Field(min_length=1, max_length=CARD_ITEMS_MAX)
     visual_policy: VisualPolicy | None = None  # see SECTION_VISUAL_POLICY_SPEC.md
 
     @field_validator("heading", mode="before")
     @classmethod
     def heal_heading(cls, v: object) -> object:
         return _default_if_blank(v, "Our services")
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def heal_items(cls, v: object) -> object:
+        return _first_items(v, CARD_ITEMS_MAX)
 
 
 class TestimonialItem(BaseModel):
@@ -1833,6 +1859,23 @@ class SourceContent(BaseModel):
             "uses the first source's value; the preview says so."
         ),
     )
+    app_links: list["NavLink"] = Field(
+        default_factory=list,
+        max_length=2,
+        description=(
+            "The business's own app-store listings (App Store, Google Play) "
+            "linked on the page (nav_extraction.extract_app_links)."
+        ),
+    )
+    disclosures: list[str] = Field(
+        default_factory=list,
+        max_length=3,
+        description=(
+            "Regulatory disclosure sentences the page's footer states, verbatim "
+            "(services/disclosures.py): who licenses or regulates the business. "
+            "Carried to the generated footer for the SaaS family; never composed."
+        ),
+    )
     declared_lang: str | None = Field(
         default=None,
         description=(
@@ -1840,6 +1883,16 @@ class SourceContent(BaseModel):
             "evidence of the language: mmta.org.my and uniquekindies.com "
             "declare 'en' on every language. language_analysis records it with "
             "low weight; nothing else reads it."
+        ),
+    )
+    declared_entry: Literal["article", "event"] | None = Field(
+        default=None,
+        description=(
+            "The one post or event the page's own markup declares itself "
+            "(services/entry_markup.py) — WordPress core's body class, a "
+            "JSON-LD naming one entry, article:published_time. None for a page "
+            "or a listing. page_inference.collection_entries reads it, so a "
+            "post at the site root is migrated as an article like one under /blog."
         ),
     )
     language_profile: LanguageProfile | None = Field(
@@ -2025,6 +2078,10 @@ class ProfileCandidate(BaseModel):
 # rooms and features alike — whether a card carries a photo is already visible
 # in `image_urls`, and splitting on that alone produced a "facilities" category
 # that meant nothing more than "has an image".
+#
+# "plans" and "questions" are read from an authored source's outline only
+# (services/outline_sections.py), where a card's price and a question-shaped
+# title are stated in its own words; the HTML classifier never emits them.
 SourceCardKind = Literal[
     "people",
     "offerings",
@@ -2032,6 +2089,8 @@ SourceCardKind = Literal[
     "documents",
     "gallery",
     "contact",
+    "plans",
+    "questions",
     "prose",
 ]
 

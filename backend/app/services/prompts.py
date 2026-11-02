@@ -21,6 +21,17 @@ from app.services.business_archetype import prompt_enum as archetype_prompt_enum
 _INDUSTRY_ENUM = "|".join(f'"{slug}"' for slug in INDUSTRY_LABELS)
 _INDUSTRY_LIST = ", ".join(INDUSTRY_LABELS)
 
+# Childcare: the source's own safety and licensing sentences, handed over
+# verbatim by services/family_evidence.safety_facts — the model places them,
+# it never writes one.
+CHILDCARE_SAFETY_FACTS_USE = (
+    "Safety and licensing facts THIS school states, verbatim. Parents look for "
+    "these before they visit: where a requested section fits them (a features "
+    "item, the about section), include the ones that fit, keeping each fact's "
+    "wording. Never add a safety claim, licence, ratio, check or certification "
+    "that is not in this list or the page text."
+)
+
 RESTAURANT_MENU_CONTENT_PROMPT = """RESTAURANT MENU CONTENT
 Apply only to restaurant, café, bar and food-service sites.
 Menu content may be supplied as source text, menu-board photos, scanned menu
@@ -358,6 +369,8 @@ Follow the supplied order; preserve every section's contents and card grouping.
   are never people — "Innovation Centre" is a room.
 - `card_kind: contact` (call/WhatsApp/social cards) → `contact`; its cards
   are ways to reach the business, never a gallery or a services grid.
+- `plans` → `pricing`, a tier per card (`meta` is its price; keep every
+  feature line). `questions` → `faq`.
 - NEVER write markdown (`**bold**`, `-`/`•` bullets). Text renders literally.
 
 FIDELITY RULES — these override every other instruction:
@@ -506,8 +519,8 @@ _SCAFFOLD_BLOCK_SCHEMAS: dict[str, str] = {
           secondary_cta_label?, secondary_cta_href?, image_alt?, image_query, image_ref?, layout:"split"|"background" }
           (headline_accent: when the headline's final 1-4 words carry its emotional or benefit weight, copy EXACTLY
           those trailing words here — the layout renders them in the brand accent colour; omit when nothing deserves emphasis)""",
-    "features": '- features: { kind:"features", heading, subheading?, items: [{title, description, image_query, image_ref?}] }  (1-6 real items; image_query only for a real, photographable subject)',
-    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, audience?, cta_label?, cta_href?, image_query, image_ref?}] }  (1-8 real items; image_query only for a real, photographable subject; audience = short who-it\'s-for badge like "Ages 2-4" only when the source states it)',
+    "features": '- features: { kind:"features", heading, subheading?, items: [{title, description, image_query, image_ref?}] }  (1-12 real items; image_query only for a real, photographable subject)',
+    "services": '- services: { kind:"services", heading, subheading?, items: [{title, description, audience?, cta_label?, cta_href?, image_query, image_ref?}] }  (1-12 real items; image_query only for a real, photographable subject; audience = short who-it\'s-for badge like "Ages 2-4" only when the source states it)',
     "testimonials": '- testimonials: { kind:"testimonials", heading, items: [{quote, author, role?, avatar_query?}] }  (real reviews with real names only)',
     "about": '- about: { kind:"about", heading, body, image_alt?, image_query, image_ref? }',
     "faq": '- faq: { kind:"faq", heading, items: [{question, answer}] }  (transcribe EVERY genuine Q&A the source page asks — this is the one block where you must NOT curate or pick a "representative" subset; include all of them, up to 50; if the page has no Q&A content, omit the block; NEVER turn people, staff or profile listings into questions)',
@@ -704,7 +717,8 @@ Rules:
   source references, editorial notes, verification logs, internal appendices.
   A document that labels a part "internal" or "not for publication" has told
   you. Use skip_ranges for a run of such lines. Real marketing copy is never
-  skipped, even when it sits under such a label.
+  skipped, even when it sits under such a label. A card's or a plan's title,
+  its price, and every row of a comparison or feature table are copy.
 - When the document offers several alternatives for one line ("Headline
   options" followed by three headlines), keep them all — they are copy, and the
   writer downstream will choose.

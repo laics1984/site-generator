@@ -74,6 +74,7 @@ _DIMENSION: dict[str, str] = {
     "portrait-in-landscape-slot": "imagery",
     "abstract-featured-image": "imagery",
     "button-blends-band": "legibility",
+    "card-blends-band": "legibility",
 }
 
 # ux_audit rules that are SEO, not design: logged, not scored.
@@ -333,6 +334,76 @@ def _check_conversion(ctx: _Context) -> Iterator[QualityFinding]:
             "no-closing-action", "low", "the homepage ends without a next step", page="/",
             section=len(sections) - 1,
         )
+    yield from _check_family_journey(ctx, sections)
+
+
+# A parent's way in: the words of any action that leads to seeing the school.
+_VISIT_PATH_WORDS = re.compile(
+    r"\b(visit|tour|enrol|enroll|admission|apply|trial|open day|register|whatsapp|call)\b",
+    re.IGNORECASE,
+)
+
+
+def _site_industry(ctx: _Context) -> str | None:
+    theme = ctx.site.theme
+    return theme.get("industry") if isinstance(theme, dict) else getattr(theme, "industry", None)
+
+
+def _contact_forms(site: GeneratedSite) -> Iterator[tuple[str, BuilderElement]]:
+    for page in site.pages:
+        for section in _body(page):
+            for node in section.walk():
+                if node.type == "contactForm":
+                    yield page.slug, node
+
+
+def _check_family_journey(ctx: _Context, home_sections: list[BuilderElement]) -> Iterator[QualityFinding]:
+    """The two industry families' conversion path (services/contact_intents.py).
+
+    * `form-intent-mismatch` — the enquiry form does not say what the site asks
+      for (a "Request a Tour" site whose form says "Send enquiry"). Asked of the
+      SAME intent the build used, recomputed from the manifest's direction and
+      the industry, so a generated site always passes and an edited one is
+      caught.
+    * `childcare-no-visit-path` — a childcare site with no enquiry form and no
+      visit, tour or enrolment action on its homepage: a parent has no way in.
+    """
+    from app.services import contact_intents
+
+    industry = _site_industry(ctx)
+    if industry not in contact_intents.FORM_FAMILIES:
+        return
+    forms = list(_contact_forms(ctx.site))
+    direction = ctx.manifest.direction if ctx.manifest else None
+    intent = contact_intents.INTENTS[
+        contact_intents.intent_for(tuple(direction.cta_strategy) if direction else None, industry)
+    ]
+    if intent.has_form_copy:
+        for slug, form in forms:
+            submit = getattr(form.content, "submitLabel", None) if form.content else None
+            if submit != intent.submit:
+                yield _finding(
+                    "form-intent-mismatch", "low",
+                    f"the site asks visitors to '{intent.label}' but its form says "
+                    f"'{submit or 'Send enquiry'}'",
+                    page=slug or "/", node=form.name,
+                )
+                break
+    if industry == "childcare" and not forms:
+        labels = [
+            node.content.innerText
+            for section in home_sections
+            for node in section.walk()
+            if node.type == "link" and isinstance(node.content, BuilderElementContent)
+            and node.content.innerText
+        ]
+        if not any(_VISIT_PATH_WORDS.search(label) for label in labels):
+            yield _finding(
+                "childcare-no-visit-path", "medium",
+                "a parent has no way to arrange a visit: no enquiry form and no "
+                "visit, tour or enrolment action on the homepage",
+                page="/",
+            )
 
 
 def _check_fonts(ctx: _Context) -> Iterator[QualityFinding]:
@@ -461,6 +532,28 @@ def _check_button_bands(ctx: _Context) -> Iterator[QualityFinding]:
             yield from walk(section, page_rgb, page.slug or "/", index)
 
 
+def _check_card_bands(ctx: _Context) -> Iterator[QualityFinding]:
+    """A card that does not stand off the band it sits on (a near-miss fill on
+    a dark band, no fill/frame/shadow that reads on a light one —
+    `card_frames.CardFrame.separates`). `card_frames.separate_cards` restates
+    such cards, so this is the regression net for a tree that skipped or
+    predates that pass. Charged once per section, however many cards repeat."""
+    from app.services.card_frames import walk_cards
+
+    theme = _theme_tokens(ctx.site)
+    if theme is None:
+        return
+    for page in ctx.site.pages:
+        for index, section in enumerate(_body(page)):
+            card = next((c for c, frame in walk_cards(section, theme) if not frame.separates), None)
+            if card is not None:
+                yield _finding(
+                    "card-blends-band", "medium",
+                    "a card's surface barely stands off the band behind it",
+                    page=page.slug or "/", section=index, node=card.name,
+                )
+
+
 def _contrast_ratio(a: str, b: str) -> float:
     from app.services.theme import _contrast
 
@@ -548,6 +641,7 @@ _CHECKS: tuple[Callable[[_Context], Iterator[QualityFinding]], ...] = (
     _check_imagery,
     _check_abstract_imagery,
     _check_button_bands,
+    _check_card_bands,
     _check_direction,
     _check_originality,
 )

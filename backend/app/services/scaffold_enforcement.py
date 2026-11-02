@@ -42,6 +42,7 @@ from app.models.content_blocks import (
 )
 from app.models.industry import PageScaffold
 from app.services.image_abstract import abstract_text
+from app.services.price_lists import amounts
 from app.services.profile_text import (
     clean_team_bio,
     has_sentence_punctuation,
@@ -455,13 +456,6 @@ def _sanitize_stats_block(
     return block.model_copy(update={"items": items})
 
 
-_AMOUNT_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
-
-
-def _amounts(text: str) -> set[str]:
-    return {m.group(0).replace(",", "") for m in _AMOUNT_RE.finditer(text)}
-
-
 def _sanitize_pricing_block(
     block: PricingBlock, source_text: str | None
 ) -> PricingBlock | None:
@@ -470,8 +464,8 @@ def _sanitize_pricing_block(
     ("Custom", "Ask us") states no amount and stays."""
     if not source_text:
         return block
-    stated = _amounts(source_text)
-    tiers = [tier for tier in block.tiers if _amounts(tier.price) <= stated]
+    stated = amounts(source_text)
+    tiers = [tier for tier in block.tiers if amounts(tier.price) <= stated]
     if not tiers:
         return None
     return block.model_copy(update={"tiers": tiers})

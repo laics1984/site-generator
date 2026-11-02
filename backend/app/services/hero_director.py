@@ -28,13 +28,15 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Literal, TypeVar
+from typing import Callable, Literal, TypeVar
 
 from app.config import settings
 from app.models.brand import HeroBackgroundHeight
 from app.models.content_blocks import BrandMood, PagePlan
+from app.services import friendly_envelope
 from app.services.design_schemes import NEUTRAL_SCHEME, DesignScheme
 from app.services.image_styling import HeroAnchor
+from app.services.template_filler import get_template
 
 # Hero templates that render no image slot (see app/templates/section_catalog.json).
 # For these the photo policy skips image resolution entirely so a scraped photo
@@ -167,6 +169,23 @@ def _rotation_index(seed: str, slug: str, size: int) -> int:
     survives interpreter restarts — regeneration must be idempotent."""
     digest = hashlib.md5(f"{seed}:{slug}".encode()).hexdigest()
     return int(digest[:8], 16) % size
+
+
+def _admitted_for(industry: str | None) -> Callable[[HeroDirective], bool]:
+    """Whether a hero may open a page of this industry's site."""
+    return lambda d: not friendly_envelope.refuses_template(industry, get_template(d.template_id))
+
+
+def _within(spec: _MoodSpec, admitted: Callable[[HeroDirective], bool]) -> _MoodSpec:
+    """`spec` with every hero the site refuses taken out; a refused homepage
+    lead falls to the rotation's first. Every rotation keeps an admitted
+    hero (test_friendly_envelope pins it), so this never empties one."""
+    rotation = tuple(d for d in spec.rotation if admitted(d))
+    return _MoodSpec(
+        homepage=spec.homepage if admitted(spec.homepage) else rotation[0],
+        by_page_type={kind: d for kind, d in spec.by_page_type.items() if admitted(d)},
+        rotation=rotation,
+    )
 
 
 _T = TypeVar("_T")
@@ -322,6 +341,7 @@ def plan_site_heroes(
     scheme: DesignScheme | None = None,
     has_hero_photo: bool | None = None,
     direction_leads: tuple[str, ...] = (),
+    industry: str | None = None,
 ) -> dict[str, HeroDirective]:
     """Assign every page a HeroDirective, keyed by slug.
 
@@ -355,10 +375,30 @@ def plan_site_heroes(
     float over). Takes the site-wide branch below whatever the settings say —
     the caller demotes the header archetype if a page still can't resolve a
     genuine photo. See schema_builder's self-chrome audit.
+    ``industry``: a friendly one (services/friendly_envelope.py) refuses the
+    heroes built to carry copy on a dark backdrop — the full-bleed photo and
+    the dark gradient — on every page, ahead of every precedence above: the
+    whole vocabulary is narrowed before anything is chosen from it.
     """
-    spec = (_MOOD_SPECS.get(mood) if mood else None) or _DEFAULT_SPEC  # type: ignore[arg-type]
+    admitted = _admitted_for(industry)
+    spec = _within(
+        (_MOOD_SPECS.get(mood) if mood else None) or _DEFAULT_SPEC,  # type: ignore[arg-type]
+        admitted,
+    )
     scheme = scheme or NEUTRAL_SCHEME
     hero_policy = scheme.hero_policy
+    if not admitted(_BACKGROUND):
+        # No photo opening exists for this site, so nothing may ask for one:
+        # not the pill, not a source background, not a banded (photo) height.
+        force_background = has_source_background = False
+        hero_height = "full"
+        hero_policy = "editorial-mix"
+    scheme_home = _LEADS.get(scheme.homepage_hero or "")
+    if scheme_home is not None and not admitted(scheme_home):
+        scheme_home = None
+    direction_leads = tuple(
+        name for name in direction_leads if name in _LEADS and admitted(_LEADS[name])
+    )
     # No photograph to open on, and nothing (the pill) that needs one: lead
     # with type. A source background IS a photograph, whatever was measured.
     type_led = has_hero_photo is False and not force_background and not has_source_background
@@ -367,6 +407,8 @@ def plan_site_heroes(
         if scheme.type_led_hero
         else _TYPE_LED_BY_MOOD.get(mood or "friendly", _CENTERED)  # type: ignore[arg-type]
     )
+    if not admitted(type_led_hero):
+        type_led_hero = _CENTERED
 
     # Site-wide full-bleed policy: EVERY page opens with a background hero —
     # a real/stock photo or the colour-matched abstract — so the transparent
@@ -423,13 +465,10 @@ def plan_site_heroes(
         scheme_lead = (
             direction_lead
             if direction_lead is not None and not force_background
-            else _LEADS[scheme.homepage_hero]
-            if scheme.homepage_hero
+            else scheme_home
+            if scheme_home is not None
             and not force_background
-            and (
-                hero_height != "banded"
-                or _LEADS[scheme.homepage_hero].template_id not in IMAGELESS_HERO_IDS
-            )
+            and (hero_height != "banded" or scheme_home.template_id not in IMAGELESS_HERO_IDS)
             else None
         )
 
@@ -453,7 +492,7 @@ def plan_site_heroes(
             if type_led:
                 directives[page.slug] = direction_lead or type_led_hero
                 continue
-            directive = _LEADS[scheme.homepage_hero] if scheme.homepage_hero else spec.homepage
+            directive = scheme_home or spec.homepage
             # "hero-led": the homepage still opens on the full-bleed photo — the
             # first impression is the one place atmosphere always pays — while
             # interiors take the mood's compact rotation below. "editorial-mix"

@@ -88,6 +88,29 @@ def _offline_photo_sampling():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_image_bytes():
+    """Each test downloads its own fakes.
+
+    ``image_vision._fetch_image_bytes`` keeps every body it fetched by URL, so
+    one test's fake ``https://example.com/a.png`` would otherwise be served to
+    the next test that fakes the same URL with different bytes. The source-host
+    caps and the SSRF guard's DNS verdicts go with it, for the same reason.
+    """
+    from app.services import asset_fetch, image_vision, url_guard
+
+    def _reset() -> None:
+        image_vision.clear_image_bytes_cache()
+        asset_fetch._SOURCE_GATES.clear()
+        url_guard._VERDICTS.clear()
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+
+
+@pytest.fixture(autouse=True)
 def _offline_ocr():
     """Disable the OCR text screen for every test.
 

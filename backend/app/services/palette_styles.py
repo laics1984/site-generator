@@ -27,6 +27,19 @@ def rendering_theme(theme: ThemeTokens) -> ThemeTokens:
     })})
 
 
+def brand_hue_of(value: object, palette) -> str | None:
+    """"primary" or "accent" when `value` is a literal hex of that brand's hue
+    (a brand ink some pass already lifted to AA keeps the hue, not the value),
+    else None. A near-neutral is never a brand ink."""
+    if not isinstance(value, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+        return None
+    _, chroma, hue = oklch(value)
+    if chroma <= .04:
+        return None
+    name, distance = min(((name, abs(math.atan2(math.sin(hue-oklch(getattr(palette,name))[2]), math.cos(hue-oklch(getattr(palette,name))[2])))) for name in ("primary", "accent")), key=lambda v: v[1])
+    return name if distance < .3 else None
+
+
 def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
                       rendered: ThemeTokens) -> None:
     from app.services.style_tokens import band_tints, brand_ink, emphasis_ink, _muted
@@ -191,18 +204,15 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
             node.styles["border"] = f"1px solid {token(surface+'-border-on-'+surrounding_surface)}"
         if node.type in ("text", "link") and isinstance(raw_ink, str):
             brand = None
+            ink_fill = fixed_surface
             if photo and "url(" not in str(own or "") and not styles.get("backgroundColor"):
                 # A fixed neutral photo pair preserves measured legibility on a
                 # color-only update; photographic source/crop never changes.
                 role = photo_ink
             else:
                 brand = ink_roles.get(raw_ink.lower())
-                if not brand and re.fullmatch(r"#[0-9a-fA-F]{6}", raw_ink):
-                    _, chroma, hue = oklch(raw_ink)
-                    if chroma > .04:
-                        name, distance = min(((name, abs(math.atan2(math.sin(hue-oklch(getattr(palette,name))[2]), math.cos(hue-oklch(getattr(palette,name))[2])))) for name in ("primary", "accent")), key=lambda v: v[1])
-                        if distance < .3:
-                            brand = name
+                if not brand:
+                    brand = brand_hue_of(raw_ink, palette)
                 if not brand:
                     for name in ("primary", "accent"):
                         if f"--builder-color-{name}" in raw_ink:
@@ -211,11 +221,17 @@ def bind_theme_styles(elements: list[BuilderElement], canonical: ThemeTokens,
                         f"on-{surface}" if tint else
                         f"{brand}-ink-on-{surface}" if brand else f"on-{surface}")
                 if role not in colors:
+                    # No brand-ink pair is derived for this role (the elevated,
+                    # muted and alternate surfaces a card may paint): brand copy
+                    # keeps its hue, lifted to AA on the role's colour, rather
+                    # than falling to the neutral ink.
+                    if brand and not tint and surface in colors:
+                        ink_fill = ink_fill or colors[surface]
                     role = f"on-{surface}"
             parsed_ink = _parse_color(raw_ink, rendered)
             neutral = parsed_ink is not None and oklch(_to_hex(parsed_ink[0]))[1] < .04
             if role in colors and (neutral or brand or raw_ink.lower() in values or "--builder-color-" in raw_ink or raw_ink.lower() in ink_roles):
-                node.styles["color"] = (fixed_ink(brand, fixed_surface) if fixed_surface else token(role))
+                node.styles["color"] = (fixed_ink(brand, ink_fill) if ink_fill else token(role))
                 # Informative text must not inherit a decorative opacity that
                 # invalidates its chosen pair. Photo washes remain on parents.
                 node.styles.pop("opacity", None)
@@ -299,13 +315,25 @@ def surface_foregrounds(elements: list[BuilderElement], theme: ThemeTokens, *,
             if not passes:
                 brand = next((name for name in ("primary", "accent")
                               if isinstance(original, str) and
-                              (f"--builder-color-{name}" in original or original.lower() == colors[name])), None)
+                              (f"--builder-color-{name}" in original or original.lower() == colors[name])),
+                             None) or brand_hue_of(original, theme.palette)
                 roles = ([f"{brand}-ink-on-{s}" for s in ("background", "surface", "surface-inverse", "primary", "accent")]
                          if brand else [])
-                roles += ["on-background", "on-surface", "on-surface-inverse", "ink-dark", "ink-light"]
                 role = next((r for r in roles if worst(colors[r]) >= 4.5), None)
+                # Brand copy keeps its hue: lifted along it to AA before it may
+                # fall to a neutral ink — unless the lift bleaches it (near the
+                # light/dark pivot no shade of a hue reaches 4.5:1).
+                lifted = (max((ensure_contrast(colors[brand], _to_hex(bg)) for bg in samples), key=worst)
+                          if brand and not role else None)
+                if lifted and (worst(lifted) < 4.5 or oklch(lifted)[1] <= .04):
+                    lifted = None
+                if not role and not lifted:
+                    role = next((r for r in ("on-background", "on-surface", "on-surface-inverse",
+                                             "ink-dark", "ink-light") if worst(colors[r]) >= 4.5), None)
                 if role:
                     chosen = f"var(--builder-color-{role}, {colors[role]})"
+                elif lifted:
+                    chosen = lifted
                 else:
                     # A mid-tone or layered surface may need an adjusted ink.
                     # Never repaint it to manufacture a passing contrast ratio.

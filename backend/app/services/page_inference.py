@@ -30,6 +30,7 @@ from app.models.content_blocks import (
 )
 from app.models.industry import IndustryCategory, PageScaffold
 from app.services.industry_templates import gallery_page, get_template, menu_page
+from app.services.family_evidence import family_signals
 from app.services.landing_patterns import homepage_sections
 from app.services.locale import (
     AMBIGUOUS_LOCALE_SEGMENTS,
@@ -40,7 +41,8 @@ from app.services.locale import (
 from app.services.nav_extraction import find_repeated_cluster_keys
 from app.services.source_path import is_record_url, normalize_source_slug
 from app.services.profile_text import FOUNDERS_BAND_MAX, looks_like_founder_role
-from app.services.menu_assets import PRICE, read_menu_image, serves_menus
+from app.services.menu_assets import read_menu_image, serves_menus
+from app.services.price_lists import states_price_list
 from app.services.record_pages import mark_record_sets
 from app.services.source_router import gallery_photos
 
@@ -461,6 +463,8 @@ _CARD_KIND_SECTIONS: dict[str, SectionType] = {
     "gallery": "gallery",
     "documents": "downloads",
     "contact": "contact",
+    "plans": "pricing",
+    "questions": "faq",
 }
 
 # Below this the tree says too little to be worth overriding the page-type
@@ -501,6 +505,74 @@ def source_section_kinds(tree: list[SectionCandidate]) -> list[SectionType]:
     return body
 
 
+# Sources an author wrote as the plan of a page — a brief, a document, pasted
+# copy — as opposed to a page builder's markup. Their homepage follows their own
+# sections (`_authored_homepage`).
+AUTHORED_SOURCE_KINDS = frozenset({"pdf", "docx", "paste"})
+# An authored homepage keeps this many of its own sections. It is generated a
+# few sections per call (planner._tree_groups), so the single-call ceiling that
+# caps every other page does not apply; this only bounds a runaway outline.
+_MAX_AUTHORED_SECTIONS = 16
+# A last section with no cards and no more copy than this is the page's closing
+# ask, and the closing CTA presents it rather than an `about` before the CTA.
+_CLOSING_ASK_MAX_CHARS = 400
+
+
+def tree_body(
+    page: SourceContent | None, *, homepage: bool = False
+) -> list[tuple[SectionType, SectionCandidate]] | None:
+    """The body sections a page's own tree dictates, each with the source
+    section it presents — or None to fall back to the recipe.
+
+    The one answer for the recipe (`_sections_from_tree`, `_authored_homepage`)
+    and for the planner, which cuts such a page into calls by these sections
+    (`follows_source_tree`)."""
+    tree = page.section_candidates if page else None
+    if not tree:
+        return None
+    if len(tree) < _TREE_MIN_SECTIONS and not _tree_is_image_led(tree):
+        return None
+    authored = homepage and page.source_kind in AUTHORED_SOURCE_KINDS
+    if authored and _is_closing_ask(tree[-1]):
+        tree = tree[:-1]
+    limit = _MAX_AUTHORED_SECTIONS if authored else max(0, _MAX_PAGE_SECTIONS - 2)
+    return list(zip(source_section_kinds(tree), tree))[:limit]
+
+
+def _is_closing_ask(section: SectionCandidate) -> bool:
+    copy = " ".join([section.subheading, section.prose])
+    return not section.cards and len(copy) <= _CLOSING_ASK_MAX_CHARS
+
+
+def follows_source_tree(
+    scaffold: PageScaffold, page: SourceContent | None
+) -> list[tuple[SectionType, SectionCandidate]] | None:
+    """The tree sections a scaffold presents, in order, when its body opens
+    with exactly the sections the page's tree dictates; else None (a scaffold
+    built from a recipe, or one edited since)."""
+    body = tree_body(page, homepage=scaffold.is_homepage)
+    if not body or scaffold.sections[:1] != ["hero"]:
+        return None
+    if scaffold.sections[1 : 1 + len(body)] != [kind for kind, _ in body]:
+        return None
+    return body
+
+
+def _authored_homepage(home: SourceContent | None) -> list[SectionType] | None:
+    """An authored source's homepage, section by section, as its author laid it
+    out — or None when it states no sections.
+
+    A brief is the plan of its page. Fowable's lays out fourteen sections, and
+    the SaaS landing pattern it was given instead (hero, features, process,
+    pricing, FAQ) had one six-card features block for the brief's 54 cards.
+    A crawled homepage keeps its landing pattern: its markup is a page
+    builder's, not a plan."""
+    if home is None or home.source_kind not in AUTHORED_SOURCE_KINDS:
+        return None
+    body = tree_body(home, homepage=True)
+    return ["hero", *(kind for kind, _ in body), "cta"] if body else None
+
+
 def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
     """The section list the SOURCE dictates, or None to fall back to the recipe.
 
@@ -517,18 +589,12 @@ def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
     /school-life came out as six consecutive about blocks with four age-group
     cards flattened into one of their body strings.
     """
-    tree = page.section_candidates if page else None
-    if not tree:
-        return None
-    if len(tree) < _TREE_MIN_SECTIONS and not _tree_is_image_led(tree):
-        return None
-
-    body = source_section_kinds(tree)
-
     # hero and cta bracket the page; the source's own sections are trimmed to
     # fit between them rather than displacing them.
-    body = body[: max(0, _MAX_PAGE_SECTIONS - 2)]
-    return ["hero", *body, "cta"]
+    body = tree_body(page)
+    if body is None:
+        return None
+    return ["hero", *(kind for kind, _ in body), "cta"]
 
 
 def _content_photo_count(page: SourceContent | None) -> int:
@@ -598,12 +664,13 @@ def _sections_for(
     page_type: PageType,
     parent_type: PageType | None,
     page: SourceContent | None = None,
+    industry: str | None = None,
 ) -> list[SectionType]:
     # A detected profile directory renders its roster whatever its nesting —
     # the team grid IS the page content, so the top-level team recipe wins
     # even for sub-pages (which would otherwise get the generic detail rhythm).
     if page_type == "team" and _looks_like_directory_page(page):
-        return _augment_sections(list(_TOP_SECTIONS["team"]), page_type, page)
+        return _augment_sections(list(_TOP_SECTIONS["team"]), page_type, page, industry)
     # The source's own section tree outranks every fixed rhythm below, and the
     # story heuristic above it: the story rule infers "this page is a sequence
     # of image+text sections" from photo COUNT, while the tree reads the actual
@@ -611,13 +678,13 @@ def _sections_for(
     if page_type not in _STORY_INELIGIBLE_TYPES:
         from_tree = _sections_from_tree(page)
         if from_tree is not None:
-            return _augment_sections(from_tree, page_type, page)
+            return _augment_sections(from_tree, page_type, page, industry)
     # Story pages override the fixed rhythms: the source itself dictates the
     # section list (a photo-and-heading section sequence), not the page type.
     if page_type not in _STORY_INELIGIBLE_TYPES:
         story_count = _story_section_count(page)
         if story_count >= _STORY_MIN_SECTIONS:
-            return _augment_sections(_story_sections(story_count), page_type, page)
+            return _augment_sections(_story_sections(story_count), page_type, page, industry)
     if parent_type is None:
         base = list(_TOP_SECTIONS.get(page_type, _TOP_SECTIONS["services"]))
     elif page_type in _SELF_STRUCTURED_TYPES:
@@ -638,7 +705,7 @@ def _sections_for(
     # photos as image+text splits woven into the fixed rhythm.
     base = _weave_photo_sections(base, page_type, page)
     base = _swap_unfillable_gallery_for_video(base, page)
-    return _augment_sections(base, page_type, page)
+    return _augment_sections(base, page_type, page, industry)
 
 
 def _swap_unfillable_gallery_for_video(
@@ -677,29 +744,6 @@ def _swap_unfillable_gallery_for_video(
 # section if it later finds the signal was a false positive (same fidelity
 # rule as testimonials/faq/pricing/etc in scaffold_enforcement.py).
 
-# A price list states several prices, each for a period: "RM 119 / month",
-# "RM 1,428 a year", "$29/mo". One price is a fee mentioned in passing; two
-# DIFFERENT recurring amounts are plans, packages or fee tiers. Without this,
-# pricing was reachable only from a /pricing URL, so a brief or a homepage
-# whose plans sat in its own copy was never asked for them (Fowable's three
-# plans, prices and feature lists were in the source and absent from the site).
-_PRICE_PERIOD = re.compile(
-    rf"(?P<price>{PRICE.pattern})\s*(?:/|per|an?|each|every)?\s*"
-    r"(?:month|mo|year|yr|annum|week|term|semester|session|class|lesson|hour|hr)s?\b"
-    r"|(?P<billed>" + PRICE.pattern + r")[^.\n]{0,20}\b(?:monthly|annually|yearly|weekly)\b",
-    re.IGNORECASE,
-)
-_PRICE_LIST_MIN = 2
-
-
-def _states_price_list(text: str) -> bool:
-    amounts = {
-        re.sub(r"\s+", "", (m.group("price") or m.group("billed")).lower())
-        for m in _PRICE_PERIOD.finditer(text)
-    }
-    return len(amounts) >= _PRICE_LIST_MIN
-
-
 _SIGNAL_PATTERNS: dict[SectionType, re.Pattern[str]] = {
     "timeline": re.compile(
         r"\b(our history|our journey|founded in|established in|since (19|20)\d{2}"
@@ -736,6 +780,10 @@ _SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
     "clients": frozenset({"home", "work"}),
     "stats": frozenset({"home", "about"}),
     "locations": frozenset({"home", "about", "contact"}),
+    # Family signals (services/family_evidence.py): a childcare enrolment
+    # process, a SaaS site's customer quotes.
+    "process": frozenset({"home", "about", "landing", "services"}),
+    "testimonials": frozenset({"home", "services", "landing"}),
     "video": frozenset(
         {"home", "about", "services", "gallery", "work", "landing", "process"}
     ),
@@ -759,6 +807,10 @@ _SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
 
 _MAX_EXTRA_SECTIONS = 2  # quality cap — don't let a page balloon past its rhythm
 
+# Where an earned section lands when the page has a better place for it than
+# just before the closing CTA: proof before the price list.
+_SIGNAL_LANDS_BEFORE: dict[SectionType, SectionType] = {"testimonials": "pricing"}
+
 # Hard ceiling on a single page's section count. A rich page is fine — the
 # generator splits any page above the per-call cap into several light section
 # groups (see planner._generate_page_section_chunks), so page richness is
@@ -767,8 +819,12 @@ _MAX_EXTRA_SECTIONS = 2  # quality cap — don't let a page balloon past its rhy
 _MAX_PAGE_SECTIONS = 9
 
 
-def _detect_content_signals(page: SourceContent) -> list[SectionType]:
-    """Detected kinds, in `_SIGNAL_PATTERNS` order — deterministic when the cap bites."""
+def _detect_content_signals(page: SourceContent, industry: str | None = None) -> list[SectionType]:
+    """Detected kinds, in `_SIGNAL_PATTERNS` order — deterministic when the cap bites.
+
+    The industry family's own signals (services/family_evidence.py) follow the
+    structural ones: they are read from the source's structure or its own
+    framing of quotes, ahead of the generic wording guesses."""
     haystack = " ".join([page.raw_text or "", " ".join(page.headings or [])])
     # Structural, not lexical, so these lead: the _SIGNAL_PATTERNS below are
     # regexes guessing at intent from prose, while these are the page
@@ -778,8 +834,12 @@ def _detect_content_signals(page: SourceContent) -> list[SectionType]:
     detected: list[SectionType] = ["video"] if page.video_embeds else []
     if page.map_embeds:
         detected.append("map")
-    if _states_price_list(haystack):
+    # Stated prices (price_lists.states_price_list). Without this, pricing was
+    # reachable only from a /pricing URL, so a brief or a homepage whose plans
+    # sat in its own copy was never asked for them.
+    if states_price_list(haystack):
         detected.append("pricing")
+    detected += family_signals(industry, page)
     detected += [
         kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)
     ]
@@ -787,11 +847,14 @@ def _detect_content_signals(page: SourceContent) -> list[SectionType]:
 
 
 def _augment_sections(
-    sections: list[SectionType], page_type: PageType, page: SourceContent | None
+    sections: list[SectionType],
+    page_type: PageType,
+    page: SourceContent | None,
+    industry: str | None = None,
 ) -> list[SectionType]:
     if page is None:
         return sections
-    detected = _detect_content_signals(page)
+    detected = _detect_content_signals(page, industry)
     extras = [
         kind
         for kind in detected
@@ -805,10 +868,14 @@ def _augment_sections(
     extras = extras[: max(0, _MAX_PAGE_SECTIONS - len(sections))]
     if not extras:
         return sections
-    if "cta" in sections:
-        idx = sections.index("cta")
-        return [*sections[:idx], *extras, *sections[idx:]]
-    return [*sections, *extras]
+    # Each extra goes before its anchor when the page has one, else before the
+    # closing CTA — inserted one by one, so extras keep their detected order.
+    out = list(sections)
+    for kind in extras:
+        anchor = _SIGNAL_LANDS_BEFORE.get(kind)
+        before = anchor if anchor in out else "cta" if "cta" in out else None
+        out.insert(out.index(before) if before else len(out), kind)
+    return out
 
 
 def _without_section(sections: list[SectionType], section: SectionType) -> list[SectionType]:
@@ -858,6 +925,35 @@ def translation_pairing(slugs: set[str]) -> dict[str, tuple[str, str]]:
         if remainder in slugs:
             pairs[slug] = (segment, remainder)
     return pairs
+
+
+# Which CMS collection an entry the markup declares migrates into — the listing
+# types posts and events nested under one already go to.
+ENTRY_COLLECTION: dict[str, PageType] = {"article": "blog", "event": "events"}
+
+
+def collection_entries(source: SourceContent) -> dict[str, SourceContent]:
+    """Crawled pages that are entries of the site's posts or events, by slug.
+
+    A post is a post wherever its permalink puts it: WordPress serves one at
+    /kindergarten-selangor/ as readily as under /blog/, and only the page's own
+    markup says which it is (``declared_entry``, services/entry_markup.py).
+    These are migrated as CMS entries (content_collections) and never
+    scaffolded as pages — the answer both modules read, so a page dropped from
+    the page set is always one the migration fetches.
+
+    The owner's header menu outranks the markup: a page they put in it is a
+    page. A translated mirror stays with its counterpart's pairing.
+    """
+    slugs = {_path_to_slug(page.url_path) for page in source.discovered_pages}
+    mirrors = translation_pairing(slugs)
+    nav = _gather_nav_evidence(source.nav_links).nav_slugs
+    entries: dict[str, SourceContent] = {}
+    for page in source.discovered_pages:
+        slug = _path_to_slug(page.url_path)
+        if page.declared_entry and slug and slug not in nav and slug not in mirrors:
+            entries.setdefault(slug, page)
+    return entries
 
 
 def _ambiguous_page_labels(
@@ -1271,8 +1367,12 @@ def infer_page_scaffolds(
     evidence = _gather_nav_evidence(source.nav_links)
 
     if single_page:
-        sections = homepage_sections_override or homepage_sections(
-            industry, seed=site_name, archetype=archetype, emphasis=section_emphasis
+        sections = (
+            homepage_sections_override
+            or _authored_homepage(source)
+            or homepage_sections(
+                industry, seed=site_name, archetype=archetype, emphasis=section_emphasis
+            )
         )
         home = _home_scaffold(source, industry, seed=site_name).model_copy(
             update={"sections": sections}
@@ -1299,12 +1399,13 @@ def infer_page_scaffolds(
         fallback = [
             s.model_copy(
                 update={
-                    "sections": _augment_sections(
+                    "sections": _authored_homepage(source) or _augment_sections(
                         homepage_sections(
                             industry, seed=site_name, archetype=archetype, emphasis=section_emphasis
                         ),
                         "home",
                         source,
+                        industry,
                     )
                 }
             )
@@ -1391,6 +1492,7 @@ def infer_page_scaffolds(
     # their own recipe. They're attached at the end, each pointing at the page
     # it translates.
     translations = translation_pairing(set(by_slug))
+    entries = collection_entries(source)
 
     scaffolds: list[PageScaffold] = []
     seen_slugs: set[str] = set()
@@ -1417,6 +1519,11 @@ def infer_page_scaffolds(
 
     for slug in sorted_slugs:
         if slug in seen_slugs:
+            continue
+        if any(slug == entry or slug.startswith(entry + "/") for entry in entries):
+            # A post or event by its own markup (and anything filed under one,
+            # WordPress's attachment pages) is migrated, not scaffolded.
+            seen_slugs.add(slug)
             continue
         page = by_slug[slug]
         segments = slug.split("/")
@@ -1446,7 +1553,7 @@ def infer_page_scaffolds(
                     page_type=page_type,
                     slug=slug,
                     title=title,
-                    sections=_sections_for(page_type, parent_type=None, page=page),
+                    sections=_sections_for(page_type, parent_type=None, page=page, industry=industry),
                     rationale=f"Discovered at /{slug} in the source site.",
                     source_url=page.source_ref,
                     from_source=True,
@@ -1484,7 +1591,7 @@ def infer_page_scaffolds(
                         page_type=parent_type,
                         slug=parent_slug,
                         title=parent_title,
-                        sections=_sections_for(parent_type, parent_type=None),
+                        sections=_sections_for(parent_type, parent_type=None, industry=industry),
                         rationale=f"Parent section inferred from /{slug}.",
                         from_source=True,
                     )
@@ -1514,9 +1621,9 @@ def infer_page_scaffolds(
                     slug=slug,
                     title=title,
                     sections=(
-                        _augment_sections(list(_PROFILE_PAGE_SECTIONS), sub_type, page)
+                        _augment_sections(list(_PROFILE_PAGE_SECTIONS), sub_type, page, industry)
                         if linked_from_roster
-                        else _sections_for(sub_type, parent_type=parent_type, page=page)
+                        else _sections_for(sub_type, parent_type=parent_type, page=page, industry=industry)
                     ),
                     rationale=(
                         f"Linked from the profile roster on /{parent_slug}."
@@ -1555,7 +1662,7 @@ def infer_page_scaffolds(
                 page_type=synth_type,
                 slug=synth_slug,
                 title=synth_label,
-                sections=_sections_for(synth_type, parent_type=None),
+                sections=_sections_for(synth_type, parent_type=None, industry=industry),
                 rationale=f"Hub page for the '{synth_label}' dropdown in the source navigation.",
                 from_source=True,
             )
@@ -1584,12 +1691,32 @@ def infer_page_scaffolds(
                 page_type=nav_type,
                 slug=nav_slug,
                 title=label,
-                sections=_sections_for(nav_type, parent_type=None),
+                sections=_sections_for(nav_type, parent_type=None, industry=industry),
                 rationale="Linked in the source site's header navigation.",
                 from_source=True,
             )
         )
         seen_slugs.add(nav_slug)
+
+    # Migrated entries are read from a listing. Posts under /blog/ always have
+    # one (the crawled page, or one inferred from the URL); posts at the root
+    # need one when the crawl found none.
+    listed = {s.page_type for s in scaffolds if s.parent_slug is None}
+    for kind in sorted({ENTRY_COLLECTION[p.declared_entry] for p in entries.values()}):
+        if kind in listed or kind in seen_slugs:
+            continue
+        noun = "posts" if kind == "blog" else "events"
+        scaffolds.append(
+            PageScaffold(
+                page_type=kind,
+                slug=kind,
+                title=_humanize(kind),
+                sections=_sections_for(kind, parent_type=None, industry=industry),
+                rationale=f"Lists the {noun} the source published outside a listing.",
+                from_source=True,
+            )
+        )
+        seen_slugs.add(kind)
 
     by_scaffold_slug = {s.slug: s for s in scaffolds}
     for child_slug, parent_slug in forced_parent.items():
@@ -1604,7 +1731,8 @@ def infer_page_scaffolds(
         child.parent_slug = parent_slug
         child.page_type = _child_type_under(child.page_type, parent.page_type)
         child.sections = _sections_for(
-            child.page_type, parent_type=parent.page_type, page=by_slug.get(child_slug)
+            child.page_type, parent_type=parent.page_type, page=by_slug.get(child_slug),
+            industry=industry,
         )
         child.rationale = (
             child.rationale or f"Grouped under /{parent_slug} by the source navigation."
@@ -1735,15 +1863,21 @@ def _home_scaffold(
     # Industry-fit landing pattern; `seed` (the brand/site name) varies the choice
     # among equally-fitting patterns so same-industry sites aren't identical. Falls
     # back to the standard order when industry is unknown or unmatched.
-    sections = (
-        homepage_sections(industry, seed=seed, archetype=archetype, emphasis=emphasis)
-        if industry is not None
-        else ["hero", "features", "testimonials", "cta"]
-    )
-    # An image-rich homepage gets image+text about splits woven in, same as
-    # interior pages — the landing pattern stays, cards stop monopolising it.
-    sections = _weave_photo_sections(sections, "home", home_source)
-    sections = _augment_sections(sections, "home", home_source)
+    authored = _authored_homepage(home_source)
+    if authored is not None:
+        # The author's sections are the page: nothing woven between them, and
+        # no section their wording merely hints at (a "0" became a stats band).
+        sections = authored
+    else:
+        sections = (
+            homepage_sections(industry, seed=seed, archetype=archetype, emphasis=emphasis)
+            if industry is not None
+            else ["hero", "features", "testimonials", "cta"]
+        )
+        # An image-rich homepage gets image+text about splits woven in, same as
+        # interior pages — the landing pattern stays, cards stop monopolising it.
+        sections = _weave_photo_sections(sections, "home", home_source)
+        sections = _augment_sections(sections, "home", home_source, industry)
     return PageScaffold(
         page_type="home",
         slug="",

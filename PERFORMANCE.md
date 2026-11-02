@@ -64,6 +64,44 @@ the real bottlenecks remain.
   behavior change; the shared UA removes a duplicated constant).
 - The `style_tokens.py` extraction is neutral at runtime (pure relocation).
 
+## Same site, faster, fewer requests (Oct 2026)
+
+Every change below obeys three rules, each pinned by a test: **the design is
+unchanged** (same prompts, same deterministic passes, same output), **the
+request footprint only shrinks** (per host: fewer requests, lower peak
+concurrency, no new Pexels API calls), and **throttling never leaks into the
+design** (a deadline covers the transfer, never the wait for a slot).
+
+- **One download per image** — `image_vision._fetch_image_bytes`, the fetcher
+  every pixel pass shares, keeps finished downloads (`IMAGE_BYTES_CACHE_MB`,
+  TTL) and joins the one in progress. Measured on a 20-photo source: 50 → 20
+  requests to the business's server, peak concurrency 9 → 3.
+- **The source's host is capped without a crawl** —
+  `asset_fetch.gate_source_hosts`, concurrency only, outside polite's
+  registry (a no-delay entry there would later pace a real crawl at zero delay).
+- **One keep-alive client** for file downloads (`asset_fetch.asset_client`).
+- **Content calls are scheduled by dependency** — the slot is held per call, so
+  a chunked page's calls go out together, and a child waits only for its own
+  parent. Prompt ledger old vs new: identical over concurrency 1/2/3 and eight
+  completion orders; with a fixed 200 ms per call, the fixture's content pass
+  went 2.02 s → 1.62 s at the default concurrency of 2 (serial unchanged).
+- **Identical in-flight LLM calls are joined** (`chat_json_cached`).
+- **Bio condense calls run together** (one per team block).
+- **Stock bytes are warmed** for likely full-bleed slots
+  (`ImageResolver.prewarm_background_bytes`), from Pexels results already
+  cached — CDN only, never the source's own server.
+- **The SSRF guard caches its DNS verdict** per host for 60 s.
+- `stage` timers now cover the image screens, vision annotation, bio condense,
+  bound-image verification and `plan_to_site`.
+
+Considered and rejected because they would move the design or the footprint:
+moving the design-brain recipe earlier (it reads the final page list and runs
+uncached), starting the graphic/OCR screens before the design direction (it
+reads the `role`/`ocr_has_text` they write), starting collections earlier (it
+would raise peak concurrency on the business's host), batching the stock OCR
+screen (more CPU in the common case), and any cap, budget or concurrency
+default change.
+
 ## Remaining bottlenecks (by impact)
 
 1. **LLM inference time** — inherent and hardware-bound. Levers: a faster/remote

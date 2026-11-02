@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import socket
+import time
 from urllib.parse import urlsplit
 
 from app.config import settings
@@ -42,6 +43,17 @@ _BLOCKED_HOSTNAMES = frozenset(
         "metadata.google.internal",
     }
 )
+
+
+# host:port → (resolved at, the refusal or None). One generation asks this of
+# every image it downloads — mostly a handful of hosts, each asked dozens of
+# times — and a container's resolver does not cache, so each was a fresh DNS
+# round trip. Short-lived on purpose: the guard is check-then-fetch either way
+# (the fetch resolves again), so a minute adds no exposure a re-resolve would
+# remove. A lookup that FAILED is never kept — that may be the network, not
+# the host.
+_VERDICT_TTL_SECONDS = 60.0
+_VERDICTS: dict[tuple[str, int], tuple[float, str | None]] = {}
 
 
 class UnsafeUrlError(ValueError):
@@ -85,6 +97,12 @@ async def assert_public_url(url: str, *, allow_private: bool | None = None) -> s
         raise UnsafeUrlError(f"Refusing to fetch internal host {host!r}")
 
     port = parts.port or (443 if parts.scheme.lower() == "https" else 80)
+    key = (host.lower(), port)
+    known = _VERDICTS.get(key)
+    if known is not None and time.monotonic() - known[0] < _VERDICT_TTL_SECONDS:
+        if known[1] is not None:
+            raise UnsafeUrlError(known[1])
+        return url
     try:
         infos = await asyncio.get_running_loop().getaddrinfo(
             host, port, proto=socket.IPPROTO_TCP
@@ -92,16 +110,21 @@ async def assert_public_url(url: str, *, allow_private: bool | None = None) -> s
     except socket.gaierror as exc:
         raise UnsafeUrlError(f"Cannot resolve host {host!r}: {exc}") from exc
 
-    if not infos:
-        raise UnsafeUrlError(f"Host {host!r} did not resolve to any address")
+    refusal = _refusal_for(host, infos)
+    _VERDICTS[key] = (time.monotonic(), refusal)
+    if refusal is not None:
+        raise UnsafeUrlError(refusal)
+    return url
 
+
+def _refusal_for(host: str, infos: list) -> str | None:
+    if not infos:
+        return f"Host {host!r} did not resolve to any address"
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if not _ip_is_public(ip):
-            raise UnsafeUrlError(
-                f"Refusing to fetch {host!r}: resolves to non-public address {ip}"
-            )
-    return url
+            return f"Refusing to fetch {host!r}: resolves to non-public address {ip}"
+    return None
 
 
 async def is_public_url(url: str, *, allow_private: bool | None = None) -> bool:

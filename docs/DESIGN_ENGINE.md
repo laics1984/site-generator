@@ -421,7 +421,8 @@ pipeline** and a new axis is a data edit.
 | radius / type ratio / shadow / texture / glass / motion | `build_theme` → `ThemeTokens` |
 | `container_max_width` | `PageTokens.max_width` → `--builder-page-max-width` (117 catalog nodes centre against it) |
 | `padding_scale` | `schema_builder.apply_density_scale` — after `modernize_sections`, before the divider pass |
-| card treatment / heading weight+tracking / eyebrow | `style_tokens` (`TypeRamp`, `SpacingScale`, `card_surface`, `eyebrow_styles`) + `_ModernizePlan` |
+| card treatment | `style_tokens.card_frame` — the one table both card paths read (`card_styles`, the catalogue's `_modernize_card`); which nodes are cards is `card_frames.card_children` |
+| heading weight+tracking / eyebrow | `style_tokens` (`TypeRamp`, `SpacingScale`, `card_surface`, `eyebrow_styles`) + `_ModernizePlan` |
 | `divider_shape` / `divider_height` | `schema_builder._divider_shape` (scheme → mood; no industry pin) |
 | `layout_bias` | `section_content.layout_preference`, prefixed onto the mood order |
 | `hero_policy` | `hero_director.plan_site_heroes` |
@@ -449,7 +450,11 @@ Two safety interlocks already existed and still hold: the floating pill's
 `force_background=True` outranks any scheme's `hero_policy` (broken chrome beats
 taste), and every contrast pass — `enforce_fill_contrast`,
 `enforce_text_contrast`, `_stamp_band_markers` — runs downstream of the scheme's
-passes and reads final styles, so no scheme can ship an illegible page.
+passes and reads final styles, so no scheme can ship an illegible page. The
+same holds for cards: `card_frames.separate_cards` runs after the v2 rebind and
+holds every card a step off the band it finally sits on, so no treatment can
+ship a card that melts into its section (see CLAUDE.md, "A card stands off its
+band").
 
 Chrome affinity **narrows** the fit list rather than reordering it: the picker
 takes a seeded index across the whole list, so moving an entry to the front only
