@@ -402,7 +402,10 @@ def _assemble(
                 # Only the model's pages open pages: an in-page heading keeps
                 # its rank one step below them, or the splitter would read a
                 # document's own H1 "About us" inside the homepage as a page.
-                level = min(source.level + 1, _MAX_HEADING_LEVEL) if source.level else 0
+                # Never capped: two ranks the source tells apart stay apart.
+                # Capped at six, a DOCX's headlines (5) met its card titles (6)
+                # and every section's headline came back as its first card.
+                level = source.level + 1 if source.level else 0
                 assembled.append(OutlineBlock(level=level, text=body))
             after[number] = len(assembled)
 

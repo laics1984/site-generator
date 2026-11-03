@@ -533,10 +533,20 @@ def tree_body(
     if len(tree) < _TREE_MIN_SECTIONS and not _tree_is_image_led(tree):
         return None
     authored = homepage and page.source_kind in AUTHORED_SOURCE_KINDS
+    if authored and len(tree) > 1 and _opens_with(page, tree[0]):
+        # Nothing above the first section: it is the page's opening, and the
+        # hero presents it. Fowable's DOCX opens on "Hero (above the fold)",
+        # which would otherwise show the hero's copy twice.
+        tree = tree[1:]
     if authored and _is_closing_ask(tree[-1]):
         tree = tree[:-1]
     limit = _MAX_AUTHORED_SECTIONS if authored else max(0, _MAX_PAGE_SECTIONS - 2)
     return list(zip(source_section_kinds(tree), tree))[:limit]
+
+
+def _opens_with(page: SourceContent, section: SectionCandidate) -> bool:
+    first = next((line for line in (page.raw_text or "").split("\n") if line.strip()), "")
+    return " ".join(first.split()) == " ".join(section.heading.split())
 
 
 def _is_closing_ask(section: SectionCandidate) -> bool:
@@ -570,7 +580,13 @@ def _authored_homepage(home: SourceContent | None) -> list[SectionType] | None:
     if home is None or home.source_kind not in AUTHORED_SOURCE_KINDS:
         return None
     body = tree_body(home, homepage=True)
-    return ["hero", *(kind for kind, _ in body), "cta"] if body else None
+    if not body or not any(section.cards for _, section in body):
+        # A tree with no card group states the sections' order and nothing
+        # about their shape: every one an `about`, and a plan table the reader
+        # missed would cost the page its pricing. The landing pattern and the
+        # stated-price signal still read the copy.
+        return None
+    return ["hero", *(kind for kind, _ in body), "cta"]
 
 
 def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:

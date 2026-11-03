@@ -714,8 +714,9 @@ Rules:
   "[Confirm this before publishing]"), and placeholder rows ("[CLIENT LOGO]
   [CLIENT LOGO]"), and everything written for the team rather than the
   visitor: purpose notes, design and layout directions, photo directions,
-  source references, editorial notes, verification logs, internal appendices.
-  A document that labels a part "internal" or "not for publication" has told
+  source references, editorial notes, verification logs, internal appendices,
+  and search metadata (page titles, meta descriptions, URL slugs, keywords),
+  which is never shown on the page. A document that labels a part "internal" or "not for publication" has told
   you. Use skip_ranges for a run of such lines. Real marketing copy is never
   skipped, even when it sits under such a label. A card's or a plan's title,
   its price, and every row of a comparison or feature table are copy.

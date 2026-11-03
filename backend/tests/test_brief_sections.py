@@ -242,6 +242,182 @@ class TreeGroupsTest(unittest.TestCase):
         self.assertIsNone(_tree_groups(edited, self.source))
 
 
+def _docx_brief() -> bytes:
+    """A brief laid out the way Fowable's DOCX is: Heading 1 section names,
+    bold 16pt headlines, bold 11.5pt card titles, cards and plans in tables,
+    and a body-size bold button after the plan table."""
+    import io
+
+    import docx
+    from docx.shared import Pt
+
+    document = docx.Document()
+
+    def para(text: str, size: float = 11, bold: bool = False) -> None:
+        run = document.add_paragraph().add_run(text)
+        run.font.size, run.bold = Pt(size), bold
+
+    def section(name: str, headline: str) -> None:
+        document.add_heading(name, level=1)
+        para("SECTION HEADLINE", 8, bold=True)
+        para(headline, 16, bold=True)
+
+    section("The problem", "Running a centre is full-time.")
+    cells = document.add_table(rows=1, cols=2).rows[0].cells
+    cells[0].text = "Questions come in after hours\nParents research after the kids are asleep."
+    cells[1].text = "Enquiries in too many places\nForms, WhatsApp and Facebook all differ."
+    section("How Fowable helps", "Five things that change from the first week")
+    for title in ("1. A website parents trust", "2. Never miss a parent enquiry"):
+        para(title, 11.5, bold=True)
+        para(f"{title} is explained here in a sentence of body copy.")
+    section("Plans", "A plan for every size of centre")
+    plans = document.add_table(rows=3, cols=3)
+    for column, (name, feature, price) in enumerate((
+        ("Starter", "Website\nEnquiry forms", "RM 159 / month"),
+        ("Growth", "Everything in Starter\nShared inbox", "RM 249 / month"),
+        ("Business", "Everything in Growth\nUnlimited pages", "RM 399 / month"),
+    )):
+        for row, text in enumerate((name, feature, price)):
+            plans.rows[row].cells[column].text = text
+    para("Talk to us about the right plan", 11, bold=True)
+    para("Prices in Malaysian Ringgit, billed monthly.")
+    section("Frequently asked questions", "Questions principals ask us")
+    for question in ("Do I need any technical skills?", "Is a Facebook Page enough?"):
+        para(question, 11.5, bold=True)
+        para("Yes, and we set it up with you.")
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+class DocxBriefTest(unittest.TestCase):
+    def setUp(self):
+        from app.services.doc_parser import parse_docx
+
+        self.parsed = parse_docx(_docx_brief(), "brief.docx")
+        self.tree = outline_sections(self.parsed.outline)
+
+    def test_tables_are_read_where_they_sit(self):
+        texts = [b.text for b in self.parsed.outline]
+        self.assertLess(texts.index("Starter"), texts.index("Talk to us about the right plan"))
+        self.assertLess(texts.index("Plans"), texts.index("Starter"))
+
+    def test_bold_type_above_body_size_is_a_heading_and_a_button_is_not(self):
+        level = {b.text: b.level for b in self.parsed.outline}
+        self.assertGreater(level["1. A website parents trust"], level["Five things that change from the first week"])
+        self.assertGreater(level["Five things that change from the first week"], level["How Fowable helps"])
+        self.assertEqual(level["Talk to us about the right plan"], 0)
+        self.assertEqual(level["SECTION HEADLINE"], 0)
+
+    def test_the_brief_reads_as_cards_plans_and_questions(self):
+        by_heading = {s.heading: s for s in self.tree}
+        plans = by_heading["Plans"]
+        self.assertEqual(plans.card_kind, "plans")
+        self.assertEqual(plans.subheading, "A plan for every size of centre")
+        self.assertEqual(
+            [(c.title, c.meta, c.body.split("\n")) for c in plans.cards],
+            [
+                ("Starter", ["RM 159 / month"], ["Website", "Enquiry forms"]),
+                ("Growth", ["RM 249 / month"], ["Everything in Starter", "Shared inbox"]),
+                ("Business", ["RM 399 / month"], ["Everything in Growth", "Unlimited pages"]),
+            ],
+        )
+        # The plan table's own ask is the section's copy, not Business's feature.
+        self.assertIn("Talk to us about the right plan", plans.prose)
+        self.assertEqual(by_heading["The problem"].card_kind, "offerings")
+        self.assertEqual(
+            [c.title for c in by_heading["The problem"].cards],
+            ["Questions come in after hours", "Enquiries in too many places"],
+        )
+        self.assertEqual(
+            [c.title for c in by_heading["How Fowable helps"].cards],
+            ["1. A website parents trust", "2. Never miss a parent enquiry"],
+        )
+        self.assertEqual(by_heading["Frequently asked questions"].card_kind, "questions")
+
+    def test_its_homepage_asks_for_pricing(self):
+        source = split_into_pages(self.parsed, page_topics={})
+        home = infer_page_scaffolds(source, industry="saas", site_name="Fowable")[0]
+        self.assertIn("pricing", home.sections)
+        self.assertIn("faq", home.sections)
+
+
+class StructuredDocxTest(unittest.TestCase):
+    def test_the_structure_read_keeps_a_headline_above_its_cards(self):
+        # In-page headings move one level down; capped at six, a DOCX's
+        # headlines (5) met its card titles (6).
+        from app.services.doc_parser import parse_docx
+
+        parsed = parse_docx(_docx_brief(), "brief.docx")
+        page = PasteOutlinePage(
+            title="Home", page_type="home", title_line=None,
+            first_line=1, last_line=len(parsed.outline),
+        )
+        assembled = _assemble(parsed.outline, PasteOutline(pages=[page]), [page], parsed, given_title=None)
+        tree = {s.heading: s for s in outline_sections(assembled.document.outline)}
+        self.assertEqual(tree["Plans"].subheading, "A plan for every size of centre")
+        # The assembler strips list numbering from every line it keeps.
+        self.assertEqual(
+            [c.title for c in tree["How Fowable helps"].cards],
+            ["A website parents trust", "Never miss a parent enquiry"],
+        )
+
+    def test_a_brief_that_opens_on_a_section_shows_it_once_as_the_hero(self):
+        source = _brief_source(_BRIEF[2:])  # no cover headline above the sections
+        home = infer_page_scaffolds(source, industry="saas", site_name="Fowable")[0]
+        self.assertEqual(home.sections, ["hero", "services", "pricing", "faq", "cta"])
+        from app.config import settings
+
+        old = settings.multipass_max_chars_per_call
+        settings.multipass_max_chars_per_call = 400
+        try:
+            groups = _tree_groups(home, source)
+        finally:
+            settings.multipass_max_chars_per_call = old
+        self.assertTrue(groups[0][1].raw_text.startswith("Every parent enquiry, organised in one place."))
+        self.assertEqual(groups[0][1].section_candidates[0].heading, "Make WhatsApp work for your whole team.")
+
+
+class ProseOnlyBriefTest(unittest.TestCase):
+    def test_a_brief_with_no_card_group_keeps_the_landing_pattern_and_its_prices(self):
+        blocks = []
+        for name in ("Welcome", "Our approach", "Plans", "Visit us"):
+            blocks += [OutlineBlock(level=1, text=name), OutlineBlock(level=0, text=f"{name} copy.")]
+        blocks.append(OutlineBlock(level=0, text="Starter RM 159 / month. Growth RM 249 / month."))
+        home = infer_page_scaffolds(_brief_source(blocks), industry="saas", site_name="Fowable")[0]
+        self.assertIn("pricing", home.sections)
+        self.assertNotEqual(home.sections, ["hero", "about", "about", "about", "about", "cta"])
+
+
+class GroupKindOrderTest(unittest.TestCase):
+    def test_card_grids_take_the_kind_their_position_asked_for(self):
+        # The model wrote "The problem" as features and "The solution" as
+        # services; asked the other way round, the merge swapped them.
+        from app.models.content_blocks import HeroBlock, PagePlan, ServicesBlock
+        from app.models.industry import PageScaffold
+        from app.services.planner import _kinds_as_asked
+
+        item = [{"title": "Card", "description": "Copy"}]
+        page = PagePlan(
+            page_type="home", slug="", title="Home", description="", is_homepage=True,
+            seo_title="t", seo_description="d",
+            blocks=[
+                HeroBlock(headline="H"),
+                FeaturesBlock(heading="The problem", items=item),
+                ServicesBlock(heading="The solution", items=item),
+            ],
+        )
+        sub = PageScaffold(page_type="home", slug="", title="Home", is_homepage=True,
+                           sections=["hero", "services", "features"])
+
+        fixed = _kinds_as_asked(page, sub)
+
+        self.assertEqual(
+            [(b.kind, getattr(b, "heading", None)) for b in fixed.blocks],
+            [("hero", None), ("services", "The problem"), ("features", "The solution")],
+        )
+
+
 class CardItemCapTest(unittest.TestCase):
     def test_a_grid_past_the_cap_keeps_its_first_items_instead_of_failing(self):
         items = [{"title": f"Card {i}", "description": "d"} for i in range(15)]

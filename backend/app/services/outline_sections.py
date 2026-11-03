@@ -13,7 +13,8 @@ higher rank. Which rank is the SECTION rank is the one question the outline
 does not answer on its own — a designed brief's cover sets a headline or two
 larger than any section headline — so it is the shallowest rank that recurs
 (``_MIN_SECTIONS`` times). Anything above it opens the page and belongs to the
-hero; anything below it is a card title or the section's own subheading.
+hero. Below it, a section's cards are titled at its most common heading rank
+(``_card_rank``); a heading set above them is the section's own subheading.
 
 Every word stays the source's: a card's title is its heading line and its body
 the lines under it. Kinds are read from what the cards themselves state —
@@ -46,22 +47,28 @@ def outline_sections(blocks: list[OutlineBlock]) -> list[SectionCandidate]:
     rank = _section_rank(blocks)
     if rank is None:
         return []
-    sections: list[_Section] = []
-    current: _Section | None = None
+    groups: list[tuple[str, list[OutlineBlock]]] = []
+    current: list[OutlineBlock] | None = None
     for block in blocks:
         text = " ".join(block.text.split())
         if not text:
             continue
         if block.level and block.level <= rank:
             if block.level == rank:
-                current = _Section(text, rank)
-                sections.append(current)
+                current = []
+                groups.append((text, current))
             else:
                 current = None  # a cover headline: the hero's, not a section's
             continue
         if current is not None:
-            current.take(block.level, text)
-    return [section.candidate() for section in sections]
+            current.append(OutlineBlock(level=block.level, text=text))
+    sections = []
+    for heading, body in groups:
+        section = _Section(heading, rank, _card_rank(body))
+        for block in body:
+            section.take(block.level, block.text)
+        sections.append(section.candidate())
+    return sections
 
 
 def _section_rank(blocks: list[OutlineBlock]) -> int | None:
@@ -70,20 +77,44 @@ def _section_rank(blocks: list[OutlineBlock]) -> int | None:
     return min(recurring) if recurring else None
 
 
+def _card_rank(body: list[OutlineBlock]) -> int:
+    """The rank a section's cards are titled at: its most common heading rank
+    (the deeper one on a tie). A headline set above them is the section's own
+    — "A plan for every size of centre" over Starter, Growth and Business."""
+    counts = Counter(block.level for block in body if block.level)
+    if not counts:
+        return 0
+    return max(counts, key=lambda level: (counts[level], level))
+
+
 class _Section:
     """One section while its blocks are read in."""
 
-    def __init__(self, heading: str, level: int) -> None:
+    def __init__(self, heading: str, level: int, card_rank: int) -> None:
         self.heading = heading
         self.level = level
+        self.card_rank = card_rank
         self.subheading = ""
         self.prose: list[str] = []
         self.cards: list[_Card] = []
         self.current: _Card | None = None
+        # Whether body lines still belong to `current`. A plan's copy ends at
+        # its price: what follows the last plan of a table ("Talk to us about
+        # the right plan", a billing note) is the section's, not a feature.
+        self.open = False
 
     def take(self, level: int, text: str) -> None:
-        if self.current is not None and _is_price_line(text):
+        if level and level < self.card_rank:
+            # A heading above the cards is the section's own: its subheading,
+            # or a line of its prose, and the card before it has ended.
+            self.current, self.open = None, False
+            if not self.subheading and not self.cards:
+                self.subheading = text
+            else:
+                self.prose.append(text)
+        elif self.current is not None and _is_price_line(text):
             self.current.meta.append(text)
+            self.open = False
         elif level and len(text) <= _CARD_TITLE_MAX_CHARS:
             # A title the section already used is that card again: a plan
             # table followed by "which plan suits you" names each plan twice.
@@ -91,9 +122,11 @@ class _Section:
             if same is None:
                 same = _Card(text)
                 self.cards.append(same)
-            self.current = same
-        elif self.current is not None:
+            self.current, self.open = same, True
+        elif self.current is not None and self.open:
             self.current.body.append(text)
+        elif self.current is not None:
+            self.prose.append(text)
         elif level and not self.subheading and not self.prose:
             self.subheading = text
         else:
@@ -112,13 +145,23 @@ class _Section:
             prose += [line for card in cards for line in card.lines()]
             cards = []
         cards = [card.card() for card in cards]
+        kind = _card_kind(cards)
+        if kind == "plans":
+            # A plan states its price. An unpriced card in a plan table is the
+            # table's own note or ask ("Talk to us about the right plan"),
+            # which the model would otherwise write up as a fourth plan.
+            prose += [
+                line for card in cards if not _priced(card)
+                for line in [card.title, *card.body.split("\n")] if line
+            ]
+            cards = [card for card in cards if _priced(card)]
         return SectionCandidate(
             heading=self.heading,
             level=min(self.level, 6),
             subheading=self.subheading,
             prose="\n".join(prose),
             cards=cards,
-            card_kind=_card_kind(cards),
+            card_kind=kind,
         )
 
 
@@ -139,11 +182,15 @@ def _is_price_line(text: str) -> bool:
     return len(text) <= _PRICE_LINE_MAX_CHARS and bool(PRICE.search(text))
 
 
+def _priced(card: SourceCard) -> bool:
+    return any(PRICE.search(line) for line in card.meta)
+
+
 def _card_kind(cards: list[SourceCard]) -> SourceCardKind:
     if not cards:
         return "prose"
     need = len(cards) * _GROUP_SHARE
-    if sum(any(PRICE.search(line) for line in card.meta) for card in cards) >= need:
+    if sum(_priced(card) for card in cards) >= need:
         return "plans"
     if sum(card.title.rstrip().endswith("?") for card in cards) >= need:
         return "questions"

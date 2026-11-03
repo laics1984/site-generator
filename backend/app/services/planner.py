@@ -39,9 +39,11 @@ from app.models.content_blocks import (
     DETERMINISTIC_SECTION_KINDS,
     BrandMood,
     ContentBlock,
+    FeaturesBlock,
     IndustryCategoryLiteral,
     MenuCategory,
     PagePlan,
+    ServicesBlock,
     SitePlan,
     SourceContent,
     heal_brand_mood_value,
@@ -1243,9 +1245,10 @@ def _tree_groups(
     and the merge kept the first chunk's — so a brief's later sections lost to
     paraphrases of its opening ones. Here each call writes a run of consecutive
     sections from exactly their own lines, within the per-call text budget and
-    section cap. The first group carries the text above the first section
-    (the hero's); the last carries anything after the last one the scaffold
-    names (a closing ask the CTA presents) and the scaffold's own tail.
+    section cap. The first group carries the text above the first section it
+    presents (the hero's, an opening section included); the last carries what
+    follows the last one (a closing ask the CTA presents) and the scaffold's
+    own tail.
 
     None when the scaffold doesn't follow the tree, or a section's heading
     can't be found as a whole line of the text, in order.
@@ -1266,8 +1269,12 @@ def _tree_groups(
         starts.append(at)
         at += 1
     ends = [*starts[1:], len(lines)]
-    texts = ["\n".join(lines[start:end]) for start, end in zip(starts, ends)]
-    lead = "\n".join(lines[: starts[0]])
+    # The body is a run of the tree; an opening section the hero presents and
+    # a closing ask the CTA presents sit outside it.
+    first = next(i for i, section in enumerate(tree) if section is body[0][1])
+    texts = ["\n".join(lines[start:end]) for start, end in zip(starts, ends)][first:]
+    tree = tree[first:]
+    lead = "\n".join(lines[: starts[first]])
     trail = "\n".join(texts[len(body):])
     tail = scaffold.sections[1 + len(body):]
 
@@ -1301,6 +1308,37 @@ def _tree_groups(
             "section_candidates": [tree[i] for i in group],
         })))
     return out
+
+
+# Card grids either kind can carry: which one a section is was the recipe's
+# composition choice (source_section_kinds alternates them), not the source's.
+_CARD_GRID_BLOCKS: dict[str, type] = {"features": FeaturesBlock, "services": ServicesBlock}
+
+
+def _kinds_as_asked(page: PagePlan, sub: PageScaffold) -> PagePlan:
+    """A group's blocks as the kinds their sections asked for.
+
+    A group answers in its sections' order, but the merge and the scaffold
+    alignment place blocks by KIND. When the model wrote the first of two
+    card sections as `features` and the second as `services` — the reverse of
+    what was asked — Fowable's "The solution" landed above "The problem". So
+    when the group returned one block per section, a card grid takes the kind
+    its position asked for. Anything else is left as the model wrote it.
+    """
+    asked = sub.sections[1:]
+    body = [block for block in page.blocks if getattr(block, "kind", None) != "hero"]
+    if len(body) != len(asked):
+        return page
+    swapped: dict[int, ContentBlock] = {}
+    for block, want in zip(body, asked):
+        kind = getattr(block, "kind", None)
+        if kind != want and kind in _CARD_GRID_BLOCKS and want in _CARD_GRID_BLOCKS:
+            swapped[id(block)] = _CARD_GRID_BLOCKS[want].model_validate(
+                {**block.model_dump(), "kind": want}
+            )
+    if not swapped:
+        return page
+    return page.model_copy(update={"blocks": [swapped.get(id(b), b) for b in page.blocks]})
 
 
 async def _generate_page_tree_groups(
@@ -1337,7 +1375,7 @@ async def _generate_page_tree_groups(
             result.pages[0] if result.pages else None,
         )
         if page is not None:
-            chunk_plans.append(page)
+            chunk_plans.append(_kinds_as_asked(page, groups[index][0]))
         else:
             logger.warning(
                 "tree-multipass group %d/%d for '%s' returned no page",

@@ -1434,11 +1434,23 @@ whichever text chunk came first. Three pieces, each one home:
   is `questions` → `faq`, a repeated title continues its card, bare titles
   among bodied cards are a list in the prose. The crawl never emits either kind.
   It needs PDF heading sizes ranked into six levels (`_PDF_HEADING_TIERS`): at
-  three, a 20pt section headline and a 9pt card title were both H3.
+  three, a 20pt section headline and a 9pt card title were both H3. A
+  section's cards are its most common deeper rank (`_card_rank`); a headline
+  set above them is its subheading. A plan's copy ends at its price.
+- **A DOCX is read the way it looks** (`doc_parser.parse_docx`): paragraphs
+  and tables in document order (tables used to be appended after the last
+  paragraph — Fowable's plan table landed past the copy and the homepage had
+  no plans); a short wholly-bold paragraph LARGER than body text is a heading,
+  sizes ranked from the smallest up below the style levels (`_docx_levels`; a
+  body-size bold line is a button); and a table is cards when it says so
+  (`_docx_table_blocks`: a priced column per plan, a titled cell per card, a
+  row per card under a two-column header), else one line per row.
 - **The homepage follows it** (`page_inference._authored_homepage`) for
   `AUTHORED_SOURCE_KINDS` (pdf, docx, paste) — no landing pattern, no woven
   photo splits, no wording signals (a "0" became a stats band), up to
-  `_MAX_AUTHORED_SECTIONS`. A short card-less last section is the closing ask,
+  `_MAX_AUTHORED_SECTIONS`. Only when some section holds cards: a tree of
+  prose sections says nothing about shape, and read that way a DOCX whose
+  plans the reader missed shipped every section as an `about` and no pricing. A short card-less last section is the closing ask,
   which the CTA presents. A crawled homepage keeps its pattern. `tree_body` is
   the one answer for every tree-shaped recipe; `follows_source_tree` tells the
   planner and `landing_order` (which must not re-sort it) that a scaffold is one.

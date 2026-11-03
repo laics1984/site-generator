@@ -33,8 +33,11 @@ from collections import Counter
 import docx as python_docx  # python-docx
 import fitz  # PyMuPDF — `import fitz` is correct for the pymupdf package
 from docx.oxml.ns import qn
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 
 from app.config import settings
+from app.services.price_lists import PRICE
 
 # The parsed-source shape is shared with the paste reader — see source_outline.
 from app.services.source_outline import DocImage, OutlineBlock, ParsedDocument
@@ -408,18 +411,30 @@ def parse_docx(file_bytes: bytes, filename: str) -> ParsedDocument:
     seen_image_hashes: set[bytes] = set()
     title_from_style: str | None = None
 
-    # Walk paragraphs in document order. Inline images (<w:drawing><a:blip>) are
-    # collected at their paragraph's position so each one stays associated with
-    # the heading it sits under — an empty paragraph that holds only an image
-    # still contributes the image at the right anchor.
-    for paragraph in document.paragraphs:
+    # Paragraphs and tables in document order. Walking `document.paragraphs`
+    # and then `document.tables` put every table after the last paragraph:
+    # Fowable's plan table landed past the brief's appendix, outside its copy,
+    # and the homepage had no plans to show.
+    content = list(document.iter_inner_content())
+    level_of = _docx_levels([item for item in content if isinstance(item, Paragraph)])
+    for item in content:
+        if isinstance(item, Table):
+            for block in _docx_table_blocks(item):
+                outline.append(block)
+                text_parts.append(block.text)
+            continue
+        paragraph = item
+        # Inline images (<w:drawing><a:blip>) are collected at their
+        # paragraph's position so each one stays associated with the heading it
+        # sits under — an empty paragraph that holds only an image still
+        # contributes the image at the right anchor.
         text = (paragraph.text or "").strip()
         blips = paragraph._p.findall(".//" + _DOCX_BLIP)
         if not text and not blips:
             continue
         if text:
             style_name = (paragraph.style.name or "").lower() if paragraph.style else ""
-            level = _docx_style_to_level(style_name)
+            level = level_of.get(id(paragraph), 0)
             if level > 0:
                 outline.append(OutlineBlock(level=level, text=text))
                 if _HEADING_MIN_LEN <= len(text) <= _HEADING_MAX_LEN:
@@ -436,15 +451,6 @@ def parse_docx(file_bytes: bytes, filename: str) -> ParsedDocument:
             _collect_docx_image(
                 blip, document, images, seen_image_hashes, anchor=len(outline)
             )
-
-    # Tables — flatten cell text so the LLM sees pricing tables, hours, etc.
-    for table in document.tables:
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-            if cells:
-                row_text = " | ".join(cells)
-                text_parts.append(row_text)
-                outline.append(OutlineBlock(level=0, text=row_text))
 
     raw_text = "\n".join(text_parts)
 
@@ -497,6 +503,166 @@ def _collect_docx_image(
             anchor=anchor,
         )
     )
+
+
+# A DOCX heading level is its style's; past the styles, markdown's six.
+_DOCX_MAX_LEVEL = 6
+# What a table's cards are titled at: the deepest level, below any heading the
+# document sets itself (`outline_sections` reads a section's cards at its most
+# common deeper level).
+_TABLE_CARD_LEVEL = _DOCX_MAX_LEVEL
+# A cell's or column's first line this long is a sentence, not a card title.
+_TABLE_TITLE_MAX_CHARS = 90
+
+
+def _docx_levels(paragraphs: list[Paragraph]) -> dict[int, int]:
+    """Each heading paragraph's level, keyed by ``id(paragraph)``.
+
+    A heading style states its level. A designed brief often states none: its
+    section headlines are 16pt bold Normal paragraphs and its card titles and
+    FAQ questions 11.5pt bold ones, so read by style alone every section was
+    one block of prose. A short paragraph that is wholly bold and larger than
+    body text, or set well above it, is a heading too — ranked by size like a
+    PDF's (``_pdf_size_to_level``), below the deepest style level in use. A bold
+    line at body size is a button or an emphasised sentence ("Talk to us about
+    the right plan"), and a smaller one a label ("SECTION HEADLINE").
+    """
+    styled: dict[int, int] = {}
+    sized: list[tuple[Paragraph, float, bool]] = []
+    for paragraph in paragraphs:
+        text = (paragraph.text or "").strip()
+        if not text:
+            continue
+        style_name = (paragraph.style.name or "").lower() if paragraph.style else ""
+        level = _docx_style_to_level(style_name)
+        if level:
+            styled[id(paragraph)] = level
+        else:
+            size, bold = _docx_look(paragraph)
+            if size is not None:
+                sized.append((paragraph, size, bold))
+    if not sized:
+        return styled
+    body = Counter(size for _, size, _ in sized).most_common(1)[0][0]
+    visual = [
+        (paragraph, size)
+        for paragraph, size, bold in sized
+        if _HEADING_MIN_LEN <= len(paragraph.text.strip()) <= _HEADING_MAX_LEN
+        and ((bold and size > body) or size >= body * _HEADING_MIN_SCALE)
+    ]
+    # Ranked from the smallest up: a card title and the section headline above
+    # it are the distinction a page needs; the cover's display sizes are not,
+    # and ranked from the top they used up every level before the cards.
+    tiers = sorted({size for _, size in visual})
+    first = max(styled.values(), default=0) + 1
+    levels = dict(styled)
+    for paragraph, size in visual:
+        levels[id(paragraph)] = max(first, _DOCX_MAX_LEVEL - tiers.index(size))
+    return levels
+
+
+def _docx_look(paragraph: Paragraph) -> tuple[float | None, bool]:
+    """The paragraph's type size in points (its largest run's) and whether
+    every run that carries text is bold, each resolved through run, character
+    style and paragraph style chains."""
+    sizes: list[float] = []
+    bold = True
+    for run in paragraph.runs:
+        if not run.text.strip():
+            continue
+        size = run.font.size or _docx_style_value(run.style, "size") or _docx_style_value(
+            paragraph.style, "size"
+        )
+        if size is not None:
+            sizes.append(size.pt)
+        weight = run.bold
+        if weight is None:
+            weight = _docx_style_value(run.style, "bold")
+        if weight is None:
+            weight = _docx_style_value(paragraph.style, "bold")
+        bold = bold and bool(weight)
+    return (max(sizes) if sizes else None), (bold and bool(sizes))
+
+
+def _docx_style_value(style, attribute: str):
+    """A font attribute from a style, or from the first base style that sets it."""
+    while style is not None:
+        value = getattr(style.font, attribute, None)
+        if value is not None:
+            return value
+        style = style.base_style
+    return None
+
+
+def _docx_table_blocks(table: Table) -> list[OutlineBlock]:
+    """A table as outline blocks, its cards as headings over their copy.
+
+    Flattened row by row, a plan table read "Starter | Growth | Business", then
+    each row's three plans run together — every plan's features interleaved,
+    and nothing saying which price was whose. Three shapes are read as cards:
+
+    - **one plan per column**: a header row and a row that prices every column;
+    - **one card per cell**: every cell a short title line over its copy;
+    - **one card per row**: two columns under a header row ("Step | What
+      happens"), the first a short title.
+
+    Any other table stays one line per row, cells joined by " | ".
+    """
+    rows = [_docx_row_cells(row) for row in table.rows]
+    rows = [row for row in rows if any(row)]
+    if not rows:
+        return []
+    width = max(len(row) for row in rows)
+
+    def card(title: str, lines: list[str]) -> list[OutlineBlock]:
+        return [
+            OutlineBlock(level=_TABLE_CARD_LEVEL, text=title),
+            *(OutlineBlock(level=0, text=line) for line in lines),
+        ]
+
+    def lines_of(cell: str) -> list[str]:
+        return [line.strip() for line in cell.split("\n") if line.strip()]
+
+    header, rest = rows[0], rows[1:]
+    if (
+        width >= 2 and rest and len(header) == width and all(header)
+        and not any(PRICE.search(cell) for cell in header)
+        and any(len(row) == width and all(row) and all(PRICE.search(cell) for cell in row) for row in rest)
+    ):
+        blocks: list[OutlineBlock] = []
+        for column, title in enumerate(header):
+            body = [line for row in rest if column < len(row) for line in lines_of(row[column])]
+            blocks += card(" ".join(title.split()), body)
+        return blocks
+
+    cells = [lines_of(cell) for row in rows for cell in row if cell]
+    if len(cells) >= 2 and all(
+        len(lines) >= 2 and len(lines[0]) <= _TABLE_TITLE_MAX_CHARS for lines in cells
+    ):
+        return [block for lines in cells for block in card(lines[0], lines[1:])]
+
+    if width == 2 and len(rest) >= 2 and all(
+        len(row) == 2 and row[0] and len(row[0]) <= _TABLE_TITLE_MAX_CHARS for row in rest
+    ):
+        blocks = [OutlineBlock(level=0, text=" | ".join(header))]
+        for title, body in rest:
+            blocks += card(" ".join(title.split()), lines_of(body))
+        return blocks
+
+    return [OutlineBlock(level=0, text=" | ".join(cell for cell in row if cell)) for row in rows]
+
+
+def _docx_row_cells(row) -> list[str]:
+    """The row's cell texts, a horizontally merged cell once (python-docx
+    returns it once per grid column it spans)."""
+    seen: set[int] = set()
+    cells: list[str] = []
+    for cell in row.cells:
+        if id(cell._tc) in seen:
+            continue
+        seen.add(id(cell._tc))
+        cells.append(cell.text.strip())
+    return cells
 
 
 def _docx_style_to_level(style_name: str) -> int:
