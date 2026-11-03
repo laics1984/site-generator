@@ -1383,11 +1383,20 @@ def infer_page_scaffolds(
     evidence = _gather_nav_evidence(source.nav_links)
 
     if single_page:
+        # An override is the caller's own evidence-gated list (a Facebook Page's
+        # facts) and stands as given. Without one, the homepage earns evidenced
+        # extras exactly as the crawl and template-fallback homes do — a one-page
+        # document or paste listing its plans otherwise never got a pricing section.
         sections = (
             homepage_sections_override
             or _authored_homepage(source)
-            or homepage_sections(
-                industry, seed=site_name, archetype=archetype, emphasis=section_emphasis
+            or _augment_sections(
+                homepage_sections(
+                    industry, seed=site_name, archetype=archetype, emphasis=section_emphasis
+                ),
+                "home",
+                source,
+                industry,
             )
         )
         home = _home_scaffold(source, industry, seed=site_name).model_copy(

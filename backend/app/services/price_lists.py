@@ -28,11 +28,12 @@ PRICE = re.compile(
 )
 
 # A price list states several prices, each for a period: "RM 119 / month",
-# "RM 1,428 a year", "$29/mo". One price is a fee mentioned in passing; two
-# DIFFERENT recurring amounts are plans, packages or fee tiers.
+# "RM 1,428 a year", "$29/mo", "€9 per user". One price is a fee mentioned in
+# passing; two DIFFERENT recurring amounts are plans, packages or fee tiers.
 _PRICE_PERIOD = re.compile(
     rf"(?P<price>{PRICE.pattern})\s*(?:/|per|an?|each|every)?\s*"
-    r"(?:month|mo|year|yr|annum|week|term|semester|session|class|lesson|hour|hr)s?\b"
+    r"(?:month|mo|mth|year|yr|annum|week|wk|term|semester|session|class|lesson|hour|hr"
+    r"|user|seat)s?\b"
     r"|(?P<billed>" + PRICE.pattern + r")[^.\n]{0,20}\b(?:monthly|annually|yearly|weekly)\b",
     re.IGNORECASE,
 )

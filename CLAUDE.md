@@ -1476,7 +1476,7 @@ three plans, prices and feature lists were in the source and absent from the
 site). `price_lists.states_price_list` is structural evidence, beside
 video and map: two or more DIFFERENT amounts (`price_lists.PRICE`, the one
 price pattern) each with a billing period ("RM 119 / month", "$29/mo",
-"billed annually"). One fee in passing, or a menu's one-off prices, is not a
+"€9 per user", "billed annually"). One fee in passing, or a menu's one-off prices, is not a
 price list. Eligible on home, services and landing pages. `services/price_lists.py`
 is the one home for every price question below.
 
@@ -1497,7 +1497,13 @@ And the table is never cut: `source_router.split_raw_text` keeps each
 `price_list_spans` span (its headings, the plans, up to the next heading) in
 one chunk when it fits one.
 
-Tests: `test_page_inference` (pricing block),
+The single-page path (`single_page=True`) reads its homepage the way the
+template fallback does — the override (a Facebook Page's evidence-gated list)
+as given, else the brief's own sections, else the landing pattern **augmented**
+like every other homepage. It used to take the bare pattern, so no evidenced
+extra could reach a one-page document or paste whose sections hold no cards.
+
+Tests: `test_page_inference` (pricing block), `test_pricing_signal.py`,
 `test_scaffold_enforcement` (tier tests), `test_planner_merge.MergePricingBlocksTest`,
 `test_brief_sections.PriceListChunkTest`.
 
