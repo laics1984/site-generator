@@ -729,7 +729,33 @@ _SIGNAL_ELIGIBLE_TYPES: dict[SectionType, frozenset[PageType]] = {
             "gallery",
         }
     ),
+    # A price list belongs where the offer is made. Never on contact/faq/menu
+    # (a menu prices dishes, not plans) or on a pricing page, which has it already.
+    "pricing": frozenset({"home", "services", "landing"}),
 }
+
+# A recurring price: a currency, an amount, then a billing period —
+# "RM 249 / month", "$29/mo", "RM650 a month", "S$1,200 per year". The period is
+# what separates a PLAN from any number with a currency on it: a menu's "RM 12"
+# or a one-off "from RM 3,000" never matches.
+_RECURRING_PRICE_RE = re.compile(
+    r"(?:RM|MYR|SGD|S\$|USD|US\$|AUD|A\$|IDR|Rp|PHP|₱|THB|฿|INR|₹|EUR|€|GBP|£|\$)"
+    r"\s?(\d[\d,]*(?:\.\d{1,2})?)"
+    r"\s*(?:/|per|a|an|each|every)\s*"
+    r"(?:month|mo|mth|year|yr|annum|week|wk|term|semester|user|seat)s?\b",
+    re.IGNORECASE,
+)
+
+# Tiers are a comparison, so one price is not evidence of a pricing section —
+# "fees from RM 650 a month" is a sentence, and the planner's tier schema wants
+# 2-4 real tiers. Two DISTINCT recurring amounts are.
+_MIN_PRICE_TIERS = 2
+
+
+def _has_price_tiers(text: str) -> bool:
+    amounts = {m.group(1).replace(",", "") for m in _RECURRING_PRICE_RE.finditer(text)}
+    return len(amounts) >= _MIN_PRICE_TIERS
+
 
 _MAX_EXTRA_SECTIONS = 2  # quality cap — don't let a page balloon past its rhythm
 
@@ -752,6 +778,12 @@ def _detect_content_signals(page: SourceContent) -> list[SectionType]:
     detected: list[SectionType] = ["video"] if page.video_embeds else []
     if page.map_embeds:
         detected.append("map")
+    # Counted, not matched: two distinct recurring prices are a price list the
+    # page states outright, so they rank with the structural signals ahead of
+    # the prose guesses below. No landing pattern but saas's asks for pricing,
+    # so without this a document listing its plans never got a section for them.
+    if _has_price_tiers(haystack):
+        detected.append("pricing")
     detected += [
         kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)
     ]
@@ -1171,8 +1203,12 @@ def infer_page_scaffolds(
     evidence = _gather_nav_evidence(source.nav_links)
 
     if single_page:
-        sections = homepage_sections_override or homepage_sections(
-            industry, seed=site_name
+        # An override is the caller's own evidence-gated list (a Facebook Page's
+        # facts) and stands as given. Without one, the homepage earns evidenced
+        # extras exactly as the crawl and template-fallback homes do — a one-page
+        # document or paste listing its plans otherwise never got a pricing section.
+        sections = homepage_sections_override or _augment_sections(
+            homepage_sections(industry, seed=site_name), "home", source
         )
         home = _home_scaffold(source, industry, seed=site_name).model_copy(
             update={"sections": sections}

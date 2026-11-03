@@ -329,6 +329,26 @@ services layouts. The friendly/playful `services-programs-age` rule is more
 specific and stays absolute, since no other variant declares its age badge, and
 it now also requires the items to actually carry one (`_items_have_audience`).
 
+## A stated price list earns a pricing section
+
+Only the `saas` landing pattern asks for `pricing`, so a document listing its
+plans under any other industry (a page about kindergartens reads as
+`childcare`) shipped with no prices — `scaffold_enforcement` drops what the
+scaffold never requested. `page_inference._has_price_tiers` is the evidence:
+**two distinct recurring prices** (currency + amount + billing period —
+"RM 249 / month", "$29/mo", "RM650 a month"). One price is a sentence ("fees
+from RM 650 a month"); a price with no period is a menu or a quote. It ranks
+with the structural signals, ahead of the prose regexes, and is eligible on
+home/services/landing only.
+
+The single-page path (`single_page=True`, no `homepage_sections_override`) now
+augments the homepage like the crawl and template-fallback paths always did —
+it used to take the bare landing pattern, so no evidenced extra could ever reach
+a one-page document or paste. An override (a Facebook Page's evidence-gated
+list) still stands as given.
+
+Tests: `test_pricing_signal.py`.
+
 ## A team grid holds people
 
 `profile_text.roster_is_people` is the one gate, applied once, at the only layer
