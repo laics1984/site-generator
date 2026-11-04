@@ -3918,6 +3918,43 @@ Tests: `test_llm_anthropic.py` (fake SDK client injected; middleware, menu,
 health and brand-cache key included). The local path stays covered by
 `test_llm_backend.py` / `test_llm_cache.py`, unchanged.
 
+## Copy is held to one written standard
+
+`prompts.WEBSITE_COPY_GUIDANCE` is the one statement of how generated copy
+reads — natural, idiomatic, specific to THIS business, no AI marketing
+clichés, no section restating another, write less rather than pad, CTAs that
+name the action. Both copy-writing prompts carry it (the scaffold head and the
+legacy prompt), and the headline/CTA rules that used to be spelled three times
+over now point at it. **Text only**: nothing in it says how a section looks,
+and no design pass reads it. Every other LLM call answers in numbers (paste
+structure, bio condense, record templates, Facebook knowledge) or translates,
+so it has no copy of its own to hold to this.
+
+- **The prompt is at the 8K budget.** `test_scaffold_batching.
+  test_batches_fit_the_input_budget` measures the tailored system prompt and a
+  one-page batch had 7 tokens to spare before this; the guidance was fitted by
+  folding in duplicates (SEO bullets, E-E-A-T, search intent, the interior-hero
+  rule) rather than growing the head. Any addition must be paid for the same
+  way — never with a design or imagery instruction.
+- **Two lists, one reader each way.** `GENERIC_HEADLINES` is stock only in a
+  heading ("learning through play" is a fine About sentence);
+  `AI_STOCK_PHRASES` is wrong anywhere. The prompt quotes the first few of
+  each (so the most varied come first), and `ux_audit.audit_copy` checks the
+  whole lists — headings for both, every other text node for the clichés,
+  a split headline read whole and never again line by line. Advisory
+  (`stock-phrase`, low, scored as `originality` like `generic-headline`);
+  the lists must not overlap.
+- **The market decides the spelling.** `locale.english_spelling` names a
+  convention per country (British for Malaysia: programmes, centre,
+  enquiries; American for the US and the Philippines; Canadian), and
+  `planner._language_payload` sends it as `english_spelling` whenever the copy
+  may be English (no language plan, or an English primary). A market with no
+  single convention, or only a confident region, sends nothing and the model
+  follows the source. `locale.source_market` is the one "which market is this
+  source for" — the image cues ask it too.
+
+Tests: `test_copy_quality.py`, `test_ux_audit.GenericHeadlineTest`.
+
 ## Gotchas
 
 - **The UI's mood starts at Auto** (`BrandMoodChoice`, sent as `null`). It

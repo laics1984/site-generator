@@ -255,6 +255,7 @@ everywhere, random blobs, three identical cards per section, slogans like
 # Stock headings any business in its industry could put on its site. Named in
 # the copy prompt below and checked, advisory only, by ux_audit.audit_copy —
 # one list, two readers. A source that itself uses one of these may keep it.
+# Headings only: "learning through play" is a fine sentence in an About body.
 GENERIC_HEADLINES: tuple[str, ...] = (
     "where little minds grow",
     "building bright futures",
@@ -262,40 +263,85 @@ GENERIC_HEADLINES: tuple[str, ...] = (
     "where every child shines",
     "nurturing young minds",
     "a place to grow",
-    "unlock your potential",
-    "take your business to the next level",
     "your journey starts here",
-    "your trusted partner",
     "discover the difference",
     "experience the difference",
     "where quality meets",
     "more than just a",
-    "we are passionate about",
     "empowering you",
     "transforming the way",
     "your one-stop",
     "crafted with passion",
     "made with love",
 )
-# How many of them the prompt quotes as examples. The prompt is token-budgeted
-# (an 8K-context model must still fit a batch — test_scaffold_batching), and a
-# few examples carry the rule; the audit checks the whole list.
-_PROMPTED_HEADLINES = 4
+# AI marketing clichés: wrong in ANY string a visitor reads, not only a
+# heading, so audit_copy checks every text node for these. Matched as plain
+# lower-case substrings (ux_audit._plain), so each is the cliché's fixed core
+# and a spelling variant gets its own entry.
+AI_STOCK_PHRASES: tuple[str, ...] = (
+    # The first _PROMPTED_STOCK_PHRASES are quoted by the prompt, so they are
+    # the most varied; spelling variants and near-twins come after.
+    "in today's fast-paced world",
+    "unlock your potential",
+    "elevate your",
+    "seamless solution",
+    "cutting-edge technology",
+    "your trusted partner",
+    "where innovation meets",
+    "tailored to your unique needs",
+    "look no further",
+    "we're passionate about",
+    "in today's digital landscape",
+    "in today's digital age",
+    "take your business to the next level",
+    "seamless experience",
+    "cutting-edge solution",
+    "revolutionize the way",
+    "revolutionise the way",
+    "transform your journey",
+    "empowering businesses",
+    "discover a world of",
+    "we are passionate about",
+    "we've got you covered",
+)
+# How many of each list the prompt quotes as examples. The prompt is
+# token-budgeted (an 8K-context model must still fit a batch —
+# test_scaffold_batching), and a few examples carry the rule; the audit checks
+# the whole lists.
+_PROMPTED_HEADLINES = 3
+_PROMPTED_STOCK_PHRASES = 6
 
-WEBSITE_COPY_GUIDANCE = """WEBSITE COPY QUALITY
-Make the offer, audience, supported benefit and next step clear in one consistent
-voice. Sections help visitors understand, evaluate, trust or act; remove filler
-and repetition without losing useful content or qualifications. Never invent
-scarcity, urgency or response/delivery promises. One dominant action per page;
-secondary actions serve a distinct purpose. Labels match real destinations: an
-enquiry is not confirmed booking. Use supplied links or supported contact, never
-guess booking/payment URLs. Testimonial questions are not public reviews.
-Keep mobile copy concise without changing meaning. Clarity, accessibility and
-usable output outrank decoration; premium quality does not require more effects.
-Headings name THIS business's real programmes, places, methods and
-brand.differentiators, never stock phrases (e.g. """ + ", ".join(
-    f'"{phrase}"' for phrase in GENERIC_HEADLINES[:_PROMPTED_HEADLINES]
-) + """). Never fill brand.unknowns.
+
+def _quoted(phrases: tuple[str, ...]) -> str:
+    return ", ".join(f'"{phrase}"' for phrase in phrases)
+
+
+# The copy standard every string the planner writes is held to. Text only:
+# nothing here says how a section looks, and the design passes read none of it.
+WEBSITE_COPY_GUIDANCE = """WEBSITE COPY QUALITY — every string a visitor reads, SEO fields included, reads
+as if a senior human copywriter wrote it for THIS business.
+- Purpose: make the offer, audience, supported benefit and next step clear in one
+  voice. Each section says what no other does: never restate the hero in the
+  intro, cards and CTA. Cut filler, keep qualifications; with little source,
+  write less, never pad. Never invent scarcity, urgency or delivery promises.
+  One dominant action per page; labels match real destinations (an enquiry is
+  not a booking); never guess booking/payment URLs. Testimonial questions are
+  not reviews. Keep mobile copy concise; clarity outranks decoration.
+- Language: natural, idiomatic, right read aloud. Familiar words, concrete
+  nouns, specific verbs; no jargon, buzzwords or stacked adjectives. Vary
+  sentence length and shape. Flawless grammar; ONE spelling convention:
+  `english_spelling` if given, else the source's.
+- No AI clichés: never """ + _quoted(AI_STOCK_PHRASES[:_PROMPTED_STOCK_PHRASES]) + """ or variants.
+  Ration "not just X, but Y", "whether you're X or Y", "from X to Y", "where X
+  meets Y", rhetorical questions, three-part lists, same-shaped short
+  sentences, forced metaphors.
+- Headlines: specific and concise, naming THIS business's real programmes,
+  places, methods and brand.differentiators; never stock (e.g. """ + _quoted(GENERIC_HEADLINES[:_PROMPTED_HEADLINES]) + """),
+  abstract or poetic. Vary construction across pages.
+- CTAs name the action ("Book a Visit", "Ask About Availability", "Get a Quote"),
+  never "Click here" or a bare "Learn more".
+- Reread: sounds like AI marketing copy → rewrite; says nothing specific → cut.
+  Never fill brand.unknowns.
 """
 
 HERO_COPY_GUIDANCE = """HERO: Make the first screen explain the offer, audience,
@@ -339,9 +385,8 @@ actual clients, staff or customers. Do not manufacture case studies.""",
 
 _SCAFFOLD_PROMPT_HEAD = """You are a senior web editor and SEO copywriter. You REWRITE the business's
 own existing content into a cleaner, better-organised, search-optimised
-website — you never invent a new business. Improve freely: fix grammar and
-spelling, tighten wording, improve flow, make headlines benefit-led, add SEO
-titles/descriptions/keywords. Every CONCRETE FACT must come from the source.
+website — you never invent a new business. Improve the language freely and
+add SEO fields; every CONCRETE FACT must come from the source.
 Write all copy in the language `write_in` names — even where the source
 mixes in another one; that language is added separately. Without `write_in`,
 use the source content's own language. Names, brands and quotes stay as written.
@@ -393,16 +438,12 @@ FIDELITY RULES — these override every other instruction:
   general benefit statements that follow directly from what the business says
   it does. You MAY NOT add specifics the source doesn't state.
 
-E-E-A-T SIGNALS — search engines reward expertise, experience, authority, trust:
-- Weave supplied credentials, experience, certifications and memberships into
-  about/services copy. Prefer specific expertise over vague praise; preserve
-  real testimonials, case studies and portfolio work.
-
-SEARCH INTENT — match the page's tone to its purpose:
-- Homepage = navigational (brand identity + core value proposition).
-- Services / pricing = commercial (convince and convert).
-- About = informational (build trust and credibility).
-- Contact = transactional (make action effortless).
+E-E-A-T: weave supplied credentials, experience, certifications and memberships
+into about/services copy; specific expertise over vague praise; preserve real
+testimonials, case studies and portfolio work.
+SEARCH INTENT: homepage navigational (identity + core value proposition);
+services/pricing commercial; about informational (trust); contact
+transactional (make action effortless).
 
 REAL PHOTOS — `page_source.images` lists the page's ACTUAL photos as
 {ref, alt, role, near} (near = the source heading the photo sat under).
@@ -423,10 +464,8 @@ Strongly prefer them over stock:
 - Still fill `image_query` (2-6 word stock phrase) as fallback.
 
 DESIGN INTENT — you write for an award-calibre layout, not a generic template:
-- Headlines read like confident editorial pull-quotes: benefit-led, specific,
-  6-12 words, drawn from what the business actually does. Never generic
-  ("Welcome to our site"), and vary the phrasing — don't open several pages'
-  headlines with the same pattern.
+- Headlines follow WEBSITE COPY QUALITY below: usually 4-12 words, never
+  generic ("Welcome to our site"), and no two pages open on the same pattern.
 - Give every hero an `eyebrow` — the small label above the headline
   (e.g. "Family-owned since 1998").
 - Homepage hero `layout`: follow `design_direction.hero` when the payload
@@ -462,24 +501,18 @@ PER PAGE
 - If `parent_slug` is set this is a SUB-PAGE: mirror the parent's tone and
   value prop (`parent_context`), don't restate what the company does in the
   hero — deep-dive on this specific offering.
-- Interior-page heroes (except dedicated landing pages) are orientation headers, not
-  conversion blocks: strong eyebrow + headline + subheadline, and NO hero CTA
-  pointing at the page's own content — the page's closing `cta` block owns the
-  conversion ask. Homepage and dedicated landing-page heroes may keep their
-  primary CTA; other interior-page heroes follow the orientation policy.
+- Interior-page heroes (not homepage or dedicated landing pages) orient the
+  reader: eyebrow + headline + subheadline, and NO hero CTA pointing at the
+  page's own content — the closing `cta` block owns the conversion ask.
 - Preserve real proper nouns, prices and contact details verbatim.
-- CTAs use action verbs ("Book a call", "Get a quote") — never "Click here".
 - A `cta_label` is 2-4 words and delivers its headline's promise (join →
   "Become a member"). Never paste navigation text or a sentence into a button.
-- SEO titles 50-60 chars, primary keyword near the start, unique per page.
-  Interior pages: "[Primary benefit/service] | [Brand name]".
-- SEO descriptions 140-160 chars, include the primary keyword naturally,
-  summarise what the user will find, end with an action phrase. Unique per page.
-- seo_keywords: 3-5 relevant search terms per page drawn from the source's
-  real subject matter. Homepage gets broad terms; interior pages get specific
-  long-tail variations. Never stuff or repeat.
-- Build all SEO fields from the page's real subject matter — do not invent
-  claims to fill length.
+- SEO fields are unique per page and built from its real subject, never
+  invented claims to fill length. seo_title 50-60 chars, primary keyword near
+  the start (interior: "[Primary benefit/service] | [Brand name]");
+  seo_description 140-160 chars, keyword used naturally, says what the page
+  offers, ends with an action; seo_keywords 3-5 real search terms, broad on the
+  homepage, long-tail inside, never stuffed.
 - Fill REQUIRED visual query slots with concrete 2-6 word stock phrases.
   Optional imagery may be omitted when a clean text/icon layout serves the
   section better. The visual/design direction takes precedence. Stock is
@@ -553,9 +586,7 @@ Hard rules:
   when absent). Names, brands and quotes stay as written.
 - Reply with ONE JSON object matching the schema. No markdown, no commentary.
 - Every page MUST have a hero block first. The homepage MUST end with a cta or contact block.
-- Headlines: benefit-led, specific, 6-12 words, drawn from what the business actually does.
-  NEVER generic ("Welcome to our site", "About us").
-- CTAs: action verbs ("Book a call", "Get a quote"), never "Click here" or "Learn more" alone.
+- Headlines and CTAs follow WEBSITE COPY QUALITY below; never generic ("Welcome to our site", "About us").
 - FIDELITY: use ONLY facts present in the source. You may fix grammar, tighten wording, improve
   flow, and add SEO copy — but NEVER fabricate testimonials, reviewer names, statistics, prices,
   awards, certifications, team members, contact details, hours, or FAQ specifics. If the source

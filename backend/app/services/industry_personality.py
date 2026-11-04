@@ -67,7 +67,7 @@ _PERSONALITIES: dict[str, IndustryPersonality] = {
         ),
     ),
     "nonprofit": IndustryPersonality(
-        voice="human, urgent, hopeful — people over programs",
+        voice="human, direct, hopeful — the people first, then the work",
         design=(
             "emotional documentary imagery, humanist type, warm accessible "
             "palette, accent reserved for the donate action"

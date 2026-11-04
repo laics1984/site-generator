@@ -56,6 +56,7 @@ _RULES = {
     "orphan-page": ("SEO", "medium"),
     "rhythm-monotone": ("Design", "low"),
     "generic-headline": ("Content", "low"),
+    "stock-phrase": ("Content", "low"),
 }
 
 # This many body sections of one visual weight in a row reads as a stack of
@@ -388,22 +389,46 @@ def _heading_text(el: BuilderElement) -> str:
     return " ".join(_heading_text(child) for child in el.content or [])
 
 
-def audit_copy(site: GeneratedSite) -> list[Finding]:
-    """Headings that are a stock phrase (prompts.GENERIC_HEADLINES) rather than
-    something about this business. Advisory: a source that uses the phrase
-    itself may keep it, and only a human can tell which this is."""
-    from app.services.prompts import GENERIC_HEADLINES
+def _copy_strings(elements: Iterable[BuilderElement]) -> Iterator[tuple[bool, str]]:
+    """Every string a visitor reads, once each, as (is_heading, text).
 
-    phrases = [_plain(p) for p in GENERIC_HEADLINES]
+    A heading is read whole — a split headline group is one heading, so its
+    lines are never visited again as body text (a cliché split across the two
+    lines is still found, and one inside a line is not reported twice)."""
+    for el in elements:
+        if (el.htmlTag or "").lower() in _HEADING_TAGS:
+            yield True, _heading_text(el)
+            continue
+        content = el.content
+        if isinstance(content, BuilderElementContent):
+            if content.innerText:
+                yield False, content.innerText
+        elif isinstance(content, list):
+            yield from _copy_strings(content)
+
+
+def audit_copy(site: GeneratedSite) -> list[Finding]:
+    """Copy that says nothing about this business. Two lists, both in prompts:
+    GENERIC_HEADLINES in a heading (stock, but a fine sentence in a body), and
+    AI_STOCK_PHRASES anywhere a visitor reads them. Advisory: a source that uses
+    the phrase itself may keep it, and only a human can tell which this is."""
+    from app.services.prompts import AI_STOCK_PHRASES, GENERIC_HEADLINES
+
+    headline_phrases = [p for p in (_plain(p) for p in GENERIC_HEADLINES) if p]
+    stock_phrases = [p for p in (_plain(p) for p in AI_STOCK_PHRASES) if p]
     out: list[Finding] = []
     for page in site.pages:
-        for el in _descendants(page.body_schema.elements if page.body_schema else []):
-            if (el.htmlTag or "").lower() not in _HEADING_TAGS:
-                continue
-            text = _plain(_heading_text(el))
-            hit = next((p for p in phrases if p and p in text), None)
+        slug = page.slug or "/"
+        elements = page.body_schema.elements if page.body_schema else []
+        for is_heading, raw in _copy_strings(elements):
+            text = _plain(raw)
+            hit = next((p for p in stock_phrases if p in text), None)
             if hit:
-                _add(out, "generic-headline", page.slug or "/", f"'{text}' uses the stock phrase '{hit}'")
+                _add(out, "stock-phrase", slug, f"'{text}' uses the AI cliché '{hit}'")
+            elif is_heading:
+                hit = next((p for p in headline_phrases if p in text), None)
+                if hit:
+                    _add(out, "generic-headline", slug, f"'{text}' uses the stock phrase '{hit}'")
     return out
 
 

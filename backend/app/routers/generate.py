@@ -132,7 +132,7 @@ from app.services.image_vision import (
     annotate_image_pool,
     prefetch_image_pool,
 )
-from app.services.locale import detect_market, image_query_cue, locale_label, place_query_cue
+from app.services.locale import image_query_cue, locale_label, place_query_cue, source_market
 from app.services.content_collections import extract_collections
 from app.services.schema_builder import plan_to_site
 from app.models.brand import CreativePalette
@@ -186,8 +186,7 @@ def _market_cues_for(source: SourceContent) -> tuple[str, str]:
     not break generation, so we swallow errors and fall back to no cues.
     """
     try:
-        urls = [source.source_ref, *source.links, *source.images]
-        market = detect_market(source.raw_text, urls=urls)
+        market = source_market(source)
         return image_query_cue(market), place_query_cue(market)
     except Exception:  # noqa: BLE001 — image localisation must not 500 a generation
         return "", ""
