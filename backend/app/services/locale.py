@@ -25,7 +25,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from app.models.content_blocks import SourceContent
 
 # --- language directories ---------------------------------------------------------
 
@@ -398,6 +402,14 @@ def detect_market(text: str | None, urls: list[str] | None = None) -> MarketCont
     )
 
 
+def source_market(source: SourceContent) -> MarketContext | None:
+    """The market a source is written for: its text plus every URL it carries
+    (the source itself, its links and its images — domain evidence). The one
+    reading both the image cues and the copy's spelling convention ask."""
+    urls = [source.source_ref, *source.links, *source.images]
+    return detect_market(source.raw_text, urls=urls)
+
+
 def image_query_cue(market: MarketContext | None) -> str:
     """The locale phrase to prepend to a stock image query. We use the *regional*
     term (e.g. "Southeast Asian") because stock libraries tag it far more than a
@@ -415,3 +427,32 @@ def place_query_cue(market: MarketContext | None) -> str:
     if market is None:
         return ""
     return market.country or market.region
+
+
+# Which English spelling a market's own websites use, for the copy the planner
+# writes in English. Only countries with one settled convention are named; a
+# market with none (or only a confident region) gets no instruction, and the
+# model follows the source's own spelling. Each value is what the prompt shows:
+# the convention, then the words a model most often gets wrong in it.
+_BRITISH = "British: programmes, centre, enquiries, colour, organise, licence (noun)"
+_ENGLISH_SPELLING: dict[str, str] = {
+    **{
+        country: _BRITISH
+        for country in (
+            "Malaysia", "Singapore", "Brunei", "Hong Kong", "India", "Pakistan",
+            "Bangladesh", "Sri Lanka", "United Kingdom", "Ireland", "Nigeria",
+            "Kenya", "South Africa", "Australia", "New Zealand",
+        )
+    },
+    "United States": "American: programs, center, inquiries, color, organize, license",
+    "Philippines": "American: programs, center, inquiries, color, organize, license",
+    "Canada": "Canadian: centre, colour, program, organize, licence (noun)",
+}
+
+
+def english_spelling(market: MarketContext | None) -> str | None:
+    """The English spelling convention for this market, or None when it has
+    no single one (or the country is not known)."""
+    if market is None or market.country is None:
+        return None
+    return _ENGLISH_SPELLING.get(market.country)

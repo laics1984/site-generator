@@ -68,6 +68,7 @@ _DIMENSION: dict[str, str] = {
     "gradient-heavy": "restraint",
     "purple-blue-gradient": "originality",
     "generic-headline": "originality",
+    "stock-phrase": "originality",
     "near-repeat": "originality",
     "font-outside-theme": "coherence",
     "shape-crops-portrait": "imagery",

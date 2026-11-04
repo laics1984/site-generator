@@ -72,7 +72,7 @@ from app.services.llm import (
     get_reasoning_llm,
 )
 from app.services.polite import HostPoliteness
-from app.services.locale import locale_label
+from app.services.locale import english_spelling, locale_label, source_market
 from app.services.family_evidence import safety_facts
 from app.services.prompts import (
     CHILDCARE_SAFETY_FACTS_USE,
@@ -109,17 +109,32 @@ _LLM_ITEM_ATTEMPTS = 2
 # land as isolated diffs; assembly, sizing, and batching stay here.
 
 
-def _write_in(source: SourceContent) -> dict[str, str]:
-    """The language the planner writes in, from the decided language plan.
+def _language_payload(source: SourceContent) -> dict[str, str]:
+    """The language the planner writes in, and how it spells English.
 
-    A bilingual source would otherwise leave "the source's language" to the
-    model, which writes some sections in each; the second language is added
-    by the translation passes, never by the planner.
+    `write_in` comes from the decided language plan: a bilingual source would
+    otherwise leave "the source's language" to the model, which writes some
+    sections in each; the second language is added by the translation passes,
+    never by the planner.
+
+    `english_spelling` is the market's convention (British for a Malaysian
+    site, so "programmes", "centre", "enquiries"), stated whenever the copy
+    may be English — a plan whose primary is English, or no plan at all. The
+    model otherwise mixes conventions, or defaults to American spelling on a
+    site whose own copy is British. Absent when the market has no single one.
     """
+    out: dict[str, str] = {}
     plan = source.multilingual
-    if plan is None:
-        return {}
-    return {"write_in": f"{locale_label(plan.primary)} ({plan.primary})"}
+    if plan is not None:
+        out["write_in"] = f"{locale_label(plan.primary)} ({plan.primary})"
+    if plan is None or plan.primary.split("-")[0].lower() == "en":
+        try:
+            spelling = english_spelling(source_market(source))
+        except Exception:  # noqa: BLE001 — a spelling hint must never fail a plan
+            spelling = None
+        if spelling:
+            out["english_spelling"] = spelling
+    return out
 
 
 def _build_user_prompt(source: SourceContent, max_chars: int | None = None) -> str:
@@ -137,7 +152,7 @@ def _build_user_prompt(source: SourceContent, max_chars: int | None = None) -> s
             "sample_links": source.links[:30],
             "sample_image_alts": source.images[:20],
             "raw_text": truncated_text,
-            **_write_in(source),
+            **_language_payload(source),
             "menu_assets": [
                 {"purpose": meta.content_purpose, "heading": meta.menu_heading}
                 for meta in source.image_metadata if meta.content_purpose
@@ -763,7 +778,7 @@ def _build_scaffolded_user_prompt(
     return json.dumps(
         {
             "source": source_payload,
-            **_write_in(source),
+            **_language_payload(source),
             "brand": brand.copy_payload() if brand else None,
             # 2026 art-direction brief for this industry — the DESIGN INTENT
             # section of the system prompt tells the model how to apply it.
