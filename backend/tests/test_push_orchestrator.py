@@ -81,11 +81,10 @@ def test_publish_uses_layout_version_refreshed_by_builder_styles():
             "save_page_draft",
             new=AsyncMock(return_value={"draftVersion": 2}),
         ),
-        patch.object(CmsClient, "mint_builder_session", new=AsyncMock(return_value=None)),
         patch.object(
             CmsClient,
             "update_builder_styles",
-            new=AsyncMock(return_value={"data": {"layout": {"versionId": "V2"}}}),
+            new=AsyncMock(return_value={"layout": {"versionId": "V2"}}),
         ),
         patch.object(CmsClient, "publish_page", new=AsyncMock(return_value={})) as publish_page,
     ):

@@ -183,17 +183,100 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class PublishTranslationTest(unittest.IsolatedAsyncioTestCase):
-    async def test_allowing_gaps_is_asked_for_on_the_wire_and_only_when_meant(self):
-        bodies: list[dict] = []
+class SaveTranslationsTest(unittest.IsolatedAsyncioTestCase):
+    """A push's translations go in one request; saving and publishing are two
+    routes because the CMS gates them on different roles."""
+
+    ITEMS = [{"type": "page", "id": "p1", "locale": "zh-Hans", "overlay": {"elements": {}}, "baseDraftVersion": None}]
+
+    async def test_drafts_and_publishing_go_to_their_own_routes_in_one_request(self):
+        seen: list[tuple[str, str, dict]] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
-            bodies.append(json.loads(request.content or b"{}"))
-            return httpx.Response(200, json={"data": {}})
+            seen.append((request.method, request.url.path, json.loads(request.content)))
+            return httpx.Response(200, json={"data": {"items": [{"locale": "zh-Hans", "published": False}]}})
 
         client = _client(handler)
-        await client.publish_translation("tok", "page", "p1", "zh-Hans")
-        await client.publish_translation("tok", "page", "p1", "zh-Hans", allow_incomplete=True)
+        drafts = await client.save_translations("tok", self.ITEMS, publish=False)
+        await client.save_translations("tok", self.ITEMS, publish=True, allow_incomplete=True)
         await client.aclose()
 
-        self.assertEqual(bodies, [{}, {"allowIncomplete": True}])
+        self.assertEqual(seen, [
+            ("PUT", "/api/entities/tok/translations", {"items": self.ITEMS}),
+            ("POST", "/api/entities/tok/translations/publish", {"items": self.ITEMS, "allowIncomplete": True}),
+        ])
+        self.assertEqual(drafts, [{"locale": "zh-Hans", "published": False}])
+
+    async def test_the_summary_is_asked_for_the_pushed_pages_only(self):
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"data": {"pages": [], "layout": None}})
+
+        client = _client(handler)
+        await client.get_translation_summary("tok", ["p1", "p2"])
+        await client.aclose()
+
+        self.assertEqual(seen[0].url.path, "/api/entities/tok/translations")
+        self.assertEqual(dict(seen[0].url.params), {"pageIds": "p1,p2"})
+
+    async def test_a_refusal_carries_the_cms_message_and_the_item(self):
+        refusal = {"error": {"code": "DRAFT_VERSION_CONFLICT", "message": "This translation has changed since it was loaded.",
+                             "details": {"draftVersion": 2, "item": {"type": "page", "id": "p1", "locale": "zh-Hans"}}}}
+
+        client = _client(lambda request: httpx.Response(409, json=refusal))
+        with self.assertRaises(CmsApiError) as ctx:
+            await client.save_translations("tok", self.ITEMS, publish=False)
+        await client.aclose()
+
+        self.assertEqual(str(ctx.exception), "Saving the translations failed: This translation has changed since it was loaded.")
+        self.assertEqual(ctx.exception.response_body["error"]["details"]["item"]["locale"], "zh-Hans")
+
+
+class BuilderStylesTest(unittest.IsolatedAsyncioTestCase):
+    """The theme goes to the CMS on the admin credential, never a session cookie.
+
+    It used to ride a builder session the client minted for itself, and the
+    CMS refuses a cookie write that carries no browser Origin: every push to
+    production failed CROSS_SITE_REQUEST at the theme step.
+    """
+
+    async def test_the_theme_is_written_with_the_bearer_token_and_no_cookie(self):
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"data": {"layout": {"versionId": "v2"}}})
+
+        client = _client(handler)
+        saved = await client.update_builder_styles(
+            "tok", {"colors": {"primary": "#123456"}}, expected_layout_version_id="v1"
+        )
+        await client.aclose()
+
+        (request,) = seen
+        self.assertEqual((request.method, request.url.path), ("PUT", "/api/entities/tok/builder-styles"))
+        self.assertEqual(request.headers["authorization"], "Bearer test-jwt")
+        self.assertNotIn("cookie", request.headers)
+        self.assertEqual(
+            json.loads(request.content),
+            {"builder_styles": {"colors": {"primary": "#123456"}}, "expectedLayoutVersionId": "v1"},
+        )
+        self.assertEqual(saved, {"layout": {"versionId": "v2"}})
+
+    async def test_reading_and_a_stale_version_name_the_site(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET":
+                return httpx.Response(200, json={"data": {"builder_styles": {}, "layout": {"versionId": "v1"}}})
+            return httpx.Response(409, json={"message": "The live design changed.", "code": "LAYOUT_VERSION_CONFLICT"})
+
+        client = _client(handler)
+        live = await client.get_builder_styles("tok")
+        with self.assertRaises(CmsApiError) as ctx:
+            await client.update_builder_styles("tok", {}, expected_layout_version_id="v0")
+        await client.aclose()
+
+        self.assertEqual(live["layout"]["versionId"], "v1")
+        self.assertEqual(ctx.exception.status, 409)
+        self.assertIn("The live design changed.", str(ctx.exception))

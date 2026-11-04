@@ -101,7 +101,7 @@ def _push_layout_args(site: GeneratedSite) -> dict:
             "save_page_draft",
             new=AsyncMock(return_value={"draftVersion": 2}),
         ),
-        patch.object(CmsClient, "mint_builder_session", new=AsyncMock(return_value=None)),
+        patch.object(CmsClient, "update_builder_styles", new=AsyncMock(return_value={})),
     ):
         report = asyncio.run(push_site(req))
 

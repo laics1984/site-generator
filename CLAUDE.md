@@ -3391,6 +3391,17 @@ because that column is `nullable` but `unique` across a whole CMS, so on a share
 production one a site's own address may already belong to another tenant. Detect
 it on the `errors` **key** — Laravel's message text is translatable.
 
+**Every call carries the JWT, never a session cookie.** The theme went to
+`/api/builder/styles` on a builder session the client minted itself
+(`builder/launch` → `builder/redeem`), and the CMS refuses a cookie WRITE
+with no allowed browser `Origin` as cross-site (`BuilderSessionMiddleware::
+refuseCrossSiteUse`, cms-api #126). A server-to-server call has no Origin, so
+every production push failed `CROSS_SITE_REQUEST` at the theme step, and so did
+publishing a palette. The styles route for an admin credential is
+`/api/entities/{token}/builder-styles` (cms-api `SiteBuilderStylesController`,
+one `BuilderStylesService` behind both). Sending a builder `Origin` from here
+would pass the guard by impersonating the builder; don't.
+
 Not needed, and adding them would be debt: no 429/back-off logic (no admin route
 is throttled) and no CORS work (the browser talks to the *local* backend; the
 backend talks to the CMS server-to-server with no `Origin`). No compose edit
@@ -3427,7 +3438,7 @@ Rules the CMS API makes easy to get wrong, each pinned in `test_cms_sync.py`:
   its path — the same choice a new site gets. `keep_paths=False` is gone: it
   flattened *every* re-push, renaming exactly the pages an update exists not
   to rename.
-- **The layout has no draft state.** `saveLayout` and `PUT /builder/styles`
+- **The layout has no draft state.** `saveLayout` and a builder-styles save
   each mint a layout version and re-pin every published page to it, so on an
   update the header, footer, menus and theme go live at the save-layout step
   whether or not the bodies are published. The drawer says so when "Publish
@@ -3654,12 +3665,22 @@ sets `uncertain` and says so; it never silently changes the mode.
   set; a translation takes no slug, follows a renamed counterpart, and an old
   mirror page at its URL is unclaimed, so the existing archive rule takes it
   off (the "adoption"). `_push_languages` (after the archive): `PUT languages`,
-  then each page and layout overlay saved and, when publishing AND
-  `entitled`, published; otherwise drafts with a warning. One the CMS finds
+  then **every page and layout overlay in one request**
+  (`_save_translations`: the summary's `draftVersion`s, then `PUT
+  translations`, or `POST translations/publish` when publishing AND
+  `entitled`; otherwise drafts with a warning). The CMS writes the batch in
+  one transaction, so the step reports exactly what landed — all, or none
+  with the refused item named — never "3 of 4". One the CMS finds
   incomplete is published anyway (`allowIncomplete`, the owner's call
   2026-10-21: live in its language with a few gaps beats not live in it) and
   the step names each page and how many strings still show in the primary
-  language. Menu labels are
+  language. **The CMS locks no row before a translation write**
+  (`TranslationService::store`): saves sent one at a time and in parallel
+  locked the empty slot each new row would take, and a page's first `ms` and
+  `zh-Hans` saves deadlocked on each other's slot (production, measured on
+  MySQL 8: 1213, the `zh-Hans` page lost as a 500). The write itself checks
+  `baseDraftVersion` now, as a page draft's does; without the locking read
+  the same race committed both rows in 5 of 5 trials. Menu labels are
   translated at generation BY TEXT (`GeneratedSite.menu_label_translations`;
   language and social menus skipped) and keyed to item ids only against the
   menus in hand (`locale_overlay.menu_overlay`: a translated page's title

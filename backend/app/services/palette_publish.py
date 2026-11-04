@@ -1,4 +1,4 @@
-"""The styles bridge only: no page, media, menu, favicon or content writes."""
+"""Builder styles only: no page, media, menu, favicon or content writes."""
 from app.models.brand import ColorPalette, CreativePalette
 from app.services.cms_client import CmsApiError
 from app.services.palette_updates import current_theme, merge_palette_styles, PalettePatch
@@ -7,7 +7,7 @@ from app.services.theme import apply_creative_palette
 
 async def publish_palette(client, *, site, expected_version: str, project_target: str,
                           entity_token: str) -> dict:
-    data = (await client.get_builder_styles()).get("data") or {}
+    data = await client.get_builder_styles(entity_token)
     existing = data.get("builder_styles") or {}
     layout = data.get("layout") or {}
     if str(layout.get("versionId")) != expected_version:
@@ -27,8 +27,8 @@ async def publish_palette(client, *, site, expected_version: str, project_target
         project = await get_project(site.generation_project_id)
         entities = await client.list_entities()
         target_entity = next((e for e in entities if e.get("entity_api_token") == entity_token), {})
-    saved = await client.update_builder_styles(merged, expected_layout_version_id=expected_version)
-    result = {"success": True, "layout_version_id": (saved.get("data", {}).get("layout") or {}).get("versionId"),
+    saved = await client.update_builder_styles(entity_token, merged, expected_layout_version_id=expected_version)
+    result = {"success": True, "layout_version_id": (saved.get("layout") or {}).get("versionId"),
               "cache_refresh_pending": True, "project_updated": False}
     if site.generation_project_id:
         from app.services.generation_projects import save_project_palette
