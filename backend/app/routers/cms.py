@@ -105,8 +105,7 @@ async def palette_context(payload: PaletteContextRequest) -> dict:
     client = CmsClient.for_target(_resolve(payload.target))
     try:
         await client.login(payload.email, payload.password)
-        await client.mint_builder_session(payload.entity_token)
-        data = (await client.get_builder_styles()).get("data") or {}
+        data = await client.get_builder_styles(payload.entity_token)
         if payload.palette is not None:
             from app.services.palette_verification import verify_public_palette
             data["publication"] = await verify_public_palette(client, payload.entity_token, payload.palette)
@@ -124,7 +123,6 @@ async def publish_colors(payload: PublishPaletteRequest) -> dict:
     client = CmsClient.for_target(target)
     try:
         await client.login(payload.email, payload.password)
-        await client.mint_builder_session(payload.entity_token)
         return await publish_palette(client, site=payload.site,
                                      expected_version=payload.expected_layout_version_id,
                                      project_target=target.name, entity_token=payload.entity_token)
@@ -238,7 +236,7 @@ class PushRequestBody(BaseModel):
     publish: bool = False
     push_builder_styles: bool = Field(
         default=True,
-        description="Apply the generated theme via the launch-code → /builder/styles bridge.",
+        description="Apply the generated theme (PUT /entities/{token}/builder-styles).",
     )
     push_favicon: bool = Field(
         default=True,

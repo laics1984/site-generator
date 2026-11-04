@@ -14,6 +14,9 @@ Four readers ask it, and they used to ask it three different ways:
 - ``planner`` keeps the chunk's pricing block that states the most DIFFERENT
   prices (``amounts``): three plans all "From RM 119" is one price restated.
 - ``scaffold_enforcement`` keeps a tier only when its amounts are the source's.
+- ``outline_sections`` reads a short priced line as a card's price, and
+  ``doc_parser`` writes a table's plan cards so their price ends them
+  (``is_price_line``).
 """
 
 from __future__ import annotations
@@ -39,6 +42,10 @@ _PRICE_PERIOD = re.compile(
 )
 _PRICE_LIST_MIN = 2
 
+# A priced line this short is a price ("RM 159 / month"); a longer one is a
+# sentence that mentions one ("Our Full-Day Programme … is RM 650 a month").
+_PRICE_LINE_MAX_CHARS = 60
+
 _AMOUNT = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
 # Two price lines further apart than this are two mentions, not one list. A
@@ -57,6 +64,11 @@ def _period_amounts(text: str) -> set[str]:
         re.sub(r"\s+", "", (match.group("price") or match.group("billed")).lower())
         for match in _PRICE_PERIOD.finditer(text)
     }
+
+
+def is_price_line(text: str) -> bool:
+    """A line that IS a price, as a plan card states one."""
+    return len(text) <= _PRICE_LINE_MAX_CHARS and bool(PRICE.search(text))
 
 
 def states_price_list(text: str) -> bool:

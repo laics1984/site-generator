@@ -586,7 +586,14 @@ def _authored_homepage(home: SourceContent | None) -> list[SectionType] | None:
         # missed would cost the page its pricing. The landing pattern and the
         # stated-price signal still read the copy.
         return None
-    return ["hero", *(kind for kind, _ in body), "cta"]
+    kinds: list[SectionType] = [kind for kind, _ in body]
+    if "pricing" not in kinds and _states_prices(home):
+        # The tree is the page's order, not a licence to lose what its copy
+        # states: a plan table the tree missed still earns its section, and
+        # the planner writes it from the price list's own lines
+        # (planner._tree_groups).
+        kinds.append("pricing")
+    return ["hero", *kinds, "cta"]
 
 
 def _sections_from_tree(page: SourceContent | None) -> list[SectionType] | None:
@@ -853,13 +860,19 @@ def _detect_content_signals(page: SourceContent, industry: str | None = None) ->
     # Stated prices (price_lists.states_price_list). Without this, pricing was
     # reachable only from a /pricing URL, so a brief or a homepage whose plans
     # sat in its own copy was never asked for them.
-    if states_price_list(haystack):
+    if _states_prices(page):
         detected.append("pricing")
     detected += family_signals(industry, page)
     detected += [
         kind for kind, pattern in _SIGNAL_PATTERNS.items() if pattern.search(haystack)
     ]
     return detected
+
+
+def _states_prices(page: SourceContent) -> bool:
+    """The page's copy states a price list — the evidence that earns `pricing`,
+    asked by the augmented recipes and the authored homepage alike."""
+    return states_price_list(" ".join([page.raw_text or "", " ".join(page.headings or [])]))
 
 
 def _augment_sections(

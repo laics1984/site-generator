@@ -407,15 +407,17 @@ async def test_live_palette_publisher_only_writes_styles_and_checks_expected_ver
     proposed = patched_site(original, palette_patch(original, CreativePalette(**PALETTES[1])))
     class Cms:
         def __init__(self): self.writes = []
-        async def get_builder_styles(self): return {"data":{"builder_styles":original.builder_styles,"layout":{"versionId":"version-2"}}}
-        async def update_builder_styles(self, styles, **kwargs):
-            self.writes.append((styles,kwargs)); return {"data":{"layout":{"versionId":"version-3"}}}
+        async def get_builder_styles(self, token): return {"builder_styles":original.builder_styles,"layout":{"versionId":"version-2"}}
+        async def update_builder_styles(self, token, styles, **kwargs):
+            self.writes.append((styles,kwargs,token)); return {"layout":{"versionId":"version-3"}}
     cms = Cms()
     with pytest.raises(CmsApiError, match="changed"):
         await publish_palette(cms,site=proposed,expected_version="version-1",project_target="default",entity_token="token")
     assert cms.writes == []
     result = await publish_palette(cms,site=proposed,expected_version="version-2",project_target="default",entity_token="token")
     assert result["success"] and result["cache_refresh_pending"]
+    assert result["layout_version_id"] == "version-3"
+    assert cms.writes[0][2] == "token"
     assert cms.writes[0][0]["typography"]["headingFont"] == "Owner font"
     assert cms.writes[0][0]["brand"] == original.builder_styles["brand"]
     assert cms.writes[0][1] == {"expected_layout_version_id":"version-2"}
@@ -572,9 +574,9 @@ async def test_live_publisher_preserves_independent_button_and_page_customizatio
     proposed = patched_site(original,palette_patch(original,CreativePalette(**PALETTES[1])))
     class Cms:
         writes = []
-        async def get_builder_styles(self):return {"data":{"builder_styles":live,"layout":{"versionId":"v1"}}}
-        async def update_builder_styles(self,styles,**kwargs):
-            self.writes.append(styles);return {"data":{"layout":{"versionId":"v2"}}}
+        async def get_builder_styles(self,token):return {"builder_styles":live,"layout":{"versionId":"v1"}}
+        async def update_builder_styles(self,token,styles,**kwargs):
+            self.writes.append(styles);return {"layout":{"versionId":"v2"}}
     cms = Cms()
     await publish_palette(cms,site=proposed,expected_version="v1",project_target="default",entity_token="token")
     assert cms.writes[0]["buttons"] == live["buttons"]
@@ -588,7 +590,7 @@ async def test_failed_live_write_never_updates_the_extension_snapshot(monkeypatc
     from app.services.cms_client import CmsApiError
     original = site(); original.generation_project_id = "saved-preview"
     class Cms:
-        async def get_builder_styles(self):return {"data":{"builder_styles":original.builder_styles,"layout":{"versionId":"v1"}}}
+        async def get_builder_styles(self,token):return {"builder_styles":original.builder_styles,"layout":{"versionId":"v1"}}
         async def list_entities(self):return [{"entity_api_token":"token","entity_id":"entity"}]
         async def update_builder_styles(self,*args,**kwargs):raise CmsApiError(409,"Concurrent style save")
     writes = []
@@ -607,9 +609,9 @@ async def test_snapshot_failure_is_distinct_from_successful_live_publication(mon
     from app.services.palette_publish import publish_palette
     original = site(); original.generation_project_id = "saved-preview"
     class Cms:
-        async def get_builder_styles(self):return {"data":{"builder_styles":original.builder_styles,"layout":{"versionId":"v1"}}}
+        async def get_builder_styles(self,token):return {"builder_styles":original.builder_styles,"layout":{"versionId":"v1"}}
         async def list_entities(self):return [{"entity_api_token":"token","entity_id":"entity"}]
-        async def update_builder_styles(self,*args,**kwargs):return {"data":{"layout":{"versionId":"v2"}}}
+        async def update_builder_styles(self,*args,**kwargs):return {"layout":{"versionId":"v2"}}
     async def get_project(project_id):return {"cms_target":"default","entity_id":"entity"}
     async def save(*args,**kwargs):raise OSError("Disk unavailable")
     monkeypatch.setattr(generation_projects,"get_project",get_project)

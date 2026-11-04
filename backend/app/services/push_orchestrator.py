@@ -22,7 +22,7 @@ Steps (in order):
      save-layout step (layout is entity-scoped — write it once).
   6. Save layout — wrap header/footer + emit menus + PUT once on the homepage
   7. Save drafts — for every page, PUT /draft with its bodySchema
-  8. Builder styles — mint launch-code session + PUT /builder/styles;
+  8. Builder styles — PUT /entities/{token}/builder-styles;
      site icon; WhatsApp button (first push only)
   9. (Optional) Publish — POST /publish for each page, then archive the pages
      the new site does not have
@@ -536,15 +536,14 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
         report.error = str(exc)
         return report
 
-    # 8. Builder styles via launch-code bridge (optional)
+    # 8. Builder styles (optional)
     if req.operation != "extend" and req.push_builder_styles and req.site.builder_styles:
         try:
-            await client.mint_builder_session(req.entity_token)
-            styles_result = await client.update_builder_styles(req.site.builder_styles)
+            styles_result = await client.update_builder_styles(req.entity_token, req.site.builder_styles)
             # Saving builder_styles mints a new layout version and makes it the
             # entity's active version — refresh layout_version_id so the publish
             # step's expectedLayoutVersionId isn't stale (else LAYOUT_VERSION_CONFLICT).
-            new_layout = (styles_result.get("data") or {}).get("layout") or {}
+            new_layout = styles_result.get("layout") or {}
             if new_layout.get("versionId"):
                 layout_version_id = new_layout["versionId"]
             report.record(PushStep(name="builder_styles", ok=True, detail="Theme applied"))
@@ -676,34 +675,63 @@ def _language_config(plan) -> dict[str, Any]:
     }
 
 
-async def _save_translation(
-    client: CmsClient, token: str, kind: str, target_id: str, locale: str,
-    overlay: dict[str, Any], *, publish: bool,
-) -> tuple[str, int]:
-    """Save one translation as a draft, then publish it when asked. Returns
-    ("published" | "draft" | "partial", how many strings are still in the
-    primary language).
+# (kind, CMS target, locale, overlay, what the report calls it)
+_TranslationJob = tuple[str, str, str, dict[str, Any], str]
 
-    "partial": the CMS found text not yet translated, and it is published
-    anyway (`allowIncomplete`), each such string showing in the primary
-    language until someone translates it — a page live in its language with
-    a few gaps, rather than not live in it at all."""
-    current = await client.get_translation(token, kind, target_id, locale)
-    await client.save_translation(
-        token, kind, target_id, locale,
-        overlay=overlay, base_draft_version=current.get("draftVersion"),
+
+async def _save_translations(
+    client: CmsClient, token: str, jobs: list[_TranslationJob], *, publish: bool
+) -> list[tuple[str, int]]:
+    """Every translation in two requests: the versions the CMS holds, then one
+    save of them all in one CMS transaction — all land or none. Returns, per
+    job, ("published" | "draft" | "partial", strings still in the primary
+    language).
+
+    They used to go one at a time, a read and a save each, in parallel: a
+    page's `ms` and `zh-Hans` first saves then deadlocked inside MySQL and one
+    was lost as a 500, while the report counted "3 of 4". "partial": text the
+    CMS found untranslated, published anyway (`allowIncomplete`), each such
+    string showing in the primary language until someone translates it — a
+    page live in its language with a few gaps, rather than not live in it."""
+    summary = await client.get_translation_summary(
+        token, sorted({target for kind, target, *_ in jobs if kind == "page"})
     )
-    if not publish:
-        return "draft", 0
-    try:
-        await client.publish_translation(token, kind, target_id, locale)
-    except CmsApiError as exc:
-        if exc.code != "TRANSLATION_INCOMPLETE":
-            raise
-        details = ((exc.response_body or {}).get("error") or {}).get("details") or {}
-        await client.publish_translation(token, kind, target_id, locale, allow_incomplete=True)
-        return "partial", len(details.get("missing") or [])
-    return "published", 0
+    versions = _draft_versions(summary)
+    saved = await client.save_translations(
+        token,
+        [{"type": kind, "id": target, "locale": locale, "overlay": overlay,
+          "baseDraftVersion": versions.get((kind, target, locale))}
+         for kind, target, locale, overlay, _name in jobs],
+        publish=publish, allow_incomplete=True,
+    )
+    return [
+        ("draft", 0) if not item.get("published")
+        else ("partial", len(item["missing"])) if item.get("missing")
+        else ("published", 0)
+        for item in saved
+    ]
+
+
+def _draft_versions(summary: dict[str, Any]) -> dict[tuple[str, str, str], int | None]:
+    """(kind, target, locale) → the draft version the CMS holds. The layout is
+    addressed as "website", as the push addresses it."""
+    versions = {
+        ("page", str(page.get("id")), locale): state.get("draftVersion")
+        for page in summary.get("pages") or []
+        for locale, state in (page.get("locales") or {}).items()
+    }
+    for locale, state in (summary.get("layout") or {}).items():
+        versions[("layout", "website", locale)] = state.get("draftVersion")
+    return versions
+
+
+def _refused_translation(exc: CmsApiError, jobs: list[_TranslationJob]) -> str:
+    """Which translation the CMS refused, in the report's own words."""
+    details = (((exc.response_body or {}).get("error") or {}).get("details") or {})
+    item = details.get("item") or {}
+    name = next((job[4] for job in jobs
+                 if (job[0], job[1], job[2]) == (item.get("type"), item.get("id"), item.get("locale"))), None)
+    return f"{name} ({item.get('locale')}): {exc}" if name else str(exc)
 
 
 async def _push_languages(
@@ -735,8 +763,7 @@ async def _push_languages(
     publish = req.publish and entitled
 
     page_ids = {item.page.slug: item.page_id for item in landed}
-    # (kind, CMS target, locale, overlay, what the report calls it)
-    jobs: list[tuple[str, str, str, dict[str, Any], str]] = [
+    jobs: list[_TranslationJob] = [
         ("page", page_ids[page.translation_of], page.locale, page.overlay, f"/{page.slug}")
         for page in req.site.pages
         if page.locale and page.overlay and page.translation_of in page_ids
@@ -754,16 +781,15 @@ async def _push_languages(
             )
             jobs.append(("layout", "website", locale, layout, "the header and footer"))
 
-    sem = asyncio.Semaphore(_PUSH_CONCURRENCY)
-
-    async def run(kind: str, target: str, locale: str, overlay: dict[str, Any], _name: str) -> tuple[str, int]:
-        async with sem:
-            return await _save_translation(client, token, kind, target, locale, overlay, publish=publish)
-
-    with stage("push_translations"):
-        results = await asyncio.gather(*(run(*job) for job in jobs), return_exceptions=True)
-    failed = [r for r in results if isinstance(r, BaseException)]
-    states = [r[0] for r in results if not isinstance(r, BaseException)]
+    results: list[tuple[str, int]] = []
+    refused = None
+    if jobs:
+        try:
+            with stage("push_translations"):
+                results = await _save_translations(client, token, jobs, publish=publish)
+        except CmsApiError as exc:
+            refused = _refused_translation(exc, jobs)
+    states = [state for state, _count in results]
     outcome = {key: states.count(key) for key in ("published", "partial", "draft")}
     detail = (
         f"{len(languages.secondary)} language(s); {outcome['published'] + outcome['partial']} translation(s) "
@@ -773,15 +799,15 @@ async def _push_languages(
     if req.publish and not entitled:
         warnings.append("This site's plan doesn't include more than one language, so the translations "
                         "were saved as drafts. They publish once the plan does.")
-    if gaps := [(job[4], r[1]) for job, r in zip(jobs, results)
-                if not isinstance(r, BaseException) and r[0] == "partial"]:
+    if gaps := [(job[4], r[1]) for job, r in zip(jobs, results) if r[0] == "partial"]:
         warnings.append(
             "Published with some text still in the main language: "
             + ", ".join(f"{name} ({count} item{'s' if count != 1 else ''})" for name, count in gaps)
             + ". Open the page in the builder's language switch to translate what's left, then publish."
         )
-    if failed:
-        warnings.append(f"{len(failed)} translation(s) could not be saved: {failed[0]}")
+    if refused:
+        warnings.append(f"None of the {len(jobs)} translation(s) were saved, because the CMS refused "
+                        f"{refused}. Push again to retry them together.")
     if languages.mode == "separate":
         from app.services.locale import locale_label
 

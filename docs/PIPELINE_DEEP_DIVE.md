@@ -770,7 +770,7 @@ plans it; see CLAUDE.md "Updating a site that already has pages"). Ordered steps
 6. `read_layout_version` → `save_layout` — menus + header/footer in one PUT on the homepage. The layout has
    no draft state, so on an update this goes live immediately
 7. `save_drafts` — `bodySchema` per page, concurrent
-8. `builder_styles` via the launch-code bridge — **non-fatal**, but it mints a new layout version, so
+8. `builder_styles` via `PUT /entities/{token}/builder-styles` — **non-fatal**, but it mints a new layout version, so
    `layout_version_id` must be refreshed or publish fails with `LAYOUT_VERSION_CONFLICT`; `favicon`;
    `whatsapp_widget` on a first push only
 9. `publish` (optional), then `archive_pages` — the pages the new site lacks, only when publishing

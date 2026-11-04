@@ -13,7 +13,10 @@ What these tests pin:
   * PDF heading sizes rank into six levels, so a section is not a card;
   * a document's outline becomes a section tree, plans and questions included;
   * an authored homepage follows that tree, a crawled one keeps its pattern;
-  * the planner writes such a page a few sections per call, from their text.
+  * the planner writes such a page a few sections per call, from their text;
+  * a headline set a size up after the sections begin is a section, and a
+    table priced under its plan names keeps each plan's features;
+  * a price list the tree missed still earns the homepage its pricing.
 """
 
 from __future__ import annotations
@@ -387,6 +390,157 @@ class ProseOnlyBriefTest(unittest.TestCase):
         home = infer_page_scaffolds(_brief_source(blocks), industry="saas", site_name="Fowable")[0]
         self.assertIn("pricing", home.sections)
         self.assertNotEqual(home.sections, ["hero", "about", "about", "about", "about", "cta"])
+
+
+class LargerHeadlineTest(unittest.TestCase):
+    """The simplified Fowable brief set its pricing headline at 16pt among
+    15pt ones. Read as a cover headline, it took its plans out of the tree."""
+
+    def _plans(self) -> list[OutlineBlock]:
+        return [
+            OutlineBlock(level=4, text="Simple plans for every size of centre"),
+            OutlineBlock(level=6, text="Starter"),
+            OutlineBlock(level=0, text="Website"),
+            OutlineBlock(level=0, text="RM 159 / month"),
+            OutlineBlock(level=6, text="Growth"),
+            OutlineBlock(level=0, text="Shared inbox"),
+            OutlineBlock(level=0, text="RM 249 / month"),
+        ]
+
+    def test_a_larger_headline_after_the_first_section_opens_one(self):
+        tree = outline_sections([
+            OutlineBlock(level=3, text="Parents ask at 10 pm."),
+            *_cards("One", ["A", "B"], "copy."),
+            *_cards("Two", ["C", "D"], "copy."),
+            *_cards("Three", ["E", "F"], "copy."),
+            *self._plans(),
+        ])
+        self.assertEqual([s.heading for s in tree], ["One", "Two", "Three", "Simple plans for every size of centre"])
+        self.assertEqual([(c.title, c.meta) for c in tree[-1].cards],
+                         [("Starter", ["RM 159 / month"]), ("Growth", ["RM 249 / month"])])
+
+    def test_a_part_title_with_nothing_under_it_is_not_a_section(self):
+        tree = outline_sections([
+            *_cards("One", ["A", "B"], "copy."),
+            OutlineBlock(level=4, text="Part two"),
+            *_cards("Two", ["C", "D"], "copy."),
+            *_cards("Three", ["E", "F"], "copy."),
+        ])
+        self.assertEqual([s.heading for s in tree], ["One", "Two", "Three"])
+
+
+def _docx_short_brief() -> bytes:
+    """Laid out the way the simplified Fowable brief is: no heading styles,
+    15pt bold section headlines and a 16pt one for pricing, card tables, and a
+    plan table priced in the row under the plan names."""
+    import io
+
+    import docx
+    from docx.shared import Pt
+
+    document = docx.Document()
+
+    def para(text: str, size: float = 11, bold: bool = False) -> None:
+        run = document.add_paragraph().add_run(text)
+        run.font.size, run.bold = Pt(size), bold
+
+    def cards(*cells: str) -> None:
+        for cell, text in zip(document.add_table(rows=1, cols=len(cells)).rows[0].cells, cells):
+            cell.text = text
+
+    para("01 · HERO", 8, bold=True)
+    para("Parents ask at 10 pm.", 20, bold=True)
+    para("A website, one shared WhatsApp inbox and an assistant.")
+    para("Great centres lose families before the first visit.", 15, bold=True)
+    cards("One phone, many hands\nNobody knows who replied.", "Messages after hours\nParents ask at night.")
+    para("One place for every parent enquiry.", 15, bold=True)
+    cards("A website parents trust\nWe build it for you.", "Never miss an enquiry\nEvery form is saved.")
+    para("Questions principals ask us", 15, bold=True)
+    for question in ("Do I need technical skills?", "Can I switch plans later?"):
+        para(question, 11.5, bold=True)
+        para("Yes, and we set it up with you.")
+    para("Simple plans for every size of centre", 16, bold=True)
+    para("Start where you are. Move up as you grow.")
+    plans = document.add_table(rows=4, cols=3)
+    for column, plan in enumerate((
+        ("Starter", "RM 159 / month", "For centres getting online", "Website on your own domain\nUp to 5 pages"),
+        ("Growth", "RM 249 / month", "For centres on WhatsApp", "Everything in Starter, plus:\nShared inbox"),
+        ("Business", "RM 399 / month", "For multi-branch centres", "Everything in Growth, plus:\nUnlimited pages"),
+    )):
+        for row, text in enumerate(plan):
+            plans.rows[row].cells[column].text = text
+    para("Prices in Malaysian Ringgit, billed monthly.", 8)
+    para("See your centre's demo website", 11, bold=True)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+class PricedFirstTableTest(unittest.TestCase):
+    """A plan's copy ends at its price; a table priced in the row under the
+    names lost every feature to the section's prose."""
+
+    def setUp(self):
+        from app.services.doc_parser import parse_docx
+
+        self.parsed = parse_docx(_docx_short_brief(), "short.docx")
+
+    def test_each_plan_keeps_its_own_copy(self):
+        plans = {s.heading: s for s in outline_sections(self.parsed.outline)}["Simple plans for every size of centre"]
+        self.assertEqual(plans.card_kind, "plans")
+        self.assertEqual(
+            [(c.title, c.meta, c.body.split("\n")) for c in plans.cards],
+            [
+                ("Starter", ["RM 159 / month"],
+                 ["For centres getting online", "Website on your own domain", "Up to 5 pages"]),
+                ("Growth", ["RM 249 / month"],
+                 ["For centres on WhatsApp", "Everything in Starter, plus:", "Shared inbox"]),
+                ("Business", ["RM 399 / month"],
+                 ["For multi-branch centres", "Everything in Growth, plus:", "Unlimited pages"]),
+            ],
+        )
+        self.assertIn("Prices in Malaysian Ringgit, billed monthly.", plans.prose)
+
+    def test_its_homepage_closes_on_its_plans(self):
+        source = split_into_pages(self.parsed, page_topics={})
+        home = infer_page_scaffolds(source, industry="childcare", site_name="Fowable")[0]
+        self.assertEqual(home.sections, ["hero", "services", "features", "faq", "pricing", "cta"])
+
+
+class PricesTheTreeMissedTest(unittest.TestCase):
+    """The tree is the homepage's order, not a licence to lose its prices."""
+
+    def setUp(self):
+        self.source = _brief_source([
+            OutlineBlock(level=3, text="More parents discovering your centre."),
+            *_cards("Every parent enquiry, organised in one place.", ["One list", "Clear status"], "kept together."),
+            OutlineBlock(level=5, text="What it costs"),
+            OutlineBlock(level=0, text="Starter is RM 119 / month for a single centre."),
+            OutlineBlock(level=0, text="Growth is RM 249 / month for a team on WhatsApp."),
+            *_cards("Make WhatsApp work for your whole team.", ["A shared inbox", "An AI agent"], "answers."),
+            *_cards("Questions owners often ask.", ["Do I need skills?", "Can I use my domain?"], "we help."),
+        ])
+        self.home = infer_page_scaffolds(self.source, industry="childcare", site_name="Fowable")[0]
+
+    def test_a_price_list_in_prose_still_earns_pricing(self):
+        self.assertEqual(self.home.sections, ["hero", "services", "about", "features", "faq", "pricing", "cta"])
+        self.assertIsNotNone(follows_source_tree(self.home, self.source))
+
+    def test_the_call_that_writes_pricing_reads_the_price_list(self):
+        from app.config import settings
+
+        old = settings.multipass_max_chars_per_call
+        settings.multipass_max_chars_per_call = 150
+        try:
+            groups = _tree_groups(self.home, self.source)
+        finally:
+            settings.multipass_max_chars_per_call = old
+
+        costs = next(i for i, (_, g) in enumerate(groups) if "What it costs" in g.headings)
+        last_sub, last = groups[-1]
+        self.assertLess(costs, len(groups) - 1)
+        self.assertIn("pricing", last_sub.sections)
+        self.assertIn("Growth is RM 249 / month for a team on WhatsApp.", last.raw_text)
 
 
 class GroupKindOrderTest(unittest.TestCase):

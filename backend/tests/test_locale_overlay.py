@@ -373,30 +373,33 @@ class SyncTest(unittest.TestCase):
 
 
 class _Cms:
-    """Records the language calls the push makes."""
+    """Records the language calls the push makes, answering as the CMS's
+    summary and batch endpoints do (TranslationService::saveMany)."""
 
-    def __init__(self, *, entitled: bool, incomplete: set[str] = frozenset()):
+    def __init__(self, *, entitled: bool, incomplete: set[str] = frozenset(),
+                 summary: dict | None = None, refuse: dict | None = None):
         self.entitled, self.incomplete, self.calls = entitled, set(incomplete), []
+        self.summary, self.refuse = summary or {"pages": [], "layout": None}, refuse
 
     async def put_languages(self, token, config):
         self.calls.append(("languages", config))
         return {**config, "entitled": self.entitled}
 
-    async def get_translation(self, token, kind, target, locale):
-        return {"draftVersion": None}
+    async def get_translation_summary(self, token, page_ids):
+        self.calls.append(("summary", page_ids))
+        return self.summary
 
-    async def save_translation(self, token, kind, target, locale, *, overlay, base_draft_version):
-        self.calls.append(("save", kind, target, locale, overlay))
-        return {}
-
-    async def publish_translation(self, token, kind, target, locale, *, allow_incomplete=False):
+    async def save_translations(self, token, items, *, publish, allow_incomplete=False):
         from app.services.cms_client import CmsApiError
 
-        if target in self.incomplete and not allow_incomplete:
-            raise CmsApiError(409, "incomplete", response_body={"error": {
-                "code": "TRANSLATION_INCOMPLETE", "details": {"missing": ["eyebrow", "label"]}}})
-        self.calls.append(("publish", kind, target, locale) + (("allowIncomplete",) if allow_incomplete else ()))
-        return {}
+        self.calls.append(("batch", publish, allow_incomplete, [i["baseDraftVersion"] for i in items]))
+        if self.refuse:
+            raise CmsApiError(409, "Saving the translations failed: This translation has changed since it was loaded.",
+                              response_body={"error": {"code": "DRAFT_VERSION_CONFLICT", "details": {"item": self.refuse}}})
+        self.calls.extend(("save", i["type"], i["id"], i["locale"], i["overlay"]) for i in items)
+        return [{"published": publish,
+                 "missing": ["eyebrow", "label"] if publish and i["id"] in self.incomplete else []}
+                for i in items]
 
 
 class PushLanguagesTest(unittest.IsolatedAsyncioTestCase):
@@ -434,15 +437,40 @@ class PushLanguagesTest(unittest.IsolatedAsyncioTestCase):
         layout = saves[1][4]
         self.assertEqual(layout["menus"], {"menu-primary": {"i1": {"label": "Tentang"}}})
         self.assertEqual(layout["elements"], {"f": {"innerText": "Hak cipta"}})
-        self.assertEqual(len([c for c in cms.calls if c[0] == "publish"]), 2)
+        # Every translation in one request, saved and published together.
+        self.assertEqual([c[:3] for c in cms.calls if c[0] in ("summary", "batch")],
+                         [("summary", ["p-about"]), ("batch", True, True)])
         step = report.steps[-1]
         self.assertEqual((step.name, step.data["published"], step.warning), ("languages", 2, None))
+
+    async def test_each_translation_is_held_to_the_version_the_cms_holds(self):
+        """The overlay replaces the draft, but only the draft the CMS last told
+        the push about: a version read from the summary, passed back as each
+        item's baseDraftVersion. A language never saved has none."""
+        cms = _Cms(entitled=True, summary={
+            "pages": [{"id": "p-about", "locales": {"ms": {"state": "complete", "missing": 0, "draftVersion": 4}}}],
+            "layout": {"ms": {"state": "untranslated", "missing": 1, "draftVersion": None}},
+        })
+        await self._push(cms, self.req())
+
+        self.assertEqual(next(c[3] for c in cms.calls if c[0] == "batch"), [4, None])
+
+    async def test_a_refused_translation_saves_none_and_the_report_names_it(self):
+        """All or none, so the report never reads "3 of 4": it names the one the
+        CMS refused, and says nothing else landed either."""
+        cms = _Cms(entitled=True, refuse={"type": "page", "id": "p-about", "locale": "ms"})
+        report = await self._push(cms, self.req())
+
+        step = report.steps[-1]
+        self.assertEqual((step.ok, step.data), (True, {"published": 0, "partial": 0, "draft": 0}))
+        self.assertIn("None of the 2 translation(s) were saved", step.warning)
+        self.assertIn("/bm/about (ms): Saving the translations failed: This translation has changed", step.warning)
 
     async def test_without_the_plan_translations_are_kept_as_drafts_and_the_step_says_why(self):
         cms = _Cms(entitled=False)
         report = await self._push(cms, self.req())
 
-        self.assertFalse([c for c in cms.calls if c[0] == "publish"])
+        self.assertEqual([c[:3] for c in cms.calls if c[0] == "batch"], [("batch", False, True)])
         self.assertEqual(report.steps[-1].data["draft"], 2)
         self.assertIn("plan doesn't include more than one language", report.steps[-1].warning)
 
@@ -477,7 +505,7 @@ class PushLanguagesTest(unittest.IsolatedAsyncioTestCase):
         cms = _Cms(entitled=True, incomplete={"p-about"})
         report = await self._push(cms, self.req())
 
-        self.assertIn(("publish", "page", "p-about", "ms", "allowIncomplete"), cms.calls)
+        self.assertEqual([c[:3] for c in cms.calls if c[0] == "batch"], [("batch", True, True)])
         step = report.steps[-1]
         self.assertEqual((step.data["published"], step.data["partial"], step.data["draft"]), (1, 1, 0))
         self.assertIn("/bm/about (2 items)", step.warning)
@@ -487,5 +515,5 @@ class PushLanguagesTest(unittest.IsolatedAsyncioTestCase):
         cms = _Cms(entitled=False, incomplete={"p-about"})
         report = await self._push(cms, self.req())
 
-        self.assertFalse([c for c in cms.calls if c[0] == "publish"])
+        self.assertEqual([c[:2] for c in cms.calls if c[0] == "batch"], [("batch", False)])
         self.assertEqual(report.steps[-1].data["draft"], 2)

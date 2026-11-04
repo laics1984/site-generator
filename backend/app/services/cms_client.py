@@ -2,16 +2,13 @@
 HTTP client for the webtree CMS API.
 
 All endpoints + shapes confirmed by recon (PHASE_4_RECON.md). The client
-carries:
-  - a JWT (from /api/auth/login) → used for every cms.auth route
-  - an optional builder-session cookie (from the launch-code bridge) →
-    used for /api/builder/styles only, since that route requires the
-    builder.auth middleware
+carries one credential: a JWT (from /api/auth/login), used for every route,
+the site's builder styles included (/api/entities/{token}/builder-styles).
 
-Two-phase auth is needed because builderStyles is entity-scoped + lives
-behind builder.auth (session cookie), while page management uses cms.auth
-(JWT). The launch-code bridge mints a session cookie via the JWT-authed
-/api/builder/launch + /api/builder/redeem pair.
+The styles used to go through /api/builder/styles on a builder-session cookie
+this client minted itself (/api/builder/launch → /api/builder/redeem). The CMS
+refuses a cookie write with no browser Origin as cross-site, so every push to
+a CMS with that guard failed CROSS_SITE_REQUEST at the theme step.
 
 This module is pure HTTP + light validation. The push orchestrator
 (push_orchestrator.py) sequences calls.
@@ -26,7 +23,7 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, AsyncIterator
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlencode
 
 import httpx
 
@@ -64,14 +61,12 @@ class CmsApiError(Exception):
 
 @dataclass
 class CmsClient:
-    """Stateful client — holds JWT + optional builder-session cookie jar."""
+    """Stateful client — holds the JWT."""
 
     base_url: str
     # repr=False on the credentials so an accidental repr()/exception dump of the
-    # client can't leak the bearer token or session cookies.
+    # client can't leak the bearer token.
     jwt: str | None = field(default=None, repr=False)
-    # cookies for builder-session calls (set via launch-code bridge)
-    _builder_cookies: dict[str, str] = field(default_factory=dict, repr=False)
     # long-lived connection pool shared by every JWT call + media upload
     _http: httpx.AsyncClient | None = field(default=None, repr=False)
     # False once GET /api/file/lookup answered a bare 404 — an API deployed
@@ -433,39 +428,37 @@ class CmsClient:
             failure="Saving the site's languages failed",
         )
 
-    async def get_translation(
-        self, entity_token: str, kind: str, target_id: str, locale: str
-    ) -> dict[str, Any]:
+    async def get_translation_summary(self, entity_token: str, page_ids: list[str]) -> dict[str, Any]:
+        """Each listed page's and the layout's translation state per language,
+        with the `draftVersion` a save must pass back as its baseDraftVersion."""
+        query = f"?{urlencode({'pageIds': ','.join(page_ids)})}" if page_ids else ""
         return await self._json_call(
-            "get_translation", "get",
-            f"/api/entities/{entity_token}/translations/{kind}/{target_id}/{locale}", None,
-            failure="Reading a translation failed",
+            "get_translation_summary", "get", f"/api/entities/{entity_token}/translations{query}", None,
+            failure="Reading the site's translations failed",
         )
 
-    async def save_translation(
-        self, entity_token: str, kind: str, target_id: str, locale: str,
-        *, overlay: dict[str, Any], base_draft_version: int | None,
-    ) -> dict[str, Any]:
-        return await self._json_call(
-            "save_translation", "put",
-            f"/api/entities/{entity_token}/translations/{kind}/{target_id}/{locale}",
-            {"overlay": overlay, "baseDraftVersion": base_draft_version},
-            failure="Saving a translation failed",
-        )
-
-    async def publish_translation(
-        self, entity_token: str, kind: str, target_id: str, locale: str, *, allow_incomplete: bool = False
-    ) -> dict[str, Any]:
-        """Publish a translation's draft. The CMS refuses one with text still in
-        the primary language (409 TRANSLATION_INCOMPLETE) unless
-        `allow_incomplete`, which publishes it with those strings showing in
-        the primary language."""
-        return await self._json_call(
-            "publish_translation", "post",
-            f"/api/entities/{entity_token}/translations/{kind}/{target_id}/{locale}/publish",
-            {"allowIncomplete": True} if allow_incomplete else {},
-            failure="Publishing a translation failed",
-        )
+    async def save_translations(
+        self, entity_token: str, items: list[dict[str, Any]], *, publish: bool, allow_incomplete: bool = False
+    ) -> list[dict[str, Any]]:
+        """Every translation in one request and one CMS transaction: all saved
+        (and published, with `publish`) or none. An item is {type, id, locale,
+        overlay, baseDraftVersion}; the answer is one translation per item, in
+        order. A refusal names its item in `error.details.item`. Publishing
+        refuses an item with text still in the primary language (409
+        TRANSLATION_INCOMPLETE) unless `allow_incomplete`."""
+        path = f"/api/entities/{entity_token}/translations"
+        if publish:
+            data = await self._json_call(
+                "publish_translations", "post", f"{path}/publish",
+                {"items": items, "allowIncomplete": allow_incomplete},
+                failure="Publishing the translations failed",
+            )
+        else:
+            data = await self._json_call(
+                "save_translations", "put", path, {"items": items},
+                failure="Saving the translations failed",
+            )
+        return list(data.get("items") or [])
 
     async def _json_call(
         self, name: str, method: str, path: str, payload: dict[str, Any] | None, *, failure: str
@@ -483,7 +476,7 @@ class CmsClient:
             if resp.status_code >= 400:
                 raise CmsApiError(
                     resp.status_code,
-                    f"{failure}: {body.get('message') or resp.text[:300]}",
+                    f"{failure}: {_extract_error(body) or resp.text[:300]}",
                     response_body=body,
                 )
             return body.get("data") or body
@@ -854,112 +847,34 @@ class CmsClient:
                 )
             return str(body.get("eid"))
 
-    # --- builder-styles via launch-code bridge ---------------------------------
+    # --- builder styles (webtree-cms-api SiteBuilderStylesController) ------------
 
-    async def mint_builder_session(self, entity_token: str) -> None:
-        """
-        Two-call bridge: POST /api/builder/launch (JWT) → {code}, then
-        POST /api/builder/redeem (no auth) → Set-Cookie builder session.
-
-        After this, calls to update_builder_styles() carry the session cookie.
-        """
-        async with self._wrap_request("mint_builder_session"):
-            # 1. Issue launch code via JWT
-            launch_url = f"{self.base_url}/api/builder/launch"
-            resp = await self._http_client().post(
-                launch_url, json={"entity_api_token": entity_token}, headers=self._jwt_headers()
-            )
-            body = _safe_json(resp)
-            if resp.status_code >= 400:
-                raise CmsApiError(
-                    resp.status_code,
-                    f"Launch code request failed: {body.get('message') or resp.text[:200]}",
-                    response_body=body,
-                )
-            code = body.get("code") or body.get("launch_code")
-            if not code:
-                # The handler may put it under "data" or similar — be lenient.
-                data = body.get("data") or {}
-                code = data.get("code") or data.get("launch_code")
-            if not code:
-                # The CMS's current shape is {"launch_url": "<builder>/?code=…", "expires_in": 60}
-                # — the code is URL-encoded into launch_url's query string.
-                launch_url = body.get("launch_url") or (body.get("data") or {}).get("launch_url")
-                if isinstance(launch_url, str) and launch_url:
-                    qs = parse_qs(urlparse(launch_url).query)
-                    code = (qs.get("code") or [None])[0]
-            if not code:
-                raise CmsApiError(500, f"Launch code response missing code: {body}", response_body=body)
-
-            # 2. Redeem → Set-Cookie builder session
-            redeem_url = f"{self.base_url}/api/builder/redeem"
-            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
-                resp = await client.post(redeem_url, json={"code": code})
-            body = _safe_json(resp)
-            if resp.status_code >= 400:
-                raise CmsApiError(
-                    resp.status_code,
-                    f"Launch code redeem failed: {body.get('message') or resp.text[:200]}",
-                    response_body=body,
-                )
-            # Capture the Set-Cookie pairs for later builder.* calls.
-            self._builder_cookies = dict(resp.cookies)
-            if not self._builder_cookies:
-                raise CmsApiError(
-                    500,
-                    "Redeem succeeded but no session cookie was set — "
-                    "check the API's session cookie name + SameSite settings.",
-                    response_body=body,
-                )
+    async def get_builder_styles(self, entity_token: str) -> dict[str, Any]:
+        """The live theme: {builder_styles, layout: {versionId, …}, …}."""
+        return await self._json_call(
+            "get_builder_styles", "get", f"/api/entities/{entity_token}/builder-styles", None,
+            failure="Could not read the site's current colors",
+        )
 
     async def update_builder_styles(
-        self, builder_styles: dict[str, Any], *, expected_layout_version_id: str | None = None
+        self, entity_token: str, builder_styles: dict[str, Any], *,
+        expected_layout_version_id: str | None = None,
     ) -> dict[str, Any]:
-        """PUT /api/builder/styles — entity-scoped, uses the builder-session cookie."""
-        if not self._builder_cookies:
-            raise CmsApiError(
-                500,
-                "update_builder_styles called without mint_builder_session — "
-                "the builder.auth middleware requires a session cookie.",
-            )
-        async with self._wrap_request("update_builder_styles"):
-            url = f"{self.base_url}/api/builder/styles"
-            async with httpx.AsyncClient(
-                timeout=_DEFAULT_TIMEOUT, cookies=self._builder_cookies
-            ) as client:
-                payload: dict[str, Any] = {"builder_styles": builder_styles}
-                if expected_layout_version_id is not None:
-                    payload["expectedLayoutVersionId"] = expected_layout_version_id
-                resp = await client.put(url, json=payload)
-            body = _safe_json(resp)
-            if resp.status_code >= 400:
-                raise CmsApiError(
-                    resp.status_code,
-                    f"Update builder_styles failed: {body.get('message') or resp.text[:300]}",
-                    response_body=body,
-                )
-            return body
-
-    async def get_builder_styles(self) -> dict[str, Any]:
-        if not self._builder_cookies:
-            raise CmsApiError(500, "A builder session is required.")
-        async with self._wrap_request("get_builder_styles"):
-            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT, cookies=self._builder_cookies) as client:
-                resp = await client.get(f"{self.base_url}/api/builder/styles")
-            body = _safe_json(resp)
-            if resp.status_code >= 400:
-                raise CmsApiError(resp.status_code, "Could not read the site's current colors.", response_body=body)
-            return body
+        """Save the theme as a new layout version, which the CMS re-pins every
+        published page to. Answers like get_builder_styles, with the new
+        version; a stale `expected_layout_version_id` is a 409."""
+        payload: dict[str, Any] = {"builder_styles": builder_styles}
+        if expected_layout_version_id is not None:
+            payload["expectedLayoutVersionId"] = expected_layout_version_id
+        return await self._json_call(
+            "update_builder_styles", "put", f"/api/entities/{entity_token}/builder-styles", payload,
+            failure="Update builder_styles failed",
+        )
 
     async def update_whatsapp_widget(
         self, entity_token: str, widget: dict[str, Any]
     ) -> dict[str, Any]:
-        """PUT /api/entities/{token}/whatsapp-widget — the site's chat button.
-
-        The admin (JWT) route rather than the builder-session one used by
-        update_builder_styles: this needs no builder session, so it does not
-        have to be sequenced after mint_builder_session.
-        """
+        """PUT /api/entities/{token}/whatsapp-widget — the site's chat button."""
         async with self._wrap_request("update_whatsapp_widget"):
             url = f"{self.base_url}/api/entities/{entity_token}/whatsapp-widget"
             resp = await self._http_client().put(
