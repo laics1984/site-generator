@@ -207,8 +207,19 @@ page was untranslated afterwards.
 is carried, not edited); "Hide in other languages" on a section; the page
 list's per-language pills (admin, P7); a new section added in English is
 counted "to translate" in 中文 but its words are not pre-filled (no LLM in
-the builder); the Menu sheet's "Language" heading is the menu's name, not
-translated per language.
+the builder) — since answered by "Translate with AI" below; the Menu sheet's
+"Language" heading is the menu's name, not translated per language.
+
+**Translate with AI (2026-11-04, `feature/auto-translate` in builder,
+webtree-cms-api and here).** The builder's "N to translate" is a button: the
+CMS (`TranslationSuggester`) translates what the page and the layout still
+show in the main language, and the builder puts the words in place as one
+undoable edit, `origin: 'ai'`, outlined until typed over or kept (builder
+`docs/auto-translate-plan.md`). It runs in the CMS, not here: the CMS owns the
+drafts, the plan gate and the monthly AI pool (a `translation` channel). It
+uses THIS module's rules, pinned by `test_translation_prompt_mirror.py`:
+`TRANSLATION_PROMPT` byte for byte, `_MAX_SOURCE_CHARS`, and
+`is_untranslatable`'s patterns. Change one, and change the CMS with it.
 
 ### P5 (site-generator push + one cms-api rule, 2026-10-16)
 
@@ -882,6 +893,7 @@ also Bahasa Melayu)?
 
 ## Future work (not in these phases)
 
-Regenerate-translation from the builder; localised slugs (`/ms/tentang-kami`);
+Refreshing *outdated* AI strings from the builder (its gaps are covered: see
+P6's "Translate with AI"); localised slugs (`/ms/tentang-kami`);
 per-locale articles/events (CMS content types); translation of image text;
 locale-specific contact forms/WhatsApp copy.
