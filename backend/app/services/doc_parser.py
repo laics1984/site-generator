@@ -37,7 +37,7 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from app.config import settings
-from app.services.price_lists import PRICE
+from app.services.price_lists import PRICE, is_price_line
 
 # The parsed-source shape is shared with the paste reader — see source_outline.
 from app.services.source_outline import DocImage, OutlineBlock, ParsedDocument
@@ -607,6 +607,12 @@ def _docx_table_blocks(table: Table) -> list[OutlineBlock]:
       happens"), the first a short title.
 
     Any other table stays one line per row, cells joined by " | ".
+
+    A plan's copy ends at its price (``outline_sections``), which is right for
+    a brief that prices each plan under its features and wrong for a table
+    that prices it in the row under its name: every feature after the price
+    became the section's prose. A table states where each card ends, so its
+    price lines go last and the card keeps its own copy.
     """
     rows = [_docx_row_cells(row) for row in table.rows]
     rows = [row for row in rows if any(row)]
@@ -615,9 +621,11 @@ def _docx_table_blocks(table: Table) -> list[OutlineBlock]:
     width = max(len(row) for row in rows)
 
     def card(title: str, lines: list[str]) -> list[OutlineBlock]:
+        priced = [is_price_line(line) for line in lines]
         return [
             OutlineBlock(level=_TABLE_CARD_LEVEL, text=title),
-            *(OutlineBlock(level=0, text=line) for line in lines),
+            *(OutlineBlock(level=0, text=line) for line, price in zip(lines, priced) if not price),
+            *(OutlineBlock(level=0, text=line) for line, price in zip(lines, priced) if price),
         ]
 
     def lines_of(cell: str) -> list[str]:

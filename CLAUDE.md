@@ -1427,7 +1427,11 @@ whichever text chunk came first. Three pieces, each one home:
 - **The outline is a section tree** (`services/outline_sections.py`, the
   document twin of `section_extraction`), attached per page by
   `doc_structure.split_into_pages`. The section rank is the shallowest heading
-  rank that recurs (a cover sets a headline or two larger); deeper headings are
+  rank that recurs (a cover sets a headline or two larger); a larger headline
+  AFTER the first section is a section set a size up, not the cover's — the
+  short Fowable brief's 16pt pricing headline among 15pt ones took its plans
+  out of the tree (one with nothing under it is a part title, and dropped);
+  deeper headings are
   card titles, or the section's subheading when they read as a paragraph. Kinds
   come from what the cards state: a price line (`price_lists.PRICE`) is a
   card's `meta`, a group mostly priced is `plans` → `pricing`, mostly questions
@@ -1444,13 +1448,20 @@ whichever text chunk came first. Three pieces, each one home:
   sizes ranked from the smallest up below the style levels (`_docx_levels`; a
   body-size bold line is a button); and a table is cards when it says so
   (`_docx_table_blocks`: a priced column per plan, a titled cell per card, a
-  row per card under a two-column header), else one line per row.
+  row per card under a two-column header), else one line per row. A table
+  card's price lines go LAST (`price_lists.is_price_line`, the reader's own
+  test): a plan's copy ends at its price, and a table priced in the row under
+  its names lost every feature to the section's prose.
 - **The homepage follows it** (`page_inference._authored_homepage`) for
   `AUTHORED_SOURCE_KINDS` (pdf, docx, paste) — no landing pattern, no woven
   photo splits, no wording signals (a "0" became a stats band), up to
   `_MAX_AUTHORED_SECTIONS`. Only when some section holds cards: a tree of
   prose sections says nothing about shape, and read that way a DOCX whose
-  plans the reader missed shipped every section as an `about` and no pricing. A short card-less last section is the closing ask,
+  plans the reader missed shipped every section as an `about` and no pricing.
+  A tree with no plans section whose copy states a price list
+  (`_states_prices`, the augment's own test) still gets `pricing` before the
+  CTA, and `_tree_groups` hands the last call the price list's lines
+  (`price_list_spans`) wherever they sit. A short card-less last section is the closing ask,
   which the CTA presents. A crawled homepage keeps its pattern. `tree_body` is
   the one answer for every tree-shaped recipe; `follows_source_tree` tells the
   planner and `landing_order` (which must not re-sort it) that a scaffold is one.

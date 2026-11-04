@@ -12,8 +12,10 @@ reads markup: a heading owns everything until the next heading of the same or
 higher rank. Which rank is the SECTION rank is the one question the outline
 does not answer on its own — a designed brief's cover sets a headline or two
 larger than any section headline — so it is the shallowest rank that recurs
-(``_MIN_SECTIONS`` times). Anything above it opens the page and belongs to the
-hero. Below it, a section's cards are titled at its most common heading rank
+(``_MIN_SECTIONS`` times). Anything above it BEFORE the first section opens the
+page and belongs to the hero; after it, a larger headline is a section its
+author set a size up (Fowable's 16pt pricing headline among 15pt ones). Below
+it, a section's cards are titled at its most common heading rank
 (``_card_rank``); a heading set above them is the section's own subheading.
 
 Every word stays the source's: a card's title is its heading line and its body
@@ -26,7 +28,7 @@ from __future__ import annotations
 from collections import Counter
 
 from app.models.content_blocks import SectionCandidate, SourceCard, SourceCardKind
-from app.services.price_lists import PRICE
+from app.services.price_lists import PRICE, is_price_line
 from app.services.source_outline import OutlineBlock
 
 # A rank that opens fewer sections than this is a cover headline, not the
@@ -35,8 +37,6 @@ _MIN_SECTIONS = 3
 # A deeper heading this long is a paragraph set large, not a card's title:
 # Fowable's subheadings run 90-250 characters at heading size.
 _CARD_TITLE_MAX_CHARS = 90
-# A price line set as a heading belongs to the card above it.
-_PRICE_LINE_MAX_CHARS = 60
 # Share of a group's cards that must state a price / ask a question.
 _GROUP_SHARE = 0.6
 _MIN_GROUP_CARDS = 2
@@ -47,23 +47,25 @@ def outline_sections(blocks: list[OutlineBlock]) -> list[SectionCandidate]:
     rank = _section_rank(blocks)
     if rank is None:
         return []
-    groups: list[tuple[str, list[OutlineBlock]]] = []
+    groups: list[tuple[str, int, list[OutlineBlock]]] = []
     current: list[OutlineBlock] | None = None
     for block in blocks:
         text = " ".join(block.text.split())
         if not text:
             continue
         if block.level and block.level <= rank:
-            if block.level == rank:
+            if block.level == rank or groups:
                 current = []
-                groups.append((text, current))
+                groups.append((text, block.level, current))
             else:
                 current = None  # a cover headline: the hero's, not a section's
             continue
         if current is not None:
             current.append(OutlineBlock(level=block.level, text=text))
     sections = []
-    for heading, body in groups:
+    for heading, level, body in groups:
+        if level < rank and not body:
+            continue  # a part title over the sections that follow, not one of them
         section = _Section(heading, rank, _card_rank(body))
         for block in body:
             section.take(block.level, block.text)
@@ -112,7 +114,7 @@ class _Section:
                 self.subheading = text
             else:
                 self.prose.append(text)
-        elif self.current is not None and _is_price_line(text):
+        elif self.current is not None and is_price_line(text):
             self.current.meta.append(text)
             self.open = False
         elif level and len(text) <= _CARD_TITLE_MAX_CHARS:
@@ -176,10 +178,6 @@ class _Card:
 
     def lines(self) -> list[str]:
         return [self.title, *self.meta, *self.body]
-
-
-def _is_price_line(text: str) -> bool:
-    return len(text) <= _PRICE_LINE_MAX_CHARS and bool(PRICE.search(text))
 
 
 def _priced(card: SourceCard) -> bool:

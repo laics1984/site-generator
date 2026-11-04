@@ -85,7 +85,7 @@ from app.services.prompts import (
     _SCAFFOLD_PROMPT_HEAD,
 )
 from app.services.page_inference import follows_source_tree
-from app.services.price_lists import amounts
+from app.services.price_lists import amounts, price_list_spans
 from app.services.source_router import (
     excerpt_for_prompt,
     image_prompt_payload,
@@ -1248,7 +1248,8 @@ def _tree_groups(
     section cap. The first group carries the text above the first section it
     presents (the hero's, an opening section included); the last carries what
     follows the last one (a closing ask the CTA presents) and the scaffold's
-    own tail.
+    own tail — with, for a `pricing` the tree did not present, the price
+    list's own lines, wherever on the page they sit.
 
     None when the scaffold doesn't follow the tree, or a section's heading
     can't be found as a whole line of the text, in order.
@@ -1277,6 +1278,10 @@ def _tree_groups(
     lead = "\n".join(lines[: starts[first]])
     trail = "\n".join(texts[len(body):])
     tail = scaffold.sections[1 + len(body):]
+    prices = (
+        ["\n".join(lines[start : end + 1]) for start, end in price_list_spans(lines, page_source.headings)]
+        if "pricing" in tail else []
+    )
 
     budget = settings.multipass_max_chars_per_call
     room = max(1, settings.max_sections_per_batch - 2)  # the hero anchor, the tail
@@ -1299,6 +1304,8 @@ def _tree_groups(
                 trail if last else "",
             ) if part
         )
+        if last:
+            text = "\n".join([text, *(span for span in prices if span not in text)])
         sub = scaffold.model_copy(update={
             "sections": ["hero", *(body[i][0] for i in group), *(tail if last else [])],
         })
