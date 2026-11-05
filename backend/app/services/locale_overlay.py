@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from datetime import datetime, timezone
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -112,6 +113,30 @@ def source_hash(element: BuilderElement) -> str | None:
     return hashlib.sha1("\n".join(parts).encode()).hexdigest() if parts else None
 
 
+def source_meta(element: BuilderElement, origin: str) -> dict | None:
+    """An overlay entry's meta: who wrote it, and what primary text it was made
+    from — the hash, that text field by field, and when. The builder lists a
+    translation as "changed since translated" when the hash no longer matches,
+    and diffs `sourceText` against the text now (builder
+    docs/translation-sync-plan.md, "Tracking what changed"; same keys as the
+    builder's `stampSourceHashes`)."""
+    digest = source_hash(element)
+    if digest is None:
+        return None
+    content = element.content
+    text = {
+        field: value
+        for field in TEXT_FIELDS
+        if isinstance(value := getattr(content, field, None), str) and value.strip()
+    }
+    return {
+        "origin": origin,
+        "sourceHash": digest,
+        "sourceText": text,
+        "translatedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    }
+
+
 def _walk(elements: list[BuilderElement]) -> Iterator[BuilderElement]:
     for element in elements:
         yield element
@@ -131,8 +156,8 @@ def derive(
 
     def put(element: BuilderElement, patch: dict) -> None:
         out["elements"][element.id] = {**out["elements"].get(element.id, {}), **patch}
-        if (digest := source_hash(element)) is not None:
-            out["meta"][element.id] = {"origin": origin, "sourceHash": digest}
+        if (meta := source_meta(element, origin)) is not None:
+            out["meta"][element.id] = meta
 
     for element in _walk(elements):
         if (group := joined_lines(element)) is not None and (line := lookup(group[0], mapping)):

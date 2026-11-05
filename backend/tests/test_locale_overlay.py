@@ -117,6 +117,16 @@ class DeriveApplyTest(unittest.TestCase):
         self.assertEqual(overlay["meta"]["h"]["origin"], "ai")
         self.assertEqual([el.id for el in locale_overlay.missing(self.tree(), overlay)], ["n"])
 
+    def test_meta_records_the_primary_text_each_translation_was_made_from(self):
+        # The builder's "changed since translated" trace (builder
+        # docs/translation-sync-plan.md): the hash, the text it covers, and when.
+        tree = self.tree()
+        meta = locale_overlay.derive(tree, self.MAP, origin="ai")["meta"]
+        self.assertEqual(meta["h"]["sourceHash"], locale_overlay.source_hash(tree[0].content[0]))
+        self.assertEqual(meta["h"]["sourceText"], {"innerText": "Welcome"})
+        self.assertEqual(meta["cta"]["sourceText"], {"innerText": "Contact us"})
+        self.assertRegex(meta["h"]["translatedAt"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+
     def test_apply_is_a_copy_with_the_words_and_links_of_the_language(self):
         tree = self.tree()
         overlay = locale_overlay.derive(tree, self.MAP, origin="ai")
