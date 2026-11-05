@@ -154,6 +154,7 @@ from app.services.image_styling import (
     HeroAnchor,
     PhotoLuminance,
     is_edge_fade_layer,
+    lift_photo_scrim,
     photo_background,
     photo_surface_hex,
     washed_photo_background,
@@ -1315,6 +1316,24 @@ def sync_divider_fills(sections: list[BuilderElement]) -> None:
             SectionDivider(top=edges["top"], bottom=edges["bottom"])
             if edges["top"] or edges["bottom"] else None
         )
+
+
+def lift_photo_scrims(elements: list[BuilderElement]) -> int:
+    """Every baked copy scrim moved into its photo's filter settings, where the
+    builder's Color filter can change it or switch it off (image_styling,
+    `lift_photo_scrim`). The LAST styling pass: every pass before it measures
+    the hero in its layer stack, and the renderers paint the filter back into
+    the same slot, so nothing they show changes. In place; returns the count."""
+    lifted = 0
+    for node in elements:
+        if isinstance(node.styles, dict):
+            styles = lift_photo_scrim(node.styles)
+            if styles is not None:
+                node.styles = styles
+                lifted += 1
+        if isinstance(node.content, list):
+            lifted += lift_photo_scrims([c for c in node.content if isinstance(c, BuilderElement)])
+    return lifted
 
 
 def _section_edge_color(section: BuilderElement) -> str | None:
@@ -5957,6 +5976,9 @@ async def plan_to_site(
     # after the v2 rebind and every recolour, so a wedge always matches it.
     for generated_page in [*pages, *outside_pages]:
         sync_divider_fills(generated_page.body_schema.elements)
+        # After every pass that reads a hero's scrim in its layer stack: the
+        # owner gets it as the photo's Color filter (lift_photo_scrims).
+        lift_photo_scrims(generated_page.body_schema.elements)
     theme = canonical_theme
     builder_styles = theme.to_builder_styles()
     if settings.design_engine_enabled:

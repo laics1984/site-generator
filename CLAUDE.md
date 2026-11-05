@@ -2721,6 +2721,18 @@ The fix is four pieces, each one home:
    reaches it (a bottom-anchored tile), and only a SECTION fades to the page.
    A photo that cannot be read is assumed as bright as a photo can be;
    `PHOTO_SAMPLING_ENABLED=false` is the old ramp exactly.
+   **It ships as the photo's Color filter, not a baked layer.** Every pass
+   above reads the scrim in the layer stack; the LAST body pass
+   (`schema_builder.lift_photo_scrims` → `image_styling.lift_photo_scrim`)
+   moves it into the filter's style tokens — `--builder-background-photo-overlay-
+   color` (the bound `photo-scrim` token), `-opacity` (its strength) and
+   `-shape` (its anchor; `flat` is the old even tint) — so the owner can change
+   it or switch it off in the builder. Both renderers paint a shaped filter back
+   into the slot it was baked in (`with_photo_filter`: under the grain and edge
+   fade), byte-identically. Only an exact generator scrim is lifted. Mirrors:
+   builder `lib/photo-filter.ts` (which also lifts pages generated before this,
+   on load), webtree-public `lib/photoFilter.ts`; `test_photo_filter_mirror.py`
+   writes and checks their shared fixture.
 3. **One ink rule** (`theme.ink_on`): copy wears the palette's own neutral —
    its brand-tinted near-white (`light_ink`) or its darkest — whichever reads on
    the surface, nudged AWAY from it. `band_colors`, the ink pass, the fallback
