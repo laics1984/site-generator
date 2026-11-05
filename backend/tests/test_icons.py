@@ -76,6 +76,51 @@ class KeywordMatchTest(unittest.TestCase):
         self.assertIsNone(icon_name_for("Purple monkey dishwasher"))
         self.assertIsNone(icon_name_for(None, "", "   "))
 
+    def test_every_glyph_can_be_reached_from_copy(self):
+        # A glyph no keyword leads to is never generated; it is only in the
+        # builder's picker.
+        reachable = set(_KEYWORDS.values())
+        self.assertEqual([g for g in GLYPHS if g not in reachable], [])
+
+    def test_copy_resolves_to_the_glyphs_drawn_for_the_set(self):
+        cases = {
+            "Never miss an enquiry": "chat",
+            "Answer parents after hours": "moon",
+            "Lunches cooked daily": "utensils",
+            "Field trips": "bus",
+            "School bus service": "bus",
+            "Photo gallery": "camera",
+            "Music & movement": "music",
+            "Accessible campus": "building",
+            "Parent feedback": "thumbs-up",
+            "Haircut & styling": "scissors",
+            "Pet grooming": "paw",
+            "Corporate clients": "briefcase",
+            "Clear pricing": "tag",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(icon_name_for(text), expected, text)
+
+    def test_opening_times_stay_a_clock(self):
+        # "business" and "office" have glyphs of their own now; the longer
+        # phrase keeps the hours on the clock.
+        for text in ("Business hours", "Opening hours", "Office hours"):
+            self.assertEqual(icon_name_for(text), "clock", text)
+
+    def test_no_new_keyword_hides_inside_a_common_word(self):
+        # Matching is a substring test. Each of these once matched a keyword
+        # that was only part of a word: paRENTAL, IDEAl, data-DRIVEn,
+        # STREAMlined, TRIPle, monKEYs.
+        for text in (
+            "Parental involvement",
+            "Ideal for families",
+            "Streamlined workflow",
+            "Triple-checked",
+            "Purple monkeys",
+        ):
+            self.assertIsNone(icon_name_for(text), text)
+        self.assertEqual(icon_name_for("Data-driven decisions"), "chart")
+
 
 class AllOrNothingTest(unittest.TestCase):
     """A grid where some tiles carry a glyph and others don't reads as a
