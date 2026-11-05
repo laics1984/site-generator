@@ -15,7 +15,7 @@ import colorsys
 import math
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Callable, Literal
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -169,16 +169,52 @@ def _pct(fraction: float) -> str:
     return f"{round(fraction * 100)}%"
 
 
-def _scrim_ramp(rgb: tuple[int, int, int], peak: float, plateau: float) -> str:
-    """The stops of one scrim layer: full strength across the copy (the
-    plateau), then the historical fall-off to nothing."""
+def _scrim_layers(stop: Callable[[float], str], a: float, anchor: HeroAnchor) -> list[str]:
+    """The scrim's layers, top first, with each stop's colour written by `stop`
+    (an alpha in, a CSS colour out). One geometry for both writers: the baked
+    scrim (`text_scrim_gradient`, rgba stops) and the photo filter
+    (`photo_filter_layers`, the filter's own colour) — so a lifted scrim paints
+    back exactly as it was baked."""
+
+    def ramp(peak: float, plateau: float) -> str:
+        # Full strength across the copy (the plateau), then the historical
+        # fall-off to nothing.
+        mid = round(peak * _SCRIM_MID_SHARE, 2)
+        return (
+            f"{stop(peak)} {_pct(plateau)}, "
+            f"{stop(mid)} {_pct(plateau + _SCRIM_FALL_MID)}, "
+            f"{stop(0)} {_pct(plateau + _SCRIM_FALL_END)}"
+        )
+
+    x0, y0, x1, y1 = COPY_ZONES[anchor]
+    if anchor == "left":
+        return [f"linear-gradient(to right, {ramp(a, x1)})"]
+    if anchor == "bottom":
+        return [f"linear-gradient(to top, {ramp(a, 1 - y0)})"]
+    if anchor == "bottom-left":
+        # Two axes: the copy sits in the corner, so darkness has to fall off
+        # both upward and rightward or the headline's top line loses its
+        # backdrop. Split the alpha between them so they compound to `a` across
+        # the copy rather than doubling it.
+        half = _corner_half(a)
+        return [
+            f"linear-gradient(to top, {ramp(half, 1 - y0)})",
+            f"linear-gradient(to right, {ramp(half, x1)})",
+        ]
+    rx, ry = _RADIAL_RADII
+    plateau = math.hypot((x1 - 0.5) / rx, (y1 - 0.5) / ry)
+    return [f"radial-gradient({_pct(rx)} {_pct(ry)} at 50% 50%, {ramp(a, plateau)})"]
+
+
+def _corner_half(a: float) -> float:
+    """Each of the corner scrim's two layers, so that together they cover `a`.
+    Rounded UP, not to nearest: two rounded-down halves compound to less than `a`."""
+    return math.ceil((1 - (1 - a) ** 0.5) * 100) / 100
+
+
+def _rgba_stop(rgb: tuple[int, int, int]) -> Callable[[float], str]:
     r, g, b = rgb
-    mid = round(peak * _SCRIM_MID_SHARE, 2)
-    return (
-        f"rgba({r},{g},{b},{peak}) {_pct(plateau)}, "
-        f"rgba({r},{g},{b},{mid}) {_pct(plateau + _SCRIM_FALL_MID)}, "
-        f"rgba({r},{g},{b},0) {_pct(plateau + _SCRIM_FALL_END)}"
-    )
+    return lambda alpha: f"rgba({r},{g},{b},{alpha})"
 
 
 def text_scrim_gradient(
@@ -200,31 +236,13 @@ def text_scrim_gradient(
     scrim dims the middle of the frame, which is where a photograph's subject
     almost always is. The directional variants run the darkness off the edge
     the copy is anchored to, so the subject stays vivid on the open side.
+
+    The scrim is baked here because every pass that measures the hero reads it
+    in the layer stack; the last pass of a generation lifts it into the photo
+    filter's settings (`lift_photo_scrim`), where the owner can change it.
     """
-    rgb = _hex_to_rgb(secondary_hex)
     a = scrim_alpha if scrim_alpha is not None else round(alpha * _TEXT_SCRIM_RATIO, 2)
-    x0, y0, x1, y1 = COPY_ZONES[anchor]
-    if anchor == "left":
-        return f"linear-gradient(to right, {_scrim_ramp(rgb, a, x1)})"
-    if anchor == "bottom":
-        return f"linear-gradient(to top, {_scrim_ramp(rgb, a, 1 - y0)})"
-    if anchor == "bottom-left":
-        # Two axes: the copy sits in the corner, so darkness has to fall off
-        # both upward and rightward or the headline's top line loses its
-        # backdrop. Split the alpha between them so they compound to `a` across
-        # the copy rather than doubling it. Rounded UP, not to nearest: two
-        # rounded-down halves compound to less than `a`.
-        half = math.ceil((1 - (1 - a) ** 0.5) * 100) / 100
-        return (
-            f"linear-gradient(to top, {_scrim_ramp(rgb, half, 1 - y0)}), "
-            f"linear-gradient(to right, {_scrim_ramp(rgb, half, x1)})"
-        )
-    rx, ry = _RADIAL_RADII
-    plateau = math.hypot((x1 - 0.5) / rx, (y1 - 0.5) / ry)
-    return (
-        f"radial-gradient({_pct(rx)} {_pct(ry)} at 50% 50%, "
-        f"{_scrim_ramp(rgb, a, plateau)})"
-    )
+    return ", ".join(_scrim_layers(_rgba_stop(_hex_to_rgb(secondary_hex)), a, anchor))
 
 
 # --- the copy scrim, solved for what is behind the copy ------------------------
@@ -589,6 +607,182 @@ def _split_layers(css: str) -> list[str]:
             start = i + 1
     out.append(css[start:].strip())
     return [layer for layer in out if layer]
+
+
+# --- the photo filter: the copy scrim as settings -----------------------------
+#
+# The scrim is how a hero's copy reads, and it is also styling the owner must be
+# able to change or switch off. Baked into `backgroundImage` it was one more
+# anonymous gradient the builder could not offer. So the generation's last pass
+# lifts it (`lift_photo_scrim`) into the photo filter's settings: the same three
+# style tokens the builder's Color filter has always written, plus its SHAPE —
+# `flat` (the old uniform tint, painted over the whole background) or one of the
+# copy anchors, a scrim of exactly this geometry. Both renderers paint a shaped
+# filter back into the slot the scrim was baked in (`with_photo_filter`): under
+# the grain and the edge fade, which must stay on top, and over everything else.
+# A lifted page therefore paints pixel-identically.
+#
+# Mirrors: builder src/lib/photo-filter.ts and webtree-public lib/photoFilter.ts,
+# pinned by photo-filter.fixtures.json (tests/test_photo_filter_mirror.py).
+PHOTO_FILTER_COLOR = "--builder-background-photo-overlay-color"
+PHOTO_FILTER_OPACITY = "--builder-background-photo-overlay-opacity"
+PHOTO_FILTER_SHAPE = "--builder-background-photo-overlay-shape"
+PhotoFilterShape = Literal["flat", "center", "left", "bottom-left", "bottom"]
+PHOTO_FILTER_SHAPES: tuple[PhotoFilterShape, ...] = ("flat", "center", "left", "bottom-left", "bottom")
+# A layer the filter is slotted UNDER: the grain tile (an SVG data URI) and the
+# edge fade (the only `to bottom` ramp in a photo stack).
+_FILTER_ABOVE_RE = re.compile(r"^(?:url\(\s*['\"]?\s*data:image/svg\+xml|linear-gradient\(\s*to bottom\b)", re.I)
+_LAYER_LISTS = {"backgroundSize": "cover", "backgroundRepeat": "no-repeat", "backgroundPosition": "center"}
+_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_RGBA_STOP_RE = re.compile(r"^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$")
+_MIX_STOP_RE = re.compile(r"^color-mix\(\s*in srgb\s*,\s*(.+?)\s+([\d.]+)%\s*,\s*transparent\s*\)$", re.I)
+_STOP_POSITION_RE = re.compile(r"\s+-?[\d.]+%$")
+
+
+def _filter_stop(color: str) -> Callable[[float], str]:
+    """A filter colour at an alpha: rgba for a hex (the baked scrim's own form),
+    a mix toward transparent for anything else — a palette token, which a
+    palette edit then carries along (`bind_theme_styles`' form)."""
+    if _HEX_RE.match(color):
+        return _rgba_stop(_hex_to_rgb(color))
+    return lambda alpha: f"color-mix(in srgb, {color} {alpha * 100:g}%, transparent)"
+
+
+def photo_filter_layers(color: str, opacity: int, shape: str) -> list[str]:
+    """The background layers a SHAPED filter paints, top first; none for a flat
+    filter (a renderer tints the whole background with it) or a clear one."""
+    if shape not in PHOTO_FILTER_SHAPES or shape == "flat" or opacity <= 0:
+        return []
+    return _scrim_layers(_filter_stop(color), min(opacity, 100) / 100, shape)  # type: ignore[arg-type]
+
+
+def _is_photo_layer(layer: str) -> bool:
+    if "var(--wt-content-cover" in layer:
+        return True
+    match = re.match(r"^url\(\s*['\"]?\s*([^'\")]*)", layer.strip(), re.I)
+    return bool(match and match.group(1).strip() and not match.group(1).strip().lower().startswith(("data:image/svg", "#", "%23")))
+
+
+def _filter_slot(layers: list[str]) -> int:
+    """Where a shaped filter goes: under the leading grain and edge fade."""
+    slot = 0
+    while slot < len(layers) and _FILTER_ABOVE_RE.match(layers[slot]):
+        slot += 1
+    return slot
+
+
+def _splice_lists(styles: dict, count: int, at: int, remove: int, insert: int) -> None:
+    """Keep each per-layer list (`backgroundSize`…) aligned with a layer stack of
+    `count` layers that loses `remove` at `at` and gains `insert` there. A list
+    of one value cycles over every layer and is left alone."""
+    for key, fill in _LAYER_LISTS.items():
+        value = styles.get(key)
+        if not isinstance(value, str):
+            continue
+        parts = _split_layers(value)
+        if len(parts) != count or count == 1:
+            continue
+        parts[at:at + remove] = [fill] * insert
+        styles[key] = ", ".join(parts)
+
+
+def photo_filter_settings(styles: dict) -> tuple[str, int, str]:
+    """(colour, opacity %, shape) as stored; a missing or unknown value reads as
+    the default (black, 0, flat)."""
+    color = styles.get(PHOTO_FILTER_COLOR)
+    color = color.strip() if isinstance(color, str) and color.strip() else "#000000"
+    raw = styles.get(PHOTO_FILTER_OPACITY)
+    try:
+        opacity = max(0, min(100, round(float(str(raw).replace("%", "").strip()))))
+    except (TypeError, ValueError):
+        opacity = 0
+    shape = styles.get(PHOTO_FILTER_SHAPE)
+    return color, opacity, shape if shape in PHOTO_FILTER_SHAPES else "flat"
+
+
+def with_photo_filter(styles: dict) -> dict:
+    """`styles` with a shaped filter painted into its photo's layer stack — what
+    a renderer draws. The same dict back when there is nothing to paint."""
+    color, opacity, shape = photo_filter_settings(styles)
+    filter_layers = photo_filter_layers(color, opacity, shape)
+    image = styles.get("backgroundImage")
+    if not filter_layers or not isinstance(image, str):
+        return styles
+    layers = _split_layers(image)
+    if not any(_is_photo_layer(layer) for layer in layers):
+        return styles
+    at = _filter_slot(layers)
+    out = dict(styles)
+    _splice_lists(out, len(layers), at, 0, len(filter_layers))
+    out["backgroundImage"] = ", ".join([*layers[:at], *filter_layers, *layers[at:]])
+    return out
+
+
+def _first_stop(layer: str) -> tuple[str, float] | None:
+    """A gradient layer's first colour stop as (filter colour, alpha)."""
+    trimmed = layer.strip()
+    if not trimmed.endswith(")") or "(" not in trimmed:
+        return None
+    args = _split_layers(trimmed[trimmed.index("(") + 1:-1])
+    if len(args) < 2:
+        return None
+    stop = _STOP_POSITION_RE.sub("", args[1]).strip()
+    rgba = _RGBA_STOP_RE.match(stop)
+    if rgba:
+        return _rgb_to_hex(int(rgba[1]), int(rgba[2]), int(rgba[3])), float(rgba[4])
+    mix = _MIX_STOP_RE.match(stop)
+    if mix:
+        return mix[1].strip(), float(mix[2]) / 100
+    return None
+
+
+def _same_css(a: list[str], b: list[str]) -> bool:
+    squash = lambda css: re.sub(r"\s*([(),])\s*", r"\1", re.sub(r"\s+", " ", css.strip()))
+    return len(a) == len(b) and all(squash(x) == squash(y) for x, y in zip(a, b))
+
+
+def _lift_candidates(peak: float) -> list[tuple[str, int]]:
+    """(shape, opacity) pairs that could have baked a scrim whose first stop is
+    `peak`. A filter is stored at the scrim's own strength; the corner at the
+    cover its two halves compound to — the whole percent whose halves round
+    (up) to exactly this one, since a whole percent cannot always hold the
+    compound itself."""
+    pairs = [(shape, round(peak * 100)) for shape in ("center", "left", "bottom")]
+    pairs += [("bottom-left", o) for o in range(1, 101) if _corner_half(o / 100) == peak][:1]
+    return pairs
+
+
+def lift_photo_scrim(styles: dict) -> dict | None:
+    """`styles` with its baked copy scrim moved into the photo filter, or None
+    when there is none to move — no photo, a filter already set (the owner's),
+    or no layer that is EXACTLY a scrim this module bakes (a catalog sheet, a
+    hand-made gradient stay where they are). Lifts only what paints back
+    identically: the scrim must sit in the filter's slot, and the filter's
+    settings must rebuild it stop for stop."""
+    image = styles.get("backgroundImage")
+    if not isinstance(image, str) or photo_filter_settings(styles)[1] > 0:
+        return None
+    layers = _split_layers(image)
+    photo_at = next((i for i, layer in enumerate(layers) if _is_photo_layer(layer)), -1)
+    at = _filter_slot(layers)
+    if photo_at <= at:
+        return None
+    first = _first_stop(layers[at])
+    if first is None:
+        return None
+    color, peak = first
+    for shape, opacity in _lift_candidates(peak):
+        candidate = photo_filter_layers(color, opacity, shape)
+        if at + len(candidate) > photo_at or not _same_css(candidate, layers[at:at + len(candidate)]):
+            continue
+        out = dict(styles)
+        _splice_lists(out, len(layers), at, len(candidate), 0)
+        out["backgroundImage"] = ", ".join([*layers[:at], *layers[at + len(candidate):]])
+        out[PHOTO_FILTER_COLOR] = color
+        out[PHOTO_FILTER_OPACITY] = opacity
+        out[PHOTO_FILTER_SHAPE] = shape
+        return out
+    return None
 
 
 # The SPLIT hero's wash (see `washed_photo_background`). Near-opaque on purpose:
