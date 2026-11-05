@@ -677,8 +677,8 @@ async def _complete_overlay(
         if not patch:
             continue
         overlay.setdefault("elements", {})[element.id] = {**overlay.get("elements", {}).get(element.id, {}), **patch}
-        if (digest := locale_overlay.source_hash(element)) is not None:
-            overlay.setdefault("meta", {})[element.id] = {"origin": origin, "sourceHash": digest}
+        if (meta := locale_overlay.source_meta(element, origin)) is not None:
+            overlay.setdefault("meta", {})[element.id] = meta
     return bool(locale_overlay.missing(elements, overlay))
 
 
