@@ -2819,7 +2819,9 @@ The fix is four pieces, each one home:
    `-shape` (its anchor; `flat` is the old even tint) — so the owner can change
    it or switch it off in the builder. Both renderers paint a shaped filter back
    into the slot it was baked in (`with_photo_filter`: under the grain and edge
-   fade), byte-identically. Only an exact generator scrim is lifted. Mirrors:
+   fade), byte-identically. Only an exact generator scrim is lifted — today's,
+   or the pre-plateau one baked until 2026-10-15 (`_legacy_scrim_layers`),
+   which is repainted in today's geometry at its own strength. Mirrors:
    builder `lib/photo-filter.ts` (which also lifts pages generated before this,
    on load), webtree-public `lib/photoFilter.ts`; `test_photo_filter_mirror.py`
    writes and checks their shared fixture.
