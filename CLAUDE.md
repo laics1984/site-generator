@@ -1391,10 +1391,66 @@ paste lesson, so a document now goes through the paste reader too.
 - **"One page" is asked outright** (`PasteOutline.single_page`), then enforced
   (`_one_page_if_said` folds the listed sections into the first page). As a
   rule buried in the prompt the model ignored it: "14 sections, one per page"
-  meant sheets of paper.
+  meant sheets of paper. It only decides for a source whose copy states no
+  heading ranks (a paste); a ranked source is grouped by its titles (below).
 - **A supplied `page_topics` is the whole answer** (`split_into_pages`): a
   heading it does not name never opens a page, and an empty mapping is "one
-  page". In-page headings come back one level down, below the model's pages.
+  page". Absent, the splitter reads it from the outline (`outline_pages`).
+
+## A document's titles say which parts are pages
+
+The same kindergarten brief — three headline sections and a "Get in touch" —
+shipped as one homepage when the structure model answered "one page", and as a
+homepage plus a Contact page when it listed pages or was down; the picker then
+left Contact unticked, so the site sometimes had no contact form at all.
+`services/outline_pages.plan_pages` is now the ONE decision, for every reader
+of a source that states heading ranks (PDF, DOCX, a marked-up or heuristically
+read paste), with or without the model.
+
+- **Roles**: every title is `cover`, `home`, `page`, `section` or `subtitle`.
+  The main titles are the document's parts: the shallowest rank a title that
+  owns copy sits at. A STACKED title (the next copy line is a title of its rank
+  or higher — a two-line cover, an eyebrow) is never a part; the opening title
+  is the cover unless it names a page; a lone headline above a rank that
+  recurs is the cover's second line, but a lone page NAME ("About Us" over its
+  subsections) is that page.
+- **Evidence, strongest first**: names its pages (a main title "HOME"/"Home
+  page" beside others, or two "X page"/"Page 2: X" labels) → pages; labels
+  sections ("Section 01", "WEBSITE SECTION 02 / 14", "Hero" — read on every
+  line, including the ones the model skipped as notes) → one page; two main
+  titles each holding two titled card groups → pages; ≥60% of main titles are
+  short page names (`doc_contract.names_page`: ≤4 words, no sentence
+  punctuation, a topic by `page_inference`'s whole-token matcher) → pages;
+  else one page. One part named "Contact" under an intro is the Contact page —
+  what the paste box is for.
+- **Pages**: a "HOME" title opens the homepage; without one, headline parts
+  before the first page stay homepage sections. Every later part is a page,
+  except a second title of a topic already given one ("Services", then
+  "Solutions"). The label "HOME" is never copy (`split_into_pages`).
+- **The model types pages, never makes them.** `paste_structure._by_outline`
+  takes the model's copy (its pages' lines, each from its `title_line` — the
+  local model starts `first_line` AFTER the title, which left every title
+  outside every page and read a four-page site map as one — minus skips) and
+  hands it to the plan; the model's `page_type` only types a page the plan
+  opened. `_by_model` (the old re-levelled assembly) remains for a source with
+  no ranked copy. Every block keeps the level the source gave it.
+- `classify_page_title` is whole-token now: the substring test read "How we
+  help" as an FAQ page and split a one-page PDF brief in two.
+- **A one-page site carries its own form** (`page_inference.with_closing_contact`,
+  the single-page branch of `infer_page_scaffolds`): `contact` goes just before
+  the closing CTA, after what the page earned (pricing, a map). No recipe asked
+  for one, so a one-page brief shipped with no form and every "get in touch"
+  action dropped for want of a destination. A closing "Get in touch" section
+  (`_is_contact_section` → `names_page`, any length) sits outside the tree body
+  like the closing ask, so `_tree_groups` hands its lines to the call that
+  writes the form, and a ticked Contact page takes the form back
+  (`defer_home_contact`) without breaking `follows_source_tree`. A Facebook
+  override already carries `contact` and stands as given; a multi-page
+  homepage is unchanged (its Contact page has the form).
+
+Tests: `test_outline_pages.py` (including the same document through no model
+and three model answers giving one page set), `test_doc_structure.py`,
+`test_one_page_contact.py`.
 - **The document keeps what was measured**: source, reference colours, and its
   images re-anchored to the new outline (one in an excluded part goes with it).
   The logo is still picked from the document as printed. The site's name is the
@@ -1462,7 +1518,8 @@ whichever text chunk came first. Three pieces, each one home:
   (`_states_prices`, the augment's own test) still gets `pricing` before the
   CTA, and `_tree_groups` hands the last call the price list's lines
   (`price_list_spans`) wherever they sit. A short card-less last section is the closing ask,
-  which the CTA presents. A crawled homepage keeps its pattern. `tree_body` is
+  which the CTA presents; a closing "Get in touch" is the contact form's
+  (`with_closing_contact`). A crawled homepage keeps its pattern. `tree_body` is
   the one answer for every tree-shaped recipe; `follows_source_tree` tells the
   planner and `landing_order` (which must not re-sort it) that a scaffold is one.
 - **It is written a few sections per call** (`planner._tree_groups`): runs of

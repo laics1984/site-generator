@@ -102,11 +102,17 @@ def _pdf_bytes():
     return data
 
 
-def test_real_pdf_parser_and_splitter_reach_home_conversion_without_a_section_tree():
+def test_real_pdf_parser_and_splitter_reach_home_conversion():
     parsed = parse_pdf(_pdf_bytes(), "brief.pdf")
     source = split_into_pages(parsed)
     before = json.dumps(source.model_dump(), sort_keys=True)
-    assert source.section_candidates == []
+    # One brief, one page in three sections. A substring rule read "help" in
+    # "How we help" as an FAQ page and split the brief in two; the no-tree
+    # path is `test_unstructured_dedicated_landing_pages_also_qualify`'s.
+    assert source.discovered_pages == []
+    assert [s.heading for s in source.section_candidates] == [
+        "Our results", "How we help", "The problem",
+    ]
     prepared, sources = prepare_landing_pages([_home()], {"": source})
     home = prepared[0]
     assert [binding.role for binding in home._conversion_journey] == ["problem", "solution", "proof"]

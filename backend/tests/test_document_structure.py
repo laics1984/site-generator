@@ -164,11 +164,15 @@ class StructureDocumentTest(unittest.TestCase):
             self.assertNotIn(line, copy)
 
     def test_an_in_page_heading_never_opens_a_page(self):
-        # "About us" is the document's own H1 inside the landing page; the
-        # model said one page, so it stays a section of it.
+        # "About us" is the document's own H1 inside the landing page. The
+        # brief labels its sections ("WEBSITE SECTION 02 / 03"), so its outline
+        # reads as one page and "About us" is a section of it — keeping the
+        # rank the document gave it, since the outline, not a re-levelling,
+        # decides which titles are pages.
         structured = self.read(_FakeLLM(_answer()))
         about = next(b for b in structured.document.outline if b.text == "About us")
-        self.assertEqual(about.level, 2)
+        self.assertEqual(about.level, 1)
+        self.assertEqual(structured.page_topics, {})
         source = split_into_pages(structured.document, page_topics=structured.page_topics)
         self.assertEqual(source.discovered_pages, [])
 

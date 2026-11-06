@@ -1,12 +1,12 @@
 """
 Turn a parsed document's outline into page-shaped ``SourceContent``.
 
-The document's titles are a *content signal*, not a layout blueprint. A heading
-that reads like a page topic (About, Services, Contact…) opens a new page
-bucket; every other heading is in-page content. Body paragraphs accumulate into
-whichever bucket is open. The leading bucket becomes the primary page
-(homepage); the rest become ``discovered_pages``, each carrying a synthesized
-``url_path`` so the planner walks them exactly like crawled pages.
+The document's titles are a *content signal*, not a layout blueprint. Which of
+them open pages is ``outline_pages``' decision (or, for a paste read by the
+model, the model's); every other heading is in-page content. Body paragraphs
+accumulate into whichever bucket is open. The leading bucket becomes the
+primary page (homepage); the rest become ``discovered_pages``, each carrying a
+synthesized ``url_path`` so the planner walks them exactly like crawled pages.
 
 Crucially, section composition and visual distinctiveness are **not** derived
 here — ``infer_page_scaffolds`` + the section catalog own that, identically to
@@ -18,17 +18,18 @@ hands a page the tree its markup declares.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Mapping
 
 from app.models.content_blocks import ImageMetadata, SourceContent
-from app.services.doc_contract import classify_page_title, is_home_title, slug_for_title
+from app.services.doc_contract import names_home_page, slug_for_title
+from app.services.outline_pages import plan_pages
 from app.services.outline_sections import outline_sections
 from app.services.source_outline import OutlineBlock, ParsedDocument
 
-# A page-topic heading must be reasonably prominent. Examining only H1/H2 keeps a
-# deep "Heading 3" detail inside a section from fracturing the page into many.
-_MAX_PAGE_HEADING_LEVEL = 2
+logger = logging.getLogger(__name__)
+
 # Defensive cap so a pathological document can't explode into hundreds of pages.
 # Public because paste_source.merge_sources holds the merged page set to it too.
 MAX_DISCOVERED_PAGES = 30
@@ -94,39 +95,31 @@ def split_into_pages(
 ) -> SourceContent:
     """Build the primary ``SourceContent`` (homepage) with ``discovered_pages``.
 
-    Falls back to a single page (today's behaviour) when the document has no
-    page-topic headings — the planner then composes a full homepage from the
-    industry template. Images are placed on the page (and given alt text from the
-    heading) they appear under, so the resolver can match them to the right slot.
+    ``page_topics`` maps a heading's exact text to its page type, and is the
+    whole answer to which headings open pages: a heading it does not name is
+    in-page content, and an empty mapping means the document is one page. A
+    structure read supplies it (``services/paste_structure.py``: from the
+    document's outline when the source states heading ranks, from the model
+    for a paste that states none). Absent, ``outline_pages`` reads it from
+    this outline — so a document read with or without the model is grouped by
+    one rule. With no page the planner composes a full homepage from the
+    industry template.
 
-    ``page_topics`` maps a heading's exact text to its page type when something
-    upstream already knows which headings name pages — the LLM structure read
-    (``services/paste_structure.py``) of a paste or a document, which is asked
-    precisely that.
-    Supplied, it is the whole answer: a heading it does not name stays in-page
-    content even when ``classify_page_title`` would open a page for it, and an
-    empty mapping means the document is one page. Absent (a PDF or DOCX read
-    by its headings, a heuristically-read paste) ``classify_page_title``
-    decides, and a heading whose words it doesn't recognise stays in-page
-    content.
+    A page title opens a page once: a second heading of the same slug stays in
+    the page before it. Several pages may share a TYPE — "AI Agents" and
+    "Custom Software" are both ``services``, and collapsing them would
+    silently drop one. A heading that only names the home page ("HOME") is a
+    label for the bucket it already is, not copy.
 
-    The dedupe rule follows the same split. Classified pages keep "one page per
-    topic", which is what stops a document repeating the word "about" from
-    fracturing. Supplied topics dedupe on the SLUG instead, because several
-    named pages legitimately share a type — "AI Agents" and "Custom Software"
-    are both ``services``, and collapsing them would silently drop one.
+    Images are placed on the page (and given alt text from the heading) they
+    appear under, so the resolver can match them to the right slot.
     """
-    # Only headings at the document's *shallowest* topic level open pages. A doc
-    # that uses H1 for page titles keeps its H2s as in-page sections; a doc that
-    # only uses H2s lets those open pages. This stops a sub-heading like "Our
-    # Story" inside About from fracturing off into its own page.
-    page_level = _page_heading_level(parsed, page_topics)
+    opens = _page_titles(parsed.outline, page_topics)
 
     home = _Bucket(title=parsed.title or "Home", slug="", page_type="home")
     pages: list[_Bucket] = [home]
     current = home
     used_slugs: set[str] = set()
-    seen_types: set[str] = {"home"}
 
     # Parallel to parsed.outline: the bucket + nearest heading at each position,
     # so an image's anchor can be resolved to the page it belongs under.
@@ -134,46 +127,27 @@ def split_into_pages(
     heading_at: list[str | None] = []
     last_heading: str | None = None
 
-    for block in parsed.outline:
+    for index, block in enumerate(parsed.outline):
         text = block.text.strip()
         if not text:
             bucket_at.append(current)
             heading_at.append(last_heading)
             continue
 
-        at_page_level = page_level is not None and block.level == page_level
-        named = page_topics.get(text) if page_topics is not None else None
-        # A structured read names EVERY page; a heading it did not name is
-        # in-page content, whatever its words. "One page" is an answer too.
-        page_type = (
-            named if page_topics is not None
-            else classify_page_title(text) if at_page_level else None
-        )
-        opens_page = (
+        page_type = opens.get(index)
+        slug = slug_for_title(text)
+        if (
             page_type is not None
-            and (named is not None or at_page_level)
-            and not is_home_title(text)
             and len(pages) - 1 < MAX_DISCOVERED_PAGES
-            and (
-                # A named page answers for itself; slug uniqueness (below) is
-                # the only dedupe it needs.
-                named is not None
-                or (
-                    page_type != current.page_type  # same topic ⇒ stays in this page
-                    and page_type not in seen_types  # one page per topic
-                )
-            )
-            and (named is None or slug_for_title(text) not in used_slugs)
-        )
-
-        if opens_page:
-            slug = _unique_slug(slug_for_title(text), used_slugs)
+            and slug not in used_slugs
+        ):
             used_slugs.add(slug)
-            seen_types.add(page_type)
             current = _Bucket(title=text, slug=slug, page_type=page_type)
             current.headings.append(text)  # the page title is also its first heading
             pages.append(current)
             last_heading = text
+        elif block.level > 0 and names_home_page(text):
+            pass  # "HOME" labels the homepage; it is not the page's copy
         else:
             # In-page heading or body. Headings feed both the headings list
             # (section cues) and raw_text (so the copy isn't dropped); body feeds
@@ -273,43 +247,30 @@ def _image_payload(bucket: _Bucket) -> tuple[list[str], list[ImageMetadata]]:
     return urls, meta
 
 
-def _page_heading_level(
-    parsed: ParsedDocument, page_topics: Mapping[str, str] | None = None
-) -> int | None:
-    """The shallowest heading level (1-``_MAX_PAGE_HEADING_LEVEL``) at which a
-    page-topic title appears, or ``None`` if the doc has none (→ single page).
+def _page_titles(
+    outline: list[OutlineBlock], page_topics: Mapping[str, str] | None
+) -> dict[int, str]:
+    """The blocks that open pages, by position, with their page types.
 
-    A supplied topic counts as a page-topic title here too, so a named heading
-    sets the level even when ``classify_page_title`` doesn't recognise its
-    words — otherwise the level would come out ``None`` and every named page
-    would collapse back into the homepage.
+    Supplied topics name a title by its text; the outline's own plan names the
+    exact block, so a card titled "Our Programmes" on the homepage can never
+    open the "Our Programmes" page that comes after it.
     """
-    if page_topics:
-        named_levels = [
-            block.level
-            for block in parsed.outline
-            if 0 < block.level and block.text.strip() in page_topics
-        ]
-        if named_levels:
-            return min(named_levels)
-    levels = [
-        block.level
-        for block in parsed.outline
-        if 0 < block.level <= _MAX_PAGE_HEADING_LEVEL
-        and not is_home_title(block.text)
-        and classify_page_title(block.text) is not None
-    ]
-    return min(levels) if levels else None
-
-
-def _unique_slug(slug: str, used: set[str]) -> str:
-    """Disambiguate repeated titles so no page is silently dropped downstream."""
-    if slug not in used:
-        return slug
-    n = 2
-    while f"{slug}-{n}" in used:
-        n += 1
-    return f"{slug}-{n}"
+    if page_topics is not None:
+        return {
+            index: page_topics[block.text.strip()]
+            for index, block in enumerate(outline)
+            if block.level > 0 and block.text.strip() in page_topics
+        }
+    plan = plan_pages(outline)
+    if plan is None:
+        return {}
+    logger.info(
+        "Document grouped as %s: %s",
+        "one page" if plan.one_page else f"the homepage and {len(plan.pages)} page(s)",
+        plan.reason,
+    )
+    return dict(plan.pages)
 
 
 def _dedupe(items: list[str]) -> list[str]:

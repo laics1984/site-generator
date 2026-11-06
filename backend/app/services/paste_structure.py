@@ -19,7 +19,11 @@ levels shown to the model as evidence.
 
 **The model returns line numbers, never text.** It says which lines open a page,
 which lines belong to it, and which lines are not website copy; this module then
-slices the source's own lines accordingly. So a structure call cannot invent a
+slices the source's own lines accordingly. For a source whose copy states
+heading ranks — any document — which pages exist is then the outline's call
+(``outline_pages``, via ``_by_outline``), so one document is one site however
+the model answered; the model's pages decide only for a paste, which states
+none (``_by_model``). So a structure call cannot invent a
 sentence, its reply stays small however large the source is, and the copy that
 reaches the planner is verbatim what the author wrote. Same division of labour
 as the rest of the pipeline: the model supplies small semantic judgements,
@@ -54,6 +58,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.config import settings
 from app.models.industry import PageType
 from app.services.llm import LlmClient, LlmError, chat_json_cached, get_llm
+from app.services.outline_pages import plan_pages
 from app.services.paste_source import strip_markers
 from app.services.prompts import (
     PASTE_STRUCTURE_PROMPT,
@@ -351,6 +356,11 @@ def _windows(rows: list[str], max_chars: int) -> list[tuple[int, int]]:
     return windows
 
 
+# What an assembly hands back: the copy's blocks, the page titles by their text,
+# the headings, and where each source block's images now anchor.
+_Assembly = tuple[list[OutlineBlock], dict[str, PageType], list[str], dict[int, int | None]]
+
+
 def _assemble(
     blocks: list[OutlineBlock],
     outline: PasteOutline,
@@ -359,11 +369,119 @@ def _assemble(
     *,
     given_title: str | None,
 ) -> StructuredDocument | None:
-    """Turn the model's line numbers back into blocks of the source's own text."""
+    """Turn the model's line numbers back into blocks of the source's own text.
+
+    Which pages exist is the outline's to say when the source states heading
+    ranks (``_by_outline``), and the model's only for a source that states
+    none — a paste, whose lines are all level 0 (``_by_model``).
+    """
     if not pages:
         return None
 
     skip = _titles_of_kept_copy(blocks, _skipped(outline, len(blocks)))
+    assembled, page_topics, headings, after = (
+        _by_outline(blocks, outline, pages, skip) or _by_model(blocks, pages, skip)
+    )
+    if not assembled:
+        return None
+
+    resolved_title = (
+        (given_title or "").strip()
+        or _clean(outline.site_title or "")
+        or shell.title
+        or None
+    )
+    document = dataclasses.replace(
+        shell,
+        title=resolved_title,
+        raw_text="\n".join(block.text for block in assembled),
+        headings=headings,
+        outline=assembled,
+        images=_reanchored(shell.images, after),
+    )
+    return StructuredDocument(document=document, page_topics=page_topics)
+
+
+def _by_outline(
+    blocks: list[OutlineBlock],
+    outline: PasteOutline,
+    pages: list[PasteOutlinePage],
+    skip: set[int],
+) -> _Assembly | None:
+    """The copy the model kept, grouped by the source's own titles.
+
+    The model said which lines are copy and where the copy runs; whether its
+    main titles are pages or sections of one is ``outline_pages``' call on
+    those lines, the same call a document read without the model gets. Asked
+    of the model, the same brief came back one page on one read and four on
+    the next. Its answer still types the pages it opens: "AI AGENTS" is a
+    page because the outline says so, and ``services`` because the model did.
+    Every block keeps the level the source gave it. ``None`` when no copy
+    line is a title, which leaves the grouping to the model.
+    """
+    numbers = _page_lines(pages)
+    position = {number: k for k, number in enumerate(numbers)}
+    named = {} if outline.single_page else {
+        position[page.title_line]: page.page_type
+        for page in pages[1:]
+        if page.title_line in position
+    }
+    plan = plan_pages(
+        [blocks[n - 1] for n in numbers],
+        copy={k for k, n in enumerate(numbers) if n not in skip},
+        named=named,
+    )
+    if plan is None:
+        return None
+    logger.info(
+        "Document grouped by its outline as %s: %s",
+        "one page" if plan.one_page else f"the homepage and {len(plan.pages)} page(s)",
+        plan.reason,
+    )
+    opens = {numbers[k]: page_type for k, page_type in plan.pages}
+
+    assembled: list[OutlineBlock] = []
+    page_topics: dict[str, PageType] = {}
+    headings: list[str] = []
+    after: dict[int, int | None] = {}
+    for number in numbers:
+        source = blocks[number - 1]
+        body = _clean(source.text)
+        if number not in skip and body:
+            assembled.append(OutlineBlock(level=source.level, text=body))
+            if source.level:
+                headings.append(body)
+            if number in opens:
+                page_topics[body] = opens[number]
+        after[number] = len(assembled)
+    return assembled, page_topics, headings, after
+
+
+def _page_lines(pages: list[PasteOutlinePage]) -> list[int]:
+    """Every line the model's pages hold, each page from its title line.
+
+    The local model starts a page's copy on the line AFTER its title ("HOME"
+    on line 1, first_line 2), which leaves every title outside every page;
+    ``_by_model`` recovers it as the page's name, and the outline needs the
+    line itself — without it a site map of four pages read as one. A title
+    line is taken only from the gap before its page, never from the page
+    before it.
+    """
+    numbers: list[int] = []
+    previous_end = 0
+    for page in pages:
+        start = page.first_line
+        if page.title_line is not None and previous_end < page.title_line < start:
+            start = page.title_line
+        numbers.extend(range(start, page.last_line + 1))
+        previous_end = page.last_line
+    return numbers
+
+
+def _by_model(
+    blocks: list[OutlineBlock], pages: list[PasteOutlinePage], skip: set[int]
+) -> _Assembly:
+    """The model's pages, for a source whose lines state no ranks."""
     assembled: list[OutlineBlock] = []
     page_topics: dict[str, PageType] = {}
     headings: list[str] = []
@@ -399,34 +517,11 @@ def _assemble(
             source = blocks[number - 1]
             body = _clean(source.text)
             if number != title_line and number not in skip and body:
-                # Only the model's pages open pages: an in-page heading keeps
-                # its rank one step below them, or the splitter would read a
-                # document's own H1 "About us" inside the homepage as a page.
-                # Never capped: two ranks the source tells apart stay apart.
-                # Capped at six, a DOCX's headlines (5) met its card titles (6)
-                # and every section's headline came back as its first card.
-                level = source.level + 1 if source.level else 0
-                assembled.append(OutlineBlock(level=level, text=body))
+                # No copy line here is a title (``_by_outline`` would have
+                # grouped it), so the page titles above are the only ranks.
+                assembled.append(OutlineBlock(level=0, text=body))
             after[number] = len(assembled)
-
-    if not assembled:
-        return None
-
-    resolved_title = (
-        (given_title or "").strip()
-        or _clean(outline.site_title or "")
-        or shell.title
-        or None
-    )
-    document = dataclasses.replace(
-        shell,
-        title=resolved_title,
-        raw_text="\n".join(block.text for block in assembled),
-        headings=headings,
-        outline=assembled,
-        images=_reanchored(shell.images, after),
-    )
-    return StructuredDocument(document=document, page_topics=page_topics)
+    return assembled, page_topics, headings, after
 
 
 def _skipped(outline: PasteOutline, line_count: int) -> set[int]:
