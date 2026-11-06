@@ -48,6 +48,14 @@ second title naming a topic already given a page ("Services", then
 Inside a page, the titles one rank below its title are its sections and
 anything deeper is a subtitle; ``outline_sections`` reads a page's own section
 tree from there.
+
+**The person making the site has the last word** (``shape``, the page picker's
+"Site type"). One page folds every part onto the homepage. Multi-page on a
+document that reads as one landing page files its parts by practice
+(``_pages_by_practice``, ``OWN_PAGE_TYPES``); with nothing to file, the site
+still gets the industry's pages around the whole homepage. The document's own
+reading stays on the plan (``suggests_one_page``, ``reason``) so the picker can
+say what it was.
 """
 
 from __future__ import annotations
@@ -66,6 +74,19 @@ from app.services.doc_contract import (
 from app.services.source_outline import OutlineBlock
 
 TitleRole = Literal["cover", "home", "page", "section", "subtitle"]
+# What the person making the site chose it to be, over what the document says.
+SiteShape = Literal["one_page", "multi_page"]
+
+# What a multi-page site takes off its homepage when the document was written
+# as one landing page: the pages a visitor goes to ON PURPOSE — to compare
+# plans, look up an answer, read who you are, meet the team, see the photos,
+# the menu or the work, read the news, or get in touch. The homepage keeps the
+# journey that sells — the hero, the problem, the offer, how it works, the
+# proof — and its closing ask, which now leads to those pages. Services stay:
+# a homepage that does not say what the business does has nothing to sell.
+OWN_PAGE_TYPES: frozenset[PageType] = frozenset({
+    "about", "team", "pricing", "faq", "contact", "gallery", "menu", "work", "blog", "events",
+})
 
 # Titles a rank needs to recur before a lone headline above it is the cover's.
 _MIN_MAIN_TITLES = 2
@@ -91,11 +112,15 @@ class OutlinePlan:
     """How a document groups into pages, and every title's part in it.
 
     ``roles`` and ``pages`` key on the index of the title's block in the
-    blocks that were planned. ``reason`` says which evidence decided.
+    blocks that were planned. A ``pages`` entry typed ``home`` files its part
+    back on the homepage after a page (``_pages_by_practice``). ``reason`` is
+    the document's own evidence, and ``suggests_one_page`` what that evidence
+    says; ``one_page`` is the site's shape, which a chosen shape overrides.
     """
 
     one_page: bool
     reason: str
+    suggests_one_page: bool
     roles: Mapping[int, TitleRole] = field(default_factory=dict)
     pages: tuple[tuple[int, PageType], ...] = ()
 
@@ -105,13 +130,15 @@ def plan_pages(
     *,
     copy: Collection[int] | None = None,
     named: Mapping[int, PageType] | None = None,
+    shape: SiteShape | None = None,
 ) -> OutlinePlan | None:
     """Group ``blocks`` into pages, or ``None`` when no copy line is a title.
 
     ``copy`` holds the indices that are website copy (``None``: all of them);
     titles and ranks are read on copy alone, section labels on every block.
     ``named`` gives a page TYPE by title index (the structure read's answer),
-    used to type a page this plan opens and for nothing else.
+    used to type a page this plan opens and for nothing else. ``shape`` is the
+    site the person chose; ``None`` follows the document.
     """
     named = named or {}
     in_copy = [
@@ -129,9 +156,10 @@ def plan_pages(
     parts = [i for i in titles if owns[i] and i != opening]
     if not parts:
         return OutlinePlan(
-            True,
-            "it has no titled parts below its cover",
-            {i: "cover" if i == opening else "subtitle" for i in titles},
+            one_page=shape != "multi_page",
+            reason="it has no titled parts below its cover",
+            suggests_one_page=True,
+            roles={i: "cover" if i == opening else "subtitle" for i in titles},
         )
 
     rank = _main_rank(blocks, parts, text)
@@ -147,17 +175,21 @@ def plan_pages(
         if _child_sections(blocks, in_copy, m, ends[m]) >= _MIN_CHILD_SECTIONS
     }
 
-    one_page, reason = _verdict(blocks, mains, nested, text)
-    if not one_page:
-        pages = _assign_pages(mains, nested, text, named, roles)
-        if pages:
-            for page, _ in pages:
+    suggests_one_page, reason = _verdict(blocks, mains, nested, text)
+    if (shape == "multi_page") if shape else not suggests_one_page:
+        pages = (
+            _pages_by_practice(mains, text, roles) if suggests_one_page
+            else _assign_pages(mains, nested, text, named, roles)
+        )
+        opened = [page for page, page_type in pages if page_type != "home"]
+        if opened or shape == "multi_page":
+            for page in opened:
                 _mark_page_sections(blocks, in_copy, page, ends[page], roles)
-            return OutlinePlan(False, reason, roles, tuple(pages))
-        reason = "no main title opens a page"
+            return OutlinePlan(False, reason, suggests_one_page, roles, tuple(pages))
+        reason, suggests_one_page = "no main title opens a page", True
     for main in mains:
         roles[main] = "section"
-    return OutlinePlan(True, reason, roles)
+    return OutlinePlan(True, reason, suggests_one_page, roles)
 
 
 def _main_rank(blocks: Sequence[OutlineBlock], parts: list[int], text: Mapping[int, str]) -> int:
@@ -226,6 +258,34 @@ def _assign_pages(
         if topic is not None:
             topics.add(topic)
         pages.append((main, named.get(main) or topic or UNNAMED_PAGE_TYPE))
+    return pages
+
+
+def _pages_by_practice(
+    mains: list[int], text: Mapping[int, str], roles: dict[int, TitleRole]
+) -> list[tuple[int, PageType]]:
+    """A one-page document's parts, filed the way a multi-page site files them.
+
+    A part that names an ``OWN_PAGE_TYPES`` page ("Pricing", "Common
+    questions") becomes that page; every other part stays on the homepage, in
+    the document's order — a part after a page goes BACK to the homepage
+    (typed ``home``) rather than onto the page before it. One page per topic.
+    """
+    pages: list[tuple[int, PageType]] = []
+    topics: set[PageType] = set()
+    on_page = False
+    for main in mains:
+        topic = names_page(text[main])
+        if topic in OWN_PAGE_TYPES and topic not in topics:
+            topics.add(topic)
+            roles[main] = "page"
+            pages.append((main, topic))
+            on_page = True
+            continue
+        roles[main] = "section"
+        if on_page:
+            pages.append((main, "home"))
+            on_page = False
     return pages
 
 

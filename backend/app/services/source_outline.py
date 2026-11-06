@@ -169,6 +169,52 @@ def strip_list_marker(text: str) -> str:
     return rest or text
 
 
+# A brief numbers its sections bare as well: "01 Hero", "02 Sound familiar".
+# Alone, a number then a space is copy ("12 children per class", "3 Steps to
+# enrol"); only a RUN of same-rank titles numbered in order says it is the
+# author's numbering.
+_SECTION_NUMBER_RE = re.compile(r"^\s*(\d{1,3})(?:\)\s*|\.\s+|\s+)(?=\S)")
+_MIN_NUMBERED_RUN = 3
+
+
+def strip_numbered_titles(blocks: list[OutlineBlock]) -> list[OutlineBlock]:
+    """``blocks`` with the author's section numbers taken off their titles.
+
+    A run is ``_MIN_NUMBERED_RUN`` or more titles of one rank numbered n, n+1,
+    n+2 … with no other title of that rank between them. The number is
+    structure, never copy — the same rule as ``strip_list_marker`` — so a page
+    is "Pricing" at ``/pricing``, never "08 Pricing" at ``/08-pricing``.
+    Blocks keep their positions, so indices into the outline stay valid.
+    """
+    numbers = {
+        index: int(match.group(1))
+        for index, block in enumerate(blocks)
+        if block.level and (match := _SECTION_NUMBER_RE.match(block.text))
+    }
+    stripped = list(blocks)
+    for level in {block.level for block in blocks if block.level}:
+        run: list[int] = []
+        for index, block in enumerate(blocks):
+            if block.level != level:
+                continue
+            number = numbers.get(index)
+            if run and number is not None and numbers[run[-1]] + 1 == number:
+                run.append(index)
+                continue
+            _strip_run(blocks, run, stripped)
+            run = [index] if number is not None else []
+        _strip_run(blocks, run, stripped)
+    return stripped
+
+
+def _strip_run(blocks: list[OutlineBlock], run: list[int], out: list[OutlineBlock]) -> None:
+    if len(run) < _MIN_NUMBERED_RUN:
+        return
+    for index in run:
+        block = blocks[index]
+        out[index] = OutlineBlock(block.level, _SECTION_NUMBER_RE.sub("", block.text, count=1))
+
+
 # h4-h6 all collapse to 3: doc_structure only opens pages at level 1-2, and a
 # deeply nested heading is in-page detail either way. Mirrors the PDF reader's
 # `_pdf_size_to_level`, which caps its font-size tiers at three levels.

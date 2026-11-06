@@ -1448,9 +1448,38 @@ read paste), with or without the model.
   override already carries `contact` and stands as given; a multi-page
   homepage is unchanged (its Contact page has the form).
 
+- **The person picks the site type** (the page picker's "Site type", documents
+  only): one-page landing site or multi-page website, pre-set to what the
+  outline says and showing why (`OutlinePlan.suggests_one_page`/`reason`,
+  reported as `document.site_shape`/`suggested_site_shape`/`site_shape_reason`).
+  Pages exist in the source, so the choice re-reads the document
+  (`POST /api/document/preview` with `site_shape`; the structure read is cached,
+  so no model call) and the picker re-reads its recipe with defaults reset —
+  carried selections would keep a multi-page About ticked on a one-page site.
+  `plan_pages(shape=)` and `split_into_pages(shape=)` take it; "one_page" folds
+  every page, whoever named it.
+- **Multi-page from a landing brief files by practice** (`_pages_by_practice`,
+  `OWN_PAGE_TYPES`): a part naming a page a visitor goes to on purpose (about,
+  team, pricing, faq, contact, gallery, menu, work, blog, events) becomes that
+  page; the selling journey (hero, problem, offer, services, how it works,
+  proof) stays home in order. A part after a page goes BACK home — a `pages`
+  entry typed `home`, which `split_into_pages` reads as "resume the homepage".
+  Nothing to file still means a website: the recipe's industry pages around
+  the whole homepage.
+- **Section numbers are structure** (`source_outline.strip_numbered_titles`): a
+  run of ≥3 same-rank titles numbered in order ("01 Hero" … "08 Pricing") loses
+  its numbers before anything reads the outline, so a page is "Pricing" at
+  `/pricing`. One number then a space is copy ("12 children per class").
+- **A labelled hero opens the page** (`page_inference._hero_label_at`,
+  `doc_contract.declares_hero`): it and the cover above it are the hero's, so
+  "Hero" no longer repeats as an about block after a document title.
+- **An FAQ at body size is an FAQ** (`outline_sections._questions_in`): short
+  lines ending "?" each over its answer are question cards; most must be
+  answered, so a run of rhetorical lines stays prose.
+
 Tests: `test_outline_pages.py` (including the same document through no model
 and three model answers giving one page set), `test_doc_structure.py`,
-`test_one_page_contact.py`.
+`test_one_page_contact.py`, `test_site_shape.py`.
 - **The document keeps what was measured**: source, reference colours, and its
   images re-anchored to the new outline (one in an excluded part goes with it).
   The logo is still picked from the document as printed. The site's name is the
@@ -1469,6 +1498,10 @@ and three model answers giving one page set), `test_doc_structure.py`,
   kept is not. Fowable's reads dropped 25 card titles with the "ALL PLANS" tag
   under each, and every card reached the site untitled. A blanket "never skip a
   price line" was measured and rejected: an editorial note quotes the prices.
+  What a heading owns runs to the next heading of its rank or higher, deeper
+  headings included: read one line deep, the model dropped every numbered
+  section title of a brief ("02 Sound familiar", "08 Pricing") as a layout
+  label, and with "08 Pricing" gone no rule could find the pricing part.
 
 Tests: `test_document_structure.py`, `test_paste_structure.py`,
 `test_brief_sections.SkippedTitleTest`.

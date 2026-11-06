@@ -533,7 +533,14 @@ def tree_body(
     if len(tree) < _TREE_MIN_SECTIONS and not _tree_is_image_led(tree):
         return None
     authored = homepage and page.source_kind in AUTHORED_SOURCE_KINDS
-    if authored and len(tree) > 1 and _opens_with(page, tree[0]):
+    hero = _hero_label_at(tree) if authored else None
+    if hero is not None:
+        # The author labelled the hero ("01 Hero", "Hero (above the fold)"): it
+        # and the cover above it open the page, and the hero presents them.
+        # Read as the second section after a document title, "01 Hero" became
+        # an about block repeating the hero's copy.
+        tree = tree[hero + 1:]
+    elif authored and len(tree) > 1 and _opens_with(page, tree[0]):
         # Nothing above the first section: it is the page's opening, and the
         # hero presents it. Fowable's DOCX opens on "Hero (above the fold)",
         # which would otherwise show the hero's copy twice.
@@ -548,6 +555,19 @@ def tree_body(
         tree = tree[:-1]
     limit = _MAX_AUTHORED_SECTIONS if authored else max(0, _MAX_PAGE_SECTIONS - 2)
     return list(zip(source_section_kinds(tree), tree))[:limit]
+
+
+def _hero_label_at(tree: list[SectionCandidate]) -> int | None:
+    """Where the author labelled the hero, when only a cover precedes it (no
+    card group) and sections follow; else None."""
+    from app.services.doc_contract import declares_hero  # doc_contract imports this module
+
+    for index, section in enumerate(tree[:-1]):
+        if declares_hero(section.heading):
+            return index
+        if section.cards:
+            return None
+    return None
 
 
 def _opens_with(page: SourceContent, section: SectionCandidate) -> bool:

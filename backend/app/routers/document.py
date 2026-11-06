@@ -14,7 +14,7 @@ import asyncio
 import logging
 import re
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -28,8 +28,9 @@ from app.services.doc_parser import (
     image_to_data_url,
     parse_document,
 )
-from app.services.doc_structure import DocImageRef, split_into_pages
+from app.services.doc_structure import DocImageRef, outline_plan, split_into_pages
 from app.services.logo import extract_palette_from_image_bytes
+from app.services.outline_pages import OutlinePlan, SiteShape
 from app.services.page_inference import infer_page_scaffolds
 from app.services.paste_structure import StructuredDocument, structure_document
 from app.services.photo_quality import depicts_nothing
@@ -74,11 +75,20 @@ def _is_feature_sized(img: DocImage) -> bool:
 
 
 @router.post("/preview")
-async def document_preview(file: UploadFile = File(...)) -> dict:
+async def document_preview(
+    file: UploadFile = File(...),
+    site_shape: SiteShape | None = Form(None),
+) -> dict:
     """Parse an uploaded PDF/DOCX and return SourceContent + brand candidate.
 
     Response shape matches a crawl job's `result` so the frontend can reuse the
     ScrapePreview → PagePicker → Generate flow with no source-kind branching.
+
+    ``site_shape`` is the page picker's "Site type": a one-page landing site
+    or a multi-page website, over what the document's own outline says
+    (``outline_pages``). Omitted, the document decides. The pages exist in the
+    source itself, so the choice re-reads the document rather than reshaping a
+    recipe; the structure read is cached, so the second read costs no call.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided.")
@@ -106,11 +116,15 @@ async def document_preview(file: UploadFile = File(...)) -> dict:
     # (services/paste_structure.py), in line numbers, never text. A designed
     # brief's typography only says what is prominent. Unavailable, disabled or
     # an answer that doesn't line up ⇒ `None`, and the headings split it.
-    structured = await structure_document(parsed)
-    return await asyncio.to_thread(_build_preview, parsed, structured)
+    structured = await structure_document(parsed, shape=site_shape)
+    return await asyncio.to_thread(_build_preview, parsed, structured, site_shape)
 
 
-def _build_preview(parsed: ParsedDocument, structured: StructuredDocument | None) -> dict:
+def _build_preview(
+    parsed: ParsedDocument,
+    structured: StructuredDocument | None,
+    site_shape: SiteShape | None = None,
+) -> dict:
     """The synchronous split → payload pipeline, run off the loop."""
     document = structured.document if structured else parsed
 
@@ -158,6 +172,7 @@ def _build_preview(parsed: ParsedDocument, structured: StructuredDocument | None
         document,
         images=feature_refs,
         page_topics=structured.page_topics if structured else None,
+        shape=site_shape,
     )
     image_candidates = candidates_from_source(source_content)
 
@@ -170,8 +185,39 @@ def _build_preview(parsed: ParsedDocument, structured: StructuredDocument | None
         fetched_at=0.0,
         # Which reader worked out the pages, so a silent fallback (LLM down)
         # is visible rather than a mysteriously flat site.
-        extra={"document": {"structured_by": "llm" if structured else "headings"}},
+        extra={"document": {
+            "structured_by": "llm" if structured else "headings",
+            **_site_shape_report(
+                structured.plan if structured else outline_plan(parsed, site_shape),
+                structured,
+                source_content,
+            ),
+        }},
     )
+
+
+def _site_shape_report(
+    plan: OutlinePlan | None,
+    structured: StructuredDocument | None,
+    source: SourceContent,
+) -> dict:
+    """What the picker's "Site type" shows: the shape built, the shape the
+    document itself suggests, and why. With no plan (no titles to group by,
+    or a model that grouped a source with no ranks) the pages it built are
+    the evidence."""
+    if plan is not None:
+        built, suggested, reason = not plan.one_page, not plan.suggests_one_page, plan.reason
+    else:
+        named = structured is not None and any(
+            page_type != "home" for page_type in structured.page_topics.values()
+        )
+        built = bool(source.discovered_pages)
+        suggested, reason = named or built, "it has no titles to group its parts by"
+    return {
+        "site_shape": "multi_page" if built else "one_page",
+        "suggested_site_shape": "multi_page" if suggested else "one_page",
+        "site_shape_reason": reason,
+    }
 
 
 class ExportRequest(BaseModel):

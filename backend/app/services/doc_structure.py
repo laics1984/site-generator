@@ -24,9 +24,9 @@ from typing import Mapping
 
 from app.models.content_blocks import ImageMetadata, SourceContent
 from app.services.doc_contract import names_home_page, slug_for_title
-from app.services.outline_pages import plan_pages
+from app.services.outline_pages import OutlinePlan, SiteShape, plan_pages
 from app.services.outline_sections import outline_sections
-from app.services.source_outline import OutlineBlock, ParsedDocument
+from app.services.source_outline import OutlineBlock, ParsedDocument, strip_numbered_titles
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,7 @@ def split_into_pages(
     images: list[DocImageRef] | None = None,
     description: str | None = None,
     page_topics: Mapping[str, str] | None = None,
+    shape: SiteShape | None = None,
 ) -> SourceContent:
     """Build the primary ``SourceContent`` (homepage) with ``discovered_pages``.
 
@@ -103,7 +104,13 @@ def split_into_pages(
     for a paste that states none). Absent, ``outline_pages`` reads it from
     this outline — so a document read with or without the model is grouped by
     one rule. With no page the planner composes a full homepage from the
-    industry template.
+    industry template. A title typed ``home`` files its part back on the
+    homepage after a page. ``shape`` is the site the person chose
+    ("one_page" folds every page onto the homepage, whoever named them).
+
+    The author's section numbers ("01 Hero", "02 Sound familiar") come off the
+    titles first (``strip_numbered_titles``), so every reader of the outline —
+    the plan, the section tree, the planner — sees one spelling of each title.
 
     A page title opens a page once: a second heading of the same slug stays in
     the page before it. Several pages may share a TYPE — "AI Agents" and
@@ -114,7 +121,8 @@ def split_into_pages(
     Images are placed on the page (and given alt text from the heading) they
     appear under, so the resolver can match them to the right slot.
     """
-    opens = _page_titles(parsed.outline, page_topics)
+    outline = strip_numbered_titles(parsed.outline)
+    opens = _page_titles(outline, page_topics, shape)
 
     home = _Bucket(title=parsed.title or "Home", slug="", page_type="home")
     pages: list[_Bucket] = [home]
@@ -127,7 +135,7 @@ def split_into_pages(
     heading_at: list[str | None] = []
     last_heading: str | None = None
 
-    for index, block in enumerate(parsed.outline):
+    for index, block in enumerate(outline):
         text = block.text.strip()
         if not text:
             bucket_at.append(current)
@@ -135,6 +143,8 @@ def split_into_pages(
             continue
 
         page_type = opens.get(index)
+        if page_type == "home":
+            current, page_type = home, None  # this part is the homepage's again
         slug = slug_for_title(text)
         if (
             page_type is not None
@@ -247,8 +257,15 @@ def _image_payload(bucket: _Bucket) -> tuple[list[str], list[ImageMetadata]]:
     return urls, meta
 
 
+def outline_plan(parsed: ParsedDocument, shape: SiteShape | None = None) -> OutlinePlan | None:
+    """The page plan this document's own outline states (``outline_pages``)."""
+    return plan_pages(strip_numbered_titles(parsed.outline), shape=shape)
+
+
 def _page_titles(
-    outline: list[OutlineBlock], page_topics: Mapping[str, str] | None
+    outline: list[OutlineBlock],
+    page_topics: Mapping[str, str] | None,
+    shape: SiteShape | None,
 ) -> dict[int, str]:
     """The blocks that open pages, by position, with their page types.
 
@@ -256,18 +273,21 @@ def _page_titles(
     exact block, so a card titled "Our Programmes" on the homepage can never
     open the "Our Programmes" page that comes after it.
     """
+    if shape == "one_page":
+        return {}
     if page_topics is not None:
         return {
             index: page_topics[block.text.strip()]
             for index, block in enumerate(outline)
             if block.level > 0 and block.text.strip() in page_topics
         }
-    plan = plan_pages(outline)
+    plan = plan_pages(outline, shape=shape)
     if plan is None:
         return {}
+    opened = sum(page_type != "home" for _, page_type in plan.pages)
     logger.info(
         "Document grouped as %s: %s",
-        "one page" if plan.one_page else f"the homepage and {len(plan.pages)} page(s)",
+        "one page" if plan.one_page else f"the homepage and {opened} page(s)",
         plan.reason,
     )
     return dict(plan.pages)

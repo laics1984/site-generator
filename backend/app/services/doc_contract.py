@@ -42,12 +42,12 @@ _HOME_PAGE = re.compile(r"^(?:home|home\s*page|landing\s+page|main\s+page)$", re
 _PAGE_SUFFIX = re.compile(r"^(?P<name>.+?)\s+page$", re.I)
 _PAGE_PREFIX = re.compile(r"^page\s*\d{0,3}\s*[:\-–—.|]\s*(?P<name>\S.*)$", re.I)
 # A line labelling one section of a page: "Section 01", "WEBSITE SECTION
-# 02 / 14 · ABOUT", "Hero", "Hero section", "Hero (above the fold)".
-_SECTION_LABEL = re.compile(
-    r"^(?:(?:website\s+)?section\s*\d+\b.*"
-    r"|hero(?:\s+section|\s+banner)?(?:\s*\(.*\))?)$",
-    re.I,
+# 02 / 14 · ABOUT" — the prefix — and the hero: "Hero", "Hero section",
+# "Hero (above the fold)", "Section 01 — Hero".
+_SECTION_PREFIX = re.compile(
+    r"^(?:website\s+)?section\s*\d{1,3}(?:\s*/\s*\d{1,3})?\b\s*[·:\-–—|.]?\s*", re.I
 )
+_HERO = re.compile(r"^hero(?:\s+section|\s+banner)?(?:\s*\(.*\))?$", re.I)
 
 
 def classify_page_title(title: str) -> PageType | None:
@@ -91,7 +91,12 @@ def declares_page(title: str) -> bool:
 
 def declares_section(text: str) -> bool:
     """True when a line labels a section of one page ("Section 01", "Hero")."""
-    return bool(_SECTION_LABEL.match(_bare(text)))
+    return bool(_SECTION_PREFIX.match(_bare(text))) or declares_hero(text)
+
+
+def declares_hero(text: str) -> bool:
+    """True when a line labels the page's hero ("Hero", "Section 01 — Hero")."""
+    return bool(_HERO.match(_SECTION_PREFIX.sub("", _bare(text), count=1).strip()))
 
 
 def slug_for_title(title: str) -> str:

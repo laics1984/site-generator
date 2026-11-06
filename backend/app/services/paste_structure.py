@@ -58,14 +58,14 @@ from pydantic import BaseModel, Field, field_validator
 from app.config import settings
 from app.models.industry import PageType
 from app.services.llm import LlmClient, LlmError, chat_json_cached, get_llm
-from app.services.outline_pages import plan_pages
+from app.services.outline_pages import OutlinePlan, SiteShape, plan_pages
 from app.services.paste_source import strip_markers
 from app.services.prompts import (
     PASTE_STRUCTURE_PROMPT,
     STRUCTURE_MAP_RULES,
     STRUCTURE_WINDOW_RULES,
 )
-from app.services.source_outline import OutlineBlock, ParsedDocument
+from app.services.source_outline import OutlineBlock, ParsedDocument, strip_numbered_titles
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,9 @@ class StructuredDocument(BaseModel):
 
     document: ParsedDocument
     page_topics: dict[str, PageType]
+    # The outline's own grouping (``outline_pages``) when the source states
+    # heading ranks; None when the model's pages decided (a paste).
+    plan: OutlinePlan | None = None
 
 
 async def structure_paste(
@@ -155,7 +158,7 @@ async def structure_paste(
 
 
 async def structure_document(
-    parsed: ParsedDocument, *, llm: LlmClient | None = None
+    parsed: ParsedDocument, *, llm: LlmClient | None = None, shape: SiteShape | None = None
 ) -> StructuredDocument | None:
     """Read an uploaded document's structure, or ``None`` to keep its own.
 
@@ -164,10 +167,11 @@ async def structure_document(
     and painted colours. Its title is the site's name when the model states
     one: a PDF's metadata title is the DOCUMENT's ("Fowable · Kindergarten &
     Childcare Website Content"), and it became the brand in the footer.
+    ``shape`` is the site the person chose (``outline_pages.plan_pages``).
     """
     if not settings.document_llm_structure_enabled or not parsed.outline:
         return None
-    return await _structure(parsed.outline, parsed, given_title=None, llm=llm)
+    return await _structure(parsed.outline, parsed, given_title=None, llm=llm, shape=shape)
 
 
 async def _structure(
@@ -176,6 +180,7 @@ async def _structure(
     *,
     given_title: str | None,
     llm: LlmClient | None,
+    shape: SiteShape | None = None,
 ) -> StructuredDocument | None:
     rows = _numbered_rows(blocks)
     budget = settings.paste_structure_max_chars
@@ -195,7 +200,7 @@ async def _structure(
     except Exception as exc:  # noqa: BLE001 - a read of a source must never 500
         logger.warning("Structure read errored (%s) — falling back", exc)
         return None
-    return _assemble(blocks, outline, pages, shell, given_title=given_title)
+    return _assemble(blocks, outline, pages, shell, given_title=given_title, shape=shape)
 
 
 async def _ask(client: LlmClient, system_prompt: str, user_prompt: str) -> PasteOutline:
@@ -368,6 +373,7 @@ def _assemble(
     shell: ParsedDocument,
     *,
     given_title: str | None,
+    shape: SiteShape | None = None,
 ) -> StructuredDocument | None:
     """Turn the model's line numbers back into blocks of the source's own text.
 
@@ -379,8 +385,9 @@ def _assemble(
         return None
 
     skip = _titles_of_kept_copy(blocks, _skipped(outline, len(blocks)))
-    assembled, page_topics, headings, after = (
-        _by_outline(blocks, outline, pages, skip) or _by_model(blocks, pages, skip)
+    grouped = _by_outline(blocks, outline, pages, skip, shape)
+    plan, (assembled, page_topics, headings, after) = (
+        grouped if grouped is not None else (None, _by_model(blocks, pages, skip))
     )
     if not assembled:
         return None
@@ -399,7 +406,7 @@ def _assemble(
         outline=assembled,
         images=_reanchored(shell.images, after),
     )
-    return StructuredDocument(document=document, page_topics=page_topics)
+    return StructuredDocument(document=document, page_topics=page_topics, plan=plan)
 
 
 def _by_outline(
@@ -407,7 +414,8 @@ def _by_outline(
     outline: PasteOutline,
     pages: list[PasteOutlinePage],
     skip: set[int],
-) -> _Assembly | None:
+    shape: SiteShape | None = None,
+) -> tuple[OutlinePlan, _Assembly] | None:
     """The copy the model kept, grouped by the source's own titles.
 
     The model said which lines are copy and where the copy runs; whether its
@@ -416,8 +424,10 @@ def _by_outline(
     of the model, the same brief came back one page on one read and four on
     the next. Its answer still types the pages it opens: "AI AGENTS" is a
     page because the outline says so, and ``services`` because the model did.
-    Every block keeps the level the source gave it. ``None`` when no copy
-    line is a title, which leaves the grouping to the model.
+    Every block keeps the level the source gave it, and its title loses the
+    author's section number (``strip_numbered_titles``, as the splitter does).
+    ``None`` when no copy line is a title, which leaves the grouping to the
+    model.
     """
     numbers = _page_lines(pages)
     position = {number: k for k, number in enumerate(numbers)}
@@ -426,16 +436,19 @@ def _by_outline(
         for page in pages[1:]
         if page.title_line in position
     }
+    region = strip_numbered_titles([blocks[n - 1] for n in numbers])
     plan = plan_pages(
-        [blocks[n - 1] for n in numbers],
+        region,
         copy={k for k, n in enumerate(numbers) if n not in skip},
         named=named,
+        shape=shape,
     )
     if plan is None:
         return None
     logger.info(
         "Document grouped by its outline as %s: %s",
-        "one page" if plan.one_page else f"the homepage and {len(plan.pages)} page(s)",
+        "one page" if plan.one_page
+        else f"the homepage and {sum(t != 'home' for _, t in plan.pages)} page(s)",
         plan.reason,
     )
     opens = {numbers[k]: page_type for k, page_type in plan.pages}
@@ -444,8 +457,8 @@ def _by_outline(
     page_topics: dict[str, PageType] = {}
     headings: list[str] = []
     after: dict[int, int | None] = {}
-    for number in numbers:
-        source = blocks[number - 1]
+    for k, number in enumerate(numbers):
+        source = region[k]
         body = _clean(source.text)
         if number not in skip and body:
             assembled.append(OutlineBlock(level=source.level, text=body))
@@ -454,7 +467,7 @@ def _by_outline(
             if number in opens:
                 page_topics[body] = opens[number]
         after[number] = len(assembled)
-    return assembled, page_topics, headings, after
+    return plan, (assembled, page_topics, headings, after)
 
 
 def _page_lines(pages: list[PasteOutlinePage]) -> list[int]:
@@ -543,13 +556,21 @@ def _titles_of_kept_copy(blocks: list[OutlineBlock], skip: set[int]) -> set[int]
     lines are notes is the model's judgement; that a kept paragraph's own
     heading is copy too is not a judgement at all. A paste's lines are level 0,
     so this never touches one.
+
+    What a heading owns runs to the next heading of its rank or higher, deeper
+    headings included: a section's title sits over its headline, not over a
+    paragraph. Read one line deep, the rule let the model drop every numbered
+    section title of a brief ("02 Sound familiar", "08 Pricing") as a layout
+    label, and with "08 Pricing" gone nothing could tell the plans were the
+    pricing — the outline lost the parts it groups pages by.
     """
     restored: set[int] = set()
     for number in sorted(skip):
-        if blocks[number - 1].level == 0:
+        level = blocks[number - 1].level
+        if level == 0:
             continue
         below = number + 1
-        while below <= len(blocks) and blocks[below - 1].level == 0:
+        while below <= len(blocks) and not 0 < blocks[below - 1].level <= level:
             if below not in skip and blocks[below - 1].text.strip():
                 restored.add(number)
                 break
