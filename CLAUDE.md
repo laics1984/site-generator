@@ -2880,9 +2880,11 @@ measured 4.13:1 — the ink pass drops the alpha there (`keep_alpha`).
 the surface it measured; the owner then edits it. Every `UPDATE_ELEMENT` to a
 body element that changes what it paints behind its copy (colour, gradient,
 photo, overlay) runs `withLegibleCopy` at the reducer: a photo the edit put
-there — a swap, a new one — gets the single sheet (`ensureLegibleOverPhoto`, a
-uniform `color-mix(var(--builder-color-ink-dark) 62%)` layer laid directly on
-the photo, aligned size lists kept), and the element's copy is re-inked for its
+there — a swap, a new one — gets the single sheet's cover AS ITS COLOR FILTER
+(`ensureLegibleOverPhoto`: an Off filter turns on at 62% in
+`var(--builder-color-ink-dark)`, keeping the generator's stamped shape so the
+cover lands on the copy; an On filter keeps its colour and shape and only
+rises; a catalog uniform sheet is folded in), and the element's copy is re-inked for its
 new surface (hard-coded white always, a neutral token when it no longer reads,
 a brand or owner-picked colour lifted to AA with its hue kept; a ghost
 button's outline follows). The builder has no pixels, so a photo reads there
@@ -2890,8 +2892,14 @@ only once its copy cover — what the styles PROVE: uniform sheets, plateau
 scrims, the overlay token — reaches `COPY_MAX_COVER`, and then as that cover
 over a white frame. Article/event cover heroes (`site-hero-style.ts`) take the
 single sheet too: the home hero's scrim was solved for the home photo, and each
-item brings a cover nobody measured. The selection is the tree's copy after the
-seam, or the panel's next write would undo a sheet. `band-markers.ts` reads the
+item brings a cover nobody measured. **Never bake that cover as a layer**: it
+was once a 62% sheet spliced on the photo, which no control reached, so
+switching the filter Off left the hero dark (Fowable's Pricing hero, 2026-11).
+Pages saved with one have it lifted into the filter on load
+(`liftLegibilitySheet`, run with `liftPhotoScrim` by `liftPhotoFilters`); only
+the builder's exact sheet is lifted, never a catalog photo treatment. The
+selection is the tree's copy after the seam, or the panel's next write would
+undo the cover. `band-markers.ts` reads the
 same surface model (it mirrored the old "photo or opaque gradient is dark").
 
 **A gradient is judged by its worst stop, and a button by its band.** The
