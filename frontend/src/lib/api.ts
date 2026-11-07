@@ -24,6 +24,7 @@ import type {
   PageScaffold,
   PreviewLayout,
   ScrapePreview,
+  SiteShape,
   SitemapProbeResult,
   SourceContent,
 } from '@/lib/types'
@@ -326,9 +327,15 @@ export async function mergeSourceContents(
   })
 }
 
-export async function uploadDocumentPreview(file: File): Promise<ScrapePreview> {
+/** Read a PDF/DOCX. `siteShape` is the picker's "Site type"; omitted, the
+ * document's own titles decide (`outline_pages`). */
+export async function uploadDocumentPreview(
+  file: File,
+  siteShape?: SiteShape,
+): Promise<ScrapePreview> {
   const form = new FormData()
   form.append('file', file)
+  if (siteShape) form.append('site_shape', siteShape)
   const response = await fetch('/api/document/preview', {
     method: 'POST',
     body: form,

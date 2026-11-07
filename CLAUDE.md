@@ -1391,10 +1391,95 @@ paste lesson, so a document now goes through the paste reader too.
 - **"One page" is asked outright** (`PasteOutline.single_page`), then enforced
   (`_one_page_if_said` folds the listed sections into the first page). As a
   rule buried in the prompt the model ignored it: "14 sections, one per page"
-  meant sheets of paper.
+  meant sheets of paper. It only decides for a source whose copy states no
+  heading ranks (a paste); a ranked source is grouped by its titles (below).
 - **A supplied `page_topics` is the whole answer** (`split_into_pages`): a
   heading it does not name never opens a page, and an empty mapping is "one
-  page". In-page headings come back one level down, below the model's pages.
+  page". Absent, the splitter reads it from the outline (`outline_pages`).
+
+## A document's titles say which parts are pages
+
+The same kindergarten brief — three headline sections and a "Get in touch" —
+shipped as one homepage when the structure model answered "one page", and as a
+homepage plus a Contact page when it listed pages or was down; the picker then
+left Contact unticked, so the site sometimes had no contact form at all.
+`services/outline_pages.plan_pages` is now the ONE decision, for every reader
+of a source that states heading ranks (PDF, DOCX, a marked-up or heuristically
+read paste), with or without the model.
+
+- **Roles**: every title is `cover`, `home`, `page`, `section` or `subtitle`.
+  The main titles are the document's parts: the shallowest rank a title that
+  owns copy sits at. A STACKED title (the next copy line is a title of its rank
+  or higher — a two-line cover, an eyebrow) is never a part; the opening title
+  is the cover unless it names a page; a lone headline above a rank that
+  recurs is the cover's second line, but a lone page NAME ("About Us" over its
+  subsections) is that page.
+- **Evidence, strongest first**: names its pages (a main title "HOME"/"Home
+  page" beside others, or two "X page"/"Page 2: X" labels) → pages; labels
+  sections ("Section 01", "WEBSITE SECTION 02 / 14", "Hero" — read on every
+  line, including the ones the model skipped as notes) → one page; two main
+  titles each holding two titled card groups → pages; ≥60% of main titles are
+  short page names (`doc_contract.names_page`: ≤4 words, no sentence
+  punctuation, a topic by `page_inference`'s whole-token matcher) → pages;
+  else one page. One part named "Contact" under an intro is the Contact page —
+  what the paste box is for.
+- **Pages**: a "HOME" title opens the homepage; without one, headline parts
+  before the first page stay homepage sections. Every later part is a page,
+  except a second title of a topic already given one ("Services", then
+  "Solutions"). The label "HOME" is never copy (`split_into_pages`).
+- **The model types pages, never makes them.** `paste_structure._by_outline`
+  takes the model's copy (its pages' lines, each from its `title_line` — the
+  local model starts `first_line` AFTER the title, which left every title
+  outside every page and read a four-page site map as one — minus skips) and
+  hands it to the plan; the model's `page_type` only types a page the plan
+  opened. `_by_model` (the old re-levelled assembly) remains for a source with
+  no ranked copy. Every block keeps the level the source gave it.
+- `classify_page_title` is whole-token now: the substring test read "How we
+  help" as an FAQ page and split a one-page PDF brief in two.
+- **A one-page site carries its own form** (`page_inference.with_closing_contact`,
+  the single-page branch of `infer_page_scaffolds`): `contact` goes just before
+  the closing CTA, after what the page earned (pricing, a map). No recipe asked
+  for one, so a one-page brief shipped with no form and every "get in touch"
+  action dropped for want of a destination. A closing "Get in touch" section
+  (`_is_contact_section` → `names_page`, any length) sits outside the tree body
+  like the closing ask, so `_tree_groups` hands its lines to the call that
+  writes the form, and a ticked Contact page takes the form back
+  (`defer_home_contact`) without breaking `follows_source_tree`. A Facebook
+  override already carries `contact` and stands as given; a multi-page
+  homepage is unchanged (its Contact page has the form).
+
+- **The person picks the site type** (the page picker's "Site type", documents
+  only): one-page landing site or multi-page website, pre-set to what the
+  outline says and showing why (`OutlinePlan.suggests_one_page`/`reason`,
+  reported as `document.site_shape`/`suggested_site_shape`/`site_shape_reason`).
+  Pages exist in the source, so the choice re-reads the document
+  (`POST /api/document/preview` with `site_shape`; the structure read is cached,
+  so no model call) and the picker re-reads its recipe with defaults reset —
+  carried selections would keep a multi-page About ticked on a one-page site.
+  `plan_pages(shape=)` and `split_into_pages(shape=)` take it; "one_page" folds
+  every page, whoever named it.
+- **Multi-page from a landing brief files by practice** (`_pages_by_practice`,
+  `OWN_PAGE_TYPES`): a part naming a page a visitor goes to on purpose (about,
+  team, pricing, faq, contact, gallery, menu, work, blog, events) becomes that
+  page; the selling journey (hero, problem, offer, services, how it works,
+  proof) stays home in order. A part after a page goes BACK home — a `pages`
+  entry typed `home`, which `split_into_pages` reads as "resume the homepage".
+  Nothing to file still means a website: the recipe's industry pages around
+  the whole homepage.
+- **Section numbers are structure** (`source_outline.strip_numbered_titles`): a
+  run of ≥3 same-rank titles numbered in order ("01 Hero" … "08 Pricing") loses
+  its numbers before anything reads the outline, so a page is "Pricing" at
+  `/pricing`. One number then a space is copy ("12 children per class").
+- **A labelled hero opens the page** (`page_inference._hero_label_at`,
+  `doc_contract.declares_hero`): it and the cover above it are the hero's, so
+  "Hero" no longer repeats as an about block after a document title.
+- **An FAQ at body size is an FAQ** (`outline_sections._questions_in`): short
+  lines ending "?" each over its answer are question cards; most must be
+  answered, so a run of rhetorical lines stays prose.
+
+Tests: `test_outline_pages.py` (including the same document through no model
+and three model answers giving one page set), `test_doc_structure.py`,
+`test_one_page_contact.py`, `test_site_shape.py`.
 - **The document keeps what was measured**: source, reference colours, and its
   images re-anchored to the new outline (one in an excluded part goes with it).
   The logo is still picked from the document as printed. The site's name is the
@@ -1413,6 +1498,10 @@ paste lesson, so a document now goes through the paste reader too.
   kept is not. Fowable's reads dropped 25 card titles with the "ALL PLANS" tag
   under each, and every card reached the site untitled. A blanket "never skip a
   price line" was measured and rejected: an editorial note quotes the prices.
+  What a heading owns runs to the next heading of its rank or higher, deeper
+  headings included: read one line deep, the model dropped every numbered
+  section title of a brief ("02 Sound familiar", "08 Pricing") as a layout
+  label, and with "08 Pricing" gone no rule could find the pricing part.
 
 Tests: `test_document_structure.py`, `test_paste_structure.py`,
 `test_brief_sections.SkippedTitleTest`.
@@ -1462,7 +1551,8 @@ whichever text chunk came first. Three pieces, each one home:
   (`_states_prices`, the augment's own test) still gets `pricing` before the
   CTA, and `_tree_groups` hands the last call the price list's lines
   (`price_list_spans`) wherever they sit. A short card-less last section is the closing ask,
-  which the CTA presents. A crawled homepage keeps its pattern. `tree_body` is
+  which the CTA presents; a closing "Get in touch" is the contact form's
+  (`with_closing_contact`). A crawled homepage keeps its pattern. `tree_body` is
   the one answer for every tree-shaped recipe; `follows_source_tree` tells the
   planner and `landing_order` (which must not re-sort it) that a scaffold is one.
 - **It is written a few sections per call** (`planner._tree_groups`): runs of
@@ -2729,7 +2819,9 @@ The fix is four pieces, each one home:
    `-shape` (its anchor; `flat` is the old even tint) — so the owner can change
    it or switch it off in the builder. Both renderers paint a shaped filter back
    into the slot it was baked in (`with_photo_filter`: under the grain and edge
-   fade), byte-identically. Only an exact generator scrim is lifted. Mirrors:
+   fade), byte-identically. Only an exact generator scrim is lifted — today's,
+   or the pre-plateau one baked until 2026-10-15 (`_legacy_scrim_layers`),
+   which is repainted in today's geometry at its own strength. Mirrors:
    builder `lib/photo-filter.ts` (which also lifts pages generated before this,
    on load), webtree-public `lib/photoFilter.ts`; `test_photo_filter_mirror.py`
    writes and checks their shared fixture.
@@ -2788,9 +2880,11 @@ measured 4.13:1 — the ink pass drops the alpha there (`keep_alpha`).
 the surface it measured; the owner then edits it. Every `UPDATE_ELEMENT` to a
 body element that changes what it paints behind its copy (colour, gradient,
 photo, overlay) runs `withLegibleCopy` at the reducer: a photo the edit put
-there — a swap, a new one — gets the single sheet (`ensureLegibleOverPhoto`, a
-uniform `color-mix(var(--builder-color-ink-dark) 62%)` layer laid directly on
-the photo, aligned size lists kept), and the element's copy is re-inked for its
+there — a swap, a new one — gets the single sheet's cover AS ITS COLOR FILTER
+(`ensureLegibleOverPhoto`: an Off filter turns on at 62% in
+`var(--builder-color-ink-dark)`, keeping the generator's stamped shape so the
+cover lands on the copy; an On filter keeps its colour and shape and only
+rises; a catalog uniform sheet is folded in), and the element's copy is re-inked for its
 new surface (hard-coded white always, a neutral token when it no longer reads,
 a brand or owner-picked colour lifted to AA with its hue kept; a ghost
 button's outline follows). The builder has no pixels, so a photo reads there
@@ -2798,8 +2892,14 @@ only once its copy cover — what the styles PROVE: uniform sheets, plateau
 scrims, the overlay token — reaches `COPY_MAX_COVER`, and then as that cover
 over a white frame. Article/event cover heroes (`site-hero-style.ts`) take the
 single sheet too: the home hero's scrim was solved for the home photo, and each
-item brings a cover nobody measured. The selection is the tree's copy after the
-seam, or the panel's next write would undo a sheet. `band-markers.ts` reads the
+item brings a cover nobody measured. **Never bake that cover as a layer**: it
+was once a 62% sheet spliced on the photo, which no control reached, so
+switching the filter Off left the hero dark (Fowable's Pricing hero, 2026-11).
+Pages saved with one have it lifted into the filter on load
+(`liftLegibilitySheet`, run with `liftPhotoScrim` by `liftPhotoFilters`); only
+the builder's exact sheet is lifted, never a catalog photo treatment. The
+selection is the tree's copy after the seam, or the panel's next write would
+undo the cover. `band-markers.ts` reads the
 same surface model (it mirrored the old "photo or opaque gradient is dark").
 
 **A gradient is judged by its worst stop, and a button by its band.** The

@@ -2,7 +2,10 @@ import unittest
 
 from app.services.doc_contract import (
     classify_page_title,
-    is_home_title,
+    declares_page,
+    declares_section,
+    names_home_page,
+    names_page,
     slug_for_title,
 )
 from app.services.doc_parser import OutlineBlock, ParsedDocument
@@ -35,10 +38,41 @@ class TitleExaminationTest(unittest.TestCase):
         self.assertIsNone(classify_page_title("Our Promise"))
         self.assertIsNone(classify_page_title("Features"))
 
-    def test_home_titles_recognized(self):
-        self.assertTrue(is_home_title("Welcome"))
-        self.assertTrue(is_home_title("Overview"))
-        self.assertFalse(is_home_title("About Us"))
+    def test_topics_are_whole_words(self):
+        # A substring test read "help" in "helping" as an FAQ and "people" in
+        # a headline as a team page.
+        self.assertIsNone(classify_page_title("Helping your kindergarten grow"))
+        self.assertIsNone(classify_page_title("Teamwork makes it happen"))
+        self.assertEqual(classify_page_title("Get in Touch"), "contact")
+
+    def test_a_page_name_is_a_name_not_a_headline(self):
+        self.assertEqual(names_page("About Us"), "about")
+        self.assertEqual(names_page("3. CONTACT"), "contact")
+        self.assertEqual(names_page("Services page"), "services")
+        self.assertEqual(names_page("Page 2: Meet the Team"), "team")
+        # Topic words in a sentence or a long headline name no page.
+        self.assertIsNone(names_page("Services that grow with your centre"))
+        self.assertIsNone(names_page("Contact us today."))
+        self.assertIsNone(names_page("Why Choose Us"))
+
+    def test_the_home_page_is_named_by_the_whole_title(self):
+        self.assertTrue(names_home_page("HOME"))
+        self.assertTrue(names_home_page("1. Home Page"))
+        self.assertTrue(names_home_page("Homepage"))
+        # A hero headline that greets is not the home page's name.
+        self.assertFalse(names_home_page("Welcome to Sunny Steps"))
+        self.assertFalse(names_home_page("Overview"))
+
+    def test_labels_declare_pages_and_sections(self):
+        self.assertTrue(declares_page("About Us page"))
+        self.assertTrue(declares_page("PAGE 3 – CONTACT"))
+        self.assertTrue(declares_page("Home"))
+        self.assertFalse(declares_page("Page 3 of 29"))  # paper, not a web page
+        self.assertFalse(declares_page("About Us"))
+        self.assertTrue(declares_section("WEBSITE SECTION 02 / 14 · ABOUT"))
+        self.assertTrue(declares_section("Section 3"))
+        self.assertTrue(declares_section("Hero (above the fold)"))
+        self.assertFalse(declares_section("Heroes of our school"))
 
     def test_slug_synthesis(self):
         self.assertEqual(slug_for_title("About Us"), "about-us")

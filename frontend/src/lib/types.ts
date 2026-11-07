@@ -661,6 +661,21 @@ export interface PasteReport {
   placeholders?: number
 }
 
+/** What the site is: one landing page, or a website of pages. */
+export type SiteShape = 'one_page' | 'multi_page'
+
+/** What a document read reports beside its source (`routers/document`). */
+export interface DocumentReport {
+  /** Which reader worked out the copy: the local model, or the headings alone. */
+  structured_by?: 'llm' | 'headings'
+  /** The site this read built — the picker's "Site type". */
+  site_shape?: SiteShape
+  /** What the document's own titles say it is (`outline_pages`). */
+  suggested_site_shape?: SiteShape
+  /** Why, in the document's terms ("its main titles head the sections of one page"). */
+  site_shape_reason?: string
+}
+
 export interface ScrapePreview {
   url: string
   final_url: string
@@ -677,6 +692,8 @@ export interface ScrapePreview {
   crawl_stop_reason?: CrawlStopReason | null
   /** Present only when pasted content went into this source — standalone or merged. */
   paste?: PasteReport
+  /** Present only on a document read. */
+  document?: DocumentReport
   /** Present only on a Facebook read. Additive — the rest of the shape is identical. */
   facebook_facts?: FacebookFacts
   facebook_contact?: Record<string, string>

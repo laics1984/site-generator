@@ -533,15 +533,41 @@ def tree_body(
     if len(tree) < _TREE_MIN_SECTIONS and not _tree_is_image_led(tree):
         return None
     authored = homepage and page.source_kind in AUTHORED_SOURCE_KINDS
-    if authored and len(tree) > 1 and _opens_with(page, tree[0]):
+    hero = _hero_label_at(tree) if authored else None
+    if hero is not None:
+        # The author labelled the hero ("01 Hero", "Hero (above the fold)"): it
+        # and the cover above it open the page, and the hero presents them.
+        # Read as the second section after a document title, "01 Hero" became
+        # an about block repeating the hero's copy.
+        tree = tree[hero + 1:]
+    elif authored and len(tree) > 1 and _opens_with(page, tree[0]):
         # Nothing above the first section: it is the page's opening, and the
         # hero presents it. Fowable's DOCX opens on "Hero (above the fold)",
         # which would otherwise show the hero's copy twice.
         tree = tree[1:]
-    if authored and _is_closing_ask(tree[-1]):
+    if authored and (_is_closing_ask(tree[-1]) or _is_contact_section(tree[-1])):
+        # The page's close sits outside its body: a short ask is the CTA's, and
+        # a closing "Get in touch" — however long — the contact section's
+        # (`with_closing_contact`), written from its lines (planner._tree_groups
+        # hands the last call what follows the body). Outside the body, a
+        # ticked Contact page can take the form back without breaking the
+        # body's match to the tree.
         tree = tree[:-1]
     limit = _MAX_AUTHORED_SECTIONS if authored else max(0, _MAX_PAGE_SECTIONS - 2)
     return list(zip(source_section_kinds(tree), tree))[:limit]
+
+
+def _hero_label_at(tree: list[SectionCandidate]) -> int | None:
+    """Where the author labelled the hero, when only a cover precedes it (no
+    card group) and sections follow; else None."""
+    from app.services.doc_contract import declares_hero  # doc_contract imports this module
+
+    for index, section in enumerate(tree[:-1]):
+        if declares_hero(section.heading):
+            return index
+        if section.cards:
+            return None
+    return None
 
 
 def _opens_with(page: SourceContent, section: SectionCandidate) -> bool:
@@ -552,6 +578,30 @@ def _opens_with(page: SourceContent, section: SectionCandidate) -> bool:
 def _is_closing_ask(section: SectionCandidate) -> bool:
     copy = " ".join([section.subheading, section.prose])
     return not section.cards and len(copy) <= _CLOSING_ASK_MAX_CHARS
+
+
+def _is_contact_section(section: SectionCandidate) -> bool:
+    """A section titled with the contact page's name ("Contact us", "Get in
+    touch") — the same short-name test that decides a document's pages."""
+    from app.services.doc_contract import names_page  # doc_contract imports this module
+
+    return names_page(section.heading) == "contact"
+
+
+def with_closing_contact(sections: list[SectionType]) -> list[SectionType]:
+    """A one-page site's homepage with its contact form, just before the CTA.
+
+    A one-page site has no Contact page to send a visitor to: without this the
+    homepage of a brief or a paste had no form at all, and every "get in
+    touch" action was dropped for want of a destination. The form goes last
+    before the closing CTA, after whatever the page earned. A page that
+    already has one keeps its own; a Contact page the user ticks takes the
+    form back (`defer_home_contact`).
+    """
+    if "contact" in sections:
+        return sections
+    at = sections.index("cta") if "cta" in sections else len(sections)
+    return [*sections[:at], "contact", *sections[at:]]
 
 
 def follows_source_tree(
@@ -1397,12 +1447,12 @@ def infer_page_scaffolds(
 
     if single_page:
         # An override is the caller's own evidence-gated list (a Facebook Page's
-        # facts) and stands as given. Without one, the homepage earns evidenced
-        # extras exactly as the crawl and template-fallback homes do — a one-page
-        # document or paste listing its plans otherwise never got a pricing section.
-        sections = (
-            homepage_sections_override
-            or _authored_homepage(source)
+        # facts, contact always among them) and stands as given. Without one, the
+        # homepage earns evidenced extras exactly as the crawl and template-fallback
+        # homes do — a one-page document or paste listing its plans otherwise never
+        # got a pricing section — and, being the whole site, its contact form.
+        sections = homepage_sections_override or with_closing_contact(
+            _authored_homepage(source)
             or _augment_sections(
                 homepage_sections(
                     industry, seed=site_name, archetype=archetype, emphasis=section_emphasis

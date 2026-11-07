@@ -143,7 +143,9 @@ class SkippedTitleTest(unittest.TestCase):
         outline = PasteOutline(pages=[page], skip_lines=[2, 3, 5, 6])
         shell = ParsedDocument(source_kind="pdf", source_ref="b.pdf", title=None, raw_text="")
 
-        text = _assemble(blocks, outline, [page], shell, given_title=None).document.raw_text
+        structured = _assemble(blocks, outline, [page], shell, given_title=None)
+        # "Home" labels the page it opens; the splitter drops it from the copy.
+        text = split_into_pages(structured.document, page_topics=structured.page_topics).raw_text
 
         self.assertEqual(
             text.split("\n"),

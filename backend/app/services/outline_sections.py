@@ -137,6 +137,8 @@ class _Section:
     def candidate(self) -> SectionCandidate:
         prose = list(self.prose)
         cards = self.cards
+        if not cards:
+            prose, cards = _questions_in(prose)
         if any(card.body or card.meta for card in cards):
             # Bare titles among cards with copy are a list in the section's
             # prose ("What parents can find: who you are, programmes, fees…").
@@ -178,6 +180,32 @@ class _Card:
 
     def lines(self) -> list[str]:
         return [self.title, *self.meta, *self.body]
+
+
+def _questions_in(lines: list[str]) -> tuple[list[str], list[_Card]]:
+    """(prose, cards): questions set as body text, each over its answer, as
+    the section's FAQ cards — or the lines untouched.
+
+    A brief often writes its FAQ at body size, so no question is a heading and
+    the section read as one paragraph: an about block. A line asks when it
+    ends in "?" and is short enough to be a title; the lines up to the next
+    one are its answer, and lines before the first question stay the
+    section's intro. Most questions must be answered, or a run of rhetorical
+    lines ("Sound familiar?") would be read as an FAQ.
+    """
+    intro: list[str] = []
+    cards: list[_Card] = []
+    for line in lines:
+        if line.rstrip().endswith("?") and len(line) <= _CARD_TITLE_MAX_CHARS:
+            cards.append(_Card(line))
+        elif cards:
+            cards[-1].body.append(line)
+        else:
+            intro.append(line)
+    answered = sum(bool(card.body) for card in cards)
+    if answered < _MIN_GROUP_CARDS or answered < len(cards) * _GROUP_SHARE:
+        return lines, []
+    return intro, cards
 
 
 def _priced(card: SourceCard) -> bool:

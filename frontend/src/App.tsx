@@ -46,6 +46,7 @@ import type {
   MultilingualChoice,
   PageScaffold,
   ScrapePreview as ScrapePreviewType,
+  SiteShape,
   SitemapProbeResult,
   SourceContent,
 } from '@/lib/types'
@@ -108,6 +109,8 @@ export default function App() {
   const [scrapeBusy, setScrapeBusy] = useState(false)
   const [uploadBusy, setUploadBusy] = useState(false)
   const [pasteBusy, setPasteBusy] = useState(false)
+  // The picker's "Site type" re-reads the document in the shape chosen.
+  const [siteShapeBusy, setSiteShapeBusy] = useState(false)
   const [scrapeResult, setScrapeResult] = useState<ScrapePreviewType | null>(null)
   // Scope-choice modal state. Set after a successful sitemap probe that
   // reveals more pages than our quick-scan default (20).
@@ -516,6 +519,32 @@ export default function App() {
     setConfirmedSource(updated)
   }
 
+  /**
+   * The picker's "Site type" changed. Which pages a document has is decided
+   * when it is read (`doc_structure.split_into_pages`), so the choice reads it
+   * again in that shape — the structure read is cached, so it costs no model
+   * call — and folds any pasted copy back in exactly as the first read did.
+   */
+  async function handleSiteShape(shape: SiteShape) {
+    if (!sourceFile || !confirmedSource) return
+    setSiteShapeBusy(true)
+    setError(null)
+    try {
+      const read = await uploadDocumentPreview(sourceFile, shape)
+      const landed = await composeSources([{ preview: read, label: 'document' }])
+      if (!landed) return
+      setScrapeResult(landed)
+      setConfirmedSource({
+        ...landed.source_content,
+        title: confirmedSource.title || landed.source_content.title,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not re-read the document')
+    } finally {
+      setSiteShapeBusy(false)
+    }
+  }
+
   /** User confirmed page selections → run scaffolded generation. */
   async function handlePagesConfirm() {
     if (!confirmedSource || selectedPages.length === 0) return
@@ -706,6 +735,15 @@ export default function App() {
     )
   }
 
+  // A document is one landing page or a website of pages: the person's call
+  // in the picker, starting on what the document's titles say. Only a document
+  // read on its own (a website crawl folds one in as an addition).
+  const documentShape =
+    sourceFile && confirmedSource &&
+    (confirmedSource.source_kind === 'pdf' || confirmedSource.source_kind === 'docx')
+      ? scrapeResult?.document
+      : undefined
+
   const steps: Step[] = [
     {
       id: 'brand',
@@ -825,7 +863,24 @@ export default function App() {
                     onConfirm={handlePagesConfirm}
                     onBack={backToSource}
                     busy={busy}
-                    singlePage={isSinglePageSource(confirmedSource)}
+                    singlePage={
+                      documentShape?.site_shape
+                        ? documentShape.site_shape === 'one_page'
+                        : isSinglePageSource(confirmedSource)
+                    }
+                    siteType={
+                      documentShape?.site_shape
+                        ? {
+                            shape: documentShape.site_shape,
+                            suggested: documentShape.suggested_site_shape ?? documentShape.site_shape,
+                            reason: documentShape.site_shape_reason ?? '',
+                            busy: siteShapeBusy,
+                            textEdited:
+                              confirmedSource.raw_text !== scrapeResult?.source_content.raw_text,
+                            onChange: handleSiteShape,
+                          }
+                        : undefined
+                    }
                     homepageSections={scrapeResult?.facebook_sections}
                   />
                 ) : scrapeResult ? (
@@ -902,6 +957,8 @@ export default function App() {
  * optional pool still lets the user add pages back either way.
  */
 function isSinglePageSource(source: SourceContent): boolean {
+  // A document says which it is through the picker's "Site type" instead
+  // (`documentShape` below); this answers for every other source.
   if (source.source_kind === 'url') return false
   // True for a Page, a document or a paste that yielded no pages of its own.
   // A Facebook Page is one page's worth of facts — unless pasted content added

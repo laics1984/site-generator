@@ -13,6 +13,7 @@ import type {
   MultilingualChoice,
   MultilingualPlan,
   PageScaffold,
+  SiteShape,
   SourceContent,
 } from '@/lib/types'
 import { Button, Spinner } from '@/ui'
@@ -35,6 +36,8 @@ interface PagePickerProps {
   busy: boolean
   /** One landing page instead of the industry fan-out (a Facebook Page read). */
   singlePage?: boolean
+  /** A document's "Site type" — one landing page or a website of pages. */
+  siteType?: SiteTypeChoiceProps
   /** Sections gated on the facts the source holds — overrides the industry pattern. */
   homepageSections?: string[]
   /** How to present the source's languages; changing it re-reads the recipe. */
@@ -141,6 +144,7 @@ export function PagePicker({
   onBack,
   busy,
   singlePage,
+  siteType,
   homepageSections,
   multilingual,
   setMultilingual,
@@ -155,6 +159,10 @@ export function PagePicker({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isFirstLoad = useRef(true)
+  // The site's shape the last recipe was read for. A new shape is a new page
+  // set: its defaults replace the old selection rather than carrying it, or a
+  // switch to one page would keep the multi-page About and Contact ticked.
+  const lastSinglePage = useRef(singlePage)
   const selectedRef = useRef(selectedPages)
   selectedRef.current = selectedPages
   // The first recipe's brand detection, for this source. A re-read (another
@@ -166,6 +174,8 @@ export function PagePicker({
     let cancelled = false
     setLoading(true)
     setError(null)
+    const reshaped = lastSinglePage.current !== singlePage
+    lastSinglePage.current = singlePage
     const known = detectionRef.current
     fetchPageRecipe(source, {
       industryOverride: industryOverride ?? undefined,
@@ -190,7 +200,7 @@ export function PagePicker({
 
         // Pre-check: all core pages from template + all inferred pages.
         const newDefaults = [...res.template.core_pages, ...res.inferred_pages]
-        if (isFirstLoad.current) {
+        if (isFirstLoad.current || reshaped) {
           setSelectedPages(uniqueByKey(newDefaults))
           isFirstLoad.current = false
         } else {
@@ -217,7 +227,7 @@ export function PagePicker({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source.source_ref, industryOverride, multilingual])
+  }, [source.source_ref, industryOverride, multilingual, singlePage])
 
   const selectedByKey = useMemo(
     () => new Set(selectedPages.map(pageKey)),
@@ -324,6 +334,8 @@ export function PagePicker({
         source={source}
         discoveredCount={(source.discovered_pages ?? []).length}
       />
+
+      {siteType && <SiteTypeChoice {...siteType} />}
 
       <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
         <div className="font-semibold">Detected industry: {template.label}</div>
@@ -919,5 +931,86 @@ function SectionPill({ kind }: { kind: string }) {
     >
       {kind}
     </span>
+  )
+}
+
+export interface SiteTypeChoiceProps {
+  shape: SiteShape
+  /** What the document's own titles say it is. */
+  suggested: SiteShape
+  /** Why, in the document's terms. */
+  reason: string
+  /** The document is being read again in the chosen shape. */
+  busy: boolean
+  /** The text was edited on the source step; a re-read replaces it. */
+  textEdited: boolean
+  onChange: (shape: SiteShape) => void
+}
+
+const SITE_TYPES: { shape: SiteShape; label: string; hint: string }[] = [
+  {
+    shape: 'one_page',
+    label: 'One-page landing site',
+    hint: 'Every section on the homepage, with the contact form before the closing call to action.',
+  },
+  {
+    shape: 'multi_page',
+    label: 'Multi-page website',
+    hint: 'The homepage keeps the story that sells; pricing, questions, about and contact get pages of their own.',
+  },
+]
+
+/** One landing page or a website of pages — the person's call, starting on
+ * what the document's titles say (`services/outline_pages.py`). */
+function SiteTypeChoice({ shape, suggested, reason, busy, textEdited, onChange }: SiteTypeChoiceProps) {
+  return (
+    <fieldset className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm" disabled={busy}>
+      <legend className="sr-only">Site type</legend>
+      <div className="flex items-center gap-2 font-semibold text-slate-900">
+        Site type
+        {busy && (
+          <span className="inline-flex items-center gap-1 text-xs font-normal text-slate-600">
+            <Spinner className="h-3 w-3 text-brand-600" />
+            Re-reading the document…
+          </span>
+        )}
+      </div>
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        {SITE_TYPES.map((option) => (
+          <label
+            key={option.shape}
+            className={`flex cursor-pointer gap-2 rounded-lg border bg-white p-3 ${
+              option.shape === shape ? 'border-brand-500' : 'border-slate-200'
+            }`}
+          >
+            <input
+              type="radio"
+              name="site-type"
+              className="mt-0.5"
+              checked={option.shape === shape}
+              onChange={() => onChange(option.shape)}
+            />
+            <span>
+              <span className="font-medium text-slate-900">{option.label}</span>
+              {option.shape === suggested && (
+                <span className="ml-1 text-xs text-slate-500">· what the document reads as</span>
+              )}
+              <span className="mt-0.5 block text-xs text-slate-600">{option.hint}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      {reason && (
+        <p className="mt-2 text-xs text-slate-600">
+          The document reads as {suggested === 'one_page' ? 'one landing page' : 'a website of pages'}:{' '}
+          {reason}.
+        </p>
+      )}
+      {textEdited && (
+        <p className="mt-1 text-xs text-amber-700">
+          Switching reads the document again, so your edits to its text on the previous step are replaced.
+        </p>
+      )}
+    </fieldset>
   )
 }

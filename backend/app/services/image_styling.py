@@ -741,6 +741,23 @@ def _same_css(a: list[str], b: list[str]) -> bool:
     return len(a) == len(b) and all(squash(x) == squash(y) for x, y in zip(a, b))
 
 
+def _legacy_scrim_layers(stop: Callable[[float], str], a: float, anchor: str) -> list[str]:
+    """The scrim as the generator baked it before the plateau (until 2026-10-15):
+    peak at the very edge of the ray, half-ish at 44%, nothing at 78% (the
+    corner's two halves: 46% and 82%). Only read, to lift sites generated then;
+    the filter paints them in today's geometry."""
+    mid = round(a * _SCRIM_MID_SHARE, 2)
+    if anchor == "left":
+        return [f"linear-gradient(to right, {stop(a)}, {stop(mid)} 44%, {stop(0)} 78%)"]
+    if anchor == "bottom-left":
+        half = _corner_half(a)
+        ramp = f"{stop(half)}, {stop(round(half * _SCRIM_MID_SHARE, 2))} 46%, {stop(0)} 82%"
+        return [f"linear-gradient(to top, {ramp})", f"linear-gradient(to right, {ramp})"]
+    if anchor == "center":
+        return [f"radial-gradient(115% 88% at 50% 50%, {stop(a)}, {stop(mid)} 44%, {stop(0)} 78%)"]
+    return []  # `bottom` came with the plateau
+
+
 def _lift_candidates(peak: float) -> list[tuple[str, int]]:
     """(shape, opacity) pairs that could have baked a scrim whose first stop is
     `peak`. A filter is stored at the scrim's own strength; the corner at the
@@ -755,10 +772,11 @@ def _lift_candidates(peak: float) -> list[tuple[str, int]]:
 def lift_photo_scrim(styles: dict) -> dict | None:
     """`styles` with its baked copy scrim moved into the photo filter, or None
     when there is none to move — no photo, a filter already set (the owner's),
-    or no layer that is EXACTLY a scrim this module bakes (a catalog sheet, a
-    hand-made gradient stay where they are). Lifts only what paints back
-    identically: the scrim must sit in the filter's slot, and the filter's
-    settings must rebuild it stop for stop."""
+    or no layer that is EXACTLY a scrim this module bakes or baked (a catalog
+    sheet, a hand-made gradient stay where they are). The scrim must sit in the
+    filter's slot, and today's geometry must rebuild it stop for stop — so it
+    paints back identically — or the pre-plateau one must (`_legacy_scrim_layers`):
+    then the filter repaints it in today's geometry at the same strength."""
     image = styles.get("backgroundImage")
     if not isinstance(image, str) or photo_filter_settings(styles)[1] > 0:
         return None
@@ -772,9 +790,16 @@ def lift_photo_scrim(styles: dict) -> dict | None:
         return None
     color, peak = first
     for shape, opacity in _lift_candidates(peak):
-        candidate = photo_filter_layers(color, opacity, shape)
-        if at + len(candidate) > photo_at or not _same_css(candidate, layers[at:at + len(candidate)]):
+        # Today's scrim paints back identically; one baked before the plateau
+        # is lifted at its own strength and anchor, and painted in today's
+        # geometry from then on — the same or more cover behind the copy.
+        for baked in (photo_filter_layers(color, opacity, shape),
+                      _legacy_scrim_layers(_filter_stop(color), opacity / 100, shape)):
+            if baked and at + len(baked) <= photo_at and _same_css(baked, layers[at:at + len(baked)]):
+                break
+        else:
             continue
+        candidate = baked
         out = dict(styles)
         _splice_lists(out, len(layers), at, len(candidate), 0)
         out["backgroundImage"] = ", ".join([*layers[:at], *layers[at + len(candidate):]])
