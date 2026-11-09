@@ -479,8 +479,11 @@ export interface PageScaffold {
   parent_slug?: string | null
   /** Original URL where this sub-page was discovered, if from the crawler. */
   source_url?: string | null
-  /** Position in the source site's header nav (0-based); null/absent ⇒ not in it. */
+  /** Position in the source site's header nav (0-based); null/absent ⇒ not in it.
+   * With `nav_parent` set, the position inside that dropdown. */
   nav_rank?: number | null
+  /** The source-nav dropdown this page sits in (a page slug); null ⇒ top level or not in the nav. */
+  nav_parent?: string | null
   /** Exemplar slug of the look-alike page set this page belongs to (e.g. a
    * catalogue's products) — laid out once, filled from its own content. */
   record_set?: string | null

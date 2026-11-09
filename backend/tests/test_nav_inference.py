@@ -231,3 +231,58 @@ class BodyClusterInferenceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NavPlacementTest(unittest.TestCase):
+    """Every page the source nav names records WHERE the owner's header shows
+    it — read off the nav, never the URL. The tree keeps its URL hierarchy."""
+
+    def _scaffolds(self):
+        source = _source(
+            nav_links=[
+                NavLink(label="Home", href="/"),
+                NavLink(
+                    label="About Us",
+                    href="/about-us",
+                    children=[
+                        NavLink(label="Our Story", href="/about-us/our-story"),
+                        NavLink(label="Our Teachers", href="/team"),
+                        NavLink(label="History", href="/company/history"),
+                    ],
+                ),
+                NavLink(label="Admissions", href="/enrol/apply-now"),
+                NavLink(label="Gallery", href="/gallery"),
+            ],
+            discovered=[
+                _page(path, path)
+                for path in (
+                    "/about-us", "/about-us/our-story", "/team",
+                    "/company/history", "/enrol/apply-now", "/gallery",
+                )
+            ],
+        )
+        return {s.slug: s for s in infer_page_scaffolds(source, industry="childcare")}
+
+    def test_a_top_level_item_at_a_nested_url_keeps_its_header_place(self):
+        admissions = self._scaffolds()["enrol/apply-now"]
+        self.assertEqual(admissions.parent_slug, "enrol")  # the tree is the URL's
+        self.assertEqual((admissions.nav_rank, admissions.nav_parent), (1, None))
+
+    def test_a_dropdown_page_is_placed_in_its_dropdown_whatever_its_url(self):
+        scaffolds = self._scaffolds()
+        history = scaffolds["company/history"]
+        self.assertEqual(history.parent_slug, "company")
+        self.assertEqual((history.nav_rank, history.nav_parent), (2, "about-us"))
+
+    def test_dropdown_positions_follow_the_owner_not_the_alphabet(self):
+        scaffolds = self._scaffolds()
+        self.assertEqual(
+            [(s, scaffolds[s].nav_rank) for s in ("about-us/our-story", "team", "company/history")],
+            [("about-us/our-story", 0), ("team", 1), ("company/history", 2)],
+        )
+        self.assertTrue(all(scaffolds[s].nav_parent == "about-us"
+                            for s in ("about-us/our-story", "team", "company/history")))
+
+    def test_pages_outside_the_nav_carry_no_placement(self):
+        company = self._scaffolds()["company"]  # inferred from a URL, not in the nav
+        self.assertEqual((company.nav_rank, company.nav_parent), (None, None))

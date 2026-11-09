@@ -150,14 +150,13 @@ def normalize_site_slugs(
             page.translation_of = slug_map[page.translation_of]
             page.slug = f"{prefix}/{page.translation_of}".rstrip("/") if page.translation_of else prefix
 
-    # parent_slug references point at a parent's (old) slug — remap them.
+    # parent_slug / nav_parent references point at a page's (old) slug — remap them.
+    def _remapped(slug: str | None) -> str | None:
+        return (slug_map.get(slug) or slug_spelling(slug, existing_slugs) or None) if slug else None
+
     for page in site.pages:
-        if page.parent_slug:
-            page.parent_slug = (
-                slug_map.get(page.parent_slug)
-                or slug_spelling(page.parent_slug, existing_slugs)
-                or None
-            )
+        page.parent_slug = _remapped(page.parent_slug)
+        page.nav_parent = _remapped(page.nav_parent)
 
     # page_tree mirrors `pages` — keep node slugs in lock-step, and the
     # navigation categories that name them with them.
@@ -166,6 +165,7 @@ def normalize_site_slugs(
 
     def _fix_node(node) -> None:
         node.slug = "" if node.is_homepage else _renamed(node.slug)
+        node.nav_parent = _renamed(node.nav_parent) if node.nav_parent else None
         for child in node.children:
             _fix_node(child)
 

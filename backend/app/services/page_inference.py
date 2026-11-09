@@ -1182,6 +1182,7 @@ class _NavEvidence:
 
     ``rank``       — top-level slug → 0-based position in the header nav.
     ``parent_of``  — child slug → parent slug, from dropdown nesting.
+    ``child_rank`` — child slug → 0-based position inside that dropdown.
     ``synth_parents`` — (slug, label, rank) for dropdown parents that have no
                      page of their own (href="#") — we synthesize a hub page.
     """
@@ -1189,12 +1190,30 @@ class _NavEvidence:
     def __init__(self) -> None:
         self.rank: dict[str, int] = {}
         self.parent_of: dict[str, str] = {}
+        self.child_rank: dict[str, int] = {}
         self.synth_parents: list[tuple[str, str, int]] = []
         self.labels: dict[str, str] = {}  # slug → nav label (owner's naming)
 
     @property
     def nav_slugs(self) -> set[str]:
         return set(self.rank) | set(self.parent_of)
+
+    def placement(self, slug: str) -> tuple[int | None, str | None]:
+        """Where the owner's header shows this page: ``(nav_rank, nav_parent)``.
+
+        At the top level it is ``(position, None)``; inside a dropdown it is
+        ``(position in that dropdown, the dropdown's slug)``; outside the nav,
+        ``(None, None)``. Read off the nav alone, never off the URL, so a page
+        at ``/enrol/apply-now`` the header lists beside About is still top
+        level, and ``/company/history`` under About is still About's. The page
+        tree keeps its URL hierarchy; only the header reads this.
+        A page listed both at the top level and in a dropdown is top level.
+        """
+        if slug in self.rank:
+            return self.rank[slug], None
+        if slug in self.child_rank:
+            return self.child_rank[slug], self.parent_of[slug]
+        return None, None
 
 
 def _gather_nav_evidence(nav_links: list[NavLink]) -> _NavEvidence:
@@ -1216,7 +1235,11 @@ def _gather_nav_evidence(nav_links: list[NavLink]) -> _NavEvidence:
         for child in item.children:
             child_slug = _href_to_slug(child.href)
             if child_slug and parent_slug and child_slug != parent_slug:
-                ev.parent_of.setdefault(child_slug, parent_slug)
+                if child_slug not in ev.parent_of:
+                    ev.child_rank[child_slug] = sum(
+                        1 for parent in ev.parent_of.values() if parent == parent_slug
+                    )
+                    ev.parent_of[child_slug] = parent_slug
                 ev.labels.setdefault(child_slug, child.label)
     return ev
 
@@ -1526,7 +1549,8 @@ def infer_page_scaffolds(
         # so the founders weave has to run on the fallback path too.
         _weave_founders_into_home(fallback, source)
         for scaffold in fallback:
-            scaffold.nav_rank = evidence.rank.get(scaffold.slug)
+            if not scaffold.is_homepage:
+                scaffold.nav_rank, scaffold.nav_parent = evidence.placement(scaffold.slug)
         return _apply_team_placement(fallback)
 
     # Build a map of slug → SourceContent for every discovered page (and the
@@ -1831,11 +1855,12 @@ def infer_page_scaffolds(
     #       (services/record_pages.py). After re-parenting, so the parent is final.
     mark_record_sets(scaffolds, by_slug)
 
-    # 2c. Source-nav order → nav_rank on top-level scaffolds. menu_builder uses
-    #     this to order and cap the primary menu.
+    # 2c. Where the owner's header shows each page → nav_rank + nav_parent,
+    #     wherever the URL tree put it. menu_builder builds the full site's
+    #     header from these: the owner's items, places and order.
     for scaffold in scaffolds:
-        if scaffold.parent_slug is None and not scaffold.is_homepage:
-            scaffold.nav_rank = evidence.rank.get(scaffold.slug)
+        if not scaffold.is_homepage:
+            scaffold.nav_rank, scaffold.nav_parent = evidence.placement(scaffold.slug)
 
     # 2d. The entry page itself is a profile directory (the user scraped the
     #     directory URL directly) and no scaffold surfaced a team section —

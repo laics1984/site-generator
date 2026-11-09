@@ -22,6 +22,7 @@ This module:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterator
 from typing import Any, NamedTuple
 from uuid import uuid4
 
@@ -85,8 +86,15 @@ def _group_weight(group: NavGroup) -> int:
     return _TYPE_NAV_WEIGHT.get(ranks_as(group.kind) or "", _DEFAULT_NAV_WEIGHT)
 
 
+def top_nav_rank(node: Any) -> int | None:
+    """The page's position in the source nav's TOP level — None when the nav
+    lists it inside a dropdown (its ``nav_rank`` is then its place there) or
+    not at all. Duck-typed: page trees are drawn from plans and pages too."""
+    return node.nav_rank if getattr(node, "nav_parent", None) is None else None
+
+
 def _owner_ranked(nodes: list[PageNode]) -> bool:
-    return any(n.nav_rank is not None for n in nodes)
+    return any(top_nav_rank(n) is not None for n in nodes)
 
 
 def _is_contact(node: PageNode) -> bool:
@@ -134,28 +142,76 @@ def _primary_tree(page_tree: list[PageNode] | None) -> list[PageNode]:
     return [n for n in (page_tree or []) if not n.locale]
 
 
-def _header_pages(page_tree: list[PageNode]) -> list[PageNode]:
-    """The top-level pages the header may show, in header order, before the
-    cap — the one selection both the menu and its categories are drawn from.
+def _walk(nodes: list[PageNode]) -> Iterator[PageNode]:
+    for node in nodes:
+        yield node
+        yield from _walk(node.children)
 
-    If the source nav was captured (any page carries ``nav_rank``), the owner's
-    curation is authoritative: their items, their order, nothing added — pages
-    the owner left out of their nav stay out of ours (the footer carries them).
-    Without nav evidence, page-type weights order them.
+
+def _header_candidate(node: PageNode) -> bool:
+    return (
+        not node.is_homepage
+        and not node.locale
+        and node.slug.lower() not in ("privacy", "terms")
+        and not _is_contact(node)
+    )
+
+
+class _HeaderMenu(NamedTuple):
+    """The header's entries in order (before the cap) and each one's dropdown
+    — the one selection the menu and its categories are both drawn from."""
+
+    pages: list[PageNode]
+    children: Callable[[PageNode], list[PageNode]]
+
+
+def _header_menu(page_tree: list[PageNode]) -> _HeaderMenu:
+    """What the header shows.
+
+    If the source nav was captured (a page carries a top-level ``nav_rank``),
+    the owner's curation is authoritative: their items, their order, nothing
+    added — pages the owner left out of their nav stay out of ours (the footer
+    carries them). Each page sits where THEIR header put it, read off
+    ``nav_rank``/``nav_parent`` rather than the URL tree: "Admissions" at
+    /enrol/apply-now stays top level, "History" at /company/history stays in
+    About's dropdown, and a dropdown keeps the owner's order. A page's other
+    children (pages the owner's nav does not place) follow its listed ones,
+    as before. The tree itself — breadcrumbs, the footer — keeps the URL
+    hierarchy: this is a menu decision, like ``nav_groups``.
+
+    Without nav evidence, page-type weights order the top-level pages and the
+    tree supplies the dropdowns.
     """
-    candidates = [
-        n
-        for n in page_tree
-        if not n.is_homepage
-        and n.slug.lower() not in ("privacy", "terms")
-        and not _is_contact(n)
-    ]
-    if _owner_ranked(candidates):
-        return sorted(
-            (n for n in candidates if n.nav_rank is not None),
-            key=lambda n: n.nav_rank,  # type: ignore[arg-type, return-value]
+    nodes = [n for n in _walk(page_tree) if not n.locale]
+    listed = sorted(
+        (n for n in nodes if _header_candidate(n) and top_nav_rank(n) is not None),
+        key=top_nav_rank,  # type: ignore[arg-type]
+    )
+    if not listed:
+        roots = [n for n in page_tree if _header_candidate(n)]
+        return _HeaderMenu(
+            sorted(roots, key=lambda n: (_fallback_weight(n), n.slug)), _menu_children
         )
-    return sorted(candidates, key=lambda n: (_fallback_weight(n), n.slug))
+
+    shown = {n.slug for n in listed}
+    dropdowns: dict[str, list[PageNode]] = {}
+    for node in nodes:
+        if node.nav_parent in shown and node.nav_rank is not None:
+            dropdowns.setdefault(node.nav_parent, []).append(node)
+    for items in dropdowns.values():
+        items.sort(key=lambda n: n.nav_rank)  # type: ignore[arg-type, return-value]
+    # Placed by the owner's nav somewhere this header shows. Anything else —
+    # a page whose dropdown was not generated, a Contact the header leaves to
+    # its CTA — stays in its tree parent's dropdown, as before.
+    placed = shown | {n.slug for items in dropdowns.values() for n in items}
+
+    def children(node: PageNode) -> list[PageNode]:
+        return [
+            *dropdowns.get(node.slug, []),
+            *(child for child in _menu_children(node) if child.slug not in placed),
+        ]
+
+    return _HeaderMenu(listed, children)
 
 
 def plan_nav_groups(
@@ -175,14 +231,14 @@ def plan_nav_groups(
     belong with instead (services/nav_groups.py); a page no category claims
     stays a link, and the cap still applies to what is left.
     """
-    pages = _header_pages(_primary_tree(page_tree))
+    pages, children = _header_menu(_primary_tree(page_tree))
     if len(pages) <= MAX_PRIMARY_ITEMS:
         return []
     groups = group_pages(
         pages,
         industry=industry,
         language=language,
-        has_children=frozenset(n.slug for n in pages if _menu_children(n)),
+        has_children=frozenset(n.slug for n in pages if children(n)),
         owner_order=_owner_ranked(pages),
     )
     if groups:
@@ -222,6 +278,7 @@ def _folded_items(
     nav_groups: list[NavGroup] | None,
     *,
     dropdown_cap: int | None = None,
+    children_of: Callable[[PageNode], list[PageNode]] = _menu_children,
 ) -> list[dict[str, Any]]:
     """One menu item per top-level entry: a page with its own children, or a
     category at the place of its head (with no head, of its first member). The
@@ -252,7 +309,7 @@ def _folded_items(
                 folded[node.slug] = (group, head, members)
 
     def page(node: PageNode, extra: list[PageNode] | None = None) -> dict[str, Any]:
-        children = [*_menu_children(node), *(extra or [])][:dropdown_cap]
+        children = [*children_of(node), *(extra or [])][:dropdown_cap]
         return _menu_item(
             node.title,
             f"/{node.slug}",
@@ -329,8 +386,10 @@ def build_menus(
     page_tree = _primary_tree(page_tree) or None
     primary_items: list[dict[str, Any]] = []
     if page_tree:
+        header = _header_menu(page_tree)
         entries = _folded_items(
-            _header_pages(page_tree), nav_groups, dropdown_cap=MAX_DROPDOWN_ITEMS
+            header.pages, nav_groups,
+            dropdown_cap=MAX_DROPDOWN_ITEMS, children_of=header.children,
         )
         primary_items = entries[:MAX_PRIMARY_ITEMS]
         if demoted := entries[MAX_PRIMARY_ITEMS:]:

@@ -56,6 +56,11 @@ class PageScaffold(BaseModel):
     parent_slug: str | None = None  # set on sub-pages, references the parent's slug
     source_url: str | None = None   # URL the sub-page was discovered/crawled at
     nav_rank: int | None = None     # source-nav position (0-based); None ⇒ not in the source header nav
+    # The source-nav item this page sits under (its dropdown's slug); None when
+    # the nav lists it at the top level, or not at all. nav_rank is then its
+    # position inside that dropdown. Read off the nav, never the URL
+    # (page_inference._NavEvidence.placement); only the full site's header reads it.
+    nav_parent: str | None = None
     from_source: bool = False       # page evidenced by the source (crawled / nav / strip) vs template-injected
     # A page the reader is meant to reach from a listing, not from a menu — a
     # committee member's own page, linked from the grid that names them. Set

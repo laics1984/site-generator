@@ -2271,6 +2271,7 @@ def _align_pages_to_scaffolds(
                 "is_homepage": s.is_homepage,
                 "parent_slug": s.parent_slug,
                 "nav_rank": s.nav_rank,
+                "nav_parent": s.nav_parent,
                 "from_source": s.from_source,
                 "menu_hidden": s.menu_hidden,
             }
