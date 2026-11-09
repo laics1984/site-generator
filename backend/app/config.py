@@ -354,6 +354,11 @@ class Settings(BaseSettings):
     # report on the design manifest. Off → no corrections, no report.
     design_quality_enabled: bool = True
 
+    # Browser-based review of freshly generated previews. The renderer lives
+    # on the private generator frontend and uses the existing local LLM client.
+    design_review_enabled: bool = True
+    design_review_renderer_url: str = "http://localhost:5174/bench.html"
+
     # Full-bleed photo/abstract background hero on EVERY page (not just the
     # homepage), so the transparent floating header engages site-wide. Imagery
     # per page: bound/scraped photo → stock photo → colour-matched abstract;

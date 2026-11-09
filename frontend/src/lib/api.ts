@@ -9,6 +9,7 @@ import type {
   CmsTarget,
   CrawlJob,
   DetectedBrand,
+  DesignReviewResult,
   ExtendCrawlResult,
   FacebookFacts,
   FacebookSession,
@@ -31,6 +32,11 @@ import type {
 import { llmChoiceHeaders } from '@/lib/llmChoice'
 
 const API_BASE = ''
+
+export const reviewGeneratedDesign = (site: GeneratedSite, signal: AbortSignal) =>
+  jsonRequest<DesignReviewResult>('/api/preview/design-review', {
+    method: 'POST', body: JSON.stringify(site), signal,
+  })
 
 export const previewPalette = (site: GeneratedSite, palette: CreativePalette, save = false) =>
   jsonRequest<PalettePatch>('/api/preview/palette', { method: 'POST', body: JSON.stringify({ site, palette, save }) })

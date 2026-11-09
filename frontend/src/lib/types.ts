@@ -400,6 +400,18 @@ export interface GeneratedSite {
   social_links?: Array<[string, string]>
 }
 
+export interface DesignReviewNote {
+  slug: string
+  message: string
+}
+
+export interface DesignReviewResult {
+  status: 'complete' | 'partial' | 'unavailable' | 'disabled'
+  pages: Array<Pick<GeneratedPage, 'slug' | 'body_schema'>>
+  changes: DesignReviewNote[]
+  suggestions: DesignReviewNote[]
+}
+
 export type CreativePalette = Pick<BuilderStylesShape['colors'], 'primary' | 'secondary' | 'accent' | 'surface'>
 export interface PalettePatch {
   theme: unknown
