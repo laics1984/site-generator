@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.models.builder_schema import BodySchema, BuilderElement, GeneratedPage, GeneratedSite, PageSeo
 from app.models.content_blocks import NavLink, SourceContent
@@ -16,6 +18,7 @@ from app.services.cms_client import CmsClient
 from app.services.cms_sync import ExistingPage, plan_sync
 from app.services import db, generation_projects
 from app.services.menu_builder import build_layout_payload
+from app.services.planner import DetectedBrand, ScaffoldedSitePlan
 from app.services.push_orchestrator import MediaUpload, PushRequest, inspect_entity, push_site
 
 
@@ -75,6 +78,33 @@ def test_remaining_mode_requires_saved_project_endpoint() -> None:
     )
     with pytest.raises(Exception, match="saved project endpoint"):
         asyncio.run(generate_with_pages(payload))
+
+
+@pytest.mark.parametrize("require_complete_copy", [True, False])
+def test_failed_source_copy_blocks_only_opted_in_generation(require_complete_copy: bool) -> None:
+    payload = GenerateWithPagesRequest(
+        source=SourceContent(source_kind="paste", source_ref="test", raw_text="Centre runs a Montessori programme."),
+        selected_pages=[PageScaffold(page_type="home", slug="", title="Home", sections=[], is_homepage=True)],
+        detected_brand=DetectedBrand(site_name="Centre"),
+        require_complete_copy=require_complete_copy,
+    )
+    degraded = ScaffoldedSitePlan(site_name="Centre", pages=[], degraded_slugs=[""])
+
+    class ReachedAlignment(Exception):
+        pass
+
+    with (
+        patch("app.routers.generate.resolve_direction", new=AsyncMock(return_value=SimpleNamespace(theme=None))),
+        patch("app.routers.generate.plan_site_with_scaffolds", new=AsyncMock(return_value=(degraded, {}))),
+        patch("app.routers.generate._align_pages_to_scaffolds", side_effect=ReachedAlignment),
+    ):
+        if require_complete_copy:
+            with pytest.raises(HTTPException, match="Source-based copy could not be generated for /") as caught:
+                asyncio.run(generate_with_pages(payload))
+            assert caught.value.status_code == 502
+        else:
+            with pytest.raises(ReachedAlignment):
+                asyncio.run(generate_with_pages(payload))
 
 
 def test_extension_rejects_preview_page_even_when_its_id_is_known() -> None:

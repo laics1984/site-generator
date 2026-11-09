@@ -105,7 +105,7 @@ from app.services.hero_director import (
 )
 from app.services.design_fingerprint import template_id_of
 from app.services.header_footer import build_footer, build_header, footer_band
-from app.services.menu_builder import plan_nav_groups
+from app.services.menu_builder import plan_nav_groups, top_nav_rank
 from app.services.legal_pages import drop_page_title
 from app.services.image_match import SlotUsage
 from app.services.media import (
@@ -5799,6 +5799,7 @@ async def plan_to_site(
                 ),
                 parent_slug=page_plan.parent_slug,
                 nav_rank=page_plan.nav_rank,
+                nav_parent=page_plan.nav_parent,
                 from_source=page_plan.from_source,
                 menu_hidden=page_plan.menu_hidden,
             )
@@ -6130,6 +6131,7 @@ def _build_page_tree(pages: list[GeneratedPage]) -> list[PageNode]:
             title=p.title,
             is_homepage=p.is_homepage,
             nav_rank=p.nav_rank,
+            nav_parent=p.nav_parent,
             from_source=p.from_source,
             menu_hidden=p.menu_hidden,
             locale=getattr(p, "locale", None),
@@ -6144,12 +6146,14 @@ def _build_page_tree(pages: list[GeneratedPage]) -> list[PageNode]:
         else:
             roots.append(node)
     # Homepage first, then source-nav order (unranked pages after ranked ones,
-    # alphabetical within each group).
+    # alphabetical within each group). Only a top-level rank orders roots: a
+    # dropdown page whose parent wasn't generated carries its place in THAT
+    # dropdown, which says nothing about the top level.
     roots.sort(
         key=lambda n: (
             not n.is_homepage,
-            n.nav_rank is None,
-            n.nav_rank if n.nav_rank is not None else 0,
+            top_nav_rank(n) is None,
+            top_nav_rank(n) or 0,
             n.slug,
         )
     )

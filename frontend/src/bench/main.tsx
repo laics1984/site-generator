@@ -1,5 +1,5 @@
 /**
- * Design-benchmark render harness (dev only — see bench.html).
+ * Private browser render harness for design review and benchmarking.
  *
  * backend/scripts/design_screenshots.py injects `window.__BENCH__` (a generated
  * site and the layout `/api/preview/layout` would return for it) and waits for
@@ -7,49 +7,24 @@
  * PreviewFrame → PreviewSiteShell → SchemaRenderer — with the same preview.css
  * and responsive stylesheet, so a screenshot shows what the preview shows.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 
 import type { GeneratedSite, PreviewLayout } from '@/lib/types'
-import { PreviewFrame } from '@/preview/PreviewFrame'
-import { PreviewSiteShell } from '@/preview/PreviewSiteShell'
-import { SchemaRenderer } from '@/preview/SchemaRenderer'
-import { buildResponsiveStylesheet } from '@/preview/lib/responsiveRuntime'
-import { asPublicSchema } from '@/preview/lib/adapt'
-import type { PublicStyleTokens } from '@/preview/lib/public'
-import previewCss from '@/preview/preview.css?raw'
+import { PreviewScene } from '@/preview/PreviewScene'
+import { measureReviewPage } from './reviewMetrics'
 
 declare global {
   interface Window {
     __BENCH__?: { site: GeneratedSite; layout: PreviewLayout; slug?: string }
     __BENCH_READY__?: boolean
+    __BENCH_MEASURE__?: () => ReturnType<typeof measureReviewPage>
   }
 }
 
 function Bench({ site, layout, slug }: { site: GeneratedSite; layout: PreviewLayout; slug?: string }) {
   const page = site.pages.find((p) => (slug === undefined ? p.is_homepage : p.slug === slug)) ?? site.pages[0]
   const [scrollRoot, setScrollRoot] = useState<HTMLElement | null>(null)
-  const headerSchema = useMemo(() => asPublicSchema(layout.header), [layout])
-  const footerSchema = useMemo(() => asPublicSchema(layout.footer), [layout])
-  const bodySchema = useMemo(() => asPublicSchema(page.body_schema), [page])
-  const previewSite = useMemo(
-    () => ({
-      builderStyles: site.builder_styles as PublicStyleTokens | null | undefined,
-      headerSchema,
-      footerSchema,
-      menus: layout.menus ?? [],
-    }),
-    [site, headerSchema, footerSchema, layout],
-  )
-  const styles = useMemo(
-    () => [previewCss, buildResponsiveStylesheet({ headerSchema, bodySchema, footerSchema })],
-    [headerSchema, bodySchema, footerSchema],
-  )
-  const fontHrefs = useMemo(() => {
-    const families = (site.google_fonts ?? []).filter((f) => f && f.trim() !== '')
-    if (!families.length) return []
-    return [`https://fonts.googleapis.com/css2?${families.map((f) => `family=${f.replace(/ /g, '+')}`).join('&')}&display=swap`]
-  }, [site.google_fonts])
   const onScrollRoot = useCallback((el: HTMLElement | null) => setScrollRoot(el), [])
 
   // Ready once the shell has written the theme's custom properties into the
@@ -60,12 +35,16 @@ function Bench({ site, layout, slug }: { site: GeneratedSite; layout: PreviewLay
     const doc = scrollRoot.ownerDocument
     let cancelled = false
     const poll = async () => {
-      while (!cancelled && !doc.querySelector('[style*="--builder-button-background"]')) {
+      while (!cancelled && !doc.querySelector('[data-scope="body"]')) {
         await new Promise((resolve) => window.setTimeout(resolve, 50))
       }
-      await doc.fonts.ready
-      await new Promise((resolve) => window.setTimeout(resolve, 300))
-      if (!cancelled) window.__BENCH_READY__ = true
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      await Promise.race([doc.fonts.ready, new Promise((resolve) => window.setTimeout(resolve, 1500))])
+      if (!cancelled) {
+        window.__BENCH_MEASURE__ = () => measureReviewPage(doc)
+        window.__BENCH_READY__ = true
+        document.documentElement.dataset.benchReady = "true"
+      }
     }
     void poll()
     return () => {
@@ -74,24 +53,14 @@ function Bench({ site, layout, slug }: { site: GeneratedSite; layout: PreviewLay
   }, [scrollRoot])
 
   return (
-    <PreviewFrame
-      styles={styles}
-      stylesheetHrefs={fontHrefs}
-      title={page.title}
+    <PreviewScene
+      page={page}
+      site={site}
+      layout={layout}
+      scrollRoot={scrollRoot}
       onScrollRootChange={onScrollRoot}
       style={{ width: '100vw', height: '100vh', border: 0, display: 'block' }}
-    >
-      <PreviewSiteShell site={previewSite} bodySchema={bodySchema} scrollRoot={scrollRoot}>
-        {({ headerOverlaySpacerPaddingTop, globalHeroMinHeight }) => (
-          <SchemaRenderer
-            schema={bodySchema}
-            scope="body"
-            overlaySpacerPaddingTop={headerOverlaySpacerPaddingTop}
-            globalHeroMinHeight={globalHeroMinHeight}
-          />
-        )}
-      </PreviewSiteShell>
-    </PreviewFrame>
+    />
   )
 }
 

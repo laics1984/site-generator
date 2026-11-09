@@ -16,9 +16,10 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from app.models.builder_schema import GeneratedSite
 from app.models.brand import CreativePalette
@@ -29,7 +30,8 @@ from app.services.cms_targets import (
     available_targets,
     resolve_target,
 )
-from app.services.push_orchestrator import PushRequest, inspect_entity, push_site
+from app.services.push_orchestrator import PushReport, PushRequest, inspect_entity, push_site
+from app.services.scout_assets import SavedAsset, freeze_assets, unpack_assets
 
 router = APIRouter(prefix="/api/cms", tags=["cms"])
 
@@ -225,6 +227,133 @@ async def plan(payload: PlanRequestBody) -> dict[str, Any]:
     return {**sync.as_dict(), "renamed_slugs": renamed}
 
 
+class ProspectPreviewRequest(BaseModel):
+    target: str = Field(min_length=1)
+    expected_cms_origin: str
+    email: str
+    password: SecretStr
+    entity_name: str = Field(min_length=1, max_length=255)
+    preview_key: UUID
+    expected_owner_id: str = Field(min_length=1, max_length=64)
+    expected_entity_id: UUID | None = None
+
+
+@router.post("/scout/provision")
+async def provision_prospect_preview(payload: ProspectPreviewRequest) -> dict[str, Any]:
+    target = _resolve(payload.target)
+    if target.api_base_url != payload.expected_cms_origin:
+        raise HTTPException(status_code=409, detail="The named CMS no longer matches the expected origin.")
+    client = CmsClient.for_target(target)
+    try:
+        await client.login(payload.email, payload.password.get_secret_value())
+        preview = await client.provision_prospect_preview(
+            payload.model_dump(mode="json", exclude={"target", "expected_cms_origin", "email", "password"})
+        )
+    except CmsApiError as exc:
+        status = exc.status if 400 <= exc.status <= 599 else 502
+        raise HTTPException(status_code=status, detail="CMS preview provisioning failed.") from exc
+    finally:
+        await client.aclose()
+    return {
+        **preview,
+        "admin_url": f"{target.admin_base_url}/sites" if target.admin_base_url else None,
+    }
+
+
+@router.post("/scout/freeze")
+async def freeze_scout_site(site: GeneratedSite) -> dict[str, SavedAsset]:
+    """Capture the files a Scout draft references while they are still available."""
+    try:
+        return await freeze_assets(site)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class SavedScoutPublishRequest(BaseModel):
+    site: GeneratedSite
+    assets: dict[str, SavedAsset]
+    target: str = Field(min_length=1)
+    expected_cms_origin: str
+    email: str
+    password: SecretStr
+    entity_token: SecretStr
+
+
+class SavedScoutDraftRequest(BaseModel):
+    site: GeneratedSite
+    assets: dict[str, SavedAsset]
+    target: str = Field(min_length=1)
+    email: str
+    password: SecretStr
+    draft_key: UUID
+
+
+@router.post("/scout/local-draft")
+async def stage_saved_scout_draft(payload: SavedScoutDraftRequest) -> dict[str, Any]:
+    """Open a versioned saved bundle for editing on a local CMS."""
+    target = _resolve(payload.target)
+    if target.is_remote:
+        raise HTTPException(status_code=409, detail="Scout Builder drafts require a local CMS target.")
+    try:
+        assets = unpack_assets(payload.site, payload.assets)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    password = payload.password.get_secret_value()
+    client = CmsClient.for_target(target)
+    try:
+        await client.login(payload.email, password)
+        owner_id = await client.account_id()
+        preview = await client.provision_prospect_preview({
+            "preview_key": str(payload.draft_key),
+            "expected_owner_id": owner_id,
+            "entity_name": f"{payload.site.site_name[:230]} — Scout draft",
+        })
+    except CmsApiError as exc:
+        status = exc.status if 400 <= exc.status <= 599 else 502
+        raise HTTPException(status_code=status, detail="Could not open a draft with the local CMS account.") from exc
+    finally:
+        await client.aclose()
+
+    report = await push_site(PushRequest(
+        site=payload.site, target=target, cms_email=payload.email, cms_password=password,
+        entity_id=preview["entity_id"], entity_token=preview["entity_api_token"],
+        publish=False, push_favicon=False, saved_assets=assets,
+    ))
+    if not report.success:
+        raise HTTPException(status_code=502, detail="The local CMS did not save every draft page and asset.")
+    page_ids = {slug: page_id for page_id, slug in report.page_urls.items()}
+    pages = sorted(payload.site.pages, key=lambda page: not page.is_homepage)
+    if any((page.slug or "/") not in page_ids for page in pages):
+        raise HTTPException(status_code=502, detail="The local CMS did not return every Builder page.")
+    return {"entity_id": preview["entity_id"], "pages": [
+        {"id": page_ids[page.slug or "/"], "title": page.title} for page in pages
+    ]}
+
+
+@router.post("/scout/publish")
+async def publish_saved_scout_site(payload: SavedScoutPublishRequest) -> dict[str, Any]:
+    """Publish a complete saved version, with no downloads from its source."""
+    target = _resolve(payload.target)
+    if target.api_base_url != payload.expected_cms_origin:
+        raise HTTPException(status_code=409, detail="The named CMS no longer matches the expected origin.")
+    try:
+        assets = unpack_assets(payload.site, payload.assets)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    report = await push_site(PushRequest(
+        site=payload.site,
+        target=target,
+        cms_email=payload.email,
+        cms_password=payload.password.get_secret_value(),
+        entity_token=payload.entity_token.get_secret_value(),
+        publish=True,
+        push_favicon=False,
+        saved_assets=assets,
+    ))
+    return _push_response(report, target)
+
+
 class PushRequestBody(BaseModel):
     """Site is the full GeneratedSite payload from a prior /generate call."""
 
@@ -258,6 +387,7 @@ class PushRequestBody(BaseModel):
         description="Which CMS to push into — a name from GET /api/cms/targets, "
         "never a URL. None means the default target.",
     )
+    expected_cms_origin: str | None = None
     operation: Literal["sync", "preview", "extend"] = "sync"
     generation_project_id: str | None = None
 
@@ -273,6 +403,8 @@ async def push(payload: PushRequestBody) -> dict[str, Any]:
     succeed for diagnostics.
     """
     target = _resolve(payload.target)
+    if payload.expected_cms_origin is not None and target.api_base_url != payload.expected_cms_origin:
+        raise HTTPException(status_code=409, detail="The named CMS no longer matches the expected origin.")
     req = PushRequest(
         site=payload.site,
         target=target,
@@ -290,7 +422,10 @@ async def push(payload: PushRequestBody) -> dict[str, Any]:
         operation=payload.operation,
         generation_project_id=payload.generation_project_id,
     )
-    report = await push_site(req)
+    return _push_response(await push_site(req), target)
+
+
+def _push_response(report: PushReport, target: CmsTarget) -> dict[str, Any]:
     return {
         "success": report.success,
         "error": report.error,

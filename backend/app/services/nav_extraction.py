@@ -113,22 +113,47 @@ def extract_nav_links(soup: BeautifulSoup, base_url: str) -> list[NavLink]:
     """Pull the primary header navigation as an ordered, nested NavLink list.
 
     Candidates are ``<nav>`` elements and ``role="navigation"`` containers;
-    ones inside ``<header>`` win ties. Within the chosen container, top-level
-    menu items become NavLinks and each item's nested item list becomes its
-    children — the standard dropdown markup. Navs without list markup fall
-    back to a flat anchor walk.
+    ones inside the page's header landmark win ties. Within the chosen
+    container, top-level menu items become NavLinks and each item's nested
+    item list becomes its children — the standard dropdown markup. Navs
+    without list markup fall back to a flat anchor walk.
 
     Only when no semantic candidate yields a menu are declared menus read:
     containers of ``_DECLARED_MENU_ITEM_CLASSES`` items, scored the same way.
     Sites whose navigation is already marked up keep exactly what they had.
+
+    A menu inside the footer landmark is never a candidate: the footer's
+    sitemap is the owner's footer, not their header. Scored by size, it beat
+    a header nav that sits in a plain ``<div>`` (Webflow's ``role="banner"``
+    navbar, most custom themes) on every such site — the header was then
+    ranked from the footer, and a two-page preview showed Privacy and Terms
+    in its header. No header menu at all is the honest answer instead, which
+    is what lets ``scraper._entry_with_navigation`` render the entry page to
+    find one that JavaScript builds.
     """
     for find_candidates in (_semantic_nav_candidates, _declared_menu_roots):
-        items = _best_menu(find_candidates(soup), base_url)
+        candidates = [c for c in find_candidates(soup) if not _in_landmark(c, _FOOTER)]
+        items = _best_menu(candidates, base_url)
         if items:
             if len(items) > _MAX_NAV_ITEMS:
                 logger.warning("Source navigation has %d items; retaining the first %d", len(items), _MAX_NAV_ITEMS)
             return items[:_MAX_NAV_ITEMS]
     return []
+
+
+# The page-level landmarks: an element, or any element carrying the ARIA role
+# that element implies. Webflow's navbar, for one, is `<div role="banner">`.
+_HEADER = ("header", "banner")
+_FOOTER = ("footer", "contentinfo")
+
+
+def _in_landmark(tag: Tag, landmark: tuple[str, str]) -> bool:
+    element, role = landmark
+    return any(
+        node.name == element or node.get("role") == role
+        for node in chain((tag,), tag.parents)
+        if isinstance(node, Tag)
+    )
 
 
 def _semantic_nav_candidates(soup: BeautifulSoup) -> list[Tag]:
@@ -165,7 +190,7 @@ def _best_menu(candidates: list[Tag], base_url: str) -> list[NavLink]:
     best_score = (-1, -1)
     for container in candidates:
         items = _parse_nav_container(container, base_url)
-        in_header = container.find_parent("header") is not None
+        in_header = _in_landmark(container, _HEADER)
         score = (1 if in_header else 0, min(len(items), _MAX_NAV_ITEMS))
         if score > best_score:
             best, best_score = items, score

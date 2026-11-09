@@ -1360,6 +1360,8 @@ class PagePlan(BaseModel):
     seo_keywords: list[str] = Field(default_factory=list)
     parent_slug: str | None = None
     nav_rank: int | None = None  # source-nav position from the scaffold; never set by the LLM
+    # The scaffold's nav_parent (the dropdown the source nav lists this page in).
+    nav_parent: SkipJsonSchema[str | None] = None
     from_source: bool = False    # page evidenced by the source site; never set by the LLM
     menu_hidden: bool = False    # reached from a listing, not a menu; never set by the LLM
     # Carried through from the scaffold; never set by the LLM. A page with

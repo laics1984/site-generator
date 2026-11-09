@@ -13,9 +13,15 @@ export default defineConfig(({ mode }) => {
         '@': path.resolve(__dirname, './src'),
       },
     },
+    build: {
+      rollupOptions: {
+        input: { app: path.resolve(__dirname, 'index.html'), bench: path.resolve(__dirname, 'bench.html') },
+      },
+    },
     server: {
       port: 5174,
       host: true,
+      allowedHosts: ['host.docker.internal', 'frontend'],
       strictPort: true,
       proxy: {
         '/api': { target: backendTarget, changeOrigin: true },

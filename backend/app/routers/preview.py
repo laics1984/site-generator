@@ -13,16 +13,24 @@ preview and the published site start from identical input.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 
+from app.config import settings
 from app.models.builder_schema import GeneratedSite
+from app.services import design_review
+from app.services.design_review_browser import review_browser
+from app.services.llm import OpenAIClient
 from app.services.menu_builder import build_layout_payload
 from app.services.palette_updates import PaletteRequest, PalettePatch, palette_patch, save_preview_palette
 from app.services.translations import localized_layout
 
 router = APIRouter(prefix="/api/preview", tags=["preview"])
+log = logging.getLogger(__name__)
+_review_slot = asyncio.Semaphore(1)
 
 
 @router.post("/palette", response_model=PalettePatch)
@@ -58,3 +66,31 @@ async def preview_layout(site: GeneratedSite) -> dict[str, Any]:
         "footer": payload.footer,
         "languages": languages,
     }
+
+
+@router.post("/design-review", response_model=design_review.DesignReview)
+async def preview_design_review(site: GeneratedSite, request: Request):
+    if not settings.design_review_enabled:
+        return design_review.DesignReview(status="disabled")
+
+    async def run():
+        try:
+            async with asyncio.timeout(105), _review_slot:
+                layout = await preview_layout(site)
+                async with review_browser(settings.design_review_renderer_url) as renderer:
+                    # The review always uses the local model, independently of
+                    # the optional cloud providers selected for generation.
+                    return await design_review.review(site, layout, renderer, OpenAIClient())
+        except Exception:
+            log.warning("Preview design review unavailable", exc_info=True)
+            return design_review.DesignReview(status="unavailable")
+
+    job = asyncio.create_task(run())
+    disconnect = asyncio.create_task(request.receive())
+    try:
+        done, _ = await asyncio.wait((job, disconnect), return_when=asyncio.FIRST_COMPLETED)
+        return job.result() if job in done else Response(status_code=499)
+    finally:
+        job.cancel()
+        disconnect.cancel()
+        await asyncio.gather(job, disconnect, return_exceptions=True)

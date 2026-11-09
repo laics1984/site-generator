@@ -7,9 +7,7 @@
     <style>html, body { margin: 0; padding: 0; }</style>
   </head>
   <body>
-    <!-- Dev-only entry for backend/scripts/design_screenshots.py: renders one
-         generated site through the real preview renderer. Not part of the app
-         bundle (vite build only builds index.html). -->
+    <!-- Browser workers inject one generated page into the shared preview renderer. -->
     <div id="root"></div>
     <script type="module" src="/src/bench/main.tsx"></script>
   </body>

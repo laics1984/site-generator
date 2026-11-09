@@ -135,7 +135,9 @@ logger = logging.getLogger(__name__)
 # 8: each page records the post or event its markup declares itself
 # (`declared_entry`, services/entry_markup.py), so a WordPress post at the
 # site root is migrated as an article instead of scaffolded as a page.
-EXTRACTION_VERSION = 8
+# 9: a menu inside the footer landmark is never read as the header navigation
+# (nav_extraction.extract_nav_links); `role="banner"` counts as the header.
+EXTRACTION_VERSION = 9
 
 
 # --- public types ---------------------------------------------------------------

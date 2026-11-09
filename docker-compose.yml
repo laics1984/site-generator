@@ -36,6 +36,7 @@ services:
       # NOTE: server root, no /v1 suffix — the client appends the OpenAI paths.
       LLM_BASE_URL: "${LLM_BASE_URL:-http://host.docker.internal:11434}"
       CMS_API_BASE_URL: "${CMS_API_BASE_URL:-http://host.docker.internal:8000}"
+      DESIGN_REVIEW_RENDERER_URL: "${DESIGN_REVIEW_RENDERER_URL:-http://frontend:5174/bench.html}"
     extra_hosts:
       # Required on Linux; harmless on macOS where it's already provided.
       - "host.docker.internal:host-gateway"
@@ -63,6 +64,7 @@ services:
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/index.html:/app/index.html
+      - ./frontend/bench.html:/app/bench.html:ro
       - ./frontend/vite.config.ts:/app/vite.config.ts
       - ./frontend/tailwind.config.js:/app/tailwind.config.js
       - ./frontend/postcss.config.js:/app/postcss.config.js

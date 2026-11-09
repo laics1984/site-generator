@@ -341,6 +341,7 @@ def _clone_plan(canonical: PagePlan, scaffold: PageScaffold) -> PagePlan:
     clone.is_homepage = False  # the localized home is a page, not THE homepage
     clone.parent_slug = scaffold.parent_slug
     clone.nav_rank = None
+    clone.nav_parent = None
     clone.from_source = True
     clone.locale = scaffold.locale
     clone.translation_of = scaffold.translation_of

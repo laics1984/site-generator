@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { BrandPanel } from '@/components/BrandPanel'
 import { CoveragePanel } from '@/components/CoveragePanel'
 import { CrawlProgress } from '@/components/CrawlProgress'
+import { DesignReviewStatus } from '@/components/DesignReviewStatus'
 import { PageList } from '@/components/PageList'
 import { PagePicker } from '@/components/PagePicker'
 import { PagePreview } from '@/components/PagePreview'
@@ -32,6 +33,7 @@ import {
 import { companionPageUrl, isFacebookUrl } from '@/lib/sourceDetect'
 import { combineSourcePreviews } from '@/lib/sourceCombine'
 import { withPastedContent } from '@/lib/sourcePaste'
+import { useDesignReview } from '@/lib/useDesignReview'
 import type {
   BrandIdentity,
   BrandMoodChoice,
@@ -138,7 +140,20 @@ export default function App() {
   // don't re-run brand detection.
   const [detectedBrand, setDetectedBrand] = useState<DetectedBrand | null>(null)
 
-  const [site, setSite] = useState<GeneratedSite | null>(null)
+  const [draft, setSite] = useState<GeneratedSite | null>(null)
+  const designReview = useDesignReview()
+  const reviewedPages = designReview.pages
+  const site = useMemo(() => {
+    if (!draft || !reviewedPages?.length) return draft
+    const schemas = new Map(reviewedPages.map((page) => [page.slug, page.body_schema]))
+    return {
+      ...draft,
+      pages: draft.pages.map((page) => {
+        const schema = schemas.get(page.slug)
+        return schema ? { ...page, body_schema: schema } : page
+      }),
+    }
+  }, [draft, reviewedPages])
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null)
 
   // Workspace stage. The wizard is never destroyed on success — it is hidden,
@@ -500,6 +515,7 @@ export default function App() {
    * the summary bar so Adjust/Regenerate cost nothing. */
   function acceptSite(result: GeneratedSite, origin: LastGenerate | null) {
     setSite(result)
+    designReview.start(result)
     setLastGenerate(origin)
     // Stay on the same page across a regenerate when it still exists.
     setSelectedSlug((prev) =>
@@ -605,6 +621,7 @@ export default function App() {
   }
 
   function handleStartOver() {
+    designReview.reset()
     setSite(null)
     setSelectedSlug(null)
     setLastGenerate(null)
@@ -658,7 +675,7 @@ export default function App() {
     setMultilingual({ mode: 'auto', locales: [] })
   }
 
-  if (stage === 'preview' && site && selectedPage) {
+  if (stage === 'preview' && site && draft && selectedPage) {
     return (
       <div className="flex h-screen flex-col overflow-hidden bg-canvas">
         <WorkspaceHeader />
@@ -670,7 +687,7 @@ export default function App() {
           exportBusy={exportBusy}
           onRegenerate={handleRegenerate}
           onAdjust={() => setFormOpen(true)}
-          onPublish={() => { setPaletteOnly(false); setPublishOpen(true) }}
+          onPublish={() => { designReview.stop(); setPaletteOnly(false); setPublishOpen(true) }}
           onGenerateRemaining={
             site.generation_mode === 'two_page_preview' &&
             savedProjects.some((project) => project.id === site.generation_project_id && project.status === 'preview_published')
@@ -712,13 +729,32 @@ export default function App() {
             />
           </aside>
           <section className="flex min-w-0 flex-1 flex-col overflow-hidden p-3 sm:p-4">
-            {site.builder_styles?.colors && <PalettePanel site={site} onChange={setSite} onPublish={() => { setPaletteOnly(true); setPublishOpen(true) }} />}
+            {draft.builder_styles?.colors && (
+              <PalettePanel
+                site={draft}
+                onChange={(next) => {
+                  if (next.builder_styles !== draft.builder_styles) designReview.reset()
+                  setSite(next)
+                }}
+                onPublish={() => { designReview.stop(); setPaletteOnly(true); setPublishOpen(true) }}
+              />
+            )}
             <PagePreview
               page={selectedPage}
-              site={site}
+              site={draft}
               mediaCredits={site.media_credits}
               onNavigate={setSelectedSlug}
               regenerating={busy}
+              reviewStatus={designReview.review && (
+                <DesignReviewStatus
+                  review={designReview.review}
+                  pages={site.pages}
+                  showOriginal={designReview.showOriginal}
+                  onCompare={() => designReview.setShowOriginal(!designReview.showOriginal)}
+                  onStop={designReview.stop}
+                  onNavigate={setSelectedSlug}
+                />
+              )}
             />
           </section>
         </main>

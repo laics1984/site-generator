@@ -290,6 +290,7 @@ class GeneratedPage(BaseModel):
     seo: PageSeo
     parent_slug: str | None = None  # set on sub-pages for breadcrumbs + nav grouping
     nav_rank: int | None = None     # source-nav position carried from the scaffold; None ⇒ not in source nav
+    nav_parent: str | None = None   # the source-nav dropdown it sits in; None ⇒ top level or not in it
     from_source: bool = False       # page evidenced by the source site vs template-injected
     menu_hidden: bool = False       # reached from a listing (a roster grid), not from a menu
     # A page in another language (separate URLs): its BCP 47 `locale`, the slug
@@ -316,6 +317,11 @@ class PageNode(BaseModel):
     title: str
     is_homepage: bool = False
     nav_rank: int | None = None  # source-nav position; menu_builder uses it to order + cap the primary menu
+    # The source-nav dropdown this page sits in (a page slug); None when the
+    # source nav lists it at the top level, or not at all — nav_rank is then its
+    # place in that dropdown. Independent of the tree: the full site's header
+    # places a page where the owner's header did, whatever its URL parent.
+    nav_parent: str | None = None
     # A page the source reaches from a listing rather than a menu (a committee
     # member's own page). It keeps its place in the tree — breadcrumbs and the
     # hierarchy are real — but menu_builder skips it in the header dropdown and

@@ -1,18 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 
 import type { GeneratedPage, GeneratedSite, PreviewLayout } from '@/lib/types'
 import { fetchPreviewLayout } from '@/lib/api'
 import { pagePath, resolveInternalSlug } from '@/lib/previewNav'
 import { Banner, Button, Segmented, SectionLabel, Spinner } from '@/ui'
-import { PreviewFrame } from '@/preview/PreviewFrame'
-import { PreviewSiteShell } from '@/preview/PreviewSiteShell'
-import { previewLanguages } from '@/lib/previewLanguages'
-import { SchemaRenderer } from '@/preview/SchemaRenderer'
-import { buildResponsiveStylesheet } from '@/preview/lib/responsiveRuntime'
-import { asPublicSchema } from '@/preview/lib/adapt'
-import type { PublicStyleTokens } from '@/preview/lib/public'
-import previewCss from '@/preview/preview.css?raw'
+import { PreviewScene } from '@/preview/PreviewScene'
 
 interface PagePreviewProps {
   page: GeneratedPage
@@ -22,6 +15,7 @@ interface PagePreviewProps {
   onNavigate: (slug: string) => void
   /** A regeneration is in flight — dim the canvas but keep it mounted. */
   regenerating?: boolean
+  reviewStatus?: ReactNode
 }
 
 /** Widths that match the breakpoints in lib/responsiveRuntime.ts — the frame is
@@ -45,6 +39,7 @@ export function PagePreview({
   mediaCredits,
   onNavigate,
   regenerating = false,
+  reviewStatus,
 }: PagePreviewProps) {
   const [viewport, setViewport] = useState<ViewportKey>('desktop')
   const [scrollRoot, setScrollRoot] = useState<HTMLElement | null>(null)
@@ -89,46 +84,6 @@ export function PagePreview({
       cancelled = true
     }
   }, [site, layoutAttempt])
-
-  const builderStyles = site.builder_styles as PublicStyleTokens | null | undefined
-
-  // A translated page wears its language's chrome: the header, CTA, footer and
-  // menus the CMS will serve on it, not the primary language's.
-  const chrome = (page.locale && layout?.languages?.[page.locale]) || layout
-  const headerSchema = useMemo(() => asPublicSchema(chrome?.header), [chrome])
-  const footerSchema = useMemo(() => asPublicSchema(chrome?.footer), [chrome])
-  const bodySchema = useMemo(() => asPublicSchema(page.body_schema), [page.body_schema])
-  // The language menu links where it will live: this page in each language.
-  const languages = useMemo(() => previewLanguages(site, page), [site, page])
-
-  const previewSite = useMemo(
-    () => ({
-      builderStyles,
-      headerSchema,
-      footerSchema,
-      menus: chrome?.menus ?? [],
-    }),
-    [builderStyles, headerSchema, footerSchema, chrome]
-  )
-
-  // Per-node breakpoint rules. Generated from the same schema the published
-  // page uses, so the tablet/mobile toggles below show real overrides.
-  const responsiveCss = useMemo(
-    () => buildResponsiveStylesheet({ headerSchema, bodySchema, footerSchema }),
-    [headerSchema, bodySchema, footerSchema]
-  )
-
-  const styles = useMemo(
-    () => [previewCss, responsiveCss].filter(Boolean),
-    [responsiveCss]
-  )
-
-  const fontHrefs = useMemo(() => {
-    const families = (site.google_fonts ?? []).filter((f) => f && f.trim() !== '')
-    if (families.length === 0) return []
-    const params = families.map((f) => `family=${f.replace(/ /g, '+')}`).join('&')
-    return [`https://fonts.googleapis.com/css2?${params}&display=swap`]
-  }, [site.google_fonts])
 
   const handleScrollRootChange = useCallback((element: HTMLElement | null) => {
     setScrollRoot(element)
@@ -246,6 +201,8 @@ export function PagePreview({
         </div>
       </div>
 
+      {reviewStatus}
+
       {layoutError && (
         <Banner
           tone="warn"
@@ -275,33 +232,16 @@ export function PagePreview({
         aria-busy={regenerating || layoutPending || undefined}
       >
         <div className="flex h-full justify-center">
-          <PreviewFrame
-            styles={styles}
-            stylesheetHrefs={fontHrefs}
-            title={`Preview of ${page.title}`}
+          <PreviewScene
+            page={page}
+            site={site}
+            layout={layout}
+            scrollRoot={scrollRoot}
             className="h-full w-full border-0 bg-white"
             onScrollRootChange={handleScrollRootChange}
-            // A width style (not an attribute) so the frame's own viewport —
-            // and therefore its media queries — actually narrows.
+            // Resize the frame so its own media queries respond to the viewport.
             style={frameWidth ? { width: `${frameWidth}px`, maxWidth: '100%' } : undefined}
-          >
-            <PreviewSiteShell
-              site={previewSite}
-              bodySchema={bodySchema}
-              scrollRoot={scrollRoot}
-              locale={languages.locale}
-              alternates={languages.alternates}
-            >
-              {({ headerOverlaySpacerPaddingTop, globalHeroMinHeight }) => (
-                <SchemaRenderer
-                  schema={bodySchema}
-                  scope="body"
-                  overlaySpacerPaddingTop={headerOverlaySpacerPaddingTop}
-                  globalHeroMinHeight={globalHeroMinHeight}
-                />
-              )}
-            </PreviewSiteShell>
-          </PreviewFrame>
+          />
         </div>
 
         {layoutPending && <PreviewSkeleton />}

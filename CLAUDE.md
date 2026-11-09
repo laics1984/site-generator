@@ -1182,6 +1182,42 @@ Tests: `test_nav_groups.py`, `test_menu_disclosure_mirror.py`;
 webtree-public `lib/menuDisclosure.test.ts`; builder
 `src/lib/menu-disclosure.test.mjs`.
 
+## A full site's header places pages where the owner's header did
+
+`page_inference._NavEvidence.placement` reads every page the source nav names
+as `(nav_rank, nav_parent)`: its top-level position, or its position inside the
+dropdown it sits in. **Read off the nav, never the URL**, and stamped on every
+scaffold whatever its tree parent; `nav_parent` rides with `nav_rank` through
+`PagePlan` (`SkipJsonSchema`), `GeneratedPage`, `PageNode` and
+`cms_sync.normalize_site_slugs`' renames. `menu_builder._header_menu` builds the
+header from it. Before this, ranks existed only for pages the URL tree left at
+the top level, so three things went wrong:
+
+- **A top-level item at a nested URL left the header.** "Admissions" at
+  `/enrol/apply-now` was filed under an "Enrol" page inferred from its URL.
+  That page had no rank, so neither appeared.
+- **A dropdown page followed its URL.** "History" at `/company/history` went
+  under "Company", not under the About dropdown that lists it.
+- **Dropdowns ran in tree order** (URL depth, then slug), not the owner's.
+
+It is a menu decision, like `nav_groups`: the tree keeps the URL hierarchy, so
+breadcrumbs and the footer are unchanged. `top_nav_rank` is the one "top-level
+position" read, which is why `_build_page_tree`'s root sort asks it. A
+dropdown page whose parent was not generated takes no top-level spot. A page's
+unlisted tree children follow its listed ones. **Full site only, by
+construction**: a two-page preview and its later "remaining" build hand
+`build_menus` the source menu verbatim (`source_navigation`), so they never
+reach this path.
+
+Deliberately unchanged (header UX practice, not fidelity gaps): no Home item
+(the logo is the link home), no Contact item (the header CTA is the route), and
+the grouping past `MAX_PRIMARY_ITEMS`. Not done: external nav links (shop,
+portal) are still dropped at extraction, and a dropdown page the crawl never
+reached gets no page of its own.
+
+Tests: `test_nav_inference.NavPlacementTest`,
+`test_menu_builder.HeaderFollowsSourceNavPlacementTest`, `test_cms_sync`.
+
 ## The brand mark is not content
 
 A site's own logo must never fill a photo slot. `image_evidence.classify_role`
@@ -3860,11 +3896,22 @@ walkers). Page-builder kits (feruni.com's Elementor/LaStudio header) emit no
 hidden hamburger panel changes nothing: its links are in the HTML. One parser
 covers both markups (`_is_menu_item` + `_menu_list_in`) — no second copy.
 
+**The footer is never the header.** A menu inside the footer landmark
+(`<footer>` / `role="contentinfo"`) is not a candidate, and the header landmark
+is `<header>` or `role="banner"` (Webflow's navbar is a `<div role="banner">`).
+Candidates used to be scored on size with a bonus for `<header>`. So when the
+header nav sat in a plain `<div>`, the footer sitemap won. The full site's
+header was then ranked from the footer, and a two-page preview copied Privacy
+and Terms into its header. A page whose only menu is in its footer now reads as
+having no header menu, which is what triggers the entry-page render below.
+Measured on mmta, uniquekindies, watr, mykiddyland, feruni and webflow.com: the
+same menu before and after (`EXTRACTION_VERSION` 9).
+
 Menus built by client-side JS: `scraper._entry_with_navigation` renders **the
 entry page only**, and only when its static HTML yields no menu. Advisory — a
 failed render keeps the fast parse. Menus fetched only on click are not covered.
 
-Tests: `test_nav_extraction.DeclaredMenuTest`, `test_entry_navigation.py`.
+Tests: `test_nav_extraction.ExtractNavLinksTest`/`DeclaredMenuTest`, `test_entry_navigation.py`.
 
 ## Record pages: plan once, fill many
 

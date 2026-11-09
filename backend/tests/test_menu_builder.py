@@ -1,6 +1,7 @@
 import unittest
 
 from app.models.builder_schema import PageNode
+from app.models.content_blocks import NavLink
 from app.services.menu_builder import MAX_PRIMARY_ITEMS, build_menus
 
 
@@ -110,6 +111,100 @@ class NavCuratedPrimaryMenuTest(unittest.TestCase):
             i for i in _primary(menus)["items"] if i["label"] == "Services"
         )
         self.assertEqual(len(services["children"]), 8)
+
+
+class HeaderFollowsSourceNavPlacementTest(unittest.TestCase):
+    """A full site's header places each page where the owner's header did
+    (``nav_rank`` + ``nav_parent``), whatever its URL parent; the footer keeps
+    the tree, and a two-page preview's verbatim source menu is untouched."""
+
+    def _site_tree(self) -> list[PageNode]:
+        return _tree(
+            PageNode(
+                slug="about-us", title="About Us", nav_rank=0, from_source=True,
+                children=[
+                    # Tree order is crawl order; the nav says Story, Teachers.
+                    PageNode(slug="team", title="Our Teachers", nav_rank=1, nav_parent="about-us"),
+                    PageNode(slug="about-us/our-story", title="Our Story", nav_rank=0,
+                             nav_parent="about-us"),
+                    PageNode(slug="about-us/awards", title="Awards"),  # not in the nav
+                ],
+            ),
+            PageNode(
+                slug="company", title="Company", from_source=True,  # inferred from a URL
+                children=[PageNode(slug="company/history", title="History", nav_rank=2,
+                                   nav_parent="about-us")],
+            ),
+            PageNode(
+                slug="enrol", title="Enrol", from_source=True,  # inferred from a URL
+                children=[PageNode(slug="enrol/apply-now", title="Admissions", nav_rank=1)],
+            ),
+            PageNode(slug="gallery", title="Gallery", nav_rank=2, from_source=True),
+        )
+
+    def test_the_header_reads_like_the_owners(self):
+        items = _primary(build_menus(self._site_tree()))["items"]
+        self.assertEqual([i["label"] for i in items], ["About Us", "Admissions", "Gallery"])
+        self.assertEqual(items[1]["href"], "/enrol/apply-now")
+        about = items[0]
+        # The owner's dropdown, in their order; a child they did not list follows.
+        self.assertEqual(
+            [c["label"] for c in about["children"]],
+            ["Our Story", "Our Teachers", "History", "Awards"],
+        )
+
+    def test_a_page_is_never_listed_twice(self):
+        tree = _tree(
+            PageNode(
+                slug="about", title="About", nav_rank=0, from_source=True,
+                # The tree nests Team under About; the owner's header lists it
+                # beside About.
+                children=[PageNode(slug="about/team", title="Team", nav_rank=1)],
+            ),
+        )
+        items = _primary(build_menus(tree))["items"]
+        self.assertEqual([i["label"] for i in items], ["About", "Team"])
+        self.assertNotIn("children", items[0])
+
+    def test_the_footer_keeps_the_tree(self):
+        footer = _footer(build_menus(self._site_tree()))["items"]
+        company = next(i for i in footer if i["label"] == "Company")
+        self.assertEqual([c["label"] for c in company["children"]], ["History"])
+
+    def test_a_dropdown_page_whose_dropdown_is_not_built_stays_out(self):
+        tree = _tree(
+            PageNode(slug="gallery", title="Gallery", nav_rank=0, from_source=True),
+            PageNode(slug="team", title="Our Teachers", nav_rank=0, nav_parent="about-us"),
+        )
+        items = _primary(build_menus(tree))["items"]
+        self.assertEqual([i["label"] for i in items], ["Gallery"])
+
+    def test_a_page_the_owner_placed_out_of_view_keeps_its_tree_place(self):
+        tree = _tree(
+            PageNode(
+                slug="programmes", title="Programmes", nav_rank=0, from_source=True,
+                children=[
+                    # Listed under Admissions, which was not generated.
+                    PageNode(slug="programmes/fees", title="Fees", nav_rank=0,
+                             nav_parent="admissions"),
+                    # Listed top level, but the header routes Contact to its CTA.
+                    PageNode(slug="programmes/contact", title="Contact", nav_rank=1),
+                ],
+            ),
+        )
+        programmes = _primary(build_menus(tree))["items"][0]
+        self.assertEqual([c["label"] for c in programmes["children"]], ["Fees", "Contact"])
+
+    def test_the_verbatim_source_menu_is_untouched(self):
+        source = [
+            NavLink(label="Home", href="/"),
+            NavLink(label="About Us", href="/about-us",
+                    children=[NavLink(label="History", href="/company/history")]),
+            NavLink(label="Contact Us", href="/contact-us"),
+        ]
+        items = _primary(build_menus(self._site_tree(), source_navigation=source))["items"]
+        self.assertEqual([i["label"] for i in items], ["Home", "About Us", "Contact Us"])
+        self.assertEqual([c["label"] for c in items[1]["children"]], ["History"])
 
 
 class HeuristicPrimaryMenuTest(unittest.TestCase):

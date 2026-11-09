@@ -18,15 +18,28 @@ frontend concern (frontend/src/lib/sourceCombine.ts) — the same split
 from __future__ import annotations
 
 import asyncio
+import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.models.content_blocks import SourceContent
+from app.services.llm import LlmError
+from app.services import scout_review
 from app.services.source_merge import merge_sources
 from app.services.source_preview import source_preview_payload
 
 router = APIRouter(prefix="/api/source", tags=["source"])
+logger = logging.getLogger(__name__)
+
+
+@router.post("/scout-review", response_model=scout_review.ScoutReview)
+async def review_scout_blockage(payload: scout_review.ScoutReviewRequest) -> scout_review.ScoutReview:
+    try:
+        return await scout_review.review(payload)
+    except (TimeoutError, LlmError) as exc:
+        logger.warning("Scout model review failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Scout's language model is unavailable.") from exc
 
 
 class SourceMergeRequest(BaseModel):

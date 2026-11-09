@@ -161,6 +161,21 @@ class NormalizeSiteSlugsTest(unittest.TestCase):
         nav_link = site.header_schema.content[0]
         self.assertEqual(nav_link.content.href, "/profile-ashley")
 
+    def test_a_header_placement_follows_its_dropdown_page(self):
+        """nav_parent names a page by slug, so it is renamed with that page."""
+        site = _site("About Us", "team")
+        site.pages[2].nav_parent = "About Us"
+        site.page_tree = [
+            PageNode(slug="About Us", title="About Us", nav_rank=0),
+            PageNode(slug="team", title="Team", nav_rank=0, nav_parent="About Us"),
+        ]
+
+        normalize_site_slugs(site)
+
+        self.assertEqual(site.pages[1].slug, "about-us")
+        self.assertEqual(site.pages[2].nav_parent, "about-us")
+        self.assertEqual(site.page_tree[1].nav_parent, "about-us")
+
     def test_segments_are_still_sanitized_inside_a_kept_path(self):
         site = _hierarchical_site()
         site.pages[2].slug = "Profile/Kuek Ser Sheen Tse"

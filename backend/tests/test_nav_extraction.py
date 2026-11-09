@@ -95,6 +95,58 @@ class ExtractNavLinksTest(unittest.TestCase):
         nav = extract_nav_links(_soup(html), BASE)
         self.assertEqual([n.label for n in nav], ["Home", "About"])
 
+    def test_a_footer_menu_is_never_the_header_nav(self):
+        """The footer's sitemap is longer than a header nav in a plain <div>
+        (no <header> element), and used to win on size alone."""
+        html = """
+        <div class="site-header"><nav><ul>
+          <li><a href="/">Home</a></li><li><a href="/about">About</a></li>
+          <li><a href="/services">Services</a></li>
+        </ul></nav></div>
+        <main><p>Copy.</p></main>
+        <footer><nav><ul>
+          <li><a href="/about">About</a></li><li><a href="/services">Services</a></li>
+          <li><a href="/careers">Careers</a></li><li><a href="/blog">Blog</a></li>
+          <li><a href="/privacy">Privacy</a></li><li><a href="/terms">Terms</a></li>
+        </ul></nav></footer>
+        """
+        nav = extract_nav_links(_soup(html), BASE)
+        self.assertEqual([n.label for n in nav], ["Home", "About", "Services"])
+
+    def test_the_aria_footer_landmark_counts_as_a_footer(self):
+        html = """
+        <div><nav><ul><li><a href="/about">About</a></li></ul></nav></div>
+        <div role="contentinfo"><nav><ul>
+          <li><a href="/a">A</a></li><li><a href="/b">B</a></li><li><a href="/c">C</a></li>
+        </ul></nav></div>
+        """
+        self.assertEqual([n.label for n in extract_nav_links(_soup(html), BASE)], ["About"])
+
+    def test_the_aria_banner_landmark_counts_as_the_header(self):
+        """Webflow's navbar is a <div role="banner">, never a <header>."""
+        html = """
+        <div role="banner" class="navbar w-nav"><nav role="navigation" class="nav-menu">
+          <a href="/about">About</a><a href="/work">Work</a>
+        </nav></div>
+        <div class="sidebar"><nav><ul>
+          <li><a href="/a">A</a></li><li><a href="/b">B</a></li><li><a href="/c">C</a></li>
+        </ul></nav></div>
+        """
+        self.assertEqual(
+            [n.label for n in extract_nav_links(_soup(html), BASE)], ["About", "Work"]
+        )
+
+    def test_a_page_whose_only_menu_is_its_footer_has_no_header_nav(self):
+        """Empty is the honest answer: it is what makes the crawler render the
+        entry page to find a menu JavaScript builds."""
+        html = """
+        <div class="top"><a href="/">Acme</a></div>
+        <footer><nav><ul>
+          <li><a href="/about">About</a></li><li><a href="/privacy">Privacy</a></li>
+        </ul></nav></footer>
+        """
+        self.assertEqual(extract_nav_links(_soup(html), BASE), [])
+
     def test_nav_without_lists_falls_back_to_flat_anchors(self):
         html = """
         <header><nav>
@@ -153,6 +205,12 @@ class DeclaredMenuTest(unittest.TestCase):
         self.assertEqual(
             [c.href for c in products.children[1].children], ["/kitchen-tiles", "/bathroom-tiles"]
         )
+
+    def test_a_footer_nav_does_not_hide_the_declared_header_menu(self):
+        html = self.FERUNI + '<footer><nav><ul><li><a href="/privacy">Privacy</a></li></ul></nav></footer>'
+        nav = extract_nav_links(_soup(html), BASE)
+        self.assertEqual(nav[0].label, "Home")
+        self.assertEqual(len(nav), 4)
 
     def test_semantic_navigation_still_wins(self):
         html = self.FERUNI + '<header><nav><ul><li><a href="/shop">Shop</a></li></ul></nav></header>'
