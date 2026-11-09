@@ -956,8 +956,20 @@ body {
 
 /* --- from components/blocks/ImageBlock.vue --- */
 .wt-image-block { max-width: 100%; }
-.wt-image-link { display: block; width: 100%; height: 100%; }
-.wt-image { width: 100%; height: 100%; display: block; /* object-fit/object-position driven by :style binding */ }
+/*
+  The img is at least as tall as the block's own min-height. `height: 100%`
+  only resolves when the block's height does: a block stating `height: 100%`
+  under an auto-height column (the catalog's split heroes: "Blob Photo",
+  "Hero Image", with a minHeight beside it) is only as tall as its
+  min-height, and the img fell back to the photo's aspect — a 3:2 photo
+  covered 387px of a 420px blob and left a band of the block's fill below it.
+  `inherit` reads the block's COMPUTED min-height, so it follows the
+  breakpoint rules (`[data-wt-node-id]`, !important) where an inline value
+  would carry the desktop floor onto a phone. The link sits between them, so
+  it passes the floor on. Mirrored by the builder canvas (`lib/image-frame.ts`).
+*/
+.wt-image-link { display: block; width: 100%; height: 100%; min-height: inherit; }
+.wt-image { width: 100%; height: 100%; min-height: inherit; display: block; /* object-fit/object-position driven by :style binding */ }
 
 /* --- from components/blocks/HeroBlock.vue --- */
 .wt-hero { padding: 4rem 1rem; }
