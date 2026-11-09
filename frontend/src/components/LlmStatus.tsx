@@ -147,7 +147,7 @@ function ModelMenu({
   })
   const summary = (key: keyof LlmChoice) => {
     const id = choice[key]
-    if (id === 'local') return roleHealth(key)?.model || 'Local model'
+    if (id === 'local') return 'Remote LLM'
     return (byId.get(id)?.label ?? id).replace(/^Claude /, '')
   }
   const sameModel = choice.content === choice.reasoning
@@ -236,12 +236,49 @@ function ModelMenu({
   )
 }
 
+function CopyModelName({ name }: { name: string }) {
+  const [copied, setCopied] = useState(false)
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(name)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard access can be refused; nothing else to do.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      title={copied ? 'Copied' : 'Copy model name'}
+      aria-label={copied ? 'Model name copied' : 'Copy model name'}
+      className="shrink-0 rounded-md p-1 text-ink-faint opacity-25 transition hover:bg-surface hover:text-ink hover:opacity-100 focus-visible:opacity-100"
+    >
+      {copied ? (
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.75" aria-hidden="true">
+          <path d="M3.5 8.5l3 3 6-7" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+          <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+          <path d="M10.5 3.5v-.5a1.5 1.5 0 00-1.5-1.5H4A1.5 1.5 0 002.5 3v5A1.5 1.5 0 004 9.5h.5" strokeLinecap="round" />
+        </svg>
+      )}
+    </button>
+  )
+}
+
 function RoleStatus({ status }: { status: LlmRoleHealth | undefined }) {
   if (!status) return <p className="mt-1 text-[11px] text-ink-faint">Checking…</p>
   if (status.status === 'ok') {
+    const localModel = status.provider === 'local' ? status.model : undefined
     return (
-      <p className="mt-1 text-[11px] text-emerald-700">
-        Ready{status.provider === 'local' && status.model ? ` — serving ${status.model}` : ''}
+      <p className="mt-1 flex items-center gap-1 text-[11px] text-emerald-700">
+        <span>Ready</span>
+        {localModel && <CopyModelName name={localModel} />}
       </p>
     )
   }
