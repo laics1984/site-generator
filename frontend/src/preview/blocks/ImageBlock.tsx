@@ -63,9 +63,10 @@ export function ImageBlock({ node }: { node: PublicBlockNode }) {
   const imgStyle = (() => {
     const base = getImageElementStyles(styles)
     // Logo: fill the wrapper's (shrinkable) height, keep width auto for aspect,
-    // and `contain` so it's never cropped. Overrides `.wt-image`'s 100%x100%.
+    // and `contain` so it's never cropped. Overrides `.wt-image`'s 100%x100%,
+    // and its inherited min-height: the shrink drives the logo by height alone.
     if (isBrandLogo) {
-      return { ...base, objectFit: 'contain', width: 'auto', height: '100%' } as CSSProperties
+      return { ...base, objectFit: 'contain', width: 'auto', height: '100%', minHeight: 0 } as CSSProperties
     }
     return base as CSSProperties
   })()
