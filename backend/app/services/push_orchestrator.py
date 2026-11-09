@@ -165,6 +165,8 @@ class PushRequest:
     entity_id: str | None = None
     public_url: str | None = None
     project_page_ids: dict[str, str] = field(default_factory=dict)
+    # The opt-in Scout publish route validates the complete saved bundle.
+    saved_assets: dict[str, tuple[bytes, str, str]] | None = field(default=None, repr=False)
 
 
 # --- the orchestrator -----------------------------------------------------------
@@ -273,7 +275,7 @@ def _raise_first_error(results: list) -> None:
 
 async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> PushReport:
     # 0. Nothing is written for a site whose photos can no longer be fetched.
-    dead = _dead_photo_links(req.site, at=time.time())
+    dead = _dead_photo_links(req.site, at=time.time()) if req.saved_assets is None else []
     if dead:
         deadline = min(signed_url_expiry(src) or 0 for src in dead)
         message = (
@@ -384,7 +386,12 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     #    so the published site never has a broken reference.
     try:
         with stage("push_media_upload"):
-            media = await _upload_media(client, req)
+            if req.saved_assets is None:
+                media = await _upload_media(client, req)
+            else:
+                from app.services.scout_assets import upload_saved_assets
+
+                media = await upload_saved_assets(client, req.entity_token, req.saved_assets)
         report.record(
             PushStep(
                 name="media",
@@ -402,6 +409,10 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
     # Apply rewrites BEFORE we ship schemas — saves us a second pass and
     # ensures every src on the CMS side is a permanent URL.
     _apply_src_rewrites(req.site, media.rewrites)
+    if req.saved_assets is not None:
+        from app.services.scout_assets import rewrite_responsive_assets
+
+        rewrite_responsive_assets(req.site, media.rewrites)
     # Drop any image that couldn't be re-hosted (dead/404 source URL) so the
     # published site never renders a broken image pointing back at the source.
     stripped = _strip_invalid_images(req.site, media.failed)
@@ -548,7 +559,11 @@ async def _run_push(client: CmsClient, req: PushRequest, report: PushReport) -> 
                 layout_version_id = new_layout["versionId"]
             report.record(PushStep(name="builder_styles", ok=True, detail="Theme applied"))
         except CmsApiError as exc:
-            # Non-fatal — site already pushed; theme can be set manually.
+            if req.saved_assets is not None:
+                report.record(PushStep(name="builder_styles", ok=False, error=str(exc)))
+                report.error = "The saved theme could not be applied."
+                return report
+            # Non-fatal for ordinary pushes — the theme can be set manually.
             report.record(
                 PushStep(
                     name="builder_styles",

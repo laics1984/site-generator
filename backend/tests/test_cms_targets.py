@@ -378,6 +378,55 @@ class PlanEndpointTest(_TargetSettings):
         login.assert_not_called()
 
 
+class ScoutProvisionTest(_TargetSettings):
+    def setUp(self) -> None:
+        super().setUp()
+        self.client = TestClient(app)
+        settings.cms_remote_api_base_url = "https://app-api.example.com"
+        settings.cms_remote_admin_base_url = "https://app.example.com"
+        self.payload = {
+            "target": "remote",
+            "expected_cms_origin": "https://app-api.example.com",
+            "email": "owner@example.com",
+            "password": "secret",
+            "entity_name": "Scout Demo",
+            "preview_key": "30f97aa7-1483-451c-8a94-31cd49ba466f",
+            "expected_owner_id": "owner-id",
+        }
+
+    def test_provision_passes_only_site_fields_to_the_cms(self) -> None:
+        provision = AsyncMock(return_value={
+            "entity_id": "site", "entity_api_token": "token",
+            "public_url": "https://abc123456789.preview.example.com",
+        })
+        with (
+            patch.object(CmsClient, "login", new=AsyncMock(return_value="jwt")),
+            patch.object(CmsClient, "provision_prospect_preview", new=provision),
+        ):
+            response = self.client.post("/api/cms/scout/provision", json=self.payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["admin_url"], "https://app.example.com/sites")
+        provision.assert_awaited_once_with({
+            "entity_name": "Scout Demo",
+            "preview_key": self.payload["preview_key"],
+            "expected_owner_id": "owner-id",
+            "expected_entity_id": None,
+        })
+
+    def test_a_changed_destination_is_refused_before_sending_credentials(self) -> None:
+        payload = {**self.payload, "expected_cms_origin": "https://other.example.com"}
+        with (
+            patch.object(CmsClient, "login", new=AsyncMock()) as login,
+            patch("app.routers.cms.push_site", new=AsyncMock()) as push,
+        ):
+            response = self.client.post("/api/cms/scout/provision", json=payload)
+            self.assertEqual(response.status_code, 409)
+            response = self.client.post("/api/cms/push", json={**payload, "site": _MINIMAL_SITE})
+            self.assertEqual(response.status_code, 409)
+        login.assert_not_called()
+        push.assert_not_called()
+
+
 class AdminLinkTest(_TargetSettings):
     """A successful remote push must not be followed by a localhost deep link."""
 

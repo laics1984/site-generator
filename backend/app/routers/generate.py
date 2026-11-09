@@ -1504,6 +1504,9 @@ class GenerateWithPagesRequest(BaseModel):
     # unaffected — each depicts one specific artifact, not a decorated section.
     # Applied by services/source_images.without_source_imagery.
     stock_images_only: bool = False
+    # Unattended callers can require every page's copy pass to succeed before
+    # saving a draft. The wizard can still show a partially generated result.
+    require_complete_copy: bool = False
     contact: dict[str, str] | None = None
     jurisdiction: str | None = None
     legal_contact_email: str | None = None
@@ -1884,6 +1887,16 @@ async def _generate_with_pages(payload: GenerateWithPagesRequest) -> GeneratedSi
     # the affected pages ship with scaffold defaults. Surface which ones, so a
     # thin page is traceable to a failed call rather than to bad source content.
     if scaffolded.degraded_slugs:
+        if payload.require_complete_copy:
+            pending = (prefetch_task, ocr_task, graphics_task, record_pages_task)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            routes = ", ".join(f"/{slug}" for slug in scaffolded.degraded_slugs[:8])
+            raise HTTPException(
+                status_code=502,
+                detail=f"Source-based copy could not be generated for {routes}. Retry before saving.",
+            )
         logger.warning(
             "%d of %d page(s) fell back to scaffold defaults after a failed "
             "content call: %s",

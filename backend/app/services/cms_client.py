@@ -142,6 +142,17 @@ class CmsClient:
 
     # --- entities --------------------------------------------------------------
 
+    async def account_id(self) -> str:
+        async with self._wrap_request("account_id"):
+            resp = await self._http_client().post(
+                f"{self.base_url}/api/auth/me", headers=self._jwt_headers(),
+            )
+            _assert_not_redirect(resp, self.base_url)
+            owner = _safe_json(resp).get("id")
+            if resp.status_code != 200 or not isinstance(owner, (str, int)) or not owner:
+                raise CmsApiError(502, "The CMS did not confirm the signed-in account.")
+            return str(owner)
+
     async def create_entity(
         self,
         *,
@@ -183,6 +194,24 @@ class CmsClient:
                     f"Create-entity response missing entity_api_token: {body}",
                     response_body=body,
                 )
+            return data
+
+    async def provision_prospect_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Reserve or recover the CMS site before any pages are written."""
+        async with self._wrap_request("provision_prospect_preview"):
+            resp = await self._http_client().post(
+                f"{self.base_url}/api/entities/prospect-previews",
+                json=payload,
+                headers=self._jwt_headers(),
+            )
+            _assert_not_redirect(resp, self.base_url)
+            if resp.status_code != 200:
+                raise CmsApiError(resp.status_code, "The CMS refused preview provisioning.")
+            data = _safe_json(resp).get("data")
+            if not isinstance(data, dict) or not all(
+                data.get(key) for key in ("entity_id", "entity_api_token", "public_url")
+            ):
+                raise CmsApiError(502, "The CMS did not return a usable preview.")
             return data
 
     async def list_entities(self) -> list[dict[str, Any]]:
